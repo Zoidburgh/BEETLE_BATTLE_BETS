@@ -451,6 +451,261 @@ def place_beetle_rotated(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, col
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
+# ========== PERFORMANCE OPTIMIZATION: GEOMETRY CACHING ==========
+def generate_beetle_geometry():
+    """Generate beetle geometry once as list of (dx, dy, dz) offsets"""
+    voxels = []
+
+    # ABDOMEN (rear) - LEAN ellipse
+    for dx in range(-12, -1):
+        for dy in range(0, 5):
+            for dz in range(-3, 4):
+                length_pos = (dx + 6.5) / 5.0
+                height_factor = 1.0 - ((dy - 2.5) / 2.5) ** 2
+                if height_factor > 0:
+                    width_at_height = 3.0 * math.sqrt(height_factor)
+                    length_taper = 1.0 - (length_pos * length_pos)
+                    if length_taper > 0:
+                        max_width = width_at_height * math.sqrt(length_taper)
+                        if abs(dz) <= max_width:
+                            voxels.append((dx, dy, dz))
+
+    # Pyramid top layer for abdomen - inset by 1 voxel
+    for dx in range(-11, -2):
+        for dz in range(-2, 3):
+            length_pos = (dx + 6.5) / 5.0
+            height_factor = 1.0 - ((5 - 2.5) / 2.5) ** 2
+            if height_factor > 0:
+                width_at_height = 3.0 * math.sqrt(height_factor)
+                length_taper = 1.0 - (length_pos * length_pos)
+                if length_taper > 0:
+                    max_width = width_at_height * math.sqrt(length_taper)
+                    # Inset by 1 voxel from edges
+                    if abs(dz) <= max_width - 1 and abs(dz) > 0:
+                        voxels.append((dx, 5, dz))
+
+    # THORAX (middle) - LEAN with small pronotum bump
+    for dx in range(-1, 2):
+        for dy in range(0, 2):
+            for dz in range(-2, 3):
+                width_at_height = 2.0 if dy < 1 else 1.5
+                length_factor = 1.0 - abs(dx) / 1.5
+                max_width = width_at_height * length_factor
+                if abs(dz) <= max_width:
+                    voxels.append((dx, dy, dz))
+
+    # Pyramid top layer for thorax - inset by 1 voxel
+    for dx in range(-1, 2):
+        for dz in range(-1, 2):
+            if abs(dz) > 0:  # Not on the centerline, inset from edges
+                voxels.append((dx, 2, dz))
+
+    # HEAD (front) - LEAN
+    for dx in range(2, 4):
+        for dy in range(0, 1):
+            for dz in range(-1, 2):
+                width_at_height = 1.5
+                if abs(dz) <= width_at_height:
+                    voxels.append((dx, dy, dz))
+
+    # EXAGGERATED Y-SHAPED HORN - Main shaft with overlapping layers
+    for i in range(12):
+        dx = 3 + i
+        height_curve = int(i * 0.3)
+        dy = 1 + height_curve
+        thickness = 1  # Changed from 2 to 1 for 3-voxel width
+        for dz in range(-thickness, thickness + 1):
+            # Add voxel at current height
+            voxels.append((dx, dy, dz))
+            # Add overlapping voxel below (unless at bottom)
+            if dy > 1:
+                voxels.append((dx, dy - 1, dz))
+
+    # EXAGGERATED Y-fork - Left prong with overlapping layers
+    for i in range(5):
+        dx = 13 + i
+        dy = 4 + i
+        center_dz = -i
+        for dz_offset in range(0, 2):  # Changed from range(-1, 2) to range(0, 2) for 2-voxel width
+            dz = center_dz + dz_offset
+            # Add voxel at current height
+            voxels.append((dx, dy, dz))
+            # Add overlapping voxel below
+            voxels.append((dx, dy - 1, dz))
+
+    # Right prong with overlapping layers
+    for i in range(5):
+        dx = 13 + i
+        dy = 4 + i
+        center_dz = i
+        for dz_offset in range(-1, 1):  # Changed from range(-1, 2) to range(-1, 1) for 2-voxel width
+            dz = center_dz + dz_offset
+            # Add voxel at current height
+            voxels.append((dx, dy, dz))
+            # Add overlapping voxel below
+            voxels.append((dx, dy - 1, dz))
+
+    # IMPROVED LEGS (6 total) - Front legs with smooth curves
+    for side in [-1, 1]:
+        # COXA - Wider starting position
+        for i in range(2):
+            dx = 1
+            dy = 1
+            dz = side * (3 + i)  # Start at dz=3 instead of 2
+            for extra_y in range(2):
+                voxels.append((dx, dy + extra_y, dz))
+
+        # FEMUR - Extended and smooth
+        for i in range(4):  # Extended from 3 to 4
+            dx = 1
+            dy = 0
+            dz = side * (5 + i)  # Shifted to accommodate wider start
+            for extra_y in range(2):
+                voxels.append((dx, dy + extra_y, dz))
+
+        # TIBIA - Smooth curve with no gaps, 25% longer
+        # Create smooth curve from (1, 0, 9) to (3, 0, 10)
+        tibia_points = [
+            (1, 0, side * 9),
+            (1, 0, side * 10),   # Fill gap
+            (2, 0, side * 10),   # Fill gap
+            (3, 0, side * 10),
+        ]
+        for point in tibia_points:
+            voxels.append(point)
+
+    # Middle legs - Improved with smooth curves
+    for side in [-1, 1]:
+        # COXA - Wider starting position (moved back 1 voxel)
+        for i in range(2):
+            dx = -2
+            dy = 1
+            dz = side * (3 + i)
+            for extra_y in range(2):
+                voxels.append((dx, dy + extra_y, dz))
+
+        # FEMUR - Extended and smooth
+        for i in range(4):
+            dx = -2
+            dy = 0
+            dz = side * (5 + i)
+            for extra_y in range(2):
+                voxels.append((dx, dy + extra_y, dz))
+
+        # TIBIA - Smooth curve extending backward
+        tibia_points = [
+            (-2, 0, side * 9),
+            (-2, 0, side * 10),  # Fill gap
+            (-3, 0, side * 10),  # Fill gap
+            (-4, 0, side * 10),
+        ]
+        for point in tibia_points:
+            voxels.append(point)
+
+    # Rear legs - Improved with smooth curves
+    for side in [-1, 1]:
+        # COXA - Wider starting position (moved back 1 voxel)
+        for i in range(2):
+            dx = -5
+            dy = 1
+            dz = side * (3 + i)
+            for extra_y in range(2):
+                voxels.append((dx, dy + extra_y, dz))
+
+        # FEMUR - Extended both backward and outward
+        for i in range(4):
+            dx = -5 - i
+            dy = 0
+            dz = side * (5 + i)
+            for extra_y in range(2):
+                voxels.append((dx, dy + extra_y, dz))
+
+        # TIBIA - Smooth curve extending backward
+        tibia_points = [
+            (-9, 0, side * 9),
+            (-9, 0, side * 10),   # Fill gap
+            (-10, 0, side * 10),  # Fill gap
+            (-11, 0, side * 10),
+        ]
+        for point in tibia_points:
+            voxels.append(point)
+
+    return voxels
+
+# Generate beetle geometry ONCE at startup
+BEETLE_GEOMETRY = generate_beetle_geometry()
+print(f"Beetle geometry cached: {len(BEETLE_GEOMETRY)} voxels")
+
+# Create Taichi fields for geometry cache
+beetle_cache_size = len(BEETLE_GEOMETRY)
+beetle_cache_x = ti.field(ti.i32, shape=beetle_cache_size)
+beetle_cache_y = ti.field(ti.i32, shape=beetle_cache_size)
+beetle_cache_z = ti.field(ti.i32, shape=beetle_cache_size)
+
+# Populate Taichi fields with cached geometry
+@ti.kernel
+def init_beetle_cache():
+    """Initialize beetle geometry cache on GPU"""
+    pass
+
+# Copy geometry to GPU
+for i, (dx, dy, dz) in enumerate(BEETLE_GEOMETRY):
+    beetle_cache_x[i] = dx
+    beetle_cache_y[i] = dy
+    beetle_cache_z[i] = dz
+
+init_beetle_cache()
+
+@ti.kernel
+def place_cached_beetle(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32):
+    """Fast beetle placement using pre-generated geometry cache"""
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+
+    cos_r = ti.cos(rotation)
+    sin_r = ti.sin(rotation)
+
+    # Transform cached voxels with rotation
+    for i in range(beetle_cache_size):
+        local_x = float(beetle_cache_x[i])
+        local_y = beetle_cache_y[i]
+        local_z = float(beetle_cache_z[i])
+
+        # 2D rotation
+        rotated_x = local_x * cos_r - local_z * sin_r
+        rotated_z = local_x * sin_r + local_z * cos_r
+
+        grid_x = center_x + int(ti.round(rotated_x))
+        grid_y = 2 + local_y
+        grid_z = center_z + int(ti.round(rotated_z))
+
+        if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+            simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+@ti.kernel
+def clear_beetles_bounded(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32):
+    """Clear beetles using bounding box - MUCH faster than full grid scan"""
+    # Convert to grid coordinates with margin
+    margin = 20
+    center_x1 = int(x1 + simulation.n_grid / 2.0)
+    center_z1 = int(z1 + simulation.n_grid / 2.0)
+    center_x2 = int(x2 + simulation.n_grid / 2.0)
+    center_z2 = int(z2 + simulation.n_grid / 2.0)
+
+    # Bounding box
+    min_x = ti.max(0, ti.min(center_x1, center_x2) - margin)
+    max_x = ti.min(simulation.n_grid, ti.max(center_x1, center_x2) + margin)
+    min_z = ti.max(0, ti.min(center_z1, center_z2) - margin)
+    max_z = ti.min(simulation.n_grid, ti.max(center_z1, center_z2) + margin)
+
+    # Only scan bounding box
+    for i in range(min_x, max_x):
+        for j in range(0, 15):  # Height range for beetles
+            for k in range(min_z, max_z):
+                if simulation.voxel_type[i, j, k] == simulation.BEETLE_BLUE or \
+                   simulation.voxel_type[i, j, k] == simulation.BEETLE_RED:
+                    simulation.voxel_type[i, j, k] = simulation.EMPTY
+
 def beetle_collision(b1, b2):
     """Handle collision with voxel-perfect detection and pushing"""
     # Fast GPU-based collision check
@@ -645,10 +900,10 @@ while window.running:
     # Beetle collision (voxel-perfect)
     beetle_collision(beetle_blue, beetle_red)
 
-    # Render
-    clear_beetles()
-    place_beetle_rotated(beetle_blue.x, beetle_blue.z, beetle_blue.rotation, beetle_blue.color)
-    place_beetle_rotated(beetle_red.x, beetle_red.z, beetle_red.rotation, beetle_red.color)
+    # Render - OPTIMIZED with geometry caching and bounded clearing
+    clear_beetles_bounded(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z)
+    place_cached_beetle(beetle_blue.x, beetle_blue.z, beetle_blue.rotation, beetle_blue.color)
+    place_cached_beetle(beetle_red.x, beetle_red.z, beetle_red.rotation, beetle_red.color)
 
     canvas.set_background_color((0.05, 0.05, 0.08))
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
