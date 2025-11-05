@@ -31,6 +31,8 @@ MOLTEN = 3  # Molten metal/material (will fall due to gravity)
 DEBRIS = 4  # Destroyed material (small falling chunks)
 BEETLE_BLUE = 5  # Beetle voxels (blue color)
 BEETLE_RED = 6  # Second beetle (red color)
+BEETLE_BLUE_LEGS = 7  # Blue beetle legs (lighter blue)
+BEETLE_RED_LEGS = 8  # Red beetle legs (lighter red)
 
 # Material property functions (for physics calculations)
 @ti.func

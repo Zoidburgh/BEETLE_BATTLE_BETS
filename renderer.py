@@ -53,6 +53,14 @@ def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
     elif voxel_type == 6:  # BEETLE_RED
         color = ti.math.vec3(1.0, 0.2, 0.2)
 
+    # Blue beetle legs - lighter cyan/blue
+    elif voxel_type == 7:  # BEETLE_BLUE_LEGS
+        color = ti.math.vec3(0.4, 0.7, 1.0)
+
+    # Red beetle legs - lighter orange/red
+    elif voxel_type == 8:  # BEETLE_RED_LEGS
+        color = ti.math.vec3(1.0, 0.5, 0.3)
+
     return color
 
 @ti.kernel
