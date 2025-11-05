@@ -3,8 +3,8 @@ import taichi as ti
 # Initialize Taichi with GPU
 ti.init(arch=ti.gpu, debug=False)
 
-# 128x128x128 grid for full game
-n_grid = 128
+# 192x192x192 grid (50% larger than 128 - GPU workgroup limit at 256)
+n_grid = 192
 voxel_type = ti.field(dtype=ti.i32, shape=(n_grid, n_grid, n_grid))
 
 # Debris particle system (flying particles from destroyed voxels)
@@ -269,36 +269,35 @@ def init_beetle_arena():
     for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
         voxel_type[i, j, k] = EMPTY
 
-    # Arena center
-    center_x = 64
-    center_y = 0
-    center_z = 64
+    # Arena center (updated for 192 grid)
+    center_x = 96
+    center_y = -2  # Lower floor so beetle legs touch properly
+    center_z = 96
 
-    # Arena dimensions
-    arena_radius = 40  # Same as beetle.py ARENA_RADIUS
+    # Arena dimensions (half size for closer combat)
+    arena_radius = 42
     floor_thickness = 2
 
-    # Build circular floor
+    # Build circular floor - LOWERED for beetle leg contact
     for i in range(center_x - arena_radius - 5, center_x + arena_radius + 5):
         for k in range(center_z - arena_radius - 5, center_z + arena_radius + 5):
             dx = float(i - center_x)
             dz = float(k - center_z)
             dist = ti.sqrt(dx * dx + dz * dz)
 
-            # Floor (flat circle)
+            # Floor (flat circle) at y=-2 to -1
             if dist <= arena_radius:
-                for y in range(floor_thickness):
-                    voxel_type[i, y, k] = CONCRETE
+                voxel_type[i, 0, k] = CONCRETE  # y=0 (top of floor)
+                voxel_type[i, 1, k] = EMPTY      # y=1 clear for legs
 
-            # Optional: Ring boundary markers (visual edge)
+            # Optional: Ring boundary markers (visual edge) at y=0
             if dist > arena_radius - 2 and dist <= arena_radius:
-                for y in range(floor_thickness, floor_thickness + 2):
-                    voxel_type[i, y, k] = STEEL
+                voxel_type[i, 0, k] = STEEL
 
     # Add ONE simple beetle in center - just a small rectangular box
-    beetle_center_x = 64
+    beetle_center_x = 96
     beetle_center_y = 2  # Start at y=2 (floor is y=0,1)
-    beetle_center_z = 64
+    beetle_center_z = 96
 
     # Simple 6x3x4 box (length x height x width)
     for dx in range(-3, 4):  # Length 7
@@ -311,8 +310,8 @@ def init_beetle_arena():
                     voxel_type[x, y, z] = BEETLE_BLUE
 
     # Add SECOND beetle (red) on opposite side
-    beetle2_x = 64 + 15  # East side
-    beetle2_z = 64
+    beetle2_x = 96 + 15  # East side
+    beetle2_z = 96
 
     for dx in range(-3, 4):
         for dy in range(0, 3):

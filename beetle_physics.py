@@ -10,15 +10,15 @@ import time
 import math
 
 # Physics constants
-BEETLE_RADIUS = 4.0
+BEETLE_RADIUS = 16.0  # Back to original scale - lean and mean
 MOVE_FORCE = 120.0  # Increased for more responsive feel
 FRICTION = 0.88  # Slightly higher friction
 MAX_SPEED = 7.0  # Slightly higher top speed
-ROTATION_SPEED = 18.0  # Much faster rotation for instant diagonal response
+ROTATION_SPEED = 3.0  # Even slower rotation (6x slower than original) for more controlled turning
 ANGULAR_FRICTION = 0.85  # How quickly spin slows down (lower = more spin)
 MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec)
-TORQUE_MULTIPLIER = 3.0  # Amplify rotational forces
-ARENA_RADIUS = 35.0
+TORQUE_MULTIPLIER = 1.0  # Gentler rotational forces (pushy not bouncy)
+ARENA_RADIUS = 42.5  # Half size for closer combat
 
 # Beetle state with physics
 class Beetle:
@@ -79,9 +79,9 @@ class Beetle:
             self.vx -= 2 * dot * normal_x * 0.5
             self.vz -= 2 * dot * normal_z * 0.5
 
-# Create beetles
-beetle_blue = Beetle(-15.0, 0.0, math.pi, simulation.BEETLE_BLUE)
-beetle_red = Beetle(15.0, 0.0, 0.0, simulation.BEETLE_RED)
+# Create beetles - closer together for smaller arena
+beetle_blue = Beetle(-20.0, 0.0, math.pi, simulation.BEETLE_BLUE)
+beetle_red = Beetle(20.0, 0.0, 0.0, simulation.BEETLE_RED)
 
 @ti.kernel
 def clear_beetles():
@@ -91,63 +91,377 @@ def clear_beetles():
            simulation.voxel_type[i, j, k] == simulation.BEETLE_RED:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
+@ti.kernel
+def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32,
+                           result: ti.template()) -> ti.i32:
+    """Fast GPU-based collision check - returns 1 if collision, 0 otherwise"""
+    collision = 0
+
+    # Convert to grid coordinates
+    center1_x = int(x1 + simulation.n_grid / 2.0)
+    center1_z = int(z1 + simulation.n_grid / 2.0)
+    center2_x = int(x2 + simulation.n_grid / 2.0)
+    center2_z = int(z2 + simulation.n_grid / 2.0)
+
+    # Tighter collision bounds - only check where beetles can actually overlap
+    # Beetles are max 18 voxels from center (horn extends to ~15, body to ~12)
+    x_min = ti.max(ti.max(0, center1_x - 18), ti.max(0, center2_x - 18))
+    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 18),
+                   ti.min(simulation.n_grid, center2_x + 18))
+    z_min = ti.max(ti.max(0, center1_z - 18), ti.max(0, center2_z - 18))
+    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 18),
+                   ti.min(simulation.n_grid, center2_z + 18))
+
+    # Scan for colliding voxels - TRUE 3D collision detection
+    # Track Y-ranges for each beetle in each XZ column
+    for gx in range(x_min, x_max):
+        for gz in range(z_min, z_max):
+            # Track Y ranges for both beetles in this XZ column
+            beetle1_y_min = 999
+            beetle1_y_max = -1
+            beetle2_y_min = 999
+            beetle2_y_max = -1
+
+            # Find Y-ranges for both beetles in this column
+            for gy in range(0, 15):
+                voxel = simulation.voxel_type[gx, gy, gz]
+                if voxel == simulation.BEETLE_BLUE:
+                    if gy < beetle1_y_min:
+                        beetle1_y_min = gy
+                    if gy > beetle1_y_max:
+                        beetle1_y_max = gy
+                elif voxel == simulation.BEETLE_RED:
+                    if gy < beetle2_y_min:
+                        beetle2_y_min = gy
+                    if gy > beetle2_y_max:
+                        beetle2_y_max = gy
+
+            # Check if Y-ranges overlap or are adjacent (within 1 voxel)
+            if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
+                # Check if Y ranges are within 1 voxel of each other
+                if beetle1_y_min <= beetle2_y_max + 1 and beetle2_y_min <= beetle1_y_max + 1:
+                    collision = 1
+
+    return collision
+
 def calculate_occupied_voxels(world_x, world_z, rotation):
-    """Calculate which voxels this beetle occupies (Python function)"""
+    """Calculate which voxels this beetle occupies - for torque calculation only"""
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
 
     occupied = set()
 
-    for dx in range(-3, 4):
-        for dz in range(-2, 3):
-            local_x = float(dx)
-            local_z = float(dz)
+    # Read actual voxel grid - only called during collision
+    voxels = simulation.voxel_type.to_numpy()
 
-            # Rotate voxel
-            cos_r = math.cos(rotation)
-            sin_r = math.sin(rotation)
-            rotated_x = local_x * cos_r - local_z * sin_r
-            rotated_z = local_x * sin_r + local_z * cos_r
+    # Check beetle's range
+    x_min = max(0, center_x - 20)
+    x_max = min(simulation.n_grid, center_x + 20)
+    z_min = max(0, center_z - 20)
+    z_max = min(simulation.n_grid, center_z + 20)
 
-            grid_x = center_x + int(round(rotated_x))
-            grid_z = center_z + int(round(rotated_z))
-
-            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
-                occupied.add((grid_x, grid_z))
+    for grid_x in range(x_min, x_max):
+        for grid_z in range(z_min, z_max):
+            for grid_y in range(0, 15):
+                voxel = voxels[grid_x, grid_y, grid_z]
+                if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_RED:
+                    occupied.add((grid_x, grid_z))
+                    break
 
     return occupied
 
 @ti.kernel
 def place_beetle_rotated(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32):
-    """Place beetle with rotation"""
+    """LEAN 1/3 SCALE BEETLE - Exaggerated legs & horn for animation"""
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
 
-    for dx in range(-3, 4):
-        for dy in range(0, 3):
+    cos_r = ti.cos(rotation)
+    sin_r = ti.sin(rotation)
+
+    # ========== ABDOMEN (rear) - LEAN ellipse ==========
+    # 10 voxels long × 6 wide × 5 tall (reduced from 8)
+    # Position: X from -12 to -2
+    for dx in range(-12, -1):
+        for dy in range(0, 5):
+            for dz in range(-3, 4):
+                # Lean elliptical shape
+                length_pos = (dx + 6.5) / 5.0
+                height_factor = 1.0 - ((dy - 2.5) / 2.5) ** 2
+                width_at_height = 3.0 * ti.sqrt(height_factor) if height_factor > 0 else 0
+                length_taper = 1.0 - (length_pos * length_pos)
+                max_width = width_at_height * ti.sqrt(length_taper) if length_taper > 0 else 0
+
+                if ti.abs(dz) <= max_width:
+                    local_x = float(dx)
+                    local_z = float(dz)
+                    rotated_x = local_x * cos_r - local_z * sin_r
+                    rotated_z = local_x * sin_r + local_z * cos_r
+                    grid_x = center_x + int(ti.round(rotated_x))
+                    grid_y = 2 + dy
+                    grid_z = center_z + int(ti.round(rotated_z))
+                    if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                        simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+    # ========== THORAX (middle) - LEAN with small pronotum bump ==========
+    # 3 voxels long × 4 wide × 2 tall (reduced from 4)
+    for dx in range(-1, 2):
+        for dy in range(0, 2):
             for dz in range(-2, 3):
+                # Lean rounded shape
+                width_at_height = 2.0 if dy < 1 else 1.5
+                length_factor = 1.0 - ti.abs(dx) / 1.5
+                max_width = width_at_height * length_factor
+
+                if ti.abs(dz) <= max_width:
+                    local_x = float(dx)
+                    local_z = float(dz)
+                    rotated_x = local_x * cos_r - local_z * sin_r
+                    rotated_z = local_x * sin_r + local_z * cos_r
+                    grid_x = center_x + int(ti.round(rotated_x))
+                    grid_y = 2 + dy
+                    grid_z = center_z + int(ti.round(rotated_z))
+                    if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                        simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+    # Small thoracic bump (removed - body too tall)
+
+    # ========== HEAD (front) - LEAN ==========
+    # 2 voxels long × 3 wide × 1 tall (reduced from 2)
+    for dx in range(2, 4):
+        for dy in range(0, 1):
+            for dz in range(-1, 2):
+                width_at_height = 1.5
+                if ti.abs(dz) <= width_at_height:
+                    local_x = float(dx)
+                    local_z = float(dz)
+                    rotated_x = local_x * cos_r - local_z * sin_r
+                    rotated_z = local_x * sin_r + local_z * cos_r
+                    grid_x = center_x + int(ti.round(rotated_x))
+                    grid_y = 2 + dy
+                    grid_z = center_z + int(ti.round(rotated_z))
+                    if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                        simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+    # ========== EXAGGERATED Y-SHAPED HORN ==========
+    # Main shaft - 12 voxels, curves upward, DENSE/SOLID
+    for i in range(12):
+        dx = 3 + i
+        height_curve = int(i * 0.3)  # Slightly lower curve due to body height reduction
+        dy = 1 + height_curve
+
+        # Thick solid horn - no thin tip
+        thickness = 2
+
+        for dz in range(-thickness, thickness + 1):
+            local_x = float(dx)
+            local_z = float(dz)
+            rotated_x = local_x * cos_r - local_z * sin_r
+            rotated_z = local_x * sin_r + local_z * cos_r
+            grid_x = center_x + int(ti.round(rotated_x))
+            grid_y = 2 + dy
+            grid_z = center_z + int(ti.round(rotated_z))
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+    # EXAGGERATED Y-fork - THICK SOLID prongs spreading wide
+    # Left prong - 5 voxels angling left and up, NOW THICK
+    for i in range(5):
+        dx = 13 + i
+        dy = 4 + i  # Adjusted for body height reduction
+        center_dz = -i  # Angles left
+
+        # Make prong thick (2 voxels radius)
+        for dz_offset in range(-1, 2):
+            dz = center_dz + dz_offset
+            local_x = float(dx)
+            local_z = float(dz)
+            rotated_x = local_x * cos_r - local_z * sin_r
+            rotated_z = local_x * sin_r + local_z * cos_r
+            grid_x = center_x + int(ti.round(rotated_x))
+            grid_y = 2 + dy
+            grid_z = center_z + int(ti.round(rotated_z))
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+    # Right prong - 5 voxels angling right and up, NOW THICK
+    for i in range(5):
+        dx = 13 + i
+        dy = 4 + i  # Adjusted for body height reduction
+        center_dz = i  # Angles right
+
+        # Make prong thick (2 voxels radius)
+        for dz_offset in range(-1, 2):
+            dz = center_dz + dz_offset
+            local_x = float(dx)
+            local_z = float(dz)
+            rotated_x = local_x * cos_r - local_z * sin_r
+            rotated_z = local_x * sin_r + local_z * cos_r
+            grid_x = center_x + int(ti.round(rotated_x))
+            grid_y = 2 + dy
+            grid_z = center_z + int(ti.round(rotated_z))
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+    # ========== EXAGGERATED LEGS (6 total) - THICK SEGMENTS ==========
+    # Front legs (longest) - attach to front thorax
+    for side in ti.static([-1, 1]):
+        # COXA (thick body attachment) - 2 voxels
+        for i in range(2):
+            dx = 1
+            dy = 1
+            dz = side * (2 + i)
+            for extra_y in range(2):  # Make it 2 voxels tall
                 local_x = float(dx)
                 local_z = float(dz)
-
-                # Rotate voxel
-                cos_r = ti.cos(rotation)
-                sin_r = ti.sin(rotation)
                 rotated_x = local_x * cos_r - local_z * sin_r
                 rotated_z = local_x * sin_r + local_z * cos_r
-
                 grid_x = center_x + int(ti.round(rotated_x))
-                grid_y = 2 + dy
+                grid_y = 2 + dy + extra_y
                 grid_z = center_z + int(ti.round(rotated_z))
-
                 if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
+        # FEMUR (thick upper leg) - 3 voxels extending out
+        for i in range(3):
+            dx = 1
+            dy = 0
+            dz = side * (4 + i)
+            for extra_y in range(2):  # Make it 2 voxels tall
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy + extra_y
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+        # TIBIA (lower leg) - 2 voxels angling down
+        for i in range(2):
+            dx = 1 + i
+            dy = -i
+            dz = side * 7
+            local_x = float(dx)
+            local_z = float(dz)
+            rotated_x = local_x * cos_r - local_z * sin_r
+            rotated_z = local_x * sin_r + local_z * cos_r
+            grid_x = center_x + int(ti.round(rotated_x))
+            grid_y = 2 + dy
+            grid_z = center_z + int(ti.round(rotated_z))
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+    # Middle legs - attach to middle thorax
+    for side in ti.static([-1, 1]):
+        # COXA - 2 voxels
+        for i in range(2):
+            dx = -1
+            dy = 1
+            dz = side * (2 + i)
+            for extra_y in range(2):
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy + extra_y
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+        # FEMUR - 3 voxels
+        for i in range(3):
+            dx = -1
+            dy = 0
+            dz = side * (4 + i)
+            for extra_y in range(2):
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy + extra_y
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+        # TIBIA - 2 voxels angling down
+        for i in range(2):
+            dx = -1 - i
+            dy = -i
+            dz = side * 7
+            local_x = float(dx)
+            local_z = float(dz)
+            rotated_x = local_x * cos_r - local_z * sin_r
+            rotated_z = local_x * sin_r + local_z * cos_r
+            grid_x = center_x + int(ti.round(rotated_x))
+            grid_y = 2 + dy
+            grid_z = center_z + int(ti.round(rotated_z))
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+    # Rear legs - attach to front abdomen
+    for side in ti.static([-1, 1]):
+        # COXA - 2 voxels
+        for i in range(2):
+            dx = -4
+            dy = 1
+            dz = side * (2 + i)
+            for extra_y in range(2):
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy + extra_y
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+        # FEMUR - 3 voxels angling back
+        for i in range(3):
+            dx = -4 - i
+            dy = 0
+            dz = side * (4 + i)
+            for extra_y in range(2):
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy + extra_y
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
+        # TIBIA - 2 voxels angling down
+        for i in range(2):
+            dx = -7 - i
+            dy = -i
+            dz = side * 7
+            local_x = float(dx)
+            local_z = float(dz)
+            rotated_x = local_x * cos_r - local_z * sin_r
+            rotated_z = local_x * sin_r + local_z * cos_r
+            grid_x = center_x + int(ti.round(rotated_x))
+            grid_y = 2 + dy
+            grid_z = center_z + int(ti.round(rotated_z))
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+
 def beetle_collision(b1, b2):
     """Handle collision with voxel-perfect detection and pushing"""
-    # Check for voxel overlap
-    overlap_voxels = b1.occupied_voxels & b2.occupied_voxels
+    # Fast GPU-based collision check
+    collision_result = ti.field(ti.i32, shape=())
+    has_collision = check_collision_kernel(b1.x, b1.z, b2.x, b2.z, collision_result)
 
-    if len(overlap_voxels) > 0:
+    if has_collision:
+        # Calculate occupied voxels only when collision detected (for torque)
+        b1.occupied_voxels = calculate_occupied_voxels(b1.x, b1.z, b1.rotation)
+        b2.occupied_voxels = calculate_occupied_voxels(b2.x, b2.z, b2.rotation)
+        overlap_voxels = b1.occupied_voxels & b2.occupied_voxels
         # Collision detected! Use beetle centers for push direction
         dx = b1.x - b2.x
         dz = b1.z - b2.z
@@ -159,16 +473,20 @@ def beetle_collision(b1, b2):
             normal_z = dz / dist
 
             # Calculate collision point (centroid of overlapping voxels)
-            collision_x = 0.0
-            collision_z = 0.0
-            for voxel in overlap_voxels:
-                collision_x += voxel[0] - simulation.n_grid / 2.0
-                collision_z += voxel[1] - simulation.n_grid / 2.0
-            collision_x /= len(overlap_voxels)
-            collision_z /= len(overlap_voxels)
+            if len(overlap_voxels) > 0:
+                collision_x = 0.0
+                collision_z = 0.0
+                for voxel in overlap_voxels:
+                    collision_x += voxel[0] - simulation.n_grid / 2.0
+                    collision_z += voxel[1] - simulation.n_grid / 2.0
+                collision_x /= len(overlap_voxels)
+                collision_z /= len(overlap_voxels)
+            else:
+                collision_x = (b1.x + b2.x) / 2.0
+                collision_z = (b1.z + b2.z) / 2.0
 
-            # Separate beetles slightly
-            separation_force = 0.3
+            # STRONG separation to prevent stuck collisions
+            separation_force = 2.0  # Much stronger push
             b1.x += normal_x * separation_force
             b1.z += normal_z * separation_force
             b2.x -= normal_x * separation_force
@@ -181,8 +499,8 @@ def beetle_collision(b1, b2):
 
             # Only apply impulse if moving toward each other
             if vel_along_normal < 0:
-                # Impulse magnitude (low restitution for less bouncing)
-                restitution = 0.3
+                # Impulse magnitude (very low restitution for minimal bouncing)
+                restitution = 0.05
                 impulse = -(1 + restitution) * vel_along_normal * 0.5
 
                 # Apply linear impulse
@@ -242,17 +560,17 @@ camera.pitch = -70.0
 camera.yaw = 0.0
 
 print("\n=== BEETLE PHYSICS ===")
-print("BLUE BEETLE (TFGH):")
-print("  T - Move North")
-print("  G - Move South")
-print("  F - Move West")
-print("  H - Move East")
+print("BLUE BEETLE (TFGH) - Tank Controls:")
+print("  T - Move Forward")
+print("  G - Move Backward")
+print("  F - Rotate Left")
+print("  H - Rotate Right")
 print("")
-print("RED BEETLE (IJKL):")
-print("  I - Move North")
-print("  K - Move South")
-print("  J - Move West")
-print("  L - Move East")
+print("RED BEETLE (IJKL) - Tank Controls:")
+print("  I - Move Forward")
+print("  K - Move Backward")
+print("  J - Rotate Left")
+print("  L - Rotate Right")
 print("")
 print("Push beetles together!")
 print("Camera: WASD/Mouse/Q/E")
@@ -270,79 +588,51 @@ while window.running:
     renderer.handle_camera_controls(camera, window, dt)
     renderer.handle_mouse_look(camera, window)
 
-    # === BLUE BEETLE CONTROLS (TFGH) ===
-    move_dir_x = 0.0
-    move_dir_z = 0.0
-
-    if window.is_pressed('t'):
-        move_dir_z = -1.0
-    if window.is_pressed('g'):
-        move_dir_z = 1.0
+    # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
+    # Rotation controls (F/H)
     if window.is_pressed('f'):
-        move_dir_x = -1.0
+        # Rotate left (counterclockwise)
+        beetle_blue.rotation -= ROTATION_SPEED * dt
     if window.is_pressed('h'):
-        move_dir_x = 1.0
+        # Rotate right (clockwise)
+        beetle_blue.rotation += ROTATION_SPEED * dt
 
-    # Apply movement force and rotation ONLY when keys are pressed
-    if move_dir_x != 0 or move_dir_z != 0:
-        # Calculate angle from movement direction
-        beetle_blue.target_rotation = math.atan2(-move_dir_z, move_dir_x)
-        if beetle_blue.target_rotation < 0:
-            beetle_blue.target_rotation += 2 * math.pi
-
-        # Normalize movement vector
-        length = math.sqrt(move_dir_x**2 + move_dir_z**2)
-        move_dir_x /= length
-        move_dir_z /= length
-        beetle_blue.apply_force(move_dir_x * MOVE_FORCE, move_dir_z * MOVE_FORCE, dt)
-
-        # Smooth rotation toward movement direction
-        rot_diff = shortest_rotation(beetle_blue.rotation, beetle_blue.target_rotation)
-        if abs(rot_diff) > 0.01:
-            rot_step = ROTATION_SPEED * dt
-            if abs(rot_diff) < rot_step:
-                beetle_blue.rotation = beetle_blue.target_rotation
-            else:
-                beetle_blue.rotation += rot_step if rot_diff > 0 else -rot_step
+    # Movement controls (T/G) - move in facing direction
+    if window.is_pressed('t'):
+        # Move forward in facing direction
+        move_x = math.cos(beetle_blue.rotation)
+        move_z = math.sin(beetle_blue.rotation)
+        beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
+    if window.is_pressed('g'):
+        # Move backward in facing direction
+        move_x = -math.cos(beetle_blue.rotation)
+        move_z = -math.sin(beetle_blue.rotation)
+        beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
 
     # Always add physics-driven rotation from collisions
     beetle_blue.rotation += beetle_blue.angular_velocity * dt
     beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
 
-    # === RED BEETLE CONTROLS ===
-    move_dir_x = 0.0
-    move_dir_z = 0.0
-
-    if window.is_pressed('i'):
-        move_dir_z = -1.0
-    if window.is_pressed('k'):
-        move_dir_z = 1.0
+    # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
+    # Rotation controls (J/L)
     if window.is_pressed('j'):
-        move_dir_x = -1.0
+        # Rotate left (counterclockwise)
+        beetle_red.rotation -= ROTATION_SPEED * dt
     if window.is_pressed('l'):
-        move_dir_x = 1.0
+        # Rotate right (clockwise)
+        beetle_red.rotation += ROTATION_SPEED * dt
 
-    # Apply movement force and rotation ONLY when keys are pressed
-    if move_dir_x != 0 or move_dir_z != 0:
-        # Calculate angle from movement direction
-        beetle_red.target_rotation = math.atan2(-move_dir_z, move_dir_x)
-        if beetle_red.target_rotation < 0:
-            beetle_red.target_rotation += 2 * math.pi
-
-        # Normalize movement vector
-        length = math.sqrt(move_dir_x**2 + move_dir_z**2)
-        move_dir_x /= length
-        move_dir_z /= length
-        beetle_red.apply_force(move_dir_x * MOVE_FORCE, move_dir_z * MOVE_FORCE, dt)
-
-        # Smooth rotation toward movement direction
-        rot_diff = shortest_rotation(beetle_red.rotation, beetle_red.target_rotation)
-        if abs(rot_diff) > 0.01:
-            rot_step = ROTATION_SPEED * dt
-            if abs(rot_diff) < rot_step:
-                beetle_red.rotation = beetle_red.target_rotation
-            else:
-                beetle_red.rotation += rot_step if rot_diff > 0 else -rot_step
+    # Movement controls (I/K) - move in facing direction
+    if window.is_pressed('i'):
+        # Move forward in facing direction
+        move_x = math.cos(beetle_red.rotation)
+        move_z = math.sin(beetle_red.rotation)
+        beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
+    if window.is_pressed('k'):
+        # Move backward in facing direction
+        move_x = -math.cos(beetle_red.rotation)
+        move_z = -math.sin(beetle_red.rotation)
+        beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
 
     # Always add physics-driven rotation from collisions
     beetle_red.rotation += beetle_red.angular_velocity * dt
@@ -351,14 +641,6 @@ while window.running:
     # Physics update
     beetle_blue.update_physics(dt)
     beetle_red.update_physics(dt)
-
-    # Arena collisions
-    beetle_blue.arena_collision()
-    beetle_red.arena_collision()
-
-    # Calculate occupied voxels for collision detection
-    beetle_blue.occupied_voxels = calculate_occupied_voxels(beetle_blue.x, beetle_blue.z, beetle_blue.rotation)
-    beetle_red.occupied_voxels = calculate_occupied_voxels(beetle_red.x, beetle_red.z, beetle_red.rotation)
 
     # Beetle collision (voxel-perfect)
     beetle_collision(beetle_blue, beetle_red)
@@ -373,7 +655,10 @@ while window.running:
     canvas.scene(scene)
 
     # HUD
-    window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.28)
+    fps = 1.0 / dt if dt > 0 else 0
+    window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.30)
+    window.GUI.text(f"FPS: {fps:.0f}")
+    window.GUI.text("")
     window.GUI.text("BLUE BEETLE (TFGH)")
     window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.z:.1f})")
     window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
