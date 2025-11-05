@@ -14,7 +14,10 @@ BEETLE_RADIUS = 4.0
 MOVE_FORCE = 120.0  # Increased for more responsive feel
 FRICTION = 0.88  # Slightly higher friction
 MAX_SPEED = 7.0  # Slightly higher top speed
-ROTATION_SPEED = 12.0  # Faster rotation for smoother feel
+ROTATION_SPEED = 18.0  # Much faster rotation for instant diagonal response
+ANGULAR_FRICTION = 0.85  # How quickly spin slows down (lower = more spin)
+MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec)
+TORQUE_MULTIPLIER = 3.0  # Amplify rotational forces
 ARENA_RADIUS = 35.0
 
 # Beetle state with physics
@@ -26,6 +29,8 @@ class Beetle:
         self.vz = 0.0
         self.rotation = rotation
         self.target_rotation = rotation
+        self.angular_velocity = 0.0  # Spin speed (radians/sec)
+        self.moment_of_inertia = BEETLE_RADIUS * 0.5  # Resistance to rotation (lower = easier to spin)
         self.color = color
         self.radius = BEETLE_RADIUS
         self.occupied_voxels = set()  # Track voxel positions for accurate collision
@@ -37,15 +42,22 @@ class Beetle:
 
     def update_physics(self, dt):
         """Apply friction and update position"""
-        # Apply friction
+        # Apply linear friction
         self.vx *= FRICTION
         self.vz *= FRICTION
 
-        # Clamp speed
+        # Apply angular friction
+        self.angular_velocity *= ANGULAR_FRICTION
+
+        # Clamp linear speed
         speed = math.sqrt(self.vx**2 + self.vz**2)
         if speed > MAX_SPEED:
             self.vx = (self.vx / speed) * MAX_SPEED
             self.vz = (self.vz / speed) * MAX_SPEED
+
+        # Clamp angular speed
+        if abs(self.angular_velocity) > MAX_ANGULAR_SPEED:
+            self.angular_velocity = MAX_ANGULAR_SPEED if self.angular_velocity > 0 else -MAX_ANGULAR_SPEED
 
         # Update position
         self.x += self.vx * dt
@@ -146,6 +158,15 @@ def beetle_collision(b1, b2):
             normal_x = dx / dist
             normal_z = dz / dist
 
+            # Calculate collision point (centroid of overlapping voxels)
+            collision_x = 0.0
+            collision_z = 0.0
+            for voxel in overlap_voxels:
+                collision_x += voxel[0] - simulation.n_grid / 2.0
+                collision_z += voxel[1] - simulation.n_grid / 2.0
+            collision_x /= len(overlap_voxels)
+            collision_z /= len(overlap_voxels)
+
             # Separate beetles slightly
             separation_force = 0.3
             b1.x += normal_x * separation_force
@@ -164,11 +185,30 @@ def beetle_collision(b1, b2):
                 restitution = 0.3
                 impulse = -(1 + restitution) * vel_along_normal * 0.5
 
-                # Apply impulse
-                b1.vx += impulse * normal_x
-                b1.vz += impulse * normal_z
-                b2.vx -= impulse * normal_x
-                b2.vz -= impulse * normal_z
+                # Apply linear impulse
+                impulse_x = impulse * normal_x
+                impulse_z = impulse * normal_z
+                b1.vx += impulse_x
+                b1.vz += impulse_z
+                b2.vx -= impulse_x
+                b2.vz -= impulse_z
+
+                # Calculate and apply torque (angular impulse)
+                # Torque = r × F (cross product in 2D: rx*Fz - rz*Fx)
+
+                # For beetle 1: collision point relative to its center
+                r1_x = collision_x - b1.x
+                r1_z = collision_z - b1.z
+                torque1 = r1_x * impulse_z - r1_z * impulse_x
+                angular_impulse1 = (torque1 / b1.moment_of_inertia) * TORQUE_MULTIPLIER
+                b1.angular_velocity += angular_impulse1
+
+                # For beetle 2: collision point relative to its center
+                r2_x = collision_x - b2.x
+                r2_z = collision_z - b2.z
+                torque2 = r2_x * (-impulse_z) - r2_z * (-impulse_x)
+                angular_impulse2 = (torque2 / b2.moment_of_inertia) * TORQUE_MULTIPLIER
+                b2.angular_velocity += angular_impulse2
 
 def normalize_angle(angle):
     """Normalize angle to [0, 2π)"""
@@ -236,43 +276,37 @@ while window.running:
 
     if window.is_pressed('t'):
         move_dir_z = -1.0
-        beetle_blue.target_rotation = math.pi / 2
     if window.is_pressed('g'):
         move_dir_z = 1.0
-        beetle_blue.target_rotation = 3 * math.pi / 2
     if window.is_pressed('f'):
         move_dir_x = -1.0
-        beetle_blue.target_rotation = math.pi
     if window.is_pressed('h'):
         move_dir_x = 1.0
-        beetle_blue.target_rotation = 0.0
 
-    # Diagonal directions
-    if move_dir_x != 0 and move_dir_z != 0:
-        if window.is_pressed('t') and window.is_pressed('h'):
-            beetle_blue.target_rotation = math.pi / 4
-        elif window.is_pressed('t') and window.is_pressed('f'):
-            beetle_blue.target_rotation = 3 * math.pi / 4
-        elif window.is_pressed('g') and window.is_pressed('h'):
-            beetle_blue.target_rotation = 7 * math.pi / 4
-        elif window.is_pressed('g') and window.is_pressed('f'):
-            beetle_blue.target_rotation = 5 * math.pi / 4
-
-    # Apply movement force
+    # Apply movement force and rotation ONLY when keys are pressed
     if move_dir_x != 0 or move_dir_z != 0:
+        # Calculate angle from movement direction
+        beetle_blue.target_rotation = math.atan2(-move_dir_z, move_dir_x)
+        if beetle_blue.target_rotation < 0:
+            beetle_blue.target_rotation += 2 * math.pi
+
+        # Normalize movement vector
         length = math.sqrt(move_dir_x**2 + move_dir_z**2)
         move_dir_x /= length
         move_dir_z /= length
         beetle_blue.apply_force(move_dir_x * MOVE_FORCE, move_dir_z * MOVE_FORCE, dt)
 
-    # Smooth rotation
-    rot_diff = shortest_rotation(beetle_blue.rotation, beetle_blue.target_rotation)
-    if abs(rot_diff) > 0.01:
-        rot_step = ROTATION_SPEED * dt
-        if abs(rot_diff) < rot_step:
-            beetle_blue.rotation = beetle_blue.target_rotation
-        else:
-            beetle_blue.rotation += rot_step if rot_diff > 0 else -rot_step
+        # Smooth rotation toward movement direction
+        rot_diff = shortest_rotation(beetle_blue.rotation, beetle_blue.target_rotation)
+        if abs(rot_diff) > 0.01:
+            rot_step = ROTATION_SPEED * dt
+            if abs(rot_diff) < rot_step:
+                beetle_blue.rotation = beetle_blue.target_rotation
+            else:
+                beetle_blue.rotation += rot_step if rot_diff > 0 else -rot_step
+
+    # Always add physics-driven rotation from collisions
+    beetle_blue.rotation += beetle_blue.angular_velocity * dt
     beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
 
     # === RED BEETLE CONTROLS ===
@@ -281,43 +315,37 @@ while window.running:
 
     if window.is_pressed('i'):
         move_dir_z = -1.0
-        beetle_red.target_rotation = math.pi / 2
     if window.is_pressed('k'):
         move_dir_z = 1.0
-        beetle_red.target_rotation = 3 * math.pi / 2
     if window.is_pressed('j'):
         move_dir_x = -1.0
-        beetle_red.target_rotation = math.pi
     if window.is_pressed('l'):
         move_dir_x = 1.0
-        beetle_red.target_rotation = 0.0
 
-    # Diagonal directions
-    if move_dir_x != 0 and move_dir_z != 0:
-        if window.is_pressed('i') and window.is_pressed('l'):
-            beetle_red.target_rotation = math.pi / 4
-        elif window.is_pressed('i') and window.is_pressed('j'):
-            beetle_red.target_rotation = 3 * math.pi / 4
-        elif window.is_pressed('k') and window.is_pressed('l'):
-            beetle_red.target_rotation = 7 * math.pi / 4
-        elif window.is_pressed('k') and window.is_pressed('j'):
-            beetle_red.target_rotation = 5 * math.pi / 4
-
-    # Apply movement force
+    # Apply movement force and rotation ONLY when keys are pressed
     if move_dir_x != 0 or move_dir_z != 0:
+        # Calculate angle from movement direction
+        beetle_red.target_rotation = math.atan2(-move_dir_z, move_dir_x)
+        if beetle_red.target_rotation < 0:
+            beetle_red.target_rotation += 2 * math.pi
+
+        # Normalize movement vector
         length = math.sqrt(move_dir_x**2 + move_dir_z**2)
         move_dir_x /= length
         move_dir_z /= length
         beetle_red.apply_force(move_dir_x * MOVE_FORCE, move_dir_z * MOVE_FORCE, dt)
 
-    # Smooth rotation
-    rot_diff = shortest_rotation(beetle_red.rotation, beetle_red.target_rotation)
-    if abs(rot_diff) > 0.01:
-        rot_step = ROTATION_SPEED * dt
-        if abs(rot_diff) < rot_step:
-            beetle_red.rotation = beetle_red.target_rotation
-        else:
-            beetle_red.rotation += rot_step if rot_diff > 0 else -rot_step
+        # Smooth rotation toward movement direction
+        rot_diff = shortest_rotation(beetle_red.rotation, beetle_red.target_rotation)
+        if abs(rot_diff) > 0.01:
+            rot_step = ROTATION_SPEED * dt
+            if abs(rot_diff) < rot_step:
+                beetle_red.rotation = beetle_red.target_rotation
+            else:
+                beetle_red.rotation += rot_step if rot_diff > 0 else -rot_step
+
+    # Always add physics-driven rotation from collisions
+    beetle_red.rotation += beetle_red.angular_velocity * dt
     beetle_red.rotation = normalize_angle(beetle_red.rotation)
 
     # Physics update
