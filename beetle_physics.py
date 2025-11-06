@@ -17,7 +17,10 @@ MAX_SPEED = 7.0  # Slightly higher top speed
 ROTATION_SPEED = 3.0  # Even slower rotation (6x slower than original) for more controlled turning
 ANGULAR_FRICTION = 0.85  # How quickly spin slows down (lower = more spin)
 MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec)
-TORQUE_MULTIPLIER = 1.0  # Gentler rotational forces (pushy not bouncy)
+TORQUE_MULTIPLIER = 1.5  # Rotational forces on collision
+RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
+IMPULSE_MULTIPLIER = 0.32  # Linear momentum transfer
+MOMENT_OF_INERTIA_FACTOR = 1.15  # Resistance to rotation
 ARENA_RADIUS = 42.5  # Half size for closer combat
 
 # Beetle state with physics
@@ -30,7 +33,7 @@ class Beetle:
         self.rotation = rotation
         self.target_rotation = rotation
         self.angular_velocity = 0.0  # Spin speed (radians/sec)
-        self.moment_of_inertia = BEETLE_RADIUS * 0.5  # Resistance to rotation (lower = easier to spin)
+        self.moment_of_inertia = BEETLE_RADIUS * MOMENT_OF_INERTIA_FACTOR  # Resistance to rotation (higher = more stable, less flinging)
         self.color = color
         self.radius = BEETLE_RADIUS
         self.occupied_voxels = set()  # Track voxel positions for accurate collision
@@ -782,7 +785,7 @@ def clear_beetles_bounded(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32):
                    vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
-def beetle_collision(b1, b2):
+def beetle_collision(b1, b2, params):
     """Handle collision with voxel-perfect detection and pushing"""
     # Fast GPU-based collision check
     has_collision = check_collision_kernel(b1.x, b1.z, b2.x, b2.z)
@@ -830,8 +833,7 @@ def beetle_collision(b1, b2):
             # Only apply impulse if moving toward each other
             if vel_along_normal < 0:
                 # Impulse magnitude (very low restitution for minimal bouncing)
-                restitution = 0.05
-                impulse = -(1 + restitution) * vel_along_normal * 0.5
+                impulse = -(1 + params["RESTITUTION"]) * vel_along_normal * params["IMPULSE_MULTIPLIER"]  # Lower momentum transfer = better plowing
 
                 # Apply linear impulse
                 impulse_x = impulse * normal_x
@@ -848,14 +850,14 @@ def beetle_collision(b1, b2):
                 r1_x = collision_x - b1.x
                 r1_z = collision_z - b1.z
                 torque1 = r1_x * impulse_z - r1_z * impulse_x
-                angular_impulse1 = (torque1 / b1.moment_of_inertia) * TORQUE_MULTIPLIER
+                angular_impulse1 = (torque1 / b1.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
                 b1.angular_velocity += angular_impulse1
 
                 # For beetle 2: collision point relative to its center
                 r2_x = collision_x - b2.x
                 r2_z = collision_z - b2.z
                 torque2 = r2_x * (-impulse_z) - r2_z * (-impulse_x)
-                angular_impulse2 = (torque2 / b2.moment_of_inertia) * TORQUE_MULTIPLIER
+                angular_impulse2 = (torque2 / b2.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
                 b2.angular_velocity += angular_impulse2
 
 def normalize_angle(angle):
@@ -905,6 +907,14 @@ print("")
 print("Push beetles together!")
 print("Camera: WASD/Mouse/Q/E")
 print("="*40 + "\n")
+
+# Physics parameters dictionary (mutable for sliders)
+physics_params = {
+    "TORQUE_MULTIPLIER": TORQUE_MULTIPLIER,
+    "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
+    "RESTITUTION": RESTITUTION,
+    "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR
+}
 
 last_time = time.time()
 
@@ -990,7 +1000,7 @@ while window.running:
         beetle_red.is_moving = False
 
     # Beetle collision (voxel-perfect)
-    beetle_collision(beetle_blue, beetle_red)
+    beetle_collision(beetle_blue, beetle_red, physics_params)
 
     # Render - ANIMATED with leg walking cycles and different leg colors!
     clear_beetles_bounded(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z)
@@ -1003,7 +1013,7 @@ while window.running:
 
     # HUD
     fps = 1.0 / dt if dt > 0 else 0
-    window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.30)
+    window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.52)
     window.GUI.text(f"FPS: {fps:.0f}")
     window.GUI.text("")
     window.GUI.text("BLUE BEETLE (TFGH)")
@@ -1020,6 +1030,21 @@ while window.running:
     dz = beetle_blue.z - beetle_red.z
     distance = math.sqrt(dx**2 + dz**2)
     window.GUI.text(f"Distance: {distance:.1f}")
+
+    # Physics parameter sliders
+    window.GUI.text("")
+    window.GUI.text("=== PHYSICS TUNING ===")
+    physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 1.5)
+    physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
+    physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
+    new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.5, 5.0)
+
+    # Update beetle inertia if factor changed
+    if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
+        physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
+        beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+        beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+
     window.GUI.end()
 
     window.show()
