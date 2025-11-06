@@ -23,6 +23,11 @@ IMPULSE_MULTIPLIER = 0.32  # Linear momentum transfer
 MOMENT_OF_INERTIA_FACTOR = 1.15  # Resistance to rotation
 ARENA_RADIUS = 42.5  # Half size for closer combat
 
+# Horn control constants
+HORN_TILT_SPEED = 2.0  # Radians per second
+HORN_MAX_PITCH = math.radians(20)  # +20 degrees vertical (up)
+HORN_MIN_PITCH = math.radians(-20)  # -20 degrees vertical (down)
+
 # Beetle state with physics
 class Beetle:
     def __init__(self, x, z, rotation, color):
@@ -30,6 +35,9 @@ class Beetle:
         self.z = z
         self.vx = 0.0  # Velocity
         self.vz = 0.0
+        self.y = 2.0  # Vertical position (floor level)
+        self.vy = 0.0  # Vertical velocity
+        self.on_ground = True  # Ground contact state
         self.rotation = rotation
         self.target_rotation = rotation
         self.angular_velocity = 0.0  # Spin speed (radians/sec)
@@ -42,6 +50,10 @@ class Beetle:
         self.walk_phase = 0.0  # Current walk cycle phase (0 to 2π)
         self.is_moving = False  # Whether beetle is actively walking
 
+        # Horn control state
+        self.horn_pitch = 0.0  # Vertical angle in radians (±20°, positive = up)
+        self.horn_yaw = 0.0    # Horizontal angle in radians (Phase 2, keep at 0.0 for now)
+
     def apply_force(self, fx, fz, dt):
         """Add force to velocity"""
         self.vx += fx * dt
@@ -49,6 +61,26 @@ class Beetle:
 
     def update_physics(self, dt):
         """Apply friction and update position"""
+        # === GRAVITY SYSTEM (Phase 1) ===
+        # Apply gravity (always on)
+        GRAVITY = 9.8
+        self.vy -= GRAVITY * dt
+
+        # Ground contact detection
+        FLOOR_LEVEL = 2.0
+        if self.y <= FLOOR_LEVEL and self.vy <= 0.0:
+            # Beetle is on floor and moving down/stationary
+            self.on_ground = True
+            self.y = FLOOR_LEVEL  # Snap to floor
+            self.vy = 0.0  # Cancel downward velocity
+        else:
+            # Beetle is airborne
+            self.on_ground = False
+
+        # Apply vertical velocity
+        self.y += self.vy * dt
+
+        # === HORIZONTAL PHYSICS (existing) ===
         # Apply linear friction
         self.vx *= FRICTION
         self.vz *= FRICTION
@@ -66,7 +98,7 @@ class Beetle:
         if abs(self.angular_velocity) > MAX_ANGULAR_SPEED:
             self.angular_velocity = MAX_ANGULAR_SPEED if self.angular_velocity > 0 else -MAX_ANGULAR_SPEED
 
-        # Update position
+        # Update horizontal position
         self.x += self.vx * dt
         self.z += self.vz * dt
 
@@ -177,10 +209,11 @@ def calculate_occupied_voxels(world_x, world_z, rotation):
     return occupied
 
 @ti.kernel
-def place_beetle_rotated(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32):
+def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32):
     """LEAN 1/3 SCALE BEETLE - Exaggerated legs & horn for animation"""
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
+    base_y = int(world_y)  # Use dynamic Y position
 
     cos_r = ti.cos(rotation)
     sin_r = ti.sin(rotation)
@@ -204,7 +237,7 @@ def place_beetle_rotated(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, col
                     rotated_x = local_x * cos_r - local_z * sin_r
                     rotated_z = local_x * sin_r + local_z * cos_r
                     grid_x = center_x + int(ti.round(rotated_x))
-                    grid_y = 2 + dy
+                    grid_y = base_y + dy
                     grid_z = center_z + int(ti.round(rotated_z))
                     if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                         simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
@@ -225,7 +258,7 @@ def place_beetle_rotated(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, col
                     rotated_x = local_x * cos_r - local_z * sin_r
                     rotated_z = local_x * sin_r + local_z * cos_r
                     grid_x = center_x + int(ti.round(rotated_x))
-                    grid_y = 2 + dy
+                    grid_y = base_y + dy
                     grid_z = center_z + int(ti.round(rotated_z))
                     if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                         simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
@@ -244,7 +277,7 @@ def place_beetle_rotated(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, col
                     rotated_x = local_x * cos_r - local_z * sin_r
                     rotated_z = local_x * sin_r + local_z * cos_r
                     grid_x = center_x + int(ti.round(rotated_x))
-                    grid_y = 2 + dy
+                    grid_y = base_y + dy
                     grid_z = center_z + int(ti.round(rotated_z))
                     if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                         simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
@@ -693,26 +726,51 @@ for leg_id, leg_voxels in enumerate(BEETLE_LEGS):
     leg_end_idx[leg_id] = offset
 
 @ti.kernel
-def place_animated_beetle(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, body_color: ti.i32, leg_color: ti.i32, walk_phase: ti.f32):
+def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, horn_pitch: ti.f32, body_color: ti.i32, leg_color: ti.i32, walk_phase: ti.f32):
     """Beetle placement with animated legs using tripod gait - separate body and leg colors"""
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
+    base_y = int(world_y)  # Use dynamic Y position
 
     cos_r = ti.cos(rotation)
     sin_r = ti.sin(rotation)
 
-    # 1. Place body (static)
+    # Pitch rotation for horn (rotation around Z-axis in local space)
+    cos_pitch = ti.cos(horn_pitch)
+    sin_pitch = ti.sin(horn_pitch)
+
+    # Horn pivot point in local coordinates (where horn attaches to head)
+    horn_pivot_x = 3.0
+    horn_pivot_y = 1
+
+    # 1. Place body with horn pitch applied
     for i in range(body_cache_size):
         local_x = float(body_cache_x[i])
         local_y = body_cache_y[i]
         local_z = float(body_cache_z[i])
 
-        # 2D rotation
+        # Apply horn pitch rotation ONLY to horn voxels (dx >= 3)
+        if body_cache_x[i] >= 3:
+            # This is a horn voxel - apply pitch rotation around pivot point
+            # Translate to pivot, rotate, translate back
+            rel_x = local_x - horn_pivot_x
+            rel_y = float(local_y - horn_pivot_y)
+
+            # Pitch rotation (around Z-axis in beetle local space, before body rotation)
+            # Positive pitch = horn rotates up
+            pitched_x = rel_x * cos_pitch - rel_y * sin_pitch
+            pitched_y = rel_x * sin_pitch + rel_y * cos_pitch
+
+            # Translate back from pivot
+            local_x = pitched_x + horn_pivot_x
+            local_y = int(ti.round(pitched_y + float(horn_pivot_y)))
+
+        # 2D horizontal rotation (body orientation)
         rotated_x = local_x * cos_r - local_z * sin_r
         rotated_z = local_x * sin_r + local_z * cos_r
 
         grid_x = center_x + int(ti.round(rotated_x))
-        grid_y = 2 + local_y
+        grid_y = base_y + local_y
         grid_z = center_z + int(ti.round(rotated_z))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
@@ -754,7 +812,7 @@ def place_animated_beetle(world_x: ti.f32, world_z: ti.f32, rotation: ti.f32, bo
             rotated_z = local_x * sin_r + local_z * cos_r
 
             grid_x = center_x + int(ti.round(rotated_x))
-            grid_y = 2 + local_y
+            grid_y = base_y + local_y
             grid_z = center_z + int(ti.round(rotated_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and grid_y >= 0:
@@ -892,17 +950,21 @@ camera.pitch = -70.0
 camera.yaw = 0.0
 
 print("\n=== BEETLE PHYSICS ===")
-print("BLUE BEETLE (TFGH) - Tank Controls:")
+print("BLUE BEETLE (TFGH + RY) - Tank Controls:")
 print("  T - Move Forward")
 print("  G - Move Backward")
 print("  F - Rotate Left")
 print("  H - Rotate Right")
+print("  R - Tilt Horn Up (+20°)")
+print("  Y - Tilt Horn Down (-20°)")
 print("")
-print("RED BEETLE (IJKL) - Tank Controls:")
+print("RED BEETLE (IJKL + UO) - Tank Controls:")
 print("  I - Move Forward")
 print("  K - Move Backward")
 print("  J - Rotate Left")
 print("  L - Rotate Right")
+print("  U - Tilt Horn Up (+20°)")
+print("  O - Tilt Horn Down (-20°)")
 print("")
 print("Push beetles together!")
 print("Camera: WASD/Mouse/Q/E")
@@ -949,6 +1011,16 @@ while window.running:
         move_z = -math.sin(beetle_blue.rotation)
         beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
 
+    # Horn controls (R/Y) - tilt up/down
+    if window.is_pressed('r'):
+        # Tilt horn up
+        beetle_blue.horn_pitch += HORN_TILT_SPEED * dt
+        beetle_blue.horn_pitch = min(HORN_MAX_PITCH, beetle_blue.horn_pitch)
+    if window.is_pressed('y'):
+        # Tilt horn down
+        beetle_blue.horn_pitch -= HORN_TILT_SPEED * dt
+        beetle_blue.horn_pitch = max(HORN_MIN_PITCH, beetle_blue.horn_pitch)
+
     # Always add physics-driven rotation from collisions
     beetle_blue.rotation += beetle_blue.angular_velocity * dt
     beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
@@ -973,6 +1045,16 @@ while window.running:
         move_x = -math.cos(beetle_red.rotation)
         move_z = -math.sin(beetle_red.rotation)
         beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
+
+    # Horn controls (U/O) - tilt up/down
+    if window.is_pressed('u'):
+        # Tilt horn up
+        beetle_red.horn_pitch += HORN_TILT_SPEED * dt
+        beetle_red.horn_pitch = min(HORN_MAX_PITCH, beetle_red.horn_pitch)
+    if window.is_pressed('o'):
+        # Tilt horn down
+        beetle_red.horn_pitch -= HORN_TILT_SPEED * dt
+        beetle_red.horn_pitch = max(HORN_MIN_PITCH, beetle_red.horn_pitch)
 
     # Always add physics-driven rotation from collisions
     beetle_red.rotation += beetle_red.angular_velocity * dt
@@ -1004,8 +1086,8 @@ while window.running:
 
     # Render - ANIMATED with leg walking cycles and different leg colors!
     clear_beetles_bounded(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z)
-    place_animated_beetle(beetle_blue.x, beetle_blue.z, beetle_blue.rotation, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, beetle_blue.walk_phase)
-    place_animated_beetle(beetle_red.x, beetle_red.z, beetle_red.rotation, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, beetle_red.walk_phase)
+    place_animated_beetle(beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_blue.rotation, beetle_blue.horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, beetle_blue.walk_phase)
+    place_animated_beetle(beetle_red.x, beetle_red.y, beetle_red.z, beetle_red.rotation, beetle_red.horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, beetle_red.walk_phase)
 
     canvas.set_background_color((0.13, 0.35, 0.13))  # Forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
@@ -1016,15 +1098,17 @@ while window.running:
     window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.52)
     window.GUI.text(f"FPS: {fps:.0f}")
     window.GUI.text("")
-    window.GUI.text("BLUE BEETLE (TFGH)")
+    window.GUI.text("BLUE BEETLE (TFGH + RY)")
     window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.z:.1f})")
     window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
     window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
+    window.GUI.text(f"  Horn: {math.degrees(beetle_blue.horn_pitch):.1f}°")
     window.GUI.text("")
-    window.GUI.text("RED BEETLE (IJKL)")
+    window.GUI.text("RED BEETLE (IJKL + UO)")
     window.GUI.text(f"  Pos: ({beetle_red.x:.1f}, {beetle_red.z:.1f})")
     window.GUI.text(f"  Speed: {math.sqrt(beetle_red.vx**2 + beetle_red.vz**2):.1f}")
     window.GUI.text(f"  Facing: {math.degrees(beetle_red.rotation):.0f}°")
+    window.GUI.text(f"  Horn: {math.degrees(beetle_red.horn_pitch):.1f}°")
     window.GUI.text("")
     dx = beetle_blue.x - beetle_red.x
     dz = beetle_blue.z - beetle_red.z
