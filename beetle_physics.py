@@ -28,6 +28,10 @@ HORN_TILT_SPEED = 2.0  # Radians per second
 HORN_MAX_PITCH = math.radians(20)  # +20 degrees vertical (up)
 HORN_MIN_PITCH = math.radians(-20)  # -20 degrees vertical (down)
 
+# Fixed timestep physics constants
+PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
+MAX_TIMESTEP_ACCUMULATOR = 0.25  # Max accumulator to prevent spiral of death
+
 # Beetle state with physics
 class Beetle:
     def __init__(self, x, z, rotation, color):
@@ -66,6 +70,28 @@ class Beetle:
         self.horn_yaw = 0.0    # Horizontal angle in radians (Phase 2, keep at 0.0 for now)
         self.horn_pitch_velocity = 0.0  # Rate of change of horn pitch (radians/sec)
 
+        # Collision cooldown timer (prevents multi-frame lift application)
+        self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
+
+        # Previous state for fixed timestep interpolation
+        self.prev_x = x
+        self.prev_y = 1.0
+        self.prev_z = z
+        self.prev_rotation = rotation
+        self.prev_pitch = 0.0
+        self.prev_roll = 0.0
+        self.prev_horn_pitch = 0.0
+
+    def save_previous_state(self):
+        """Save current state as previous for interpolation"""
+        self.prev_x = self.x
+        self.prev_y = self.y
+        self.prev_z = self.z
+        self.prev_rotation = self.rotation
+        self.prev_pitch = self.pitch
+        self.prev_roll = self.roll
+        self.prev_horn_pitch = self.horn_pitch
+
     def apply_force(self, fx, fz, dt):
         """Add force to velocity"""
         self.vx += fx * dt
@@ -73,6 +99,11 @@ class Beetle:
 
     def update_physics(self, dt):
         """Apply friction and update position"""
+        # === COLLISION COOLDOWN TIMER ===
+        # Decrement lift cooldown timer (prevents multi-frame lift application)
+        if self.lift_cooldown > 0.0:
+            self.lift_cooldown = max(0.0, self.lift_cooldown - dt)
+
         # === GRAVITY SYSTEM (Phase 1) ===
         # Apply gravity (always on) - use global adjustable gravity
         self.vy -= physics_params["GRAVITY"] * dt
@@ -1254,63 +1285,82 @@ def beetle_collision(b1, b2, params):
 
                 # Very low threshold - almost any velocity difference triggers
                 ADVANTAGE_THRESHOLD = 0.5
+                LIFT_COOLDOWN_DURATION = 0.03  # Seconds between lift applications
 
-                if lift_advantage > ADVANTAGE_THRESHOLD:
-                    # Blue has advantage - lifts red
-                    print(f"  -> BLUE lifts RED!")
-                    lift_force = lift_impulse * 0.15
-                    b2.vy += lift_force  # Red gets lifted HIGHER
-                    b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
+                # Check if both beetles are off cooldown before applying lift forces
+                if b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
+                    # Cooldown expired - can apply lift force
+                    if lift_advantage > ADVANTAGE_THRESHOLD:
+                        # Blue has advantage - lifts red
+                        print(f"  -> BLUE lifts RED!")
+                        lift_force = lift_impulse * 0.15
+                        b2.vy += lift_force  # Red gets lifted HIGHER
+                        b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
 
-                    # TORQUE: Apply rotation from off-center force
-                    # Calculate lever arm from red's center to collision point
-                    lever_x = collision_x - b2.x  # X offset (causes roll)
-                    lever_z = collision_z - b2.z  # Z offset (causes pitch)
+                        # TORQUE: Apply rotation from off-center force
+                        # Calculate lever arm from red's center to collision point
+                        lever_x = collision_x - b2.x  # X offset (causes roll)
+                        lever_z = collision_z - b2.z  # Z offset (causes pitch)
 
-                    # Pitch torque: force in +Y at position +Z causes nose-up pitch
-                    pitch_torque = -lever_z * lift_force  # Negative Z = positive pitch
-                    b2.pitch_velocity += pitch_torque / b2.pitch_inertia
+                        # Pitch torque: force in +Y at position +Z causes nose-up pitch
+                        pitch_torque = -lever_z * lift_force  # Negative Z = positive pitch
+                        b2.pitch_velocity += pitch_torque / b2.pitch_inertia
 
-                    # Roll torque: force in +Y at position +X causes right-side-up roll
-                    roll_torque = lever_x * lift_force
-                    b2.roll_velocity += roll_torque / b2.roll_inertia
+                        # Roll torque: force in +Y at position +X causes right-side-up roll
+                        roll_torque = lever_x * lift_force
+                        b2.roll_velocity += roll_torque / b2.roll_inertia
 
-                elif lift_advantage < -ADVANTAGE_THRESHOLD:
-                    # Red has advantage - lifts blue
-                    print(f"  -> RED lifts BLUE!")
-                    lift_force = lift_impulse * 0.15
-                    b1.vy += lift_force  # Blue gets lifted HIGHER
-                    b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
+                        # Set cooldown for both beetles
+                        b1.lift_cooldown = LIFT_COOLDOWN_DURATION
+                        b2.lift_cooldown = LIFT_COOLDOWN_DURATION
 
-                    # TORQUE: Apply rotation from off-center force
-                    lever_x = collision_x - b1.x  # X offset (causes roll)
-                    lever_z = collision_z - b1.z  # Z offset (causes pitch)
+                    elif lift_advantage < -ADVANTAGE_THRESHOLD:
+                        # Red has advantage - lifts blue
+                        print(f"  -> RED lifts BLUE!")
+                        lift_force = lift_impulse * 0.15
+                        b1.vy += lift_force  # Blue gets lifted HIGHER
+                        b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
 
-                    # Pitch torque
-                    pitch_torque = -lever_z * lift_force
-                    b1.pitch_velocity += pitch_torque / b1.pitch_inertia
+                        # TORQUE: Apply rotation from off-center force
+                        lever_x = collision_x - b1.x  # X offset (causes roll)
+                        lever_z = collision_z - b1.z  # Z offset (causes pitch)
 
-                    # Roll torque
-                    roll_torque = lever_x * lift_force
-                    b1.roll_velocity += roll_torque / b1.roll_inertia
+                        # Pitch torque
+                        pitch_torque = -lever_z * lift_force
+                        b1.pitch_velocity += pitch_torque / b1.pitch_inertia
 
+                        # Roll torque
+                        roll_torque = lever_x * lift_force
+                        b1.roll_velocity += roll_torque / b1.roll_inertia
+
+                        # Set cooldown for both beetles
+                        b1.lift_cooldown = LIFT_COOLDOWN_DURATION
+                        b2.lift_cooldown = LIFT_COOLDOWN_DURATION
+
+                    else:
+                        # Evenly matched - both get pushed (with torque)
+                        print(f"  -> BOTH beetles pushed!")
+                        push_force = lift_impulse * 0.06
+                        b1.vy += push_force
+                        b2.vy += push_force
+
+                        # Apply torque to both
+                        lever_x1 = collision_x - b1.x
+                        lever_z1 = collision_z - b1.z
+                        b1.pitch_velocity += (-lever_z1 * push_force) / b1.pitch_inertia
+                        b1.roll_velocity += (lever_x1 * push_force) / b1.roll_inertia
+
+                        lever_x2 = collision_x - b2.x
+                        lever_z2 = collision_z - b2.z
+                        b2.pitch_velocity += (-lever_z2 * push_force) / b2.pitch_inertia
+                        b2.roll_velocity += (lever_x2 * push_force) / b2.roll_inertia
+
+                        # Set cooldown for both beetles
+                        b1.lift_cooldown = LIFT_COOLDOWN_DURATION
+                        b2.lift_cooldown = LIFT_COOLDOWN_DURATION
                 else:
-                    # Evenly matched - both get pushed (with torque)
-                    print(f"  -> BOTH beetles pushed!")
-                    push_force = lift_impulse * 0.06
-                    b1.vy += push_force
-                    b2.vy += push_force
-
-                    # Apply torque to both
-                    lever_x1 = collision_x - b1.x
-                    lever_z1 = collision_z - b1.z
-                    b1.pitch_velocity += (-lever_z1 * push_force) / b1.pitch_inertia
-                    b1.roll_velocity += (lever_x1 * push_force) / b1.roll_inertia
-
-                    lever_x2 = collision_x - b2.x
-                    lever_z2 = collision_z - b2.z
-                    b2.pitch_velocity += (-lever_z2 * push_force) / b2.pitch_inertia
-                    b2.roll_velocity += (lever_x2 * push_force) / b2.roll_inertia
+                    # Cooldown active - skip lift force but still print debug info
+                    print(f"  -> COOLDOWN ACTIVE (Blue: {b1.lift_cooldown:.3f}s, Red: {b2.lift_cooldown:.3f}s)")
 
                 # Add horizontal spin based on where horn hit BOTH beetles
                 # Beetle being lifted spins
@@ -1457,148 +1507,199 @@ physics_params = {
 }
 
 last_time = time.time()
+accumulator = 0.0  # Time accumulator for fixed timestep physics
 
 while window.running:
     current_time = time.time()
-    dt = current_time - last_time
+    frame_dt = current_time - last_time
     last_time = current_time
-    dt = min(dt, 0.05)
+    frame_dt = min(frame_dt, 0.05)  # Cap at 50ms to prevent huge jumps
 
-    # Camera
-    renderer.handle_camera_controls(camera, window, dt)
+    # Add frame time to accumulator
+    accumulator += frame_dt
+    # Cap accumulator to prevent spiral of death
+    if accumulator > MAX_TIMESTEP_ACCUMULATOR:
+        accumulator = MAX_TIMESTEP_ACCUMULATOR
+
+    # Camera (runs every frame at frame rate)
+    renderer.handle_camera_controls(camera, window, frame_dt)
     renderer.handle_mouse_look(camera, window)
 
-    # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
-    # Rotation controls (F/H)
-    if window.is_pressed('f'):
-        # Rotate left (counterclockwise)
-        beetle_blue.rotation -= ROTATION_SPEED * dt
-    if window.is_pressed('h'):
-        # Rotate right (clockwise)
-        beetle_blue.rotation += ROTATION_SPEED * dt
+    # ===== FIXED TIMESTEP PHYSICS LOOP =====
+    # Run physics in fixed increments (may run 0+ times per frame)
+    while accumulator >= PHYSICS_TIMESTEP:
+        # Save previous state for interpolation
+        beetle_blue.save_previous_state()
+        beetle_red.save_previous_state()
 
-    # Movement controls (T/G) - move in facing direction
-    if window.is_pressed('t'):
-        # Move forward in facing direction
-        move_x = math.cos(beetle_blue.rotation)
-        move_z = math.sin(beetle_blue.rotation)
-        beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
-    if window.is_pressed('g'):
-        # Move backward in facing direction
-        move_x = -math.cos(beetle_blue.rotation)
-        move_z = -math.sin(beetle_blue.rotation)
-        beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
+        # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
+        # Rotation controls (F/H)
+        if window.is_pressed('f'):
+            # Rotate left (counterclockwise)
+            beetle_blue.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+        if window.is_pressed('h'):
+            # Rotate right (clockwise)
+            beetle_blue.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
 
-    # Horn controls (R/Y) - tilt up/down
-    if window.is_pressed('r'):
-        # Tilt horn up
-        beetle_blue.horn_pitch += HORN_TILT_SPEED * dt
-        beetle_blue.horn_pitch = min(HORN_MAX_PITCH, beetle_blue.horn_pitch)
-        beetle_blue.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
-    elif window.is_pressed('y'):
-        # Tilt horn down
-        beetle_blue.horn_pitch -= HORN_TILT_SPEED * dt
-        beetle_blue.horn_pitch = max(HORN_MIN_PITCH, beetle_blue.horn_pitch)
-        beetle_blue.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
-    else:
-        # Not pressing horn keys - no velocity
-        beetle_blue.horn_pitch_velocity = 0.0
+        # Movement controls (T/G) - move in facing direction
+        if window.is_pressed('t'):
+            # Move forward in facing direction
+            move_x = math.cos(beetle_blue.rotation)
+            move_z = math.sin(beetle_blue.rotation)
+            beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
+        if window.is_pressed('g'):
+            # Move backward in facing direction
+            move_x = -math.cos(beetle_blue.rotation)
+            move_z = -math.sin(beetle_blue.rotation)
+            beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
 
-    # Always add physics-driven rotation from collisions
-    beetle_blue.rotation += beetle_blue.angular_velocity * dt
-    beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
+        # Horn controls (R/Y) - tilt up/down
+        if window.is_pressed('r'):
+            # Tilt horn up
+            beetle_blue.horn_pitch += HORN_TILT_SPEED * PHYSICS_TIMESTEP
+            beetle_blue.horn_pitch = min(HORN_MAX_PITCH, beetle_blue.horn_pitch)
+            beetle_blue.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
+        elif window.is_pressed('y'):
+            # Tilt horn down
+            beetle_blue.horn_pitch -= HORN_TILT_SPEED * PHYSICS_TIMESTEP
+            beetle_blue.horn_pitch = max(HORN_MIN_PITCH, beetle_blue.horn_pitch)
+            beetle_blue.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
+        else:
+            # Not pressing horn keys - no velocity
+            beetle_blue.horn_pitch_velocity = 0.0
 
-    # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
-    # Rotation controls (J/L)
-    if window.is_pressed('j'):
-        # Rotate left (counterclockwise)
-        beetle_red.rotation -= ROTATION_SPEED * dt
-    if window.is_pressed('l'):
-        # Rotate right (clockwise)
-        beetle_red.rotation += ROTATION_SPEED * dt
+        # Always add physics-driven rotation from collisions
+        beetle_blue.rotation += beetle_blue.angular_velocity * PHYSICS_TIMESTEP
+        beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
 
-    # Movement controls (I/K) - move in facing direction
-    if window.is_pressed('i'):
-        # Move forward in facing direction
-        move_x = math.cos(beetle_red.rotation)
-        move_z = math.sin(beetle_red.rotation)
-        beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
-    if window.is_pressed('k'):
-        # Move backward in facing direction
-        move_x = -math.cos(beetle_red.rotation)
-        move_z = -math.sin(beetle_red.rotation)
-        beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, dt)
+        # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
+        # Rotation controls (J/L)
+        if window.is_pressed('j'):
+            # Rotate left (counterclockwise)
+            beetle_red.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+        if window.is_pressed('l'):
+            # Rotate right (clockwise)
+            beetle_red.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
 
-    # Horn controls (U/O) - tilt up/down
-    if window.is_pressed('u'):
-        # Tilt horn up
-        beetle_red.horn_pitch += HORN_TILT_SPEED * dt
-        beetle_red.horn_pitch = min(HORN_MAX_PITCH, beetle_red.horn_pitch)
-        beetle_red.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
-    elif window.is_pressed('o'):
-        # Tilt horn down
-        beetle_red.horn_pitch -= HORN_TILT_SPEED * dt
-        beetle_red.horn_pitch = max(HORN_MIN_PITCH, beetle_red.horn_pitch)
-        beetle_red.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
-    else:
-        # Not pressing horn keys - no velocity
-        beetle_red.horn_pitch_velocity = 0.0
+        # Movement controls (I/K) - move in facing direction
+        if window.is_pressed('i'):
+            # Move forward in facing direction
+            move_x = math.cos(beetle_red.rotation)
+            move_z = math.sin(beetle_red.rotation)
+            beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
+        if window.is_pressed('k'):
+            # Move backward in facing direction
+            move_x = -math.cos(beetle_red.rotation)
+            move_z = -math.sin(beetle_red.rotation)
+            beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
 
-    # Always add physics-driven rotation from collisions
-    beetle_red.rotation += beetle_red.angular_velocity * dt
-    beetle_red.rotation = normalize_angle(beetle_red.rotation)
+        # Horn controls (U/O) - tilt up/down
+        if window.is_pressed('u'):
+            # Tilt horn up
+            beetle_red.horn_pitch += HORN_TILT_SPEED * PHYSICS_TIMESTEP
+            beetle_red.horn_pitch = min(HORN_MAX_PITCH, beetle_red.horn_pitch)
+            beetle_red.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
+        elif window.is_pressed('o'):
+            # Tilt horn down
+            beetle_red.horn_pitch -= HORN_TILT_SPEED * PHYSICS_TIMESTEP
+            beetle_red.horn_pitch = max(HORN_MIN_PITCH, beetle_red.horn_pitch)
+            beetle_red.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
+        else:
+            # Not pressing horn keys - no velocity
+            beetle_red.horn_pitch_velocity = 0.0
 
-    # Physics update
-    beetle_blue.update_physics(dt)
-    beetle_red.update_physics(dt)
+        # Always add physics-driven rotation from collisions
+        beetle_red.rotation += beetle_red.angular_velocity * PHYSICS_TIMESTEP
+        beetle_red.rotation = normalize_angle(beetle_red.rotation)
 
-    # Floor collision - prevent penetration by pushing beetles upward
-    floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
-    if floor_y_blue >= 0:  # Floor detected under beetle
-        # Calculate lowest point of beetle geometry after rotation
-        lowest_point_blue = calculate_beetle_lowest_point(
-            beetle_blue.y, beetle_blue.rotation, beetle_blue.pitch,
-            beetle_blue.roll, beetle_blue.horn_pitch
-        )
+        # Physics update
+        beetle_blue.update_physics(PHYSICS_TIMESTEP)
+        beetle_red.update_physics(PHYSICS_TIMESTEP)
 
-        # Check if beetle penetrates floor (lowest point goes into or below floor)
-        floor_surface = floor_y_blue + 1.0  # Top of floor is at floor_y + 1
-        if lowest_point_blue < floor_surface:
-            # Penetration detected! Push beetle upward
-            penetration_depth = floor_surface - lowest_point_blue
-            beetle_blue.y += penetration_depth
+        # Floor collision - prevent penetration by pushing beetles upward
+        floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
+        if floor_y_blue >= 0:  # Floor detected under beetle
+            # Calculate lowest point of beetle geometry after rotation
+            lowest_point_blue = calculate_beetle_lowest_point(
+                beetle_blue.y, beetle_blue.rotation, beetle_blue.pitch,
+                beetle_blue.roll, beetle_blue.horn_pitch
+            )
 
-            # Apply bounce/resistance
-            if beetle_blue.vy < 0:  # Moving downward
-                beetle_blue.vy = 0.0  # Stop downward motion
+            # Check if beetle penetrates floor (lowest point goes into or below floor)
+            floor_surface = floor_y_blue + 1.0  # Top of floor is at floor_y + 1
+            if lowest_point_blue < floor_surface:
+                # Penetration detected! Push beetle upward
+                penetration_depth = floor_surface - lowest_point_blue
+                beetle_blue.y += penetration_depth
 
-            beetle_blue.on_ground = True
-        elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
-            beetle_blue.on_ground = True
+                # Apply bounce/resistance
+                if beetle_blue.vy < 0:  # Moving downward
+                    beetle_blue.vy = 0.0  # Stop downward motion
 
-    floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
-    if floor_y_red >= 0:  # Floor detected under beetle
-        lowest_point_red = calculate_beetle_lowest_point(
-            beetle_red.y, beetle_red.rotation, beetle_red.pitch,
-            beetle_red.roll, beetle_red.horn_pitch
-        )
+                beetle_blue.on_ground = True
+            elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
+                beetle_blue.on_ground = True
 
-        floor_surface = floor_y_red + 1.0
-        if lowest_point_red < floor_surface:
-            penetration_depth = floor_surface - lowest_point_red
-            beetle_red.y += penetration_depth
+        floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
+        if floor_y_red >= 0:  # Floor detected under beetle
+            lowest_point_red = calculate_beetle_lowest_point(
+                beetle_red.y, beetle_red.rotation, beetle_red.pitch,
+                beetle_red.roll, beetle_red.horn_pitch
+            )
 
-            if beetle_red.vy < 0:
-                beetle_red.vy = 0.0
+            floor_surface = floor_y_red + 1.0
+            if lowest_point_red < floor_surface:
+                penetration_depth = floor_surface - lowest_point_red
+                beetle_red.y += penetration_depth
 
-            beetle_red.on_ground = True
-        elif lowest_point_red < floor_surface + 0.5:
-            beetle_red.on_ground = True
+                if beetle_red.vy < 0:
+                    beetle_red.vy = 0.0
 
-    # Update walk animation based on velocity
+                beetle_red.on_ground = True
+            elif lowest_point_red < floor_surface + 0.5:
+                beetle_red.on_ground = True
+
+        # Beetle collision (voxel-perfect)
+        beetle_collision(beetle_blue, beetle_red, physics_params)
+
+        # Subtract fixed timestep from accumulator
+        accumulator -= PHYSICS_TIMESTEP
+
+    # ===== END FIXED TIMESTEP PHYSICS LOOP =====
+
+    # Calculate interpolation alpha for smooth rendering between physics states
+    alpha = accumulator / PHYSICS_TIMESTEP
+
+    # Helper function for angle interpolation (shortest path)
+    def lerp_angle(a, b, t):
+        """Interpolate between angles using shortest path"""
+        diff = (b - a) % 360.0
+        if diff > 180.0:
+            diff -= 360.0
+        return a + diff * t
+
+    # Interpolate blue beetle state for rendering
+    blue_render_x = beetle_blue.prev_x + (beetle_blue.x - beetle_blue.prev_x) * alpha
+    blue_render_y = beetle_blue.prev_y + (beetle_blue.y - beetle_blue.prev_y) * alpha
+    blue_render_z = beetle_blue.prev_z + (beetle_blue.z - beetle_blue.prev_z) * alpha
+    blue_render_rotation = lerp_angle(beetle_blue.prev_rotation, beetle_blue.rotation, alpha)
+    blue_render_pitch = lerp_angle(beetle_blue.prev_pitch, beetle_blue.pitch, alpha)
+    blue_render_roll = lerp_angle(beetle_blue.prev_roll, beetle_blue.roll, alpha)
+    blue_render_horn_pitch = lerp_angle(beetle_blue.prev_horn_pitch, beetle_blue.horn_pitch, alpha)
+
+    # Interpolate red beetle state for rendering
+    red_render_x = beetle_red.prev_x + (beetle_red.x - beetle_red.prev_x) * alpha
+    red_render_y = beetle_red.prev_y + (beetle_red.y - beetle_red.prev_y) * alpha
+    red_render_z = beetle_red.prev_z + (beetle_red.z - beetle_red.prev_z) * alpha
+    red_render_rotation = lerp_angle(beetle_red.prev_rotation, beetle_red.rotation, alpha)
+    red_render_pitch = lerp_angle(beetle_red.prev_pitch, beetle_red.pitch, alpha)
+    red_render_roll = lerp_angle(beetle_red.prev_roll, beetle_red.roll, alpha)
+    red_render_horn_pitch = lerp_angle(beetle_red.prev_horn_pitch, beetle_red.horn_pitch, alpha)
+
+    # Update walk animation based on velocity (uses real-time frame_dt)
     blue_speed = math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2)
     if blue_speed > 0.5:  # Only animate if moving
-        beetle_blue.walk_phase += blue_speed * WALK_CYCLE_SPEED * dt
+        beetle_blue.walk_phase += blue_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)  # Keep in [0, 2π]
         beetle_blue.is_moving = True
     else:
@@ -1606,26 +1707,23 @@ while window.running:
 
     red_speed = math.sqrt(beetle_red.vx**2 + beetle_red.vz**2)
     if red_speed > 0.5:
-        beetle_red.walk_phase += red_speed * WALK_CYCLE_SPEED * dt
+        beetle_red.walk_phase += red_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
         beetle_red.is_moving = True
     else:
         beetle_red.is_moving = False
 
-    # Beetle collision (voxel-perfect)
-    beetle_collision(beetle_blue, beetle_red, physics_params)
-
-    # Render - ANIMATED with leg walking cycles and different leg colors!
-    clear_beetles_bounded(beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_red.x, beetle_red.y, beetle_red.z)
-    place_animated_beetle(beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll, beetle_blue.horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase)
-    place_animated_beetle(beetle_red.x, beetle_red.y, beetle_red.z, beetle_red.rotation, beetle_red.pitch, beetle_red.roll, beetle_red.horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase)
+    # Render - ANIMATED with leg walking cycles and interpolated smooth positions!
+    clear_beetles_bounded(blue_render_x, blue_render_y, blue_render_z, red_render_x, red_render_y, red_render_z)
+    place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase)
+    place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase)
 
     canvas.set_background_color((0.13, 0.35, 0.13))  # Forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
     canvas.scene(scene)
 
     # HUD
-    fps = 1.0 / dt if dt > 0 else 0
+    fps = 1.0 / frame_dt if frame_dt > 0 else 0
     window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.52)
     window.GUI.text(f"FPS: {fps:.0f}")
     window.GUI.text("")
