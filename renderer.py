@@ -61,6 +61,14 @@ def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
     elif voxel_type == 8:  # BEETLE_RED_LEGS
         color = ti.math.vec3(1.0, 0.5, 0.3)
 
+    # Blue beetle leg tips - dark blue with slight tint
+    elif voxel_type == 9:  # LEG_TIP_BLUE
+        color = ti.math.vec3(0.0, 0.0, 0.3)  # Very dark blue
+
+    # Red beetle leg tips - dark red with slight tint
+    elif voxel_type == 10:  # LEG_TIP_RED
+        color = ti.math.vec3(0.3, 0.0, 0.0)  # Very dark red
+
     return color
 
 @ti.kernel

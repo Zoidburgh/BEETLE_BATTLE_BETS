@@ -35,13 +35,24 @@ class Beetle:
         self.z = z
         self.vx = 0.0  # Velocity
         self.vz = 0.0
-        self.y = 2.0  # Vertical position (floor level)
+        self.y = 1.0  # Vertical position (floor level)
         self.vy = 0.0  # Vertical velocity
         self.on_ground = True  # Ground contact state
+        # Yaw rotation (spin around vertical axis)
         self.rotation = rotation
         self.target_rotation = rotation
         self.angular_velocity = 0.0  # Spin speed (radians/sec)
         self.moment_of_inertia = BEETLE_RADIUS * MOMENT_OF_INERTIA_FACTOR  # Resistance to rotation (higher = more stable, less flinging)
+
+        # Pitch rotation (forward/backward tilt)
+        self.pitch = 0.0  # Body pitch angle (radians, positive = front up)
+        self.pitch_velocity = 0.0  # Pitch angular velocity (radians/sec)
+        self.pitch_inertia = BEETLE_RADIUS * MOMENT_OF_INERTIA_FACTOR  # Same inertia as yaw
+
+        # Roll rotation (side-to-side tilt)
+        self.roll = 0.0  # Body roll angle (radians, positive = right side up)
+        self.roll_velocity = 0.0  # Roll angular velocity (radians/sec)
+        self.roll_inertia = BEETLE_RADIUS * MOMENT_OF_INERTIA_FACTOR  # Same inertia as yaw
         self.color = color
         self.radius = BEETLE_RADIUS
         self.occupied_voxels = set()  # Track voxel positions for accurate collision
@@ -53,6 +64,7 @@ class Beetle:
         # Horn control state
         self.horn_pitch = 0.0  # Vertical angle in radians (±20°, positive = up)
         self.horn_yaw = 0.0    # Horizontal angle in radians (Phase 2, keep at 0.0 for now)
+        self.horn_pitch_velocity = 0.0  # Rate of change of horn pitch (radians/sec)
 
     def apply_force(self, fx, fz, dt):
         """Add force to velocity"""
@@ -62,31 +74,33 @@ class Beetle:
     def update_physics(self, dt):
         """Apply friction and update position"""
         # === GRAVITY SYSTEM (Phase 1) ===
-        # Apply gravity (always on)
-        GRAVITY = 9.8
-        self.vy -= GRAVITY * dt
-
-        # Ground contact detection
-        FLOOR_LEVEL = 2.0
-        if self.y <= FLOOR_LEVEL and self.vy <= 0.0:
-            # Beetle is on floor and moving down/stationary
-            self.on_ground = True
-            self.y = FLOOR_LEVEL  # Snap to floor
-            self.vy = 0.0  # Cancel downward velocity
-        else:
-            # Beetle is airborne
-            self.on_ground = False
+        # Apply gravity (always on) - use global adjustable gravity
+        self.vy -= physics_params["GRAVITY"] * dt
 
         # Apply vertical velocity
         self.y += self.vy * dt
+
+        # Ground contact will be determined by floor collision detection in main loop
+        # (No hardcoded floor level here - floor is detected via voxel checking)
 
         # === HORIZONTAL PHYSICS (existing) ===
         # Apply linear friction
         self.vx *= FRICTION
         self.vz *= FRICTION
 
-        # Apply angular friction
+        # Apply angular friction (yaw)
         self.angular_velocity *= ANGULAR_FRICTION
+
+        # Apply angular friction (pitch/roll) - stronger damping for stability
+        self.pitch_velocity *= ANGULAR_FRICTION * 0.9  # Extra damping
+        self.roll_velocity *= ANGULAR_FRICTION * 0.9
+
+        # Ground restoring torque - automatically level out when on ground
+        if self.on_ground:
+            # Apply torque to bring pitch/roll back to zero (level)
+            RESTORING_STRENGTH = 5.0  # How quickly beetle levels out
+            self.pitch_velocity -= self.pitch * RESTORING_STRENGTH * dt
+            self.roll_velocity -= self.roll * RESTORING_STRENGTH * dt
 
         # Clamp linear speed
         speed = math.sqrt(self.vx**2 + self.vz**2)
@@ -94,13 +108,28 @@ class Beetle:
             self.vx = (self.vx / speed) * MAX_SPEED
             self.vz = (self.vz / speed) * MAX_SPEED
 
-        # Clamp angular speed
+        # Clamp angular speeds (yaw, pitch, roll)
         if abs(self.angular_velocity) > MAX_ANGULAR_SPEED:
             self.angular_velocity = MAX_ANGULAR_SPEED if self.angular_velocity > 0 else -MAX_ANGULAR_SPEED
+
+        MAX_TILT_SPEED = 4.0  # Slower than yaw to prevent violent flipping
+        if abs(self.pitch_velocity) > MAX_TILT_SPEED:
+            self.pitch_velocity = MAX_TILT_SPEED if self.pitch_velocity > 0 else -MAX_TILT_SPEED
+        if abs(self.roll_velocity) > MAX_TILT_SPEED:
+            self.roll_velocity = MAX_TILT_SPEED if self.roll_velocity > 0 else -MAX_TILT_SPEED
 
         # Update horizontal position
         self.x += self.vx * dt
         self.z += self.vz * dt
+
+        # Update rotation angles (yaw, pitch, roll)
+        self.pitch += self.pitch_velocity * dt
+        self.roll += self.roll_velocity * dt
+
+        # Clamp pitch/roll to prevent full flips (±45 degrees)
+        MAX_TILT_ANGLE = math.radians(45)
+        self.pitch = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.pitch))
+        self.roll = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.roll))
 
     def arena_collision(self):
         """Bounce off arena walls"""
@@ -160,15 +189,17 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
             beetle2_y_min = 999
             beetle2_y_max = -1
 
-            # Find Y-ranges for both beetles in this column (includes legs!)
+            # Find Y-ranges for both beetles in this column (includes legs and tips!)
             for gy in range(0, 15):
                 voxel = simulation.voxel_type[gx, gy, gz]
-                if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_BLUE_LEGS:
+                # Blue beetle voxels (body, legs, and tips)
+                if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_BLUE_LEGS or voxel == simulation.LEG_TIP_BLUE:
                     if gy < beetle1_y_min:
                         beetle1_y_min = gy
                     if gy > beetle1_y_max:
                         beetle1_y_max = gy
-                elif voxel == simulation.BEETLE_RED or voxel == simulation.BEETLE_RED_LEGS:
+                # Red beetle voxels (body, legs, and tips)
+                elif voxel == simulation.BEETLE_RED or voxel == simulation.BEETLE_RED_LEGS or voxel == simulation.LEG_TIP_RED:
                     if gy < beetle2_y_min:
                         beetle2_y_min = gy
                     if gy > beetle2_y_max:
@@ -181,32 +212,6 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
                     collision = 1
 
     return collision
-
-def calculate_occupied_voxels(world_x, world_z, rotation):
-    """Calculate which voxels this beetle occupies - for torque calculation only"""
-    center_x = int(world_x + simulation.n_grid / 2.0)
-    center_z = int(world_z + simulation.n_grid / 2.0)
-
-    occupied = set()
-
-    # Read actual voxel grid - only called during collision
-    voxels = simulation.voxel_type.to_numpy()
-
-    # Check beetle's range
-    x_min = max(0, center_x - 20)
-    x_max = min(simulation.n_grid, center_x + 20)
-    z_min = max(0, center_z - 20)
-    z_max = min(simulation.n_grid, center_z + 20)
-
-    for grid_x in range(x_min, x_max):
-        for grid_z in range(z_min, z_max):
-            for grid_y in range(0, 15):
-                voxel = voxels[grid_x, grid_y, grid_z]
-                if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_RED:
-                    occupied.add((grid_x, grid_z))
-                    break
-
-    return occupied
 
 @ti.kernel
 def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32):
@@ -282,14 +287,14 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
                     if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                         simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
-    # ========== EXAGGERATED Y-SHAPED HORN ==========
-    # Main shaft - 12 voxels, curves upward, DENSE/SOLID
-    for i in range(12):
+    # ========== EXAGGERATED Y-SHAPED HORN - EARLY SPLIT ==========
+    # Shorter main shaft - 8 voxels, curves upward, splits earlier
+    for i in range(8):
         dx = 3 + i
-        height_curve = int(i * 0.3)  # Slightly lower curve due to body height reduction
+        height_curve = int(i * 0.3)
         dy = 1 + height_curve
 
-        # Thick solid horn - no thin tip
+        # Thick solid horn
         thickness = 2
 
         for dz in range(-thickness, thickness + 1):
@@ -303,44 +308,73 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
-    # EXAGGERATED Y-fork - THICK SOLID prongs spreading wide
-    # Left prong - 5 voxels angling left and up, NOW THICK
-    for i in range(5):
-        dx = 13 + i
-        dy = 4 + i  # Adjusted for body height reduction
+    # LONG LEFT PRONG - 9 voxels, starts earlier, wider at tip
+    for i in range(9):
+        dx = 9 + i  # Start at dx=9 (overlaps shaft for solid connection)
+        dy = 3 + i  # Continue upward curve
         center_dz = -i  # Angles left
 
-        # Make prong thick (2 voxels radius)
-        for dz_offset in range(-1, 2):
-            dz = center_dz + dz_offset
-            local_x = float(dx)
-            local_z = float(dz)
-            rotated_x = local_x * cos_r - local_z * sin_r
-            rotated_z = local_x * sin_r + local_z * cos_r
-            grid_x = center_x + int(ti.round(rotated_x))
-            grid_y = 2 + dy
-            grid_z = center_z + int(ti.round(rotated_z))
-            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
-                simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+        # Widen at the tip (last 3 voxels)
+        if i >= 6:
+            # Extra wide tip for catching
+            for dz_offset in range(-2, 3):
+                dz = center_dz + dz_offset
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+        else:
+            # Normal thickness for base/middle
+            for dz_offset in range(-1, 2):
+                dz = center_dz + dz_offset
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
-    # Right prong - 5 voxels angling right and up, NOW THICK
-    for i in range(5):
-        dx = 13 + i
-        dy = 4 + i  # Adjusted for body height reduction
+    # LONG RIGHT PRONG - 9 voxels, starts earlier, wider at tip
+    for i in range(9):
+        dx = 9 + i  # Start at dx=9 (overlaps shaft for solid connection)
+        dy = 3 + i  # Continue upward curve
         center_dz = i  # Angles right
 
-        # Make prong thick (2 voxels radius)
-        for dz_offset in range(-1, 2):
-            dz = center_dz + dz_offset
-            local_x = float(dx)
-            local_z = float(dz)
-            rotated_x = local_x * cos_r - local_z * sin_r
-            rotated_z = local_x * sin_r + local_z * cos_r
-            grid_x = center_x + int(ti.round(rotated_x))
-            grid_y = 2 + dy
-            grid_z = center_z + int(ti.round(rotated_z))
-            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
-                simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+        # Widen at the tip (last 3 voxels)
+        if i >= 6:
+            # Extra wide tip for catching
+            for dz_offset in range(-2, 3):
+                dz = center_dz + dz_offset
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
+        else:
+            # Normal thickness for base/middle
+            for dz_offset in range(-1, 2):
+                dz = center_dz + dz_offset
+                local_x = float(dx)
+                local_z = float(dz)
+                rotated_x = local_x * cos_r - local_z * sin_r
+                rotated_z = local_x * sin_r + local_z * cos_r
+                grid_x = center_x + int(ti.round(rotated_x))
+                grid_y = 2 + dy
+                grid_z = center_z + int(ti.round(rotated_z))
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
     # ========== EXAGGERATED LEGS (6 total) - THICK SEGMENTS ==========
     # Front legs (longest) - attach to front thorax
@@ -602,6 +636,7 @@ def generate_beetle_geometry():
 
     # Front left leg (leg 0) - MOVED FORWARD 1 VOXEL
     front_left = []
+    front_left_tips = []  # Separate tips for black coloring
     side = -1
     # COXA
     for i in range(2):
@@ -611,13 +646,14 @@ def generate_beetle_geometry():
     for i in range(4):
         for extra_y in range(2):
             front_left.append((2, 0 + extra_y, side * (5 + i)))
-    # TIBIA
+    # TIBIA (tips - will be rendered black)
     for point in [(2, 0, side * 9), (2, 0, side * 10), (3, 0, side * 10), (4, 0, side * 10)]:
-        front_left.append(point)
+        front_left_tips.append(point)
     leg_voxels.append(front_left)
 
     # Front right leg (leg 1) - MOVED FORWARD 1 VOXEL
     front_right = []
+    front_right_tips = []
     side = 1
     for i in range(2):
         for extra_y in range(2):
@@ -626,11 +662,12 @@ def generate_beetle_geometry():
         for extra_y in range(2):
             front_right.append((2, 0 + extra_y, side * (5 + i)))
     for point in [(2, 0, side * 9), (2, 0, side * 10), (3, 0, side * 10), (4, 0, side * 10)]:
-        front_right.append(point)
+        front_right_tips.append(point)
     leg_voxels.append(front_right)
 
     # Middle left leg (leg 2)
     middle_left = []
+    middle_left_tips = []
     side = -1
     for i in range(2):
         for extra_y in range(2):
@@ -639,11 +676,12 @@ def generate_beetle_geometry():
         for extra_y in range(2):
             middle_left.append((-2, 0 + extra_y, side * (5 + i)))
     for point in [(-2, 0, side * 9), (-2, 0, side * 10), (-3, 0, side * 10), (-4, 0, side * 10)]:
-        middle_left.append(point)
+        middle_left_tips.append(point)
     leg_voxels.append(middle_left)
 
     # Middle right leg (leg 3)
     middle_right = []
+    middle_right_tips = []
     side = 1
     for i in range(2):
         for extra_y in range(2):
@@ -652,11 +690,12 @@ def generate_beetle_geometry():
         for extra_y in range(2):
             middle_right.append((-2, 0 + extra_y, side * (5 + i)))
     for point in [(-2, 0, side * 9), (-2, 0, side * 10), (-3, 0, side * 10), (-4, 0, side * 10)]:
-        middle_right.append(point)
+        middle_right_tips.append(point)
     leg_voxels.append(middle_right)
 
     # Rear left leg (leg 4)
     rear_left = []
+    rear_left_tips = []
     side = -1
     for i in range(2):
         for extra_y in range(2):
@@ -665,11 +704,12 @@ def generate_beetle_geometry():
         for extra_y in range(2):
             rear_left.append((-5 - i, 0 + extra_y, side * (5 + i)))
     for point in [(-9, 0, side * 9), (-9, 0, side * 10), (-10, 0, side * 10), (-11, 0, side * 10)]:
-        rear_left.append(point)
+        rear_left_tips.append(point)
     leg_voxels.append(rear_left)
 
     # Rear right leg (leg 5)
     rear_right = []
+    rear_right_tips = []
     side = 1
     for i in range(2):
         for extra_y in range(2):
@@ -678,14 +718,18 @@ def generate_beetle_geometry():
         for extra_y in range(2):
             rear_right.append((-5 - i, 0 + extra_y, side * (5 + i)))
     for point in [(-9, 0, side * 9), (-9, 0, side * 10), (-10, 0, side * 10), (-11, 0, side * 10)]:
-        rear_right.append(point)
+        rear_right_tips.append(point)
     leg_voxels.append(rear_right)
 
-    return body_voxels, leg_voxels
+    # Collect all leg tips into single list (6 legs × 4 tips = 24 tip voxels)
+    leg_tips = [front_left_tips, front_right_tips, middle_left_tips,
+                middle_right_tips, rear_left_tips, rear_right_tips]
+
+    return body_voxels, leg_voxels, leg_tips
 
 # Generate beetle geometry ONCE at startup
-BEETLE_BODY, BEETLE_LEGS = generate_beetle_geometry()
-print(f"Beetle geometry cached: {len(BEETLE_BODY)} body voxels + {sum(len(leg) for leg in BEETLE_LEGS)} leg voxels")
+BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry()
+print(f"Beetle geometry cached: {len(BEETLE_BODY)} body voxels + {sum(len(leg) for leg in BEETLE_LEGS)} leg voxels + {sum(len(tips) for tips in BEETLE_LEG_TIPS)} tip voxels")
 
 # Create Taichi fields for body geometry cache
 body_cache_size = len(BEETLE_BODY)
@@ -704,6 +748,17 @@ leg_cache_z = ti.field(ti.i32, shape=total_leg_voxels)
 # Leg start indices for each of the 6 legs
 leg_start_idx = ti.field(ti.i32, shape=6)
 leg_end_idx = ti.field(ti.i32, shape=6)
+
+# Create Taichi fields for leg tip geometry cache (6 legs × 4 tips = 24)
+leg_tip_voxel_counts = [len(tips) for tips in BEETLE_LEG_TIPS]
+total_leg_tip_voxels = sum(leg_tip_voxel_counts)
+leg_tip_cache_x = ti.field(ti.i32, shape=total_leg_tip_voxels)
+leg_tip_cache_y = ti.field(ti.i32, shape=total_leg_tip_voxels)
+leg_tip_cache_z = ti.field(ti.i32, shape=total_leg_tip_voxels)
+
+# Leg tip start indices for each of the 6 legs
+leg_tip_start_idx = ti.field(ti.i32, shape=6)
+leg_tip_end_idx = ti.field(ti.i32, shape=6)
 
 # Animation parameters
 WALK_CYCLE_SPEED = 0.8  # Radians per second at normal walk speed (slowed down 5X)
@@ -725,15 +780,170 @@ for leg_id, leg_voxels in enumerate(BEETLE_LEGS):
     offset += len(leg_voxels)
     leg_end_idx[leg_id] = offset
 
+# Copy leg tip geometry to GPU
+offset = 0
+for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
+    leg_tip_start_idx[leg_id] = offset
+    for i, (dx, dy, dz) in enumerate(leg_tip_voxels):
+        leg_tip_cache_x[offset + i] = dx
+        leg_tip_cache_y[offset + i] = dy
+        leg_tip_cache_z[offset + i] = dz
+    offset += len(leg_tip_voxels)
+    leg_tip_end_idx[leg_id] = offset
+
 @ti.kernel
-def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, horn_pitch: ti.f32, body_color: ti.i32, leg_color: ti.i32, walk_phase: ti.f32):
-    """Beetle placement with animated legs using tripod gait - separate body and leg colors"""
+def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
+    """Check if beetle would collide with floor - returns highest floor Y coordinate"""
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+
+    # Check area around beetle (beetles are ~20 voxels wide)
+    check_radius = 20
+    highest_floor_y = -1.0
+
+    for i in range(center_x - check_radius, center_x + check_radius + 1):
+        for k in range(center_z - check_radius, center_z + check_radius + 1):
+            if 0 <= i < simulation.n_grid and 0 <= k < simulation.n_grid:
+                # Scan upward from bottom to find highest floor voxel
+                for j in range(0, 5):  # Only check low Y values where floor should be
+                    if simulation.voxel_type[i, j, k] == simulation.CONCRETE:
+                        if float(j) > highest_floor_y:
+                            highest_floor_y = float(j)
+
+    return highest_floor_y
+
+@ti.kernel
+def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32) -> ti.f32:
+    """Calculate the lowest Y coordinate the beetle's geometry would occupy after rotation"""
+    base_y = int(world_y)
+
+    # Rotation matrices
+    cos_yaw = ti.cos(rotation)
+    sin_yaw = ti.sin(rotation)
+    cos_pitch_body = ti.cos(pitch)
+    sin_pitch_body = ti.sin(pitch)
+    cos_roll = ti.cos(roll)
+    sin_roll = ti.sin(roll)
+
+    # Horn pitch rotation
+    cos_pitch = ti.cos(horn_pitch)
+    sin_pitch = ti.sin(horn_pitch)
+    horn_pivot_x = 3.0
+    horn_pivot_y = 1
+
+    lowest_y = 9999.0  # Start with very high value
+
+    # Check all body voxels
+    for i in range(body_cache_size):
+        local_x = float(body_cache_x[i])
+        local_y = body_cache_y[i]
+        local_z = float(body_cache_z[i])
+
+        # Apply horn pitch rotation if this is a horn voxel
+        if body_cache_x[i] >= 3:
+            rel_x = local_x - horn_pivot_x
+            rel_y = float(local_y - horn_pivot_y)
+            pitched_x = rel_x * cos_pitch - rel_y * sin_pitch
+            pitched_y = rel_x * sin_pitch + rel_y * cos_pitch
+            local_x = pitched_x + horn_pivot_x
+            local_y = int(ti.round(pitched_y + float(horn_pivot_y)))
+
+        # Apply 3D rotation (yaw -> pitch -> roll)
+        ly = float(local_y)
+
+        # Yaw
+        temp_x = local_x * cos_yaw - local_z * sin_yaw
+        temp_z = local_x * sin_yaw + local_z * cos_yaw
+        temp_y = ly
+
+        # Pitch
+        temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+        temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+        temp2_z = temp_z
+
+        # Roll
+        final_y = temp2_y * cos_roll - temp2_z * sin_roll
+
+        grid_y = float(base_y) + final_y
+        if grid_y < lowest_y:
+            lowest_y = grid_y
+
+    # Check all leg voxels
+    for leg_id in range(6):
+        start_idx = leg_start_idx[leg_id]
+        end_idx = leg_end_idx[leg_id]
+
+        for i in range(start_idx, end_idx):
+            local_x = float(leg_cache_x[i])
+            local_y = float(leg_cache_y[i])
+            local_z = float(leg_cache_z[i])
+
+            # Apply 3D rotation (same as body)
+            ly = local_y
+
+            # Yaw
+            temp_x = local_x * cos_yaw - local_z * sin_yaw
+            temp_z = local_x * sin_yaw + local_z * cos_yaw
+            temp_y = ly
+
+            # Pitch
+            temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+            temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+            temp2_z = temp_z
+
+            # Roll
+            final_y = temp2_y * cos_roll - temp2_z * sin_roll
+
+            grid_y = float(base_y) + final_y
+            if grid_y < lowest_y:
+                lowest_y = grid_y
+
+    # Check all leg tip voxels (these are typically the lowest points)
+    for leg_id in range(6):
+        tip_start_idx = leg_tip_start_idx[leg_id]
+        tip_end_idx = leg_tip_end_idx[leg_id]
+
+        for i in range(tip_start_idx, tip_end_idx):
+            local_x = float(leg_tip_cache_x[i])
+            local_y = float(leg_tip_cache_y[i])
+            local_z = float(leg_tip_cache_z[i])
+
+            # Apply 3D rotation (same as legs)
+            ly = local_y
+
+            # Yaw
+            temp_x = local_x * cos_yaw - local_z * sin_yaw
+            temp_z = local_x * sin_yaw + local_z * cos_yaw
+            temp_y = ly
+
+            # Pitch
+            temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+            temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+            temp2_z = temp_z
+
+            # Roll
+            final_y = temp2_y * cos_roll - temp2_z * sin_roll
+
+            grid_y = float(base_y) + final_y
+            if grid_y < lowest_y:
+                lowest_y = grid_y
+
+    return lowest_y
+
+@ti.kernel
+def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32):
+    """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs"""
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
     base_y = int(world_y)  # Use dynamic Y position
 
-    cos_r = ti.cos(rotation)
-    sin_r = ti.sin(rotation)
+    # Rotation matrices for yaw, pitch, roll
+    cos_yaw = ti.cos(rotation)
+    sin_yaw = ti.sin(rotation)
+    cos_pitch_body = ti.cos(pitch)
+    sin_pitch_body = ti.sin(pitch)
+    cos_roll = ti.cos(roll)
+    sin_roll = ti.sin(roll)
 
     # Pitch rotation for horn (rotation around Z-axis in local space)
     cos_pitch = ti.cos(horn_pitch)
@@ -765,16 +975,33 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
             local_x = pitched_x + horn_pivot_x
             local_y = int(ti.round(pitched_y + float(horn_pivot_y)))
 
-        # 2D horizontal rotation (body orientation)
-        rotated_x = local_x * cos_r - local_z * sin_r
-        rotated_z = local_x * sin_r + local_z * cos_r
+        # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
+        # Convert local_y to float for rotation
+        ly = float(local_y)
 
-        grid_x = center_x + int(ti.round(rotated_x))
-        grid_y = base_y + local_y
-        grid_z = center_z + int(ti.round(rotated_z))
+        # Step 1: Yaw rotation (around Y-axis)
+        temp_x = local_x * cos_yaw - local_z * sin_yaw
+        temp_z = local_x * sin_yaw + local_z * cos_yaw
+        temp_y = ly
 
-        if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
-            simulation.voxel_type[grid_x, grid_y, grid_z] = body_color
+        # Step 2: Pitch rotation (around Z-axis) - nose up/down
+        temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+        temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+        temp2_z = temp_z
+
+        # Step 3: Roll rotation (around X-axis) - tilt left/right
+        final_x = temp2_x
+        final_y = temp2_y * cos_roll - temp2_z * sin_roll
+        final_z = temp2_y * sin_roll + temp2_z * cos_roll
+
+        grid_x = center_x + int(ti.round(final_x))
+        grid_y = base_y + int(ti.round(final_y))
+        grid_z = center_z + int(ti.round(final_z))
+
+        if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
+            # Don't overwrite floor (CONCRETE) voxels
+            if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = body_color
 
     # 2. Place legs (animated with tripod gait) - DIFFERENT COLOR
     # Tripod gait: legs 0, 3, 4 move together (Group A), legs 1, 2, 5 move together (Group B)
@@ -807,19 +1034,71 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
             local_y = leg_cache_y[i] + int(lift)  # Apply vertical lift
             local_z = float(leg_cache_z[i])
 
-            # 2D rotation
-            rotated_x = local_x * cos_r - local_z * sin_r
-            rotated_z = local_x * sin_r + local_z * cos_r
+            # 3D rotation (same as body)
+            ly = float(local_y)
 
-            grid_x = center_x + int(ti.round(rotated_x))
-            grid_y = base_y + local_y
-            grid_z = center_z + int(ti.round(rotated_z))
+            # Yaw
+            temp_x = local_x * cos_yaw - local_z * sin_yaw
+            temp_z = local_x * sin_yaw + local_z * cos_yaw
+            temp_y = ly
 
-            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and grid_y >= 0:
-                simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
+            # Pitch
+            temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+            temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+            temp2_z = temp_z
+
+            # Roll
+            final_x = temp2_x
+            final_y = temp2_y * cos_roll - temp2_z * sin_roll
+            final_z = temp2_y * sin_roll + temp2_z * cos_roll
+
+            grid_x = center_x + int(ti.round(final_x))
+            grid_y = base_y + int(ti.round(final_y))
+            grid_z = center_z + int(ti.round(final_z))
+
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
+                # Don't overwrite floor (CONCRETE) voxels
+                if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
+
+        # Place leg tips (same animation as legs, but BLACK color for visibility)
+        tip_start_idx = leg_tip_start_idx[leg_id]
+        tip_end_idx = leg_tip_end_idx[leg_id]
+
+        for i in range(tip_start_idx, tip_end_idx):
+            local_x = float(leg_tip_cache_x[i]) + sweep  # Apply same animation
+            local_y = leg_tip_cache_y[i] + int(lift)
+            local_z = float(leg_tip_cache_z[i])
+
+            # 3D rotation (same as legs)
+            ly = float(local_y)
+
+            # Yaw
+            temp_x = local_x * cos_yaw - local_z * sin_yaw
+            temp_z = local_x * sin_yaw + local_z * cos_yaw
+            temp_y = ly
+
+            # Pitch
+            temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+            temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+            temp2_z = temp_z
+
+            # Roll
+            final_x = temp2_x
+            final_y = temp2_y * cos_roll - temp2_z * sin_roll
+            final_z = temp2_y * sin_roll + temp2_z * cos_roll
+
+            grid_x = center_x + int(ti.round(final_x))
+            grid_y = base_y + int(ti.round(final_y))
+            grid_z = center_z + int(ti.round(final_z))
+
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
+                # Don't overwrite floor (CONCRETE) voxels
+                if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
 
 @ti.kernel
-def clear_beetles_bounded(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32):
+def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti.f32, z2: ti.f32):
     """Clear beetles using bounding box - MUCH faster than full grid scan"""
     # Convert to grid coordinates with margin
     margin = 20
@@ -828,23 +1107,49 @@ def clear_beetles_bounded(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32):
     center_x2 = int(x2 + simulation.n_grid / 2.0)
     center_z2 = int(z2 + simulation.n_grid / 2.0)
 
-    # Bounding box
+    # Bounding box (X and Z)
     min_x = ti.max(0, ti.min(center_x1, center_x2) - margin)
     max_x = ti.min(simulation.n_grid, ti.max(center_x1, center_x2) + margin)
     min_z = ti.max(0, ti.min(center_z1, center_z2) - margin)
     max_z = ti.min(simulation.n_grid, ti.max(center_z1, center_z2) + margin)
 
+    # Vertical bounding box - track beetles wherever they are (even if flying!)
+    # Beetles are ~8 voxels tall, horns can extend ~12 more when tilted up
+    # Need large margin to catch horn trail voxels
+    y_margin = 20
+    min_y = ti.max(0, int(ti.min(y1, y2)) - y_margin)
+    max_y = ti.min(simulation.n_grid, int(ti.max(y1, y2)) + y_margin)
+
     # Only scan bounding box
     for i in range(min_x, max_x):
-        for j in range(0, 15):  # Height range for beetles
+        for j in range(min_y, max_y):  # Dynamic height range - follows beetles!
             for k in range(min_z, max_z):
                 vtype = simulation.voxel_type[i, j, k]
                 if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_RED or \
-                   vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS:
+                   vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS or \
+                   vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
+def calculate_occupied_voxels(world_x, world_z, rotation):
+    """Calculate which voxels this beetle occupies - for torque calculation"""
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+    occupied = set()
+    voxels = simulation.voxel_type.to_numpy()
+
+    # Scan area around beetle (40x40 area, up to height 30)
+    for i in range(max(0, center_x - 20), min(simulation.n_grid, center_x + 20)):
+        for k in range(max(0, center_z - 20), min(simulation.n_grid, center_z + 20)):
+            for j in range(0, 30):  # Check up to height 30
+                vtype = voxels[i, j, k]
+                if vtype in [simulation.BEETLE_BLUE, simulation.BEETLE_RED,
+                           simulation.BEETLE_BLUE_LEGS, simulation.BEETLE_RED_LEGS,
+                           simulation.LEG_TIP_BLUE, simulation.LEG_TIP_RED]:
+                    occupied.add((i, k))
+    return occupied
+
 def beetle_collision(b1, b2, params):
-    """Handle collision with voxel-perfect detection and pushing"""
+    """Handle collision with voxel-perfect detection, pushing, and horn leverage"""
     # Fast GPU-based collision check
     has_collision = check_collision_kernel(b1.x, b1.z, b2.x, b2.z)
 
@@ -853,52 +1158,224 @@ def beetle_collision(b1, b2, params):
         b1.occupied_voxels = calculate_occupied_voxels(b1.x, b1.z, b1.rotation)
         b2.occupied_voxels = calculate_occupied_voxels(b2.x, b2.z, b2.rotation)
         overlap_voxels = b1.occupied_voxels & b2.occupied_voxels
-        # Collision detected! Use beetle centers for push direction
+
+        # Collision detected! Calculate 3D collision geometry
         dx = b1.x - b2.x
         dz = b1.z - b2.z
         dist = math.sqrt(dx**2 + dz**2)
 
         if dist > 0.001:
-            # Collision normal (from b2 to b1)
-            normal_x = dx / dist
-            normal_z = dz / dist
+            # Calculate 3D collision point and contact height
+            collision_x = 0.0
+            collision_z = 0.0
+            collision_y = 0.0
+            contact_count = 0
 
-            # Calculate collision point (centroid of overlapping voxels)
+            # Scan 3D voxel grid to find collision point WITH HEIGHT
+            voxels = simulation.voxel_type.to_numpy()
             if len(overlap_voxels) > 0:
-                collision_x = 0.0
-                collision_z = 0.0
-                for voxel in overlap_voxels:
-                    collision_x += voxel[0] - simulation.n_grid / 2.0
-                    collision_z += voxel[1] - simulation.n_grid / 2.0
-                collision_x /= len(overlap_voxels)
-                collision_z /= len(overlap_voxels)
+                for voxel_xz in overlap_voxels:
+                    vx_grid, vz_grid = voxel_xz
+                    # Scan vertically to find all contact heights
+                    for vy_grid in range(0, 30):
+                        vtype = voxels[vx_grid, vy_grid, vz_grid]
+                        if vtype != 0:  # Non-empty voxel
+                            collision_x += vx_grid - simulation.n_grid / 2.0
+                            collision_z += vz_grid - simulation.n_grid / 2.0
+                            collision_y += float(vy_grid)
+                            contact_count += 1
+
+                if contact_count > 0:
+                    collision_x /= contact_count
+                    collision_z /= contact_count
+                    collision_y /= contact_count
+                else:
+                    collision_x = (b1.x + b2.x) / 2.0
+                    collision_z = (b1.z + b2.z) / 2.0
+                    collision_y = (b1.y + b2.y) / 2.0
             else:
                 collision_x = (b1.x + b2.x) / 2.0
                 collision_z = (b1.z + b2.z) / 2.0
+                collision_y = (b1.y + b2.y) / 2.0
 
-            # STRONG separation to prevent stuck collisions
+            # Calculate 3D collision normal (from b2 to b1)
+            # Include vertical component based on contact geometry
+            dy = b1.y - b2.y
+            dist_3d = math.sqrt(dx**2 + dy**2 + dz**2)
+
+            if dist_3d > 0.001:
+                normal_x = dx / dist_3d
+                normal_y = dy / dist_3d
+                normal_z = dz / dist_3d
+            else:
+                # Fallback to horizontal normal
+                normal_x = dx / dist
+                normal_y = 0.0
+                normal_z = dz / dist
+
+            # HORN LEVERAGE: Strong vertical lift when contact is high (horn collision)
+            center_y = (b1.y + b2.y) / 2.0
+            contact_height_above_center = collision_y - center_y
+            is_horn_contact = contact_height_above_center > 2.0  # Horn contact (above body center)
+
+            if is_horn_contact:
+                # Scale up vertical component based on height - MUCH STRONGER!
+                horn_leverage = min(contact_height_above_center / 3.0, 3.5)
+
+                # Add MASSIVE upward bias to the collision normal
+                normal_y += horn_leverage * 2.5  # 5x stronger than before!
+
+                # Re-normalize
+                norm_len = math.sqrt(normal_x**2 + normal_y**2 + normal_z**2)
+                if norm_len > 0.001:
+                    normal_x /= norm_len
+                    normal_y /= norm_len
+                    normal_z /= norm_len
+
+                # SIMPLIFIED SYMMETRIC LIFTING - PURE VELOCITY (for debugging)
+                # Whoever is pressing their lift key (R/U) lifts the opponent
+                lift_impulse = horn_leverage * 50.0  # Very strong upward kick!
+
+                # Calculate where the collision is relative to each beetle's center
+                collision_above_b1 = collision_y - b1.y
+                collision_above_b2 = collision_y - b2.y
+
+                # PURE VELOCITY ADVANTAGE - who's actively pressing R or U?
+                # Positive velocity = tilting horn UP = you lift opponent
+                # Blue pressing R: b1.horn_pitch_velocity = +2.0
+                # Red pressing U: b2.horn_pitch_velocity = +2.0
+                lift_advantage = b1.horn_pitch_velocity - b2.horn_pitch_velocity
+
+                # DEBUG: Print collision info
+                print(f"HORN COLLISION:")
+                print(f"  Blue: vel={b1.horn_pitch_velocity:.2f}, y={b1.y:.1f}")
+                print(f"  Red:  vel={b2.horn_pitch_velocity:.2f}, y={b2.y:.1f}")
+                print(f"  Lift advantage: {lift_advantage:.2f} (>0 = Blue lifts Red, <0 = Red lifts Blue)")
+
+                # Very low threshold - almost any velocity difference triggers
+                ADVANTAGE_THRESHOLD = 0.5
+
+                if lift_advantage > ADVANTAGE_THRESHOLD:
+                    # Blue has advantage - lifts red
+                    print(f"  -> BLUE lifts RED!")
+                    lift_force = lift_impulse * 0.15
+                    b2.vy += lift_force  # Red gets lifted HIGHER
+                    b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
+
+                    # TORQUE: Apply rotation from off-center force
+                    # Calculate lever arm from red's center to collision point
+                    lever_x = collision_x - b2.x  # X offset (causes roll)
+                    lever_z = collision_z - b2.z  # Z offset (causes pitch)
+
+                    # Pitch torque: force in +Y at position +Z causes nose-up pitch
+                    pitch_torque = -lever_z * lift_force  # Negative Z = positive pitch
+                    b2.pitch_velocity += pitch_torque / b2.pitch_inertia
+
+                    # Roll torque: force in +Y at position +X causes right-side-up roll
+                    roll_torque = lever_x * lift_force
+                    b2.roll_velocity += roll_torque / b2.roll_inertia
+
+                elif lift_advantage < -ADVANTAGE_THRESHOLD:
+                    # Red has advantage - lifts blue
+                    print(f"  -> RED lifts BLUE!")
+                    lift_force = lift_impulse * 0.15
+                    b1.vy += lift_force  # Blue gets lifted HIGHER
+                    b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
+
+                    # TORQUE: Apply rotation from off-center force
+                    lever_x = collision_x - b1.x  # X offset (causes roll)
+                    lever_z = collision_z - b1.z  # Z offset (causes pitch)
+
+                    # Pitch torque
+                    pitch_torque = -lever_z * lift_force
+                    b1.pitch_velocity += pitch_torque / b1.pitch_inertia
+
+                    # Roll torque
+                    roll_torque = lever_x * lift_force
+                    b1.roll_velocity += roll_torque / b1.roll_inertia
+
+                else:
+                    # Evenly matched - both get pushed (with torque)
+                    print(f"  -> BOTH beetles pushed!")
+                    push_force = lift_impulse * 0.06
+                    b1.vy += push_force
+                    b2.vy += push_force
+
+                    # Apply torque to both
+                    lever_x1 = collision_x - b1.x
+                    lever_z1 = collision_z - b1.z
+                    b1.pitch_velocity += (-lever_z1 * push_force) / b1.pitch_inertia
+                    b1.roll_velocity += (lever_x1 * push_force) / b1.roll_inertia
+
+                    lever_x2 = collision_x - b2.x
+                    lever_z2 = collision_z - b2.z
+                    b2.pitch_velocity += (-lever_z2 * push_force) / b2.pitch_inertia
+                    b2.roll_velocity += (lever_x2 * push_force) / b2.roll_inertia
+
+                # Add horizontal spin based on where horn hit BOTH beetles
+                # Beetle being lifted spins
+                dx_to_b1 = collision_x - b1.x
+                dz_to_b1 = collision_z - b1.z
+                torque_b1 = dx_to_b1 * normal_z - dz_to_b1 * normal_x
+                angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 2.0
+                b1.angular_velocity += angular_impulse_b1
+
+                dx_to_b2 = collision_x - b2.x
+                dz_to_b2 = collision_z - b2.z
+                torque_b2 = dx_to_b2 * normal_z - dz_to_b2 * normal_x
+                angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 2.0
+                b2.angular_velocity -= angular_impulse_b2  # Opposite direction
+
+            # STRONG separation to prevent stuck collisions (now 3D!)
             separation_force = 2.0  # Much stronger push
             b1.x += normal_x * separation_force
             b1.z += normal_z * separation_force
             b2.x -= normal_x * separation_force
             b2.z -= normal_z * separation_force
 
-            # Calculate relative velocity
+            # VERTICAL SEPARATION - only when both beetles are airborne
+            # This prevents floor voxel destruction and maintains symmetry
+            if not b1.on_ground and not b2.on_ground:
+                b1.y += normal_y * separation_force
+                b2.y -= normal_y * separation_force
+
+            # Safety clamp to prevent going below floor voxel layer
+            # (Main floor collision handles proper positioning above floor)
+            MIN_Y = 0.5  # Minimum Y to prevent center going below floor at y=0
+            if b1.y < MIN_Y:
+                b1.y = MIN_Y
+                b1.vy = 0.0
+            if b2.y < MIN_Y:
+                b2.y = MIN_Y
+                b2.vy = 0.0
+
+            # Calculate 3D relative velocity
             rel_vx = b1.vx - b2.vx
+            rel_vy = b1.vy - b2.vy
             rel_vz = b1.vz - b2.vz
-            vel_along_normal = rel_vx * normal_x + rel_vz * normal_z
+            vel_along_normal = rel_vx * normal_x + rel_vy * normal_y + rel_vz * normal_z
 
             # Only apply impulse if moving toward each other
             if vel_along_normal < 0:
                 # Impulse magnitude (very low restitution for minimal bouncing)
-                impulse = -(1 + params["RESTITUTION"]) * vel_along_normal * params["IMPULSE_MULTIPLIER"]  # Lower momentum transfer = better plowing
+                impulse = -(1 + params["RESTITUTION"]) * vel_along_normal * params["IMPULSE_MULTIPLIER"]
 
-                # Apply linear impulse
+                # Apply 3D linear impulse
                 impulse_x = impulse * normal_x
                 impulse_z = impulse * normal_z
+
+                # For horn contact, lifting logic handles vertical forces explicitly
+                # Only apply vertical impulse for non-horn collisions
+                if is_horn_contact:
+                    impulse_y = 0.0  # Disable vertical impulse - lifting logic handles it
+                else:
+                    impulse_y = impulse * normal_y
+
                 b1.vx += impulse_x
+                b1.vy += impulse_y
                 b1.vz += impulse_z
                 b2.vx -= impulse_x
+                b2.vy -= impulse_y
                 b2.vz -= impulse_z
 
                 # Calculate and apply torque (angular impulse)
@@ -975,7 +1452,8 @@ physics_params = {
     "TORQUE_MULTIPLIER": TORQUE_MULTIPLIER,
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
-    "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR
+    "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
+    "GRAVITY": 9.8  # Adjustable gravity for testing horn lifting
 }
 
 last_time = time.time()
@@ -1016,10 +1494,15 @@ while window.running:
         # Tilt horn up
         beetle_blue.horn_pitch += HORN_TILT_SPEED * dt
         beetle_blue.horn_pitch = min(HORN_MAX_PITCH, beetle_blue.horn_pitch)
-    if window.is_pressed('y'):
+        beetle_blue.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
+    elif window.is_pressed('y'):
         # Tilt horn down
         beetle_blue.horn_pitch -= HORN_TILT_SPEED * dt
         beetle_blue.horn_pitch = max(HORN_MIN_PITCH, beetle_blue.horn_pitch)
+        beetle_blue.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
+    else:
+        # Not pressing horn keys - no velocity
+        beetle_blue.horn_pitch_velocity = 0.0
 
     # Always add physics-driven rotation from collisions
     beetle_blue.rotation += beetle_blue.angular_velocity * dt
@@ -1051,10 +1534,15 @@ while window.running:
         # Tilt horn up
         beetle_red.horn_pitch += HORN_TILT_SPEED * dt
         beetle_red.horn_pitch = min(HORN_MAX_PITCH, beetle_red.horn_pitch)
-    if window.is_pressed('o'):
+        beetle_red.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
+    elif window.is_pressed('o'):
         # Tilt horn down
         beetle_red.horn_pitch -= HORN_TILT_SPEED * dt
         beetle_red.horn_pitch = max(HORN_MIN_PITCH, beetle_red.horn_pitch)
+        beetle_red.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
+    else:
+        # Not pressing horn keys - no velocity
+        beetle_red.horn_pitch_velocity = 0.0
 
     # Always add physics-driven rotation from collisions
     beetle_red.rotation += beetle_red.angular_velocity * dt
@@ -1063,6 +1551,49 @@ while window.running:
     # Physics update
     beetle_blue.update_physics(dt)
     beetle_red.update_physics(dt)
+
+    # Floor collision - prevent penetration by pushing beetles upward
+    floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
+    if floor_y_blue >= 0:  # Floor detected under beetle
+        # Calculate lowest point of beetle geometry after rotation
+        lowest_point_blue = calculate_beetle_lowest_point(
+            beetle_blue.y, beetle_blue.rotation, beetle_blue.pitch,
+            beetle_blue.roll, beetle_blue.horn_pitch
+        )
+
+        # Check if beetle penetrates floor (lowest point goes into or below floor)
+        floor_surface = floor_y_blue + 1.0  # Top of floor is at floor_y + 1
+        if lowest_point_blue < floor_surface:
+            # Penetration detected! Push beetle upward
+            penetration_depth = floor_surface - lowest_point_blue
+            beetle_blue.y += penetration_depth
+
+            # Apply bounce/resistance
+            if beetle_blue.vy < 0:  # Moving downward
+                beetle_blue.vy = 0.0  # Stop downward motion
+
+            beetle_blue.on_ground = True
+        elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
+            beetle_blue.on_ground = True
+
+    floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
+    if floor_y_red >= 0:  # Floor detected under beetle
+        lowest_point_red = calculate_beetle_lowest_point(
+            beetle_red.y, beetle_red.rotation, beetle_red.pitch,
+            beetle_red.roll, beetle_red.horn_pitch
+        )
+
+        floor_surface = floor_y_red + 1.0
+        if lowest_point_red < floor_surface:
+            penetration_depth = floor_surface - lowest_point_red
+            beetle_red.y += penetration_depth
+
+            if beetle_red.vy < 0:
+                beetle_red.vy = 0.0
+
+            beetle_red.on_ground = True
+        elif lowest_point_red < floor_surface + 0.5:
+            beetle_red.on_ground = True
 
     # Update walk animation based on velocity
     blue_speed = math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2)
@@ -1085,9 +1616,9 @@ while window.running:
     beetle_collision(beetle_blue, beetle_red, physics_params)
 
     # Render - ANIMATED with leg walking cycles and different leg colors!
-    clear_beetles_bounded(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z)
-    place_animated_beetle(beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_blue.rotation, beetle_blue.horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, beetle_blue.walk_phase)
-    place_animated_beetle(beetle_red.x, beetle_red.y, beetle_red.z, beetle_red.rotation, beetle_red.horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, beetle_red.walk_phase)
+    clear_beetles_bounded(beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_red.x, beetle_red.y, beetle_red.z)
+    place_animated_beetle(beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll, beetle_blue.horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase)
+    place_animated_beetle(beetle_red.x, beetle_red.y, beetle_red.z, beetle_red.rotation, beetle_red.pitch, beetle_red.roll, beetle_red.horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase)
 
     canvas.set_background_color((0.13, 0.35, 0.13))  # Forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
@@ -1099,13 +1630,13 @@ while window.running:
     window.GUI.text(f"FPS: {fps:.0f}")
     window.GUI.text("")
     window.GUI.text("BLUE BEETLE (TFGH + RY)")
-    window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.z:.1f})")
+    window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.y:.1f}, {beetle_blue.z:.1f})")
     window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
     window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
     window.GUI.text(f"  Horn: {math.degrees(beetle_blue.horn_pitch):.1f}°")
     window.GUI.text("")
     window.GUI.text("RED BEETLE (IJKL + UO)")
-    window.GUI.text(f"  Pos: ({beetle_red.x:.1f}, {beetle_red.z:.1f})")
+    window.GUI.text(f"  Pos: ({beetle_red.x:.1f}, {beetle_red.y:.1f}, {beetle_red.z:.1f})")
     window.GUI.text(f"  Speed: {math.sqrt(beetle_red.vx**2 + beetle_red.vz**2):.1f}")
     window.GUI.text(f"  Facing: {math.degrees(beetle_red.rotation):.0f}°")
     window.GUI.text(f"  Horn: {math.degrees(beetle_red.horn_pitch):.1f}°")
@@ -1118,6 +1649,7 @@ while window.running:
     # Physics parameter sliders
     window.GUI.text("")
     window.GUI.text("=== PHYSICS TUNING ===")
+    physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 15.0)
     physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 1.5)
     physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
     physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)

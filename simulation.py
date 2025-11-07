@@ -1,7 +1,7 @@
 import taichi as ti
 
-# Initialize Taichi with GPU
-ti.init(arch=ti.gpu, debug=False)
+# Initialize Taichi with Vulkan (skip CUDA attempt for faster startup)
+ti.init(arch=ti.vulkan, debug=False)
 
 # 192x192x192 grid (50% larger than 128 - GPU workgroup limit at 256)
 n_grid = 192
@@ -33,6 +33,8 @@ BEETLE_BLUE = 5  # Beetle voxels (blue color)
 BEETLE_RED = 6  # Second beetle (red color)
 BEETLE_BLUE_LEGS = 7  # Blue beetle legs (lighter blue)
 BEETLE_RED_LEGS = 8  # Red beetle legs (lighter red)
+LEG_TIP_BLUE = 9  # Blue beetle leg tips (dark blue for tracking)
+LEG_TIP_RED = 10  # Red beetle leg tips (dark red for tracking)
 
 # Material property functions (for physics calculations)
 @ti.func
