@@ -561,14 +561,14 @@ def generate_beetle_geometry():
     body_voxels = []
     leg_voxels = []  # Will be organized as list of 6 legs, each containing voxel offsets
 
-    # ABDOMEN (rear) - LEAN ellipse
+    # ABDOMEN (rear) - LEAN ellipse (1 voxel wider)
     for dx in range(-12, -1):
         for dy in range(0, 5):
             for dz in range(-3, 4):
                 length_pos = (dx + 6.5) / 5.0
                 height_factor = 1.0 - ((dy - 2.5) / 2.5) ** 2
                 if height_factor > 0:
-                    width_at_height = 3.0 * math.sqrt(height_factor)
+                    width_at_height = 4.0 * math.sqrt(height_factor)
                     length_taper = 1.0 - (length_pos * length_pos)
                     if length_taper > 0:
                         max_width = width_at_height * math.sqrt(length_taper)
@@ -581,7 +581,7 @@ def generate_beetle_geometry():
             length_pos = (dx + 6.5) / 5.0
             height_factor = 1.0 - ((5 - 2.5) / 2.5) ** 2
             if height_factor > 0:
-                width_at_height = 3.0 * math.sqrt(height_factor)
+                width_at_height = 4.0 * math.sqrt(height_factor)
                 length_taper = 1.0 - (length_pos * length_pos)
                 if length_taper > 0:
                     max_width = width_at_height * math.sqrt(length_taper)
@@ -589,11 +589,11 @@ def generate_beetle_geometry():
                     if abs(dz) <= max_width - 1 and abs(dz) > 0:
                         body_voxels.append((dx, 5, dz))
 
-    # THORAX (middle) - LEAN with small pronotum bump
+    # THORAX (middle) - LEAN with small pronotum bump (1 voxel wider)
     for dx in range(-1, 2):
         for dy in range(0, 2):
             for dz in range(-2, 3):
-                width_at_height = 2.0 if dy < 1 else 1.5
+                width_at_height = 3.0 if dy < 1 else 2.5
                 length_factor = 1.0 - abs(dx) / 1.5
                 max_width = width_at_height * length_factor
                 if abs(dz) <= max_width:
@@ -617,11 +617,11 @@ def generate_beetle_geometry():
             for dz in range(-1, 2):
                 body_voxels.append((dx, 3, dz))
 
-    # HEAD (front) - LEAN
+    # HEAD (front) - LEAN (1 voxel wider, maintains taper)
     for dx in range(2, 4):
         for dy in range(0, 1):
             for dz in range(-1, 2):
-                width_at_height = 1.5
+                width_at_height = 2.5
                 if abs(dz) <= width_at_height:
                     body_voxels.append((dx, dy, dz))
 
@@ -1285,7 +1285,7 @@ def beetle_collision(b1, b2, params):
 
                 # Very low threshold - almost any velocity difference triggers
                 ADVANTAGE_THRESHOLD = 0.5
-                LIFT_COOLDOWN_DURATION = 0.03  # Seconds between lift applications
+                LIFT_COOLDOWN_DURATION = 0.05  # Seconds between lift applications
 
                 # Check if both beetles are off cooldown before applying lift forces
                 if b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
