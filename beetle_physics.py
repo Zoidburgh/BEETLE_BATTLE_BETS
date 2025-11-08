@@ -25,8 +25,9 @@ ARENA_RADIUS = 42.5  # Half size for closer combat
 
 # Horn control constants
 HORN_TILT_SPEED = 2.0  # Radians per second
-HORN_MAX_PITCH = math.radians(20)  # +20 degrees vertical (up)
-HORN_MIN_PITCH = math.radians(-20)  # -20 degrees vertical (down)
+HORN_DEFAULT_PITCH = math.radians(10)  # Start at +10 degrees (raised)
+HORN_MAX_PITCH = math.radians(30)  # +30 degrees vertical (up) - 20° range from default
+HORN_MIN_PITCH = math.radians(-10)  # -10 degrees vertical (down) - 20° range from default
 
 # Fixed timestep physics constants
 PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
@@ -69,7 +70,7 @@ class Beetle:
         self.is_moving = False  # Whether beetle is actively walking
 
         # Horn control state
-        self.horn_pitch = 0.0  # Vertical angle in radians (±20°, positive = up)
+        self.horn_pitch = HORN_DEFAULT_PITCH  # Vertical angle in radians - starts at +10°
         self.horn_yaw = 0.0    # Horizontal angle in radians (Phase 2, keep at 0.0 for now)
         self.horn_pitch_velocity = 0.0  # Rate of change of horn pitch (radians/sec)
 
@@ -86,7 +87,7 @@ class Beetle:
         self.prev_rotation = rotation
         self.prev_pitch = 0.0
         self.prev_roll = 0.0
-        self.prev_horn_pitch = 0.0
+        self.prev_horn_pitch = HORN_DEFAULT_PITCH
 
     def save_previous_state(self):
         """Save current state as previous for interpolation"""
