@@ -80,6 +80,7 @@ class Beetle:
         # Beetle active state (for fall death)
         self.active = True  # False when beetle has fallen off arena
         self.is_falling = False  # True when beetle has passed point of no return
+        self.is_lifted_high = False  # True when lifted significantly above ground (for leg spaz animation)
 
         # Previous state for fixed timestep interpolation
         self.prev_x = x
@@ -978,7 +979,7 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     return lowest_y
 
 @ti.kernel
-def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32):
+def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs"""
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
@@ -1071,6 +1072,19 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
 
         # Subtle forward/back sweep (1 voxel range) - inverted so legs push backward when grounded
         sweep = -ti.cos(leg_phase) * 0.5  # ±0.5 voxel sweep (negative = correct walk direction)
+
+        # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
+        if is_lifted_high == 1:
+            # High-frequency wiggle with per-leg variation for chaos
+            wiggle_freq = 5.0  # Slowed down 3x (was 15.0)
+            wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
+
+            # Add erratic movement to lift and sweep
+            wiggle_lift = ti.sin(wiggle_phase) * 2.0  # ±2 voxels extra lift
+            wiggle_sweep = ti.cos(wiggle_phase * 1.3) * 0.8  # ±0.8 voxels extra sweep
+
+            lift += wiggle_lift
+            sweep += wiggle_sweep
 
         # Place all voxels for this leg
         start_idx = leg_start_idx[leg_id]
@@ -1759,12 +1773,17 @@ while window.running:
     else:
         beetle_red.is_moving = False
 
+    # Detect if beetles are lifted high (for leg spaz animation)
+    LIFT_THRESHOLD = 5.0  # 4 voxels above normal ground
+    beetle_blue.is_lifted_high = (beetle_blue.y > LIFT_THRESHOLD)
+    beetle_red.is_lifted_high = (beetle_red.y > LIFT_THRESHOLD)
+
     # Render - ANIMATED with leg walking cycles and interpolated smooth positions!
     clear_beetles_bounded(blue_render_x, blue_render_y, blue_render_z, red_render_x, red_render_y, red_render_z)
     if beetle_blue.active:
-        place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase)
+        place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0)
     if beetle_red.active:
-        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase)
+        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0)
 
     canvas.set_background_color((0.13, 0.35, 0.13))  # Forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
