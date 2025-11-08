@@ -278,8 +278,8 @@ def init_beetle_arena():
     center_y = -2  # Lower floor so beetle legs touch properly
     center_z = 96
 
-    # Arena dimensions (half size for closer combat)
-    arena_radius = 42
+    # Arena dimensions (25% smaller for closer combat)
+    arena_radius = 32
     floor_thickness = 2
     floor_y_offset = 50  # Offset to match RENDER_Y_OFFSET in beetle_physics.py
 

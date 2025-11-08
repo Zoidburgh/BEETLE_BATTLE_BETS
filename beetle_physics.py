@@ -21,7 +21,7 @@ TORQUE_MULTIPLIER = 1.95  # Rotational forces on collision
 RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
 IMPULSE_MULTIPLIER = 0.32  # Linear momentum transfer
 MOMENT_OF_INERTIA_FACTOR = 1.15  # Resistance to rotation
-ARENA_RADIUS = 42.5  # Half size for closer combat
+ARENA_RADIUS = 32.0  # 25% smaller for closer combat
 
 # Horn control constants
 HORN_TILT_SPEED = 2.0  # Radians per second
@@ -187,8 +187,8 @@ class Beetle:
             self.vz -= 2 * dot * normal_z * 0.5
 
 # Create beetles - closer together for smaller arena
-beetle_blue = Beetle(-20.0, 0.0, math.pi, simulation.BEETLE_BLUE)
-beetle_red = Beetle(20.0, 0.0, 0.0, simulation.BEETLE_RED)
+beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)  # Facing right (toward red)
+beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (toward blue)
 
 @ti.kernel
 def clear_beetles():
