@@ -79,6 +79,7 @@ class Beetle:
 
         # Beetle active state (for fall death)
         self.active = True  # False when beetle has fallen off arena
+        self.is_falling = False  # True when beetle has passed point of no return
 
         # Previous state for fixed timestep interpolation
         self.prev_x = x
@@ -839,7 +840,7 @@ def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
     center_z = int(world_z + simulation.n_grid / 2.0)
 
     # Check area around beetle (beetles are ~20 voxels wide)
-    check_radius = 7
+    check_radius = 3
     highest_floor_y = -1000.0  # Start very low in world space
 
     floor_base_y = int(RENDER_Y_OFFSET)  # Floor is at offset position in grid
@@ -1522,7 +1523,7 @@ physics_params = {
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
-    "GRAVITY": 15.0  # Adjustable gravity for testing horn lifting
+    "GRAVITY": 20.0  # Adjustable gravity for testing horn lifting
 }
 
 last_time = time.time()
@@ -1552,7 +1553,7 @@ while window.running:
         beetle_red.save_previous_state()
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
-        if beetle_blue.active:
+        if beetle_blue.active and not beetle_blue.is_falling:
             # Rotation controls (F/H)
             if window.is_pressed('f'):
                 # Rotate left (counterclockwise)
@@ -1593,7 +1594,7 @@ while window.running:
             beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
 
         # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
-        if beetle_red.active:
+        if beetle_red.active and not beetle_red.is_falling:
             # Rotation controls (J/L)
             if window.is_pressed('j'):
                 # Rotate left (counterclockwise)
@@ -1637,8 +1638,19 @@ while window.running:
         beetle_blue.update_physics(PHYSICS_TIMESTEP)
         beetle_red.update_physics(PHYSICS_TIMESTEP)
 
-        # Fall death detection - remove beetles that fall off arena
-        FALL_DEATH_Y = -30.0  # 30 voxels below arena floor
+        # Fall death detection - two-stage system
+        POINT_OF_NO_RETURN = -5.0  # Once below this, can't recover (5 voxels below floor)
+        FALL_DEATH_Y = -30.0  # Fully removed at this point (30 voxels below floor)
+
+        # Stage 1: Point of no return - disable controls but keep rendering
+        if beetle_blue.active and not beetle_blue.is_falling and beetle_blue.y < POINT_OF_NO_RETURN:
+            beetle_blue.is_falling = True
+            print("BLUE BEETLE IS FALLING!")
+        if beetle_red.active and not beetle_red.is_falling and beetle_red.y < POINT_OF_NO_RETURN:
+            beetle_red.is_falling = True
+            print("RED BEETLE IS FALLING!")
+
+        # Stage 2: Full removal - deactivate completely
         if beetle_blue.active and beetle_blue.y < FALL_DEATH_Y:
             beetle_blue.active = False
             print("BLUE BEETLE FELL INTO THE ABYSS!")
@@ -1647,7 +1659,8 @@ while window.running:
             print("RED BEETLE FELL INTO THE ABYSS!")
 
         # Floor collision - prevent penetration by pushing beetles upward
-        if beetle_blue.active:
+        # Don't check floor collision if beetle is falling
+        if beetle_blue.active and not beetle_blue.is_falling:
             floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
             if floor_y_blue > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
                 # Calculate lowest point of beetle geometry after rotation
@@ -1671,7 +1684,7 @@ while window.running:
                 elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
                     beetle_blue.on_ground = True
 
-        if beetle_red.active:
+        if beetle_red.active and not beetle_red.is_falling:
             floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
             if floor_y_red >= 0:  # Floor detected under beetle
                 lowest_point_red = calculate_beetle_lowest_point(
@@ -1800,7 +1813,7 @@ while window.running:
     # Physics parameter sliders
     window.GUI.text("")
     window.GUI.text("=== PHYSICS TUNING ===")
-    physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 15.0)
+    physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 40.0)
     physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 1.5)
     physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
     physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)

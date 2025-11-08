@@ -243,7 +243,7 @@ def render(camera, canvas, scene, voxel_field, n_grid):
     setup_camera(camera, scene)
 
     # Clear scene
-    scene.point_light(pos=(0, 50, 0), color=(1.0, 1.0, 1.0))
+    scene.point_light(pos=(0, 120, 0), color=(1.0, 1.0, 1.0))
     scene.ambient_light((0.3, 0.3, 0.3))
 
     # Render normal voxels (STEEL, CONCRETE, MOLTEN) - normal size
