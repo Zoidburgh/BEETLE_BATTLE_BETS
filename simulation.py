@@ -281,46 +281,22 @@ def init_beetle_arena():
     # Arena dimensions (half size for closer combat)
     arena_radius = 42
     floor_thickness = 2
+    floor_y_offset = 50  # Offset to match RENDER_Y_OFFSET in beetle_physics.py
 
-    # Build circular floor - LOWERED for beetle leg contact
+    # Build circular floor - RAISED to allow beetles to fall below and be visible
     for i in range(center_x - arena_radius - 5, center_x + arena_radius + 5):
         for k in range(center_z - arena_radius - 5, center_z + arena_radius + 5):
             dx = float(i - center_x)
             dz = float(k - center_z)
             dist = ti.sqrt(dx * dx + dz * dz)
 
-            # Floor (flat circle) at y=-2 to -1
+            # Floor (flat circle) at raised Y position
             if dist <= arena_radius:
-                voxel_type[i, 0, k] = CONCRETE  # y=0 (top of floor)
-                voxel_type[i, 1, k] = EMPTY      # y=1 clear for legs
+                voxel_type[i, floor_y_offset, k] = CONCRETE  # Floor at offset height
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY  # Clear space above floor
 
-    # Add ONE simple beetle in center - just a small rectangular box
-    beetle_center_x = 96
-    beetle_center_y = 2  # Start at y=2 (floor is y=0,1)
-    beetle_center_z = 96
-
-    # Simple 6x3x4 box (length x height x width)
-    for dx in range(-3, 4):  # Length 7
-        for dy in range(0, 3):  # Height 3 (sits on floor at y=2,3,4)
-            for dz in range(-2, 3):  # Width 5
-                x = beetle_center_x + dx
-                y = beetle_center_y + dy
-                z = beetle_center_z + dz
-                if 0 <= x < n_grid and 0 <= y < n_grid and 0 <= z < n_grid:
-                    voxel_type[x, y, z] = BEETLE_BLUE
-
-    # Add SECOND beetle (red) on opposite side
-    beetle2_x = 96 + 15  # East side
-    beetle2_z = 96
-
-    for dx in range(-3, 4):
-        for dy in range(0, 3):
-            for dz in range(-2, 3):
-                x = beetle2_x + dx
-                y = 2 + dy
-                z = beetle2_z + dz
-                if 0 <= x < n_grid and 0 <= y < n_grid and 0 <= z < n_grid:
-                    voxel_type[x, y, z] = BEETLE_RED
+    # Beetles are now dynamically rendered by beetle_physics.py
+    # No static beetles needed in simulation initialization
 
     print(f"BEETLE BATTLE ARENA constructed - {arena_radius}m radius circular pit")
     print(f"Two beetles placed: blue (center-west) and red (center-east)")
