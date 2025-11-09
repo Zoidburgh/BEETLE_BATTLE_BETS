@@ -187,6 +187,19 @@ class Beetle:
             self.vx -= 2 * dot * normal_x * 0.5
             self.vz -= 2 * dot * normal_z * 0.5
 
+# Game state
+match_winner = None  # "BLUE" or "RED" when a beetle dies
+
+def reset_match():
+    """Reset beetles to starting positions for new match"""
+    global beetle_blue, beetle_red, match_winner
+    beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
+    beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
+    match_winner = None
+    print("\n" + "="*50)
+    print("NEW MATCH STARTED!")
+    print("="*50 + "\n")
+
 # Create beetles - closer together for smaller arena
 beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)  # Facing right (toward red)
 beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (toward blue)
@@ -1668,9 +1681,19 @@ while window.running:
         if beetle_blue.active and beetle_blue.y < FALL_DEATH_Y:
             beetle_blue.active = False
             print("BLUE BEETLE FELL INTO THE ABYSS!")
+            if match_winner is None:
+                match_winner = "RED"
+                print("\n" + "="*50)
+                print("RED BEETLE WINS!")
+                print("="*50 + "\n")
         if beetle_red.active and beetle_red.y < FALL_DEATH_Y:
             beetle_red.active = False
             print("RED BEETLE FELL INTO THE ABYSS!")
+            if match_winner is None:
+                match_winner = "BLUE"
+                print("\n" + "="*50)
+                print("BLUE BEETLE WINS!")
+                print("="*50 + "\n")
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling
@@ -1828,6 +1851,19 @@ while window.running:
     # Active beetles count
     active_count = (1 if beetle_blue.active else 0) + (1 if beetle_red.active else 0)
     window.GUI.text(f"Active beetles: {active_count}/2")
+
+    # Winner announcement and restart button
+    if match_winner is not None:
+        window.GUI.text("")
+        window.GUI.text("="*30)
+        if match_winner == "BLUE":
+            window.GUI.text("*** BLUE BEETLE WINS! ***")
+        else:
+            window.GUI.text("*** RED BEETLE WINS! ***")
+        window.GUI.text("="*30)
+        window.GUI.text("")
+        if window.GUI.button("RESTART MATCH"):
+            reset_match()
 
     # Physics parameter sliders
     window.GUI.text("")
