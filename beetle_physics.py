@@ -238,48 +238,50 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
     center2_z = int(z2 + simulation.n_grid / 2.0)
 
     # Tighter collision bounds - only check where beetles can actually overlap
-    # Beetles are max 18 voxels from center (horn extends to ~15, body to ~12)
-    x_min = ti.max(ti.max(0, center1_x - 18), ti.max(0, center2_x - 18))
-    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 18),
-                   ti.min(simulation.n_grid, center2_x + 18))
-    z_min = ti.max(ti.max(0, center1_z - 18), ti.max(0, center2_z - 18))
-    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 18),
-                   ti.min(simulation.n_grid, center2_z + 18))
+    # Beetles are max 22 voxels from center (max horn reach: shaft 12 + prong 10 = 22)
+    x_min = ti.max(ti.max(0, center1_x - 22), ti.max(0, center2_x - 22))
+    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 22),
+                   ti.min(simulation.n_grid, center2_x + 22))
+    z_min = ti.max(ti.max(0, center1_z - 22), ti.max(0, center2_z - 22))
+    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 22),
+                   ti.min(simulation.n_grid, center2_z + 22))
 
     # Scan for colliding voxels - TRUE 3D collision detection
     # Track Y-ranges for each beetle in each XZ column
     for gx in range(x_min, x_max):
         for gz in range(z_min, z_max):
-            # Track Y ranges for both beetles in this XZ column
-            beetle1_y_min = 999
-            beetle1_y_max = -1
-            beetle2_y_min = 999
-            beetle2_y_max = -1
+            # Skip remaining checks if collision already found (can't break in Taichi outermost loop)
+            if collision == 0:
+                # Track Y ranges for both beetles in this XZ column
+                beetle1_y_min = 999
+                beetle1_y_max = -1
+                beetle2_y_min = 999
+                beetle2_y_max = -1
 
-            # Find Y-ranges for both beetles in this column (includes legs and tips!)
-            # Scan around the render offset where beetles are actually placed
-            y_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
-            y_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 35)
-            for gy in range(y_start, y_end):
-                voxel = simulation.voxel_type[gx, gy, gz]
-                # Blue beetle voxels (body, legs, and tips)
-                if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_BLUE_LEGS or voxel == simulation.LEG_TIP_BLUE:
-                    if gy < beetle1_y_min:
-                        beetle1_y_min = gy
-                    if gy > beetle1_y_max:
-                        beetle1_y_max = gy
-                # Red beetle voxels (body, legs, and tips)
-                elif voxel == simulation.BEETLE_RED or voxel == simulation.BEETLE_RED_LEGS or voxel == simulation.LEG_TIP_RED:
-                    if gy < beetle2_y_min:
-                        beetle2_y_min = gy
-                    if gy > beetle2_y_max:
-                        beetle2_y_max = gy
+                # Find Y-ranges for both beetles in this column (includes legs and tips!)
+                # Scan around the render offset where beetles are actually placed
+                y_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
+                y_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 35)
+                for gy in range(y_start, y_end):
+                    voxel = simulation.voxel_type[gx, gy, gz]
+                    # Blue beetle voxels (body, legs, and tips)
+                    if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_BLUE_LEGS or voxel == simulation.LEG_TIP_BLUE:
+                        if gy < beetle1_y_min:
+                            beetle1_y_min = gy
+                        if gy > beetle1_y_max:
+                            beetle1_y_max = gy
+                    # Red beetle voxels (body, legs, and tips)
+                    elif voxel == simulation.BEETLE_RED or voxel == simulation.BEETLE_RED_LEGS or voxel == simulation.LEG_TIP_RED:
+                        if gy < beetle2_y_min:
+                            beetle2_y_min = gy
+                        if gy > beetle2_y_max:
+                            beetle2_y_max = gy
 
-            # Check if Y-ranges overlap or are adjacent (within 1 voxel)
-            if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
-                # Check if Y ranges are within 1 voxel of each other
-                if beetle1_y_min <= beetle2_y_max + 1 and beetle2_y_min <= beetle1_y_max + 1:
-                    collision = 1
+                # Check if Y-ranges overlap or are adjacent (within 1 voxel)
+                if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
+                    # Check if Y ranges are within 1 voxel of each other
+                    if beetle1_y_min <= beetle2_y_max + 1 and beetle2_y_min <= beetle1_y_max + 1:
+                        collision = 1
 
     return collision
 
@@ -595,8 +597,13 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
 # ========== PERFORMANCE OPTIMIZATION: GEOMETRY CACHING ==========
-def generate_beetle_geometry():
-    """Generate beetle geometry separated into body and legs for animation"""
+def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5):
+    """Generate beetle geometry separated into body and legs for animation
+
+    Args:
+        horn_shaft_len: Length of main horn shaft (default 12 voxels)
+        horn_prong_len: Length of each Y-fork prong (default 5 voxels)
+    """
     body_voxels = []
     leg_voxels = []  # Will be organized as list of 6 legs, each containing voxel offsets
 
@@ -665,7 +672,8 @@ def generate_beetle_geometry():
                     body_voxels.append((dx, dy, dz))
 
     # EXAGGERATED Y-SHAPED HORN - Main shaft with overlapping layers
-    for i in range(12):
+    shaft_segments = int(horn_shaft_len)
+    for i in range(shaft_segments):
         dx = 3 + i
         height_curve = int(i * 0.3)
         dy = 1 + height_curve
@@ -678,11 +686,16 @@ def generate_beetle_geometry():
                 body_voxels.append((dx, dy - 1, dz))
 
     # EXAGGERATED Y-fork - Left prong with overlapping layers
-    for i in range(5):
-        dx = 13 + i
-        dy = 4 + i
+    prong_segments = int(horn_prong_len)
+    prong_start_x = 3 + shaft_segments  # Start where shaft ends
+    prong_start_y = 1 + int(shaft_segments * 0.3)  # Continue from shaft height curve
+
+    for i in range(prong_segments):
+        dx = prong_start_x + i
+        dy = prong_start_y + i
         center_dz = -i
-        for dz_offset in range(0, 2):  # Changed from range(-1, 2) to range(0, 2) for 2-voxel width
+        # Use range(-1, 1) to create 2-voxel width prong on left side
+        for dz_offset in range(-1, 1):
             dz = center_dz + dz_offset
             # Add voxel at current height
             body_voxels.append((dx, dy, dz))
@@ -690,11 +703,12 @@ def generate_beetle_geometry():
             body_voxels.append((dx, dy - 1, dz))
 
     # Right prong with overlapping layers
-    for i in range(5):
-        dx = 13 + i
-        dy = 4 + i
+    for i in range(prong_segments):
+        dx = prong_start_x + i
+        dy = prong_start_y + i
         center_dz = i
-        for dz_offset in range(-1, 1):  # Changed from range(-1, 2) to range(-1, 1) for 2-voxel width
+        # Use range(0, 2) to create 2-voxel width prong on right side
+        for dz_offset in range(0, 2):
             dz = center_dz + dz_offset
             # Add voxel at current height
             body_voxels.append((dx, dy, dz))
@@ -797,15 +811,19 @@ def generate_beetle_geometry():
 
     return body_voxels, leg_voxels, leg_tips
 
-# Generate beetle geometry ONCE at startup
+# Generate beetle geometry ONCE at startup (with default params)
 BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry()
 print(f"Beetle geometry cached: {len(BEETLE_BODY)} body voxels + {sum(len(leg) for leg in BEETLE_LEGS)} leg voxels + {sum(len(tips) for tips in BEETLE_LEG_TIPS)} tip voxels")
 
-# Create Taichi fields for body geometry cache
-body_cache_size = len(BEETLE_BODY)
-body_cache_x = ti.field(ti.i32, shape=body_cache_size)
-body_cache_y = ti.field(ti.i32, shape=body_cache_size)
-body_cache_z = ti.field(ti.i32, shape=body_cache_size)
+# Create OVERSIZED Taichi fields for body geometry cache (to allow dynamic resizing)
+# Max horn: shaft=15 + prong=12 = ~27 voxels * 3 width * 2 layers = ~162 horn voxels
+# Body is ~300 voxels, so max total ~500 voxels
+MAX_BODY_VOXELS = 600
+body_cache_size = ti.field(ti.i32, shape=())  # Track actual size
+body_cache_size[None] = len(BEETLE_BODY)
+body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
+body_cache_y = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
+body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 
 # Create Taichi fields for leg geometry cache (6 legs)
 # Store all leg voxels flattened with offsets to know where each leg starts
@@ -861,6 +879,27 @@ for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
     offset += len(leg_tip_voxels)
     leg_tip_end_idx[leg_id] = offset
 
+# Function to rebuild beetle geometry with new parameters
+def rebuild_beetle_geometry(shaft_len, prong_len):
+    """Rebuild beetle geometry cache with new horn parameters"""
+    global BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS
+
+    # Generate new geometry
+    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len)
+
+    # Update body cache
+    body_cache_size[None] = len(BEETLE_BODY)
+    if len(BEETLE_BODY) > MAX_BODY_VOXELS:
+        print(f"WARNING: Body voxels ({len(BEETLE_BODY)}) exceeds max ({MAX_BODY_VOXELS})!")
+        return
+
+    for i, (dx, dy, dz) in enumerate(BEETLE_BODY):
+        body_cache_x[i] = dx
+        body_cache_y[i] = dy
+        body_cache_z[i] = dz
+
+    print(f"Rebuilt beetle: {len(BEETLE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f})")
+
 @ti.kernel
 def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
     """Check if beetle would collide with floor - returns highest floor Y coordinate in WORLD space"""
@@ -909,7 +948,7 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     lowest_y = 9999.0  # Start with very high value
 
     # Check all body voxels
-    for i in range(body_cache_size):
+    for i in range(body_cache_size[None]):
         local_x = float(body_cache_x[i])
         local_y = body_cache_y[i]
         local_z = float(body_cache_z[i])
@@ -1029,7 +1068,7 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
     horn_pivot_y = 1
 
     # 1. Place body with horn pitch applied
-    for i in range(body_cache_size):
+    for i in range(body_cache_size[None]):
         local_x = float(body_cache_x[i])
         local_y = body_cache_y[i]
         local_z = float(body_cache_z[i])
@@ -1189,7 +1228,9 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
 def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti.f32, z2: ti.f32):
     """Clear beetles using bounding box - MUCH faster than full grid scan"""
     # Convert to grid coordinates with margin
-    margin = 20
+    # Max horn reach: 22 voxels (shaft 12 + prong 10 = 22, extends diagonally)
+    # Need margin to cover full horn reach in all directions
+    margin = 25  # Covers max 22 voxel radius + some safety
     center_x1 = int(x1 + simulation.n_grid / 2.0)
     center_z1 = int(z1 + simulation.n_grid / 2.0)
     center_x2 = int(x2 + simulation.n_grid / 2.0)
@@ -1202,9 +1243,9 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
     max_z = ti.min(simulation.n_grid, ti.max(center_z1, center_z2) + margin)
 
     # Vertical bounding box - track beetles wherever they are (even if flying!)
-    # Beetles are ~8 voxels tall, horns can extend ~12 more when tilted up
+    # Beetles are ~8 voxels tall, horns can extend up to 22 more when tilted up
     # Need large margin to catch horn trail voxels
-    y_margin = 20
+    y_margin = 25  # Covers max 22 voxel radius + some safety
     min_y = ti.max(0, int(ti.min(y1, y2) + RENDER_Y_OFFSET) - y_margin)
     max_y = ti.min(simulation.n_grid, int(ti.max(y1, y2) + RENDER_Y_OFFSET) + y_margin)
 
@@ -1865,6 +1906,29 @@ while window.running:
     # Active beetles count
     active_count = (1 if beetle_blue.active else 0) + (1 if beetle_red.active else 0)
     window.GUI.text(f"Active beetles: {active_count}/2")
+
+    window.GUI.text("")
+    window.GUI.text("=== GENETICS TEST ===")
+
+    # Initialize persistent slider values
+    if not hasattr(window, 'horn_shaft_value'):
+        window.horn_shaft_value = 12
+        window.horn_prong_value = 5
+
+    # Use slider_int for discrete voxel values (max 21 voxel reach: shaft 14 + prong 7)
+    new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 3, 14)
+    new_prong = window.GUI.slider_int("Horn Prong", window.horn_prong_value, 2, 7)
+
+    # Rebuild geometry if sliders changed
+    if new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value:
+        rebuild_beetle_geometry(new_shaft, new_prong)
+        window.horn_shaft_value = new_shaft
+        window.horn_prong_value = new_prong
+
+    window.GUI.text(f"Shaft: {window.horn_shaft_value} voxels")
+    window.GUI.text(f"Prong: {window.horn_prong_value} voxels")
+    total_reach = window.horn_shaft_value + window.horn_prong_value
+    window.GUI.text(f"Total Reach: {total_reach} voxels")
 
     # Winner announcement and restart button
     if match_winner is not None:
