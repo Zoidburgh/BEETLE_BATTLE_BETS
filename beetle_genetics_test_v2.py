@@ -1,6 +1,6 @@
 """
-Beetle combat with rotation and pushing physics
-TGHF for blue beetle, IKJL for red beetle
+Genetics Test Harness - Test beetle horn genetics
+TGHF for movement, RY for horn tilt
 """
 
 import taichi as ti
@@ -205,18 +205,16 @@ class Beetle:
 match_winner = None  # "BLUE" or "RED" when a beetle dies
 
 def reset_match():
-    """Reset beetles to starting positions for new match"""
-    global beetle_blue, beetle_red, match_winner
-    beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
-    beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
+    """Reset beetle to starting position"""
+    global beetle_blue, match_winner
+    beetle_blue = Beetle(0.0, 0.0, 0.0, simulation.BEETLE_BLUE)
     match_winner = None
     print("\n" + "="*50)
-    print("NEW MATCH STARTED!")
+    print("GENETICS TEST RESET!")
     print("="*50 + "\n")
 
 # Create beetles - closer together for smaller arena
-beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)  # Facing right (toward red)
-beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (toward blue)
+beetle_blue = Beetle(0.0, 0.0, 0.0, simulation.BEETLE_BLUE)  # Center position
 
 @ti.kernel
 def clear_beetles():
@@ -284,8 +282,13 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
     return collision
 
 @ti.kernel
-def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32):
-    """LEAN 1/3 SCALE BEETLE - Exaggerated legs & horn for animation"""
+def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32, horn_shaft: ti.i32, horn_prong: ti.i32):
+    """LEAN 1/3 SCALE BEETLE - Exaggerated legs & horn for animation
+
+    Args:
+        horn_shaft: Length of main horn shaft (3-20 segments)
+        horn_prong: Length of fork prongs (2-10 segments)
+    """
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
     base_y = int(world_y)  # Use dynamic Y position
@@ -664,41 +667,42 @@ def generate_beetle_geometry():
                 if abs(dz) <= width_at_height:
                     body_voxels.append((dx, dy, dz))
 
-    # EXAGGERATED Y-SHAPED HORN - Main shaft with overlapping layers
-    for i in range(12):
+    # Y-SHAPED HORN - Main shaft with overlapping layers (STATIC VERSION for cached geometry)
+    # Default horn size: shaft=12, prongs=5
+    horn_shaft_length = 12
+    horn_prong_length = 5
+
+    for i in range(horn_shaft_length):
         dx = 3 + i
         height_curve = int(i * 0.3)
         dy = 1 + height_curve
-        thickness = 1  # Changed from 2 to 1 for 3-voxel width
+        thickness = 1
         for dz in range(-thickness, thickness + 1):
-            # Add voxel at current height
             body_voxels.append((dx, dy, dz))
-            # Add overlapping voxel below (unless at bottom)
             if dy > 1:
                 body_voxels.append((dx, dy - 1, dz))
 
-    # EXAGGERATED Y-fork - Left prong with overlapping layers
-    for i in range(5):
-        dx = 13 + i
-        dy = 4 + i
+    # Y-fork - Left prong with overlapping layers
+    shaft_end_x = 3 + horn_shaft_length
+    shaft_end_y = 1 + int(horn_shaft_length * 0.3)
+
+    for i in range(horn_prong_length):
+        dx = shaft_end_x + i
+        dy = shaft_end_y + i
         center_dz = -i
-        for dz_offset in range(0, 2):  # Changed from range(-1, 2) to range(0, 2) for 2-voxel width
+        for dz_offset in range(0, 2):
             dz = center_dz + dz_offset
-            # Add voxel at current height
             body_voxels.append((dx, dy, dz))
-            # Add overlapping voxel below
             body_voxels.append((dx, dy - 1, dz))
 
     # Right prong with overlapping layers
-    for i in range(5):
-        dx = 13 + i
-        dy = 4 + i
+    for i in range(horn_prong_length):
+        dx = shaft_end_x + i
+        dy = shaft_end_y + i
         center_dz = i
-        for dz_offset in range(-1, 1):  # Changed from range(-1, 2) to range(-1, 1) for 2-voxel width
+        for dz_offset in range(-1, 1):
             dz = center_dz + dz_offset
-            # Add voxel at current height
             body_voxels.append((dx, dy, dz))
-            # Add overlapping voxel below
             body_voxels.append((dx, dy - 1, dz))
 
     # IMPROVED LEGS (6 total) - Separated for animation
@@ -1526,7 +1530,7 @@ def shortest_rotation(current, target):
     return diff
 
 # Window
-window = ti.ui.Window("Beetle Physics", (1920, 1080), vsync=True)
+window = ti.ui.Window("*** GENETICS TEST HARNESS ***", (1920, 1080), vsync=True)
 canvas = window.get_canvas()
 scene = window.get_scene()
 
@@ -1591,7 +1595,6 @@ while window.running:
     while accumulator >= PHYSICS_TIMESTEP:
         # Save previous state for interpolation
         beetle_blue.save_previous_state()
-        beetle_red.save_previous_state()
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
         if beetle_blue.active and not beetle_blue.is_falling:
@@ -1634,50 +1637,9 @@ while window.running:
             beetle_blue.rotation += beetle_blue.angular_velocity * PHYSICS_TIMESTEP
             beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
 
-        # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
-        if beetle_red.active and not beetle_red.is_falling:
-            # Rotation controls (J/L)
-            if window.is_pressed('j'):
-                # Rotate left (counterclockwise)
-                beetle_red.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
-            if window.is_pressed('l'):
-                # Rotate right (clockwise)
-                beetle_red.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
-
-            # Movement controls (I/K) - move in facing direction
-            if window.is_pressed('i'):
-                # Move forward in facing direction
-                move_x = math.cos(beetle_red.rotation)
-                move_z = math.sin(beetle_red.rotation)
-                beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
-            if window.is_pressed('k'):
-                # Move backward in facing direction
-                move_x = -math.cos(beetle_red.rotation)
-                move_z = -math.sin(beetle_red.rotation)
-                beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE, move_z * BACKWARD_MOVE_FORCE, PHYSICS_TIMESTEP)
-
-            # Horn controls (U/O) - tilt up/down
-            if window.is_pressed('u'):
-                # Tilt horn up
-                beetle_red.horn_pitch += HORN_TILT_SPEED * PHYSICS_TIMESTEP
-                beetle_red.horn_pitch = min(HORN_MAX_PITCH, beetle_red.horn_pitch)
-                beetle_red.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
-            elif window.is_pressed('o'):
-                # Tilt horn down
-                beetle_red.horn_pitch -= HORN_TILT_SPEED * PHYSICS_TIMESTEP
-                beetle_red.horn_pitch = max(HORN_MIN_PITCH, beetle_red.horn_pitch)
-                beetle_red.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
-            else:
-                # Not pressing horn keys - no velocity
-                beetle_red.horn_pitch_velocity = 0.0
-
-            # Always add physics-driven rotation from collisions
-            beetle_red.rotation += beetle_red.angular_velocity * PHYSICS_TIMESTEP
-            beetle_red.rotation = normalize_angle(beetle_red.rotation)
 
         # Physics update
         beetle_blue.update_physics(PHYSICS_TIMESTEP)
-        beetle_red.update_physics(PHYSICS_TIMESTEP)
 
         # Fall death detection - two-stage system
         POINT_OF_NO_RETURN = -5.0  # Once below this, can't recover (5 voxels below floor)
@@ -1687,26 +1649,15 @@ while window.running:
         if beetle_blue.active and not beetle_blue.is_falling and beetle_blue.y < POINT_OF_NO_RETURN:
             beetle_blue.is_falling = True
             print("BLUE BEETLE IS FALLING!")
-        if beetle_red.active and not beetle_red.is_falling and beetle_red.y < POINT_OF_NO_RETURN:
-            beetle_red.is_falling = True
-            print("RED BEETLE IS FALLING!")
 
         # Stage 2: Full removal - deactivate completely
         if beetle_blue.active and beetle_blue.y < FALL_DEATH_Y:
             beetle_blue.active = False
             print("BLUE BEETLE FELL INTO THE ABYSS!")
             if match_winner is None:
-                match_winner = "RED"
+                match_winner = "FALLEN"
                 print("\n" + "="*50)
-                print("RED BEETLE WINS!")
-                print("="*50 + "\n")
-        if beetle_red.active and beetle_red.y < FALL_DEATH_Y:
-            beetle_red.active = False
-            print("RED BEETLE FELL INTO THE ABYSS!")
-            if match_winner is None:
-                match_winner = "BLUE"
-                print("\n" + "="*50)
-                print("BLUE BEETLE WINS!")
+                print("BEETLE FELL OFF ARENA!")
                 print("="*50 + "\n")
 
         # Floor collision - prevent penetration by pushing beetles upward
@@ -1735,29 +1686,6 @@ while window.running:
                 elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
                     beetle_blue.on_ground = True
 
-        if beetle_red.active and not beetle_red.is_falling:
-            floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
-            if floor_y_red >= 0:  # Floor detected under beetle
-                lowest_point_red = calculate_beetle_lowest_point(
-                    beetle_red.y, beetle_red.rotation, beetle_red.pitch,
-                    beetle_red.roll, beetle_red.horn_pitch
-                )
-
-                floor_surface = floor_y_red + 1.0
-                if lowest_point_red < floor_surface:
-                    penetration_depth = floor_surface - lowest_point_red
-                    beetle_red.y += penetration_depth
-
-                    if beetle_red.vy < 0:
-                        beetle_red.vy = 0.0
-
-                    beetle_red.on_ground = True
-                elif lowest_point_red < floor_surface + 0.5:
-                    beetle_red.on_ground = True
-
-        # Beetle collision (voxel-perfect) - only if both beetles are active
-        if beetle_blue.active and beetle_red.active:
-            beetle_collision(beetle_blue, beetle_red, physics_params)
 
         # Subtract fixed timestep from accumulator
         accumulator -= PHYSICS_TIMESTEP
@@ -1775,7 +1703,7 @@ while window.running:
             diff -= 360.0
         return a + diff * t
 
-    # Interpolate blue beetle state for rendering
+    # Interpolate beetle state for rendering
     blue_render_x = beetle_blue.prev_x + (beetle_blue.x - beetle_blue.prev_x) * alpha
     blue_render_y = beetle_blue.prev_y + (beetle_blue.y - beetle_blue.prev_y) * alpha
     blue_render_z = beetle_blue.prev_z + (beetle_blue.z - beetle_blue.prev_z) * alpha
@@ -1783,15 +1711,6 @@ while window.running:
     blue_render_pitch = lerp_angle(beetle_blue.prev_pitch, beetle_blue.pitch, alpha)
     blue_render_roll = lerp_angle(beetle_blue.prev_roll, beetle_blue.roll, alpha)
     blue_render_horn_pitch = lerp_angle(beetle_blue.prev_horn_pitch, beetle_blue.horn_pitch, alpha)
-
-    # Interpolate red beetle state for rendering
-    red_render_x = beetle_red.prev_x + (beetle_red.x - beetle_red.prev_x) * alpha
-    red_render_y = beetle_red.prev_y + (beetle_red.y - beetle_red.prev_y) * alpha
-    red_render_z = beetle_red.prev_z + (beetle_red.z - beetle_red.prev_z) * alpha
-    red_render_rotation = lerp_angle(beetle_red.prev_rotation, beetle_red.rotation, alpha)
-    red_render_pitch = lerp_angle(beetle_red.prev_pitch, beetle_red.pitch, alpha)
-    red_render_roll = lerp_angle(beetle_red.prev_roll, beetle_red.roll, alpha)
-    red_render_horn_pitch = lerp_angle(beetle_red.prev_horn_pitch, beetle_red.horn_pitch, alpha)
 
     # Update walk animation based on velocity (uses real-time frame_dt)
     blue_speed = math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2)
@@ -1802,25 +1721,14 @@ while window.running:
     else:
         beetle_blue.is_moving = False
 
-    red_speed = math.sqrt(beetle_red.vx**2 + beetle_red.vz**2)
-    if red_speed > 0.5:
-        beetle_red.walk_phase += red_speed * WALK_CYCLE_SPEED * frame_dt
-        beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
-        beetle_red.is_moving = True
-    else:
-        beetle_red.is_moving = False
-
-    # Detect if beetles are lifted high (for leg spaz animation)
+    # Detect if beetle is lifted high (for leg spaz animation)
     LIFT_THRESHOLD = 5.0  # 4 voxels above normal ground
     beetle_blue.is_lifted_high = (beetle_blue.y > LIFT_THRESHOLD)
-    beetle_red.is_lifted_high = (beetle_red.y > LIFT_THRESHOLD)
 
     # Render - ANIMATED with leg walking cycles and interpolated smooth positions!
-    clear_beetles_bounded(blue_render_x, blue_render_y, blue_render_z, red_render_x, red_render_y, red_render_z)
+    clear_beetles_bounded(blue_render_x, blue_render_y, blue_render_z, blue_render_x, blue_render_y, blue_render_z)
     if beetle_blue.active:
         place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0)
-    if beetle_red.active:
-        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0)
 
     canvas.set_background_color((0.13, 0.35, 0.13))  # Forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
@@ -1828,71 +1736,37 @@ while window.running:
 
     # HUD
     fps = 1.0 / frame_dt if frame_dt > 0 else 0
-    window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.52)
+    window.GUI.begin("GENETICS TEST", 0.01, 0.01, 0.35, 0.52)
     window.GUI.text(f"FPS: {fps:.0f}")
+    window.GUI.text("")
+
+    # Genetics sliders
+    window.GUI.text("=== HORN GENETICS ===")
+    horn_shaft_length = window.GUI.slider_float("Horn Shaft Length", 8.0, 3.0, 20.0)
+    horn_prong_length = window.GUI.slider_float("Horn Prong Length", 9.0, 2.0, 10.0)
     window.GUI.text("")
 
     # Blue beetle status
     if beetle_blue.active:
-        window.GUI.text("BLUE BEETLE (TFGH + RY)")
+        window.GUI.text("BEETLE STATUS (TFGH + RY)")
         window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.y:.1f}, {beetle_blue.z:.1f})")
         window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
         window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
-        window.GUI.text(f"  Horn: {math.degrees(beetle_blue.horn_pitch):.1f}°")
+        window.GUI.text(f"  Horn Tilt: {math.degrees(beetle_blue.horn_pitch):.1f}°")
     else:
-        window.GUI.text("BLUE BEETLE: FALLEN")
+        window.GUI.text("BEETLE: FALLEN")
 
     window.GUI.text("")
 
-    # Red beetle status
-    if beetle_red.active:
-        window.GUI.text("RED BEETLE (IJKL + UO)")
-        window.GUI.text(f"  Pos: ({beetle_red.x:.1f}, {beetle_red.y:.1f}, {beetle_red.z:.1f})")
-        window.GUI.text(f"  Speed: {math.sqrt(beetle_red.vx**2 + beetle_red.vz**2):.1f}")
-        window.GUI.text(f"  Facing: {math.degrees(beetle_red.rotation):.0f}°")
-        window.GUI.text(f"  Horn: {math.degrees(beetle_red.horn_pitch):.1f}°")
-    else:
-        window.GUI.text("RED BEETLE: FALLEN")
-    window.GUI.text("")
-
-    # Distance display - only if both beetles are active
-    if beetle_blue.active and beetle_red.active:
-        dx = beetle_blue.x - beetle_red.x
-        dz = beetle_blue.z - beetle_red.z
-        distance = math.sqrt(dx**2 + dz**2)
-        window.GUI.text(f"Distance: {distance:.1f}")
-
-    # Active beetles count
-    active_count = (1 if beetle_blue.active else 0) + (1 if beetle_red.active else 0)
-    window.GUI.text(f"Active beetles: {active_count}/2")
-
-    # Winner announcement and restart button
+    # Reset button if fallen
     if match_winner is not None:
         window.GUI.text("")
         window.GUI.text("="*30)
-        if match_winner == "BLUE":
-            window.GUI.text("*** BLUE BEETLE WINS! ***")
-        else:
-            window.GUI.text("*** RED BEETLE WINS! ***")
+        window.GUI.text("*** BEETLE FELL OFF! ***")
         window.GUI.text("="*30)
         window.GUI.text("")
-        if window.GUI.button("RESTART MATCH"):
+        if window.GUI.button("RESET"):
             reset_match()
-
-    # Physics parameter sliders
-    window.GUI.text("")
-    window.GUI.text("=== PHYSICS TUNING ===")
-    physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 40.0)
-    physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 1.5)
-    physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
-    physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
-    new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.5, 5.0)
-
-    # Update beetle inertia if factor changed
-    if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
-        physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
-        beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
-        beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
 
     window.GUI.end()
 
