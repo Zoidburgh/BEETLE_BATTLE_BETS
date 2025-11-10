@@ -598,7 +598,7 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
 # ========== PERFORMANCE OPTIMIZATION: GEOMETRY CACHING ==========
-def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5):
+def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5, leg_length=10):
     """Generate beetle geometry separated into body and legs for animation
 
     Args:
@@ -606,6 +606,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         horn_prong_len: Length of each Y-fork prong (default 5 voxels)
         front_body_height: Height of thorax (front body) in voxel layers (default 4, range 2-6)
         back_body_height: Height of abdomen (back body) base layers (default 5, range 2-6)
+        leg_length: Total length of legs in voxels (default 10, range 6-14)
     """
     body_voxels = []
     leg_voxels = []  # Will be organized as list of 6 legs, each containing voxel offsets
@@ -693,91 +694,109 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     # IMPROVED LEGS (6 total) - Separated for animation
     # Leg order: [front_left, front_right, middle_left, middle_right, rear_left, rear_right]
 
+    # Calculate leg segment lengths based on leg_length parameter
+    # Total leg = coxa (20%) + femur (40%) + tibia (40%)
+    coxa_len = max(1, int(leg_length * 0.2))   # Minimum 1 voxel
+    femur_len = max(2, int(leg_length * 0.4))  # Minimum 2 voxels
+    tibia_len = max(2, int(leg_length * 0.4))  # Minimum 2 voxels
+
+    # Calculate Z positions for each segment
+    coxa_start = 3
+    femur_start = coxa_start + coxa_len
+    tibia_start = femur_start + femur_len
+    tibia_end = tibia_start + tibia_len
+
     # Front left leg (leg 0) - MOVED FORWARD 1 VOXEL
     front_left = []
     front_left_tips = []  # Separate tips for black coloring
     side = -1
     # COXA
-    for i in range(2):
+    for i in range(coxa_len):
         for extra_y in range(2):
-            front_left.append((2, 1 + extra_y, side * (3 + i)))
+            front_left.append((2, 1 + extra_y, side * (coxa_start + i)))
     # FEMUR
-    for i in range(4):
+    for i in range(femur_len):
         for extra_y in range(2):
-            front_left.append((2, 0 + extra_y, side * (5 + i)))
+            front_left.append((2, 0 + extra_y, side * (femur_start + i)))
     # TIBIA (tips - will be rendered black)
-    for point in [(2, 0, side * 9), (2, 0, side * 10), (3, 0, side * 10), (4, 0, side * 10)]:
-        front_left_tips.append(point)
+    for i in range(tibia_len):
+        tip_x = 2 + min(i // 2, 2)  # Extend forward gradually
+        front_left_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(front_left)
 
     # Front right leg (leg 1) - MOVED FORWARD 1 VOXEL
     front_right = []
     front_right_tips = []
     side = 1
-    for i in range(2):
+    for i in range(coxa_len):
         for extra_y in range(2):
-            front_right.append((2, 1 + extra_y, side * (3 + i)))
-    for i in range(4):
+            front_right.append((2, 1 + extra_y, side * (coxa_start + i)))
+    for i in range(femur_len):
         for extra_y in range(2):
-            front_right.append((2, 0 + extra_y, side * (5 + i)))
-    for point in [(2, 0, side * 9), (2, 0, side * 10), (3, 0, side * 10), (4, 0, side * 10)]:
-        front_right_tips.append(point)
+            front_right.append((2, 0 + extra_y, side * (femur_start + i)))
+    for i in range(tibia_len):
+        tip_x = 2 + min(i // 2, 2)
+        front_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(front_right)
 
     # Middle left leg (leg 2)
     middle_left = []
     middle_left_tips = []
     side = -1
-    for i in range(2):
+    for i in range(coxa_len):
         for extra_y in range(2):
-            middle_left.append((-2, 1 + extra_y, side * (3 + i)))
-    for i in range(4):
+            middle_left.append((-2, 1 + extra_y, side * (coxa_start + i)))
+    for i in range(femur_len):
         for extra_y in range(2):
-            middle_left.append((-2, 0 + extra_y, side * (5 + i)))
-    for point in [(-2, 0, side * 9), (-2, 0, side * 10), (-3, 0, side * 10), (-4, 0, side * 10)]:
-        middle_left_tips.append(point)
+            middle_left.append((-2, 0 + extra_y, side * (femur_start + i)))
+    for i in range(tibia_len):
+        tip_x = -2 - min(i // 2, 2)  # Extend backward gradually
+        middle_left_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(middle_left)
 
     # Middle right leg (leg 3)
     middle_right = []
     middle_right_tips = []
     side = 1
-    for i in range(2):
+    for i in range(coxa_len):
         for extra_y in range(2):
-            middle_right.append((-2, 1 + extra_y, side * (3 + i)))
-    for i in range(4):
+            middle_right.append((-2, 1 + extra_y, side * (coxa_start + i)))
+    for i in range(femur_len):
         for extra_y in range(2):
-            middle_right.append((-2, 0 + extra_y, side * (5 + i)))
-    for point in [(-2, 0, side * 9), (-2, 0, side * 10), (-3, 0, side * 10), (-4, 0, side * 10)]:
-        middle_right_tips.append(point)
+            middle_right.append((-2, 0 + extra_y, side * (femur_start + i)))
+    for i in range(tibia_len):
+        tip_x = -2 - min(i // 2, 2)
+        middle_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(middle_right)
 
     # Rear left leg (leg 4)
     rear_left = []
     rear_left_tips = []
     side = -1
-    for i in range(2):
+    for i in range(coxa_len):
         for extra_y in range(2):
-            rear_left.append((-5, 1 + extra_y, side * (3 + i)))
-    for i in range(4):
+            rear_left.append((-5, 1 + extra_y, side * (coxa_start + i)))
+    for i in range(femur_len):
         for extra_y in range(2):
-            rear_left.append((-5 - i, 0 + extra_y, side * (5 + i)))
-    for point in [(-9, 0, side * 9), (-9, 0, side * 10), (-10, 0, side * 10), (-11, 0, side * 10)]:
-        rear_left_tips.append(point)
+            rear_left.append((-5 - i, 0 + extra_y, side * (femur_start + i)))
+    for i in range(tibia_len):
+        tip_x = -5 - femur_len - min(i // 2, 2)  # Continue backward
+        rear_left_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(rear_left)
 
     # Rear right leg (leg 5)
     rear_right = []
     rear_right_tips = []
     side = 1
-    for i in range(2):
+    for i in range(coxa_len):
         for extra_y in range(2):
-            rear_right.append((-5, 1 + extra_y, side * (3 + i)))
-    for i in range(4):
+            rear_right.append((-5, 1 + extra_y, side * (coxa_start + i)))
+    for i in range(femur_len):
         for extra_y in range(2):
-            rear_right.append((-5 - i, 0 + extra_y, side * (5 + i)))
-    for point in [(-9, 0, side * 9), (-9, 0, side * 10), (-10, 0, side * 10), (-11, 0, side * 10)]:
-        rear_right_tips.append(point)
+            rear_right.append((-5 - i, 0 + extra_y, side * (femur_start + i)))
+    for i in range(tibia_len):
+        tip_x = -5 - femur_len - min(i // 2, 2)
+        rear_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(rear_right)
 
     # Collect all leg tips into single list (6 legs × 4 tips = 24 tip voxels)
@@ -800,24 +819,26 @@ body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 body_cache_y = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 
-# Create Taichi fields for leg geometry cache (6 legs)
+# Create OVERSIZED Taichi fields for leg geometry cache (6 legs)
 # Store all leg voxels flattened with offsets to know where each leg starts
-leg_voxel_counts = [len(leg) for leg in BEETLE_LEGS]
-total_leg_voxels = sum(leg_voxel_counts)
-leg_cache_x = ti.field(ti.i32, shape=total_leg_voxels)
-leg_cache_y = ti.field(ti.i32, shape=total_leg_voxels)
-leg_cache_z = ti.field(ti.i32, shape=total_leg_voxels)
+# Max leg length=14: coxa(3) + femur(6) + tibia(6) = 15 voxels per segment
+# Each segment has 2 height layers, so 15*2 = 30 voxels max per leg
+# 6 legs × 30 voxels = 180 voxels max
+MAX_LEG_VOXELS = 180
+leg_cache_x = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
+leg_cache_y = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
+leg_cache_z = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
 
 # Leg start indices for each of the 6 legs
 leg_start_idx = ti.field(ti.i32, shape=6)
 leg_end_idx = ti.field(ti.i32, shape=6)
 
-# Create Taichi fields for leg tip geometry cache (6 legs × 4 tips = 24)
-leg_tip_voxel_counts = [len(tips) for tips in BEETLE_LEG_TIPS]
-total_leg_tip_voxels = sum(leg_tip_voxel_counts)
-leg_tip_cache_x = ti.field(ti.i32, shape=total_leg_tip_voxels)
-leg_tip_cache_y = ti.field(ti.i32, shape=total_leg_tip_voxels)
-leg_tip_cache_z = ti.field(ti.i32, shape=total_leg_tip_voxels)
+# Create OVERSIZED Taichi fields for leg tip geometry cache
+# Max leg length=14: tibia(6) tips per leg × 6 legs = 36 tip voxels max
+MAX_LEG_TIP_VOXELS = 40
+leg_tip_cache_x = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
+leg_tip_cache_y = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
+leg_tip_cache_z = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
 
 # Leg tip start indices for each of the 6 legs
 leg_tip_start_idx = ti.field(ti.i32, shape=6)
@@ -855,12 +876,12 @@ for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
     leg_tip_end_idx[leg_id] = offset
 
 # Function to rebuild beetle geometry with new parameters
-def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body_height=5):
-    """Rebuild beetle geometry cache with new horn and body parameters"""
+def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body_height=5, leg_length=10):
+    """Rebuild beetle geometry cache with new horn, body, and leg parameters"""
     global BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS
 
     # Generate new geometry
-    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height)
+    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, leg_length)
 
     # Update body cache
     body_cache_size[None] = len(BEETLE_BODY)
@@ -873,7 +894,29 @@ def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body
         body_cache_y[i] = dy
         body_cache_z[i] = dz
 
-    print(f"Rebuilt beetle: {len(BEETLE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f})")
+    # Update leg cache
+    offset = 0
+    for leg_id, leg_voxels in enumerate(BEETLE_LEGS):
+        leg_start_idx[leg_id] = offset
+        for i, (dx, dy, dz) in enumerate(leg_voxels):
+            leg_cache_x[offset + i] = dx
+            leg_cache_y[offset + i] = dy
+            leg_cache_z[offset + i] = dz
+        offset += len(leg_voxels)
+        leg_end_idx[leg_id] = offset
+
+    # Update leg tip cache
+    offset = 0
+    for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
+        leg_tip_start_idx[leg_id] = offset
+        for i, (dx, dy, dz) in enumerate(leg_tip_voxels):
+            leg_tip_cache_x[offset + i] = dx
+            leg_tip_cache_y[offset + i] = dy
+            leg_tip_cache_z[offset + i] = dz
+        offset += len(leg_tip_voxels)
+        leg_tip_end_idx[leg_id] = offset
+
+    print(f"Rebuilt beetle: {len(BEETLE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
 @ti.kernel
 def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
@@ -1890,25 +1933,29 @@ while window.running:
         window.horn_shaft_value = 12
         window.horn_prong_value = 5
         window.back_body_height_value = 5
+        window.leg_length_value = 10
 
     # Front body (thorax) is fixed at 4 layers
     front_body_height = 4
 
     # Use slider_int for discrete voxel values (max 21 voxel reach: shaft 14 + prong 7)
-    new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 3, 14)
-    new_prong = window.GUI.slider_int("Horn Prong", window.horn_prong_value, 2, 7)
+    new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 4, 14)
+    new_prong = window.GUI.slider_int("Horn Prong", window.horn_prong_value, 3, 7)
     new_back_body = window.GUI.slider_int("Back Body", window.back_body_height_value, 4, 8)
+    new_leg_length = window.GUI.slider_int("Leg Length", window.leg_length_value, 6, 10)
 
     # Rebuild geometry if sliders changed
-    if new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or new_back_body != window.back_body_height_value:
-        rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body)
+    if new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or new_back_body != window.back_body_height_value or new_leg_length != window.leg_length_value:
+        rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_leg_length)
         window.horn_shaft_value = new_shaft
         window.horn_prong_value = new_prong
         window.back_body_height_value = new_back_body
+        window.leg_length_value = new_leg_length
 
     window.GUI.text(f"Shaft: {window.horn_shaft_value} voxels")
     window.GUI.text(f"Prong: {window.horn_prong_value} voxels")
     window.GUI.text(f"Back Body: {window.back_body_height_value} layers")
+    window.GUI.text(f"Leg Length: {window.leg_length_value} voxels")
     total_reach = window.horn_shaft_value + window.horn_prong_value
     window.GUI.text(f"Total Reach: {total_reach} voxels")
 
