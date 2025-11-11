@@ -1261,33 +1261,50 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
 
 @ti.kernel
 def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti.f32, z2: ti.f32):
-    """Clear beetles using bounding box - MUCH faster than full grid scan"""
-    # Convert to grid coordinates with margin
-    # Max horn reach: 22 voxels (shaft 12 + prong 10 = 22, extends diagonally)
+    """Clear beetles using SEPARATE bounding boxes for each beetle"""
+    # Max horn reach: 22 voxels (shaft 14 + prong 7 = 21, plus diagonal extension)
     # Need margin to cover full horn reach in all directions
-    margin = 25  # Covers max 22 voxel radius + some safety
+    margin = 30  # Increased margin to cover max reach + safety
+
+    # === BEETLE 1 BOUNDING BOX ===
     center_x1 = int(x1 + simulation.n_grid / 2.0)
     center_z1 = int(z1 + simulation.n_grid / 2.0)
+
+    min_x1 = ti.max(0, center_x1 - margin)
+    max_x1 = ti.min(simulation.n_grid, center_x1 + margin)
+    min_z1 = ti.max(0, center_z1 - margin)
+    max_z1 = ti.min(simulation.n_grid, center_z1 + margin)
+
+    y_margin = 30  # Covers max 22 voxel radius + some safety
+    min_y1 = ti.max(0, int(y1 + RENDER_Y_OFFSET) - y_margin)
+    max_y1 = ti.min(simulation.n_grid, int(y1 + RENDER_Y_OFFSET) + y_margin)
+
+    # Clear beetle 1's area
+    for i in range(min_x1, max_x1):
+        for j in range(min_y1, max_y1):
+            for k in range(min_z1, max_z1):
+                vtype = simulation.voxel_type[i, j, k]
+                if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_RED or \
+                   vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS or \
+                   vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED:
+                    simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+    # === BEETLE 2 BOUNDING BOX ===
     center_x2 = int(x2 + simulation.n_grid / 2.0)
     center_z2 = int(z2 + simulation.n_grid / 2.0)
 
-    # Bounding box (X and Z)
-    min_x = ti.max(0, ti.min(center_x1, center_x2) - margin)
-    max_x = ti.min(simulation.n_grid, ti.max(center_x1, center_x2) + margin)
-    min_z = ti.max(0, ti.min(center_z1, center_z2) - margin)
-    max_z = ti.min(simulation.n_grid, ti.max(center_z1, center_z2) + margin)
+    min_x2 = ti.max(0, center_x2 - margin)
+    max_x2 = ti.min(simulation.n_grid, center_x2 + margin)
+    min_z2 = ti.max(0, center_z2 - margin)
+    max_z2 = ti.min(simulation.n_grid, center_z2 + margin)
 
-    # Vertical bounding box - track beetles wherever they are (even if flying!)
-    # Beetles are ~8 voxels tall, horns can extend up to 22 more when tilted up
-    # Need large margin to catch horn trail voxels
-    y_margin = 25  # Covers max 22 voxel radius + some safety
-    min_y = ti.max(0, int(ti.min(y1, y2) + RENDER_Y_OFFSET) - y_margin)
-    max_y = ti.min(simulation.n_grid, int(ti.max(y1, y2) + RENDER_Y_OFFSET) + y_margin)
+    min_y2 = ti.max(0, int(y2 + RENDER_Y_OFFSET) - y_margin)
+    max_y2 = ti.min(simulation.n_grid, int(y2 + RENDER_Y_OFFSET) + y_margin)
 
-    # Only scan bounding box
-    for i in range(min_x, max_x):
-        for j in range(min_y, max_y):  # Dynamic height range - follows beetles!
-            for k in range(min_z, max_z):
+    # Clear beetle 2's area
+    for i in range(min_x2, max_x2):
+        for j in range(min_y2, max_y2):
+            for k in range(min_z2, max_z2):
                 vtype = simulation.voxel_type[i, j, k]
                 if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_RED or \
                    vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS or \
@@ -1661,7 +1678,7 @@ def shortest_rotation(current, target):
     return diff
 
 # Window
-window = ti.ui.Window("Beetle Physics", (1920, 1080), vsync=True)
+window = ti.ui.Window("Beetle Physics", (1920, 1080), vsync=False)
 canvas = window.get_canvas()
 scene = window.get_scene()
 
@@ -1714,9 +1731,6 @@ while window.running:
 
     # Add frame time to accumulator
     accumulator += frame_dt
-    # Cap accumulator to prevent spiral of death
-    if accumulator > MAX_TIMESTEP_ACCUMULATOR:
-        accumulator = MAX_TIMESTEP_ACCUMULATOR
 
     # Camera (runs every frame at frame rate)
     renderer.handle_camera_controls(camera, window, frame_dt)
@@ -1905,10 +1919,10 @@ while window.running:
 
     # Helper function for angle interpolation (shortest path)
     def lerp_angle(a, b, t):
-        """Interpolate between angles using shortest path"""
-        diff = (b - a) % 360.0
-        if diff > 180.0:
-            diff -= 360.0
+        """Interpolate between angles using shortest path (radians)"""
+        diff = (b - a) % (2 * math.pi)
+        if diff > math.pi:
+            diff -= 2 * math.pi
         return a + diff * t
 
     # Interpolate blue beetle state for rendering
