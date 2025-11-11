@@ -21,7 +21,7 @@ ANGULAR_FRICTION = 0.85  # How quickly spin slows down (lower = more spin)
 MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec)
 TORQUE_MULTIPLIER = 1.95  # Rotational forces on collision
 RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
-IMPULSE_MULTIPLIER = 0.32  # Linear momentum transfer
+IMPULSE_MULTIPLIER = 0.7  # Linear momentum transfer
 MOMENT_OF_INERTIA_FACTOR = 1.15  # Resistance to rotation
 ARENA_RADIUS = 32.0  # 25% smaller for closer combat
 
@@ -76,7 +76,7 @@ class Beetle:
         self.horn_yaw = 0.0    # Horizontal angle in radians (Phase 2, keep at 0.0 for now)
         self.horn_pitch_velocity = 0.0  # Rate of change of horn pitch (radians/sec)
 
-        # Collision cooldown timer (prevents multi-frame lift application)
+        # Collision cooldown timers
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
 
         # Beetle active state (for fall death)
@@ -844,6 +844,23 @@ leg_tip_cache_z = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
 leg_tip_start_idx = ti.field(ti.i32, shape=6)
 leg_tip_end_idx = ti.field(ti.i32, shape=6)
 
+# Collision detection fields - store occupied voxels for each beetle (GPU-resident)
+# Each beetle can occupy up to ~1600 voxels in a 40x40 area
+MAX_OCCUPIED_VOXELS = 1600
+beetle1_occupied_x = ti.field(ti.i32, shape=MAX_OCCUPIED_VOXELS)
+beetle1_occupied_z = ti.field(ti.i32, shape=MAX_OCCUPIED_VOXELS)
+beetle1_occupied_count = ti.field(ti.i32, shape=())
+
+beetle2_occupied_x = ti.field(ti.i32, shape=MAX_OCCUPIED_VOXELS)
+beetle2_occupied_z = ti.field(ti.i32, shape=MAX_OCCUPIED_VOXELS)
+beetle2_occupied_count = ti.field(ti.i32, shape=())
+
+# Collision point calculation fields
+collision_point_x = ti.field(ti.f32, shape=())
+collision_point_y = ti.field(ti.f32, shape=())
+collision_point_z = ti.field(ti.f32, shape=())
+collision_contact_count = ti.field(ti.i32, shape=())
+
 # Animation parameters
 WALK_CYCLE_SPEED = 0.8  # Radians per second at normal walk speed (slowed down 5X)
 
@@ -1277,6 +1294,81 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                    vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
+@ti.kernel
+def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32,
+                                     occupied_x: ti.template(), occupied_z: ti.template(),
+                                     occupied_count: ti.template()):
+    """GPU-accelerated calculation of occupied voxels for collision detection"""
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+
+    # Reset count
+    occupied_count[None] = 0
+
+    # Scan area around beetle (40x40 area, height range based on render offset)
+    y_base = int(RENDER_Y_OFFSET)
+    x_min = ti.max(0, center_x - 20)
+    x_max = ti.min(simulation.n_grid, center_x + 20)
+    z_min = ti.max(0, center_z - 20)
+    z_max = ti.min(simulation.n_grid, center_z + 20)
+    y_min = ti.max(0, y_base - 5)
+    y_max = ti.min(simulation.n_grid, y_base + 30)
+
+    # Scan voxel grid on GPU
+    for i in range(x_min, x_max):
+        for k in range(z_min, z_max):
+            found_in_column = 0
+            for j in range(y_min, y_max):
+                vtype = simulation.voxel_type[i, j, k]
+                # Check if voxel belongs to target beetle
+                if beetle_color == simulation.BEETLE_BLUE:
+                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE:
+                        found_in_column = 1
+                else:  # BEETLE_RED
+                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED:
+                        found_in_column = 1
+
+            # Add to occupied list if found (atomic increment to avoid race conditions)
+            if found_in_column == 1:
+                idx = ti.atomic_add(occupied_count[None], 1)
+                if idx < MAX_OCCUPIED_VOXELS:
+                    occupied_x[idx] = i
+                    occupied_z[idx] = k
+
+@ti.kernel
+def calculate_collision_point_kernel(overlap_count: ti.i32):
+    """GPU-accelerated calculation of 3D collision point from overlapping voxels"""
+    # Reset collision data
+    collision_point_x[None] = 0.0
+    collision_point_y[None] = 0.0
+    collision_point_z[None] = 0.0
+    collision_contact_count[None] = 0
+
+    # Scan through overlapping voxel columns
+    y_scan_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
+    y_scan_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 35)
+
+    # Check overlap between beetles using stored occupied voxels
+    for i in range(beetle1_occupied_count[None]):
+        vx1 = beetle1_occupied_x[i]
+        vz1 = beetle1_occupied_z[i]
+
+        for j in range(beetle2_occupied_count[None]):
+            vx2 = beetle2_occupied_x[j]
+            vz2 = beetle2_occupied_z[j]
+
+            # If same (x, z) position, we have overlap
+            if vx1 == vx2 and vz1 == vz2:
+                # Scan vertically to find all contact heights
+                for vy_grid in range(y_scan_start, y_scan_end):
+                    vtype = simulation.voxel_type[vx1, vy_grid, vz1]
+                    if vtype != 0:  # Non-empty voxel
+                        # Accumulate collision position
+                        ti.atomic_add(collision_point_x[None], float(vx1) - simulation.n_grid / 2.0)
+                        ti.atomic_add(collision_point_z[None], float(vz1) - simulation.n_grid / 2.0)
+                        ti.atomic_add(collision_point_y[None], float(vy_grid) - RENDER_Y_OFFSET)
+                        ti.atomic_add(collision_contact_count[None], 1)
+
 def calculate_occupied_voxels(world_x, world_z, rotation):
     """Calculate which voxels this beetle occupies - for torque calculation"""
     center_x = int(world_x + simulation.n_grid / 2.0)
@@ -1302,10 +1394,20 @@ def beetle_collision(b1, b2, params):
     has_collision = check_collision_kernel(b1.x, b1.z, b2.x, b2.z)
 
     if has_collision:
-        # Calculate occupied voxels only when collision detected (for torque)
-        b1.occupied_voxels = calculate_occupied_voxels(b1.x, b1.z, b1.rotation)
-        b2.occupied_voxels = calculate_occupied_voxels(b2.x, b2.z, b2.rotation)
-        overlap_voxels = b1.occupied_voxels & b2.occupied_voxels
+        # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
+        calculate_occupied_voxels_kernel(b1.x, b1.z, simulation.BEETLE_BLUE,
+                                        beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
+        calculate_occupied_voxels_kernel(b2.x, b2.z, simulation.BEETLE_RED,
+                                        beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
+
+        # GPU-ACCELERATED: Calculate collision point on GPU (no CPU transfer!)
+        calculate_collision_point_kernel(0)  # overlap_count not used in kernel
+
+        # Read results from GPU (minimal data transfer - just 4 values!)
+        collision_x = collision_point_x[None]
+        collision_y = collision_point_y[None]
+        collision_z = collision_point_z[None]
+        contact_count = collision_contact_count[None]
 
         # Collision detected! Calculate 3D collision geometry
         dx = b1.x - b2.x
@@ -1313,37 +1415,11 @@ def beetle_collision(b1, b2, params):
         dist = math.sqrt(dx**2 + dz**2)
 
         if dist > 0.001:
-            # Calculate 3D collision point and contact height
-            collision_x = 0.0
-            collision_z = 0.0
-            collision_y = 0.0
-            contact_count = 0
-
-            # Scan 3D voxel grid to find collision point WITH HEIGHT
-            voxels = simulation.voxel_type.to_numpy()
-            if len(overlap_voxels) > 0:
-                for voxel_xz in overlap_voxels:
-                    vx_grid, vz_grid = voxel_xz
-                    # Scan vertically to find all contact heights (around render offset)
-                    y_scan_start = max(0, int(RENDER_Y_OFFSET) - 5)
-                    y_scan_end = min(simulation.n_grid, int(RENDER_Y_OFFSET) + 35)
-                    for vy_grid in range(y_scan_start, y_scan_end):
-                        vtype = voxels[vx_grid, vy_grid, vz_grid]
-                        if vtype != 0:  # Non-empty voxel
-                            collision_x += vx_grid - simulation.n_grid / 2.0
-                            collision_z += vz_grid - simulation.n_grid / 2.0
-                            # Convert grid Y to world Y for collision calculations
-                            collision_y += float(vy_grid) - RENDER_Y_OFFSET
-                            contact_count += 1
-
-                if contact_count > 0:
-                    collision_x /= contact_count
-                    collision_z /= contact_count
-                    collision_y /= contact_count
-                else:
-                    collision_x = (b1.x + b2.x) / 2.0
-                    collision_z = (b1.z + b2.z) / 2.0
-                    collision_y = (b1.y + b2.y) / 2.0
+            # Use GPU-calculated collision point or fallback to midpoint
+            if contact_count > 0:
+                collision_x /= contact_count
+                collision_z /= contact_count
+                collision_y /= contact_count
             else:
                 collision_x = (b1.x + b2.x) / 2.0
                 collision_z = (b1.z + b2.z) / 2.0
@@ -1398,10 +1474,10 @@ def beetle_collision(b1, b2, params):
                 lift_advantage = b1.horn_pitch_velocity - b2.horn_pitch_velocity
 
                 # DEBUG: Print collision info
-                print(f"HORN COLLISION:")
-                print(f"  Blue: vel={b1.horn_pitch_velocity:.2f}, y={b1.y:.1f}")
-                print(f"  Red:  vel={b2.horn_pitch_velocity:.2f}, y={b2.y:.1f}")
-                print(f"  Lift advantage: {lift_advantage:.2f} (>0 = Blue lifts Red, <0 = Red lifts Blue)")
+                # print(f"HORN COLLISION:")
+                # print(f"  Blue: vel={b1.horn_pitch_velocity:.2f}, y={b1.y:.1f}")
+                # print(f"  Red:  vel={b2.horn_pitch_velocity:.2f}, y={b2.y:.1f}")
+                # print(f"  Lift advantage: {lift_advantage:.2f} (>0 = Blue lifts Red, <0 = Red lifts Blue)")
 
                 # Very low threshold - almost any velocity difference triggers
                 ADVANTAGE_THRESHOLD = 0.5
@@ -1412,7 +1488,7 @@ def beetle_collision(b1, b2, params):
                     # Cooldown expired - can apply lift force
                     if lift_advantage > ADVANTAGE_THRESHOLD:
                         # Blue has advantage - lifts red
-                        print(f"  -> BLUE lifts RED!")
+                        # print(f"  -> BLUE lifts RED!")
                         lift_force = lift_impulse * 0.195
                         b2.vy += lift_force  # Red gets lifted HIGHER
                         b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
@@ -1436,7 +1512,7 @@ def beetle_collision(b1, b2, params):
 
                     elif lift_advantage < -ADVANTAGE_THRESHOLD:
                         # Red has advantage - lifts blue
-                        print(f"  -> RED lifts BLUE!")
+                        # print(f"  -> RED lifts BLUE!")
                         lift_force = lift_impulse * 0.195
                         b1.vy += lift_force  # Blue gets lifted HIGHER
                         b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
@@ -1459,7 +1535,7 @@ def beetle_collision(b1, b2, params):
 
                     else:
                         # Evenly matched - both get pushed (with torque)
-                        print(f"  -> BOTH beetles pushed!")
+                        # print(f"  -> BOTH beetles pushed!")
                         push_force = lift_impulse * 0.06
                         b1.vy += push_force
                         b2.vy += push_force
@@ -1480,7 +1556,7 @@ def beetle_collision(b1, b2, params):
                         b2.lift_cooldown = LIFT_COOLDOWN_DURATION
                 else:
                     # Cooldown active - skip lift force but still print debug info
-                    print(f"  -> COOLDOWN ACTIVE (Blue: {b1.lift_cooldown:.3f}s, Red: {b2.lift_cooldown:.3f}s)")
+                    pass  # print(f"  -> COOLDOWN ACTIVE (Blue: {b1.lift_cooldown:.3f}s, Red: {b2.lift_cooldown:.3f}s)")
 
                 # Add horizontal spin based on where horn hit BOTH beetles
                 # Beetle being lifted spins
@@ -1497,7 +1573,7 @@ def beetle_collision(b1, b2, params):
                 b2.angular_velocity -= angular_impulse_b2  # Opposite direction
 
             # STRONG separation to prevent stuck collisions (now 3D!)
-            separation_force = 2.0  # Much stronger push
+            separation_force = params["SEPARATION_FORCE"]  # Tunable via slider
             b1.x += normal_x * separation_force
             b1.z += normal_z * separation_force
             b2.x -= normal_x * separation_force
@@ -1623,7 +1699,8 @@ physics_params = {
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
-    "GRAVITY": 20.0  # Adjustable gravity for testing horn lifting
+    "GRAVITY": 20.0,  # Adjustable gravity for testing horn lifting
+    "SEPARATION_FORCE": 1.15  # Instant position separation on collision (set to 0 for smooth)
 }
 
 last_time = time.time()
@@ -1978,6 +2055,7 @@ while window.running:
     physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 40.0)
     physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 1.5)
     physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
+    physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 5.0)
     physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
     new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.5, 5.0)
 
