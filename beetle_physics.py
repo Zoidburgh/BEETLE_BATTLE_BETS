@@ -237,21 +237,29 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
     center2_x = int(x2 + simulation.n_grid / 2.0)
     center2_z = int(z2 + simulation.n_grid / 2.0)
 
-    # Tighter collision bounds - only check where beetles can actually overlap
-    # Beetles are max 22 voxels from center (max horn reach: shaft 12 + prong 10 = 22)
-    x_min = ti.max(ti.max(0, center1_x - 22), ti.max(0, center2_x - 22))
-    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 22),
-                   ti.min(simulation.n_grid, center2_x + 22))
-    z_min = ti.max(ti.max(0, center1_z - 22), ti.max(0, center2_z - 22))
-    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 22),
-                   ti.min(simulation.n_grid, center2_z + 22))
+    # Early rejection: If beetles too far apart, skip voxel scanning
+    dx = center1_x - center2_x
+    dz = center1_z - center2_z
+    dist_sq = dx * dx + dz * dz
+    too_far = 0
+    if dist_sq > 2704:  # (52 voxels)^2 = beyond 2x collision margin
+        too_far = 1
 
-    # Scan for colliding voxels - TRUE 3D collision detection
+    # Tighter collision bounds - only check where beetles can actually overlap
+    # Beetles are max 26 voxels from center (max horn reach: shaft 14 + prong 7 = 21, plus diagonal tilt extension)
+    x_min = ti.max(ti.max(0, center1_x - 26), ti.max(0, center2_x - 26))
+    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 26),
+                   ti.min(simulation.n_grid, center2_x + 26))
+    z_min = ti.max(ti.max(0, center1_z - 26), ti.max(0, center2_z - 26))
+    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 26),
+                   ti.min(simulation.n_grid, center2_z + 26))
+
+    # Scan for colliding voxels - TRUE 3D collision detection (only if not too far)
     # Track Y-ranges for each beetle in each XZ column
     for gx in range(x_min, x_max):
         for gz in range(z_min, z_max):
-            # Skip remaining checks if collision already found (can't break in Taichi outermost loop)
-            if collision == 0:
+            # Skip remaining checks if collision already found OR beetles too far apart
+            if collision == 0 and too_far == 0:
                 # Track Y ranges for both beetles in this XZ column
                 beetle1_y_min = 999
                 beetle1_y_max = -1
@@ -260,8 +268,9 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
 
                 # Find Y-ranges for both beetles in this column (includes legs and tips!)
                 # Scan around the render offset where beetles are actually placed
-                y_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
-                y_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 35)
+                # Optimized range: beetles max ~15 voxels tall (8 body + 10 legs)
+                y_start = ti.max(0, int(RENDER_Y_OFFSET) - 3)
+                y_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 20)
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
                     # Blue beetle voxels (body, legs, and tips)
@@ -1478,7 +1487,7 @@ def beetle_collision(b1, b2, params):
 
                 # SIMPLIFIED SYMMETRIC LIFTING - PURE VELOCITY (for debugging)
                 # Whoever is pressing their lift key (R/U) lifts the opponent
-                lift_impulse = horn_leverage * 65.0  # Very strong upward kick!
+                lift_impulse = horn_leverage * 30.0  # Upward kick
 
                 # Calculate where the collision is relative to each beetle's center
                 collision_above_b1 = collision_y - b1.y
@@ -1498,7 +1507,7 @@ def beetle_collision(b1, b2, params):
 
                 # Very low threshold - almost any velocity difference triggers
                 ADVANTAGE_THRESHOLD = 0.5
-                LIFT_COOLDOWN_DURATION = 0.05  # Seconds between lift applications
+                LIFT_COOLDOWN_DURATION = 0.1  # Seconds between lift applications
 
                 # Check if both beetles are off cooldown before applying lift forces
                 if b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
