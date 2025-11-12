@@ -24,6 +24,8 @@ RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
 IMPULSE_MULTIPLIER = 0.7  # Linear momentum transfer
 MOMENT_OF_INERTIA_FACTOR = 1.15  # Resistance to rotation
 ARENA_RADIUS = 32.0  # 25% smaller for closer combat
+MAX_VERTICAL_VELOCITY = 20.0  # Maximum upward velocity to prevent outlier launches
+AIR_RESISTANCE = 0.02  # Air drag coefficient for vertical movement
 
 # Horn control constants
 HORN_TILT_SPEED = 2.0  # Radians per second
@@ -116,11 +118,20 @@ class Beetle:
             self.lift_cooldown = max(0.0, self.lift_cooldown - dt)
 
         # === GRAVITY SYSTEM (Phase 1) ===
+        # Air resistance (quadratic drag - lightweight calculation)
+        if abs(self.vy) > 1.0:
+            air_drag = self.vy * abs(self.vy) * AIR_RESISTANCE
+            self.vy -= air_drag * dt
+
         # Apply gravity (always on) - use global adjustable gravity
         self.vy -= physics_params["GRAVITY"] * dt
 
         # Apply vertical velocity
         self.y += self.vy * dt
+
+        # Cap vertical velocity to prevent outlier launches (hard safety limit)
+        if self.vy > MAX_VERTICAL_VELOCITY:
+            self.vy = MAX_VERTICAL_VELOCITY
 
         # Ground contact will be determined by floor collision detection in main loop
         # (No hardcoded floor level here - floor is detected via voxel checking)
@@ -1602,13 +1613,22 @@ def beetle_collision(b1, b2, params):
                 ADVANTAGE_THRESHOLD = 0.5
                 LIFT_COOLDOWN_DURATION = 0.1  # Seconds between lift applications
 
+                # Calculate height penalty (reduces lift when beetles are already airborne)
+                NORMAL_HEIGHT = 2.0  # Height where lifts start weakening (lower = earlier penalty)
+                HEIGHT_PENALTY_FACTOR = 0.35  # How quickly lift weakens with height (higher = steeper)
+                avg_height = (b1.y + b2.y) / 2.0
+                height_penalty = 1.0
+                if avg_height > NORMAL_HEIGHT:
+                    height_above_normal = avg_height - NORMAL_HEIGHT
+                    height_penalty = 1.0 / (1.0 + height_above_normal * HEIGHT_PENALTY_FACTOR)
+
                 # Check if both beetles are off cooldown before applying lift forces
                 if b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
                     # Cooldown expired - can apply lift force
                     if lift_advantage > ADVANTAGE_THRESHOLD:
                         # Blue has advantage - lifts red
                         # print(f"  -> BLUE lifts RED!")
-                        lift_force = lift_impulse * 0.195
+                        lift_force = lift_impulse * 0.195 * height_penalty
                         b2.vy += lift_force  # Red gets lifted HIGHER
                         b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
 
@@ -1632,7 +1652,7 @@ def beetle_collision(b1, b2, params):
                     elif lift_advantage < -ADVANTAGE_THRESHOLD:
                         # Red has advantage - lifts blue
                         # print(f"  -> RED lifts BLUE!")
-                        lift_force = lift_impulse * 0.195
+                        lift_force = lift_impulse * 0.195 * height_penalty
                         b1.vy += lift_force  # Blue gets lifted HIGHER
                         b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
 
@@ -1655,7 +1675,7 @@ def beetle_collision(b1, b2, params):
                     else:
                         # Evenly matched - both get pushed (with torque)
                         # print(f"  -> BOTH beetles pushed!")
-                        push_force = lift_impulse * 0.06
+                        push_force = lift_impulse * 0.06 * height_penalty
                         b1.vy += push_force
                         b2.vy += push_force
 
@@ -1790,6 +1810,9 @@ camera.pos_y = 60.0
 camera.pos_z = 0.0
 camera.pitch = -70.0
 camera.yaw = 0.0
+
+# Initialize gradient background for forest atmosphere
+renderer.init_gradient_background()
 
 print("\n=== BEETLE PHYSICS ===")
 print("BLUE BEETLE (TFGH + RY) - Tank Controls:")
@@ -2084,7 +2107,7 @@ while window.running:
     if beetle_red.active:
         place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0)
 
-    canvas.set_background_color((0.13, 0.35, 0.13))  # Forest green
+    canvas.set_background_color((0.18, 0.40, 0.22))  # Lighter forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
     canvas.scene(scene)
 

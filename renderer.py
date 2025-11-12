@@ -23,6 +23,10 @@ num_projectiles_render = ti.field(dtype=ti.i32, shape=())
 projectile_positions = ti.Vector.field(3, dtype=ti.f32, shape=10)  # Max 10 projectiles
 projectile_colors = ti.Vector.field(3, dtype=ti.f32, shape=10)
 
+# Gradient background (2 triangles forming full-screen quad)
+gradient_positions = ti.Vector.field(2, dtype=ti.f32, shape=6)
+gradient_colors = ti.Vector.field(3, dtype=ti.f32, shape=6)
+
 @ti.func
 def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
     """Get color for voxel type (GPU function)"""
@@ -33,9 +37,9 @@ def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
     if voxel_type == 1:  # STEEL
         color = ti.math.vec3(0.6, 0.65, 0.7)
 
-    # Concrete - warmer gray
+    # Concrete - darker harmonious gray for arena floor
     elif voxel_type == 2:  # CONCRETE
-        color = ti.math.vec3(0.65, 0.6, 0.55)
+        color = ti.math.vec3(0.41, 0.39, 0.37)
 
     # Molten voxels are bright orange (flowing metal)
     elif voxel_type == 3:  # MOLTEN
@@ -157,6 +161,34 @@ def extract_projectiles():
     # Set projectile count for rendering
     num_projectiles_render[None] = write_idx
 
+@ti.kernel
+def init_gradient_background():
+    """Initialize gradient background (forest canopy at top, forest floor at bottom)"""
+    # Top color - lighter forest green (canopy)
+    top_color = ti.math.vec3(0.35, 0.55, 0.40)
+    # Bottom color - darker forest green (floor)
+    bottom_color = ti.math.vec3(0.15, 0.30, 0.18)
+
+    # First triangle: bottom-left, bottom-right, top-left
+    gradient_positions[0] = ti.math.vec2(0.0, 0.0)
+    gradient_colors[0] = bottom_color
+
+    gradient_positions[1] = ti.math.vec2(1.0, 0.0)
+    gradient_colors[1] = bottom_color
+
+    gradient_positions[2] = ti.math.vec2(0.0, 1.0)
+    gradient_colors[2] = top_color
+
+    # Second triangle: bottom-right, top-right, top-left
+    gradient_positions[3] = ti.math.vec2(1.0, 0.0)
+    gradient_colors[3] = bottom_color
+
+    gradient_positions[4] = ti.math.vec2(1.0, 1.0)
+    gradient_colors[4] = top_color
+
+    gradient_positions[5] = ti.math.vec2(0.0, 1.0)
+    gradient_colors[5] = top_color
+
 class Camera:
     """Free-flying FPS camera - fly anywhere, look anywhere"""
     def __init__(self):
@@ -243,6 +275,9 @@ def render(camera, canvas, scene, voxel_field, n_grid):
         voxel_field: Voxel data field
         n_grid: Grid size
     """
+    # Draw gradient background before 3D scene (forest atmosphere)
+    canvas.triangles(gradient_positions, per_vertex_color=gradient_colors)
+
     # Extract voxels from grid (GPU operation)
     num_voxels[None] = 0  # Reset counters
     num_debris[None] = 0
@@ -258,16 +293,22 @@ def render(camera, canvas, scene, voxel_field, n_grid):
     # Set up camera
     setup_camera(camera, scene)
 
-    # Clear scene
-    scene.point_light(pos=(0, 120, 0), color=(1.0, 1.0, 1.0))
-    scene.ambient_light((0.3, 0.3, 0.3))
+    # Forest-themed lighting setup for atmospheric depth
+    # Overhead light - soft greenish (filtering through canopy)
+    scene.point_light(pos=(0, 120, 0), color=(0.75, 0.88, 0.78))
+    # Key light - warm sunbeam breaking through trees
+    scene.point_light(pos=(60, 100, -80), color=(0.95, 0.85, 0.60))
+    # Fill light - cool forest shade from opposite side
+    scene.point_light(pos=(-40, 60, 60), color=(0.30, 0.48, 0.38))
+    # Forest-tinted ambient light (canopy filtering effect)
+    scene.ambient_light((0.22, 0.28, 0.24))
 
-    # Render normal voxels (STEEL, CONCRETE, MOLTEN) - normal size
+    # Render normal voxels (STEEL, CONCRETE, MOLTEN) - balanced radius for smooth yet defined look
     count = num_voxels[None]
     if count > 0:
         scene.particles(
             voxel_positions,
-            radius=0.3,
+            radius=0.37,
             per_vertex_color=voxel_colors,
             index_count=count
         )
