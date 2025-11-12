@@ -36,7 +36,7 @@ PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
 MAX_TIMESTEP_ACCUMULATOR = 0.25  # Max accumulator to prevent spiral of death
 
 # Rendering offset - allows beetles to be visible while falling below arena
-RENDER_Y_OFFSET = 25.0  # Shift voxel rendering up so Y=0 maps to grid Y=25 (halved with 96 grid)
+RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
 
 # Beetle state with physics
 class Beetle:
@@ -619,6 +619,15 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         body_width: Width of body in voxels (default 7, range 5-9)
         leg_length: Total length of legs in voxels (default 10, range 6-14)
     """
+    # Constrain all parameters to integers to prevent floating voxels from float arithmetic
+    horn_shaft_len = int(horn_shaft_len)
+    horn_prong_len = int(horn_prong_len)
+    front_body_height = int(front_body_height)
+    back_body_height = int(back_body_height)
+    body_length = int(body_length)
+    body_width = int(body_width)
+    leg_length = int(leg_length)
+
     body_voxels = []
     leg_voxels = []  # Will be organized as list of 6 legs, each containing voxel offsets
 
@@ -661,7 +670,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     thorax_half = thorax_width // 2
     thorax_dz_min = -thorax_half
     thorax_dz_max = thorax_half + 1
-    thorax_base_width = body_width / 2.33  # Scale from 3.0 at width=7
+    thorax_base_width = thorax_width / 2.0  # Scale from constrained thorax_width to prevent floating voxels
 
     for dx in range(-1, 2):
         for dy in range(0, front_body_height):
@@ -677,7 +686,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     head_half = head_width // 2
     head_dz_min = -head_half
     head_dz_max = head_half + 1
-    head_base_width = body_width / 2.8  # Scale from 2.5 at width=7
+    head_base_width = head_width / 1.25  # Scale from constrained head_width to prevent floating voxels
 
     for dx in range(2, 4):
         for dy in range(0, 1):
@@ -1791,6 +1800,10 @@ while window.running:
     current_time = time.time()
     frame_dt = current_time - last_time
     last_time = current_time
+
+    # Calculate actual FPS before capping (for accurate display)
+    actual_fps = 1.0 / frame_dt if frame_dt > 0 else 0
+
     frame_dt = min(frame_dt, 0.02)  # Cap at 20ms to prevent accumulator spikes
 
     # Add frame time to accumulator
@@ -2047,9 +2060,8 @@ while window.running:
     canvas.scene(scene)
 
     # HUD
-    fps = 1.0 / frame_dt if frame_dt > 0 else 0
     window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.52)
-    window.GUI.text(f"FPS: {fps:.0f}")
+    window.GUI.text(f"FPS: {actual_fps:.0f}")
     window.GUI.text("")
 
     # Blue beetle status
@@ -2101,9 +2113,9 @@ while window.running:
     # Front body (thorax) is fixed at 4 layers
     front_body_height = 4
 
-    # Use slider_int for discrete voxel values (max 21 voxel reach: shaft 14 + prong 7)
-    new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 4, 14)
-    new_prong = window.GUI.slider_int("Horn Prong", window.horn_prong_value, 3, 7)
+    # Use slider_int for discrete voxel values (max 18 voxel reach: shaft 12 + prong 6)
+    new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 4, 12)
+    new_prong = window.GUI.slider_int("Horn Prong", window.horn_prong_value, 3, 6)
     new_back_body = window.GUI.slider_int("Back Body", window.back_body_height_value, 4, 8)
     new_body_length = window.GUI.slider_int("Body Length", window.body_length_value, 8, 16)
     new_body_width = window.GUI.slider_int("Body Width", window.body_width_value, 5, 9)
