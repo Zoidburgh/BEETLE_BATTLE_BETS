@@ -36,7 +36,7 @@ PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
 MAX_TIMESTEP_ACCUMULATOR = 0.25  # Max accumulator to prevent spiral of death
 
 # Rendering offset - allows beetles to be visible while falling below arena
-RENDER_Y_OFFSET = 50.0  # Shift voxel rendering up so Y=0 maps to grid Y=50
+RENDER_Y_OFFSET = 25.0  # Shift voxel rendering up so Y=0 maps to grid Y=25 (halved with 96 grid)
 
 # Beetle state with physics
 class Beetle:
@@ -607,7 +607,7 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
 # ========== PERFORMANCE OPTIMIZATION: GEOMETRY CACHING ==========
-def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5, leg_length=10):
+def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10):
     """Generate beetle geometry separated into body and legs for animation
 
     Args:
@@ -615,45 +615,74 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         horn_prong_len: Length of each Y-fork prong (default 5 voxels)
         front_body_height: Height of thorax (front body) in voxel layers (default 4, range 2-6)
         back_body_height: Height of abdomen (back body) base layers (default 5, range 2-6)
+        body_length: Length of abdomen in voxels (default 12, range 8-16)
+        body_width: Width of body in voxels (default 7, range 5-9)
         leg_length: Total length of legs in voxels (default 10, range 6-14)
     """
     body_voxels = []
     leg_voxels = []  # Will be organized as list of 6 legs, each containing voxel offsets
 
-    # ABDOMEN (rear) - LEAN ellipse (1 voxel wider)
+    # ABDOMEN (rear) - LEAN ellipse
     # Height directly controlled by back_body_height parameter
-    for dx in range(-12, -1):
-        for dy in range(0, back_body_height):
-            for dz in range(-3, 4):
-                length_pos = (dx + 6.5) / 5.0
-                # Adjust height_factor calculation based on back_body_height
-                center_height = (back_body_height - 1) / 2.0
-                height_factor = 1.0 - ((dy - center_height) / center_height) ** 2
-                if height_factor >= 0:  # Changed from > to >= to include top/bottom layers
-                    width_at_height = 4.0 * math.sqrt(max(height_factor, 0.01))  # Minimum width for top/bottom
-                    length_taper = 1.0 - (length_pos * length_pos)
-                    if length_taper > 0:
-                        max_width = width_at_height * math.sqrt(length_taper)
+    # Width directly controlled by body_width parameter
+    # Pre-calculate height-dependent values for performance
+    center_height = (back_body_height - 1) / 2.0
+    base_width_radius = body_width / 1.75  # Scale base radius proportionally (7→4.0, 5→2.86, 9→5.14)
+    width_at_height_cache = []
+    for dy in range(0, back_body_height):
+        height_factor = 1.0 - ((dy - center_height) / center_height) ** 2
+        if height_factor >= 0:
+            width_at_height_cache.append(base_width_radius * math.sqrt(max(height_factor, 0.01)))
+        else:
+            width_at_height_cache.append(0.0)
+
+    # Dynamic width range based on body_width parameter
+    width_half = body_width // 2
+    dz_min = -width_half
+    dz_max = width_half + 1
+
+    for dx in range(-body_length, -1):
+        length_pos = (dx + 6.5) / 5.0
+        length_taper = 1.0 - (length_pos * length_pos)
+        if length_taper > 0:
+            length_taper_sqrt = math.sqrt(length_taper)  # Calculate sqrt once per dx
+            for dy in range(0, back_body_height):
+                width_at_height = width_at_height_cache[dy]
+                if width_at_height > 0:
+                    max_width = width_at_height * length_taper_sqrt
+                    for dz in range(dz_min, dz_max):
                         if abs(dz) <= max_width:
                             body_voxels.append((dx, dy, dz))
 
-    # THORAX (middle) - LEAN with small pronotum bump (1 voxel wider)
+    # THORAX (middle) - LEAN with small pronotum bump, scales with body_width
     # Height directly controlled by front_body_height parameter
+    # Width proportional to abdomen (slightly narrower for taper)
+    thorax_width = max(3, int(body_width * 5 / 7))  # 71% of abdomen width, min 3
+    thorax_half = thorax_width // 2
+    thorax_dz_min = -thorax_half
+    thorax_dz_max = thorax_half + 1
+    thorax_base_width = body_width / 2.33  # Scale from 3.0 at width=7
+
     for dx in range(-1, 2):
         for dy in range(0, front_body_height):
-            for dz in range(-2, 3):
-                width_at_height = 3.0 if dy < 1 else 2.5
+            for dz in range(thorax_dz_min, thorax_dz_max):
+                width_at_height = thorax_base_width if dy < 1 else thorax_base_width * 0.83
                 length_factor = 1.0 - abs(dx) / 1.5
                 max_width = width_at_height * length_factor
                 if abs(dz) <= max_width:
                     body_voxels.append((dx, dy, dz))
 
-    # HEAD (front) - LEAN (1 voxel wider, maintains taper)
+    # HEAD (front) - LEAN, scales with body_width (narrower taper)
+    head_width = max(2, int(body_width * 3 / 7))  # 43% of abdomen width, min 2
+    head_half = head_width // 2
+    head_dz_min = -head_half
+    head_dz_max = head_half + 1
+    head_base_width = body_width / 2.8  # Scale from 2.5 at width=7
+
     for dx in range(2, 4):
         for dy in range(0, 1):
-            for dz in range(-1, 2):
-                width_at_height = 2.5
-                if abs(dz) <= width_at_height:
+            for dz in range(head_dz_min, head_dz_max):
+                if abs(dz) <= head_base_width:
                     body_voxels.append((dx, dy, dz))
 
     # EXAGGERATED Y-SHAPED HORN - Main shaft with overlapping layers
@@ -778,33 +807,34 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         middle_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(middle_right)
 
-    # Rear left leg (leg 4)
+    # Rear left leg (leg 4) - Position proportional to body length
+    rear_leg_attach_x = -(body_length // 2)  # Proportional to abdomen length
     rear_left = []
     rear_left_tips = []
     side = -1
     for i in range(coxa_len):
         for extra_y in range(2):
-            rear_left.append((-5, 1 + extra_y, side * (coxa_start + i)))
+            rear_left.append((rear_leg_attach_x, 1 + extra_y, side * (coxa_start + i)))
     for i in range(femur_len):
         for extra_y in range(2):
-            rear_left.append((-5 - i, 0 + extra_y, side * (femur_start + i)))
+            rear_left.append((rear_leg_attach_x - i, 0 + extra_y, side * (femur_start + i)))
     for i in range(tibia_len):
-        tip_x = -5 - femur_len - min(i // 2, 2)  # Continue backward
+        tip_x = rear_leg_attach_x - femur_len - min(i // 2, 2)  # Continue backward
         rear_left_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(rear_left)
 
-    # Rear right leg (leg 5)
+    # Rear right leg (leg 5) - Position proportional to body length
     rear_right = []
     rear_right_tips = []
     side = 1
     for i in range(coxa_len):
         for extra_y in range(2):
-            rear_right.append((-5, 1 + extra_y, side * (coxa_start + i)))
+            rear_right.append((rear_leg_attach_x, 1 + extra_y, side * (coxa_start + i)))
     for i in range(femur_len):
         for extra_y in range(2):
-            rear_right.append((-5 - i, 0 + extra_y, side * (femur_start + i)))
+            rear_right.append((rear_leg_attach_x - i, 0 + extra_y, side * (femur_start + i)))
     for i in range(tibia_len):
-        tip_x = -5 - femur_len - min(i // 2, 2)
+        tip_x = rear_leg_attach_x - femur_len - min(i // 2, 2)
         rear_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(rear_right)
 
@@ -870,6 +900,16 @@ collision_point_y = ti.field(ti.f32, shape=())
 collision_point_z = ti.field(ti.f32, shape=())
 collision_contact_count = ti.field(ti.i32, shape=())
 
+# Dirty voxel tracking for efficient clearing
+# Instead of scanning 250K voxels, track only the ~600 voxels we actually place
+# Max voxels per beetle: body(600) + legs(180) + tips(40) = 820
+# Two beetles: 1640, use 2000 for safety
+MAX_DIRTY_VOXELS = 2000
+dirty_voxel_x = ti.field(ti.i32, shape=MAX_DIRTY_VOXELS)
+dirty_voxel_y = ti.field(ti.i32, shape=MAX_DIRTY_VOXELS)
+dirty_voxel_z = ti.field(ti.i32, shape=MAX_DIRTY_VOXELS)
+dirty_voxel_count = ti.field(ti.i32, shape=())
+
 # Animation parameters
 WALK_CYCLE_SPEED = 0.8  # Radians per second at normal walk speed (slowed down 5X)
 
@@ -902,12 +942,12 @@ for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
     leg_tip_end_idx[leg_id] = offset
 
 # Function to rebuild beetle geometry with new parameters
-def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body_height=5, leg_length=10):
+def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10):
     """Rebuild beetle geometry cache with new horn, body, and leg parameters"""
     global BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS
 
     # Generate new geometry
-    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, leg_length)
+    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length)
 
     # Update body cache
     body_cache_size[None] = len(BEETLE_BODY)
@@ -1160,6 +1200,12 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
             # Don't overwrite floor (CONCRETE) voxels
             if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
                 simulation.voxel_type[grid_x, grid_y, grid_z] = body_color
+                # Track this voxel for efficient clearing later
+                idx = ti.atomic_add(dirty_voxel_count[None], 1)
+                if idx < MAX_DIRTY_VOXELS:
+                    dirty_voxel_x[idx] = grid_x
+                    dirty_voxel_y[idx] = grid_y
+                    dirty_voxel_z[idx] = grid_z
 
     # 2. Place legs (animated with tripod gait) - DIFFERENT COLOR
     # Tripod gait: legs 0, 3, 4 move together (Group A), legs 1, 2, 5 move together (Group B)
@@ -1231,6 +1277,12 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
                 # Don't overwrite floor (CONCRETE) voxels
                 if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
+                    # Track this voxel for efficient clearing later
+                    idx = ti.atomic_add(dirty_voxel_count[None], 1)
+                    if idx < MAX_DIRTY_VOXELS:
+                        dirty_voxel_x[idx] = grid_x
+                        dirty_voxel_y[idx] = grid_y
+                        dirty_voxel_z[idx] = grid_z
 
         # Place leg tips (same animation as legs, but BLACK color for visibility)
         tip_start_idx = leg_tip_start_idx[leg_id]
@@ -1267,13 +1319,33 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
                 # Don't overwrite floor (CONCRETE) voxels
                 if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
+                    # Track this voxel for efficient clearing later
+                    idx = ti.atomic_add(dirty_voxel_count[None], 1)
+                    if idx < MAX_DIRTY_VOXELS:
+                        dirty_voxel_x[idx] = grid_x
+                        dirty_voxel_y[idx] = grid_y
+                        dirty_voxel_z[idx] = grid_z
+
+@ti.kernel
+def reset_dirty_voxels():
+    """Reset dirty voxel counter before placing beetles"""
+    dirty_voxel_count[None] = 0
+
+@ti.kernel
+def clear_dirty_voxels():
+    """Clear only the voxels we tracked during placement (400x faster than scanning 250K voxels)"""
+    for i in range(dirty_voxel_count[None]):
+        vtype = simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]]
+        # Only clear beetle voxels (not floor/concrete)
+        if vtype >= simulation.BEETLE_BLUE:  # All beetle colors are >= BEETLE_BLUE
+            simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]] = simulation.EMPTY
 
 @ti.kernel
 def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti.f32, z2: ti.f32):
     """Clear beetles using SEPARATE bounding boxes for each beetle"""
     # Max horn reach: 22 voxels (shaft 14 + prong 7 = 21, plus diagonal extension)
     # Need margin to cover full horn reach in all directions
-    margin = 30  # Increased margin to cover max reach + safety
+    margin = 26  # Covers max reach (same as collision detection margin)
 
     # === BEETLE 1 BOUNDING BOX ===
     center_x1 = int(x1 + simulation.n_grid / 2.0)
@@ -1284,7 +1356,7 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
     min_z1 = ti.max(0, center_z1 - margin)
     max_z1 = ti.min(simulation.n_grid, center_z1 + margin)
 
-    y_margin = 30  # Covers max 22 voxel radius + some safety
+    y_margin = 23  # Covers beetle height (~15 voxels) + safety
     min_y1 = ti.max(0, int(y1 + RENDER_Y_OFFSET) - y_margin)
     max_y1 = ti.min(simulation.n_grid, int(y1 + RENDER_Y_OFFSET) + y_margin)
 
@@ -1395,24 +1467,6 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                         ti.atomic_add(collision_point_y[None], float(vy_grid) - RENDER_Y_OFFSET)
                         ti.atomic_add(collision_contact_count[None], 1)
 
-def calculate_occupied_voxels(world_x, world_z, rotation):
-    """Calculate which voxels this beetle occupies - for torque calculation"""
-    center_x = int(world_x + simulation.n_grid / 2.0)
-    center_z = int(world_z + simulation.n_grid / 2.0)
-    occupied = set()
-    voxels = simulation.voxel_type.to_numpy()
-
-    # Scan area around beetle (40x40 area, height range based on render offset)
-    y_base = int(RENDER_Y_OFFSET)
-    for i in range(max(0, center_x - 20), min(simulation.n_grid, center_x + 20)):
-        for k in range(max(0, center_z - 20), min(simulation.n_grid, center_z + 20)):
-            for j in range(max(0, y_base - 5), min(simulation.n_grid, y_base + 30)):  # Check around offset height
-                vtype = voxels[i, j, k]
-                if vtype in [simulation.BEETLE_BLUE, simulation.BEETLE_RED,
-                           simulation.BEETLE_BLUE_LEGS, simulation.BEETLE_RED_LEGS,
-                           simulation.LEG_TIP_BLUE, simulation.LEG_TIP_RED]:
-                    occupied.add((i, k))
-    return occupied
 
 def beetle_collision(b1, b2, params):
     """Handle collision with voxel-perfect detection, pushing, and horn leverage"""
@@ -1472,8 +1526,9 @@ def beetle_collision(b1, b2, params):
             is_horn_contact = contact_height_above_center > 2.0  # Horn contact (above body center)
 
             if is_horn_contact:
-                # Scale up vertical component based on height - MUCH STRONGER!
-                horn_leverage = min(contact_height_above_center / 3.0, 3.5)
+                # Scale up vertical component based on height - logarithmic scaling for diminishing returns
+                raw_leverage = contact_height_above_center / 3.0
+                horn_leverage = min(math.log(raw_leverage + 1.0) * 2.0, 2.5)
 
                 # Add MASSIVE upward bias to the collision normal
                 normal_y += horn_leverage * 2.5  # 5x stronger than before!
@@ -1736,10 +1791,14 @@ while window.running:
     current_time = time.time()
     frame_dt = current_time - last_time
     last_time = current_time
-    frame_dt = min(frame_dt, 0.05)  # Cap at 50ms to prevent huge jumps
+    frame_dt = min(frame_dt, 0.02)  # Cap at 20ms to prevent accumulator spikes
 
     # Add frame time to accumulator
     accumulator += frame_dt
+
+    # Cap accumulator to prevent spiral during geometry rebuilds (max 3 physics steps per frame)
+    MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 3  # ~50ms worth of simulation
+    accumulator = min(accumulator, MAX_ACCUMULATOR)
 
     # Camera (runs every frame at frame rate)
     renderer.handle_camera_controls(camera, window, frame_dt)
@@ -1975,7 +2034,9 @@ while window.running:
     beetle_red.is_lifted_high = (beetle_red.y > LIFT_THRESHOLD)
 
     # Render - ANIMATED with leg walking cycles and interpolated smooth positions!
-    clear_beetles_bounded(blue_render_x, blue_render_y, blue_render_z, red_render_x, red_render_y, red_render_z)
+    # OPTIMIZATION: Use dirty voxel tracking instead of scanning 250K voxels
+    clear_dirty_voxels()  # Clear voxels from previous frame (only ~600 voxels)
+    reset_dirty_voxels()  # Reset counter for this frame's tracking
     if beetle_blue.active:
         place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0)
     if beetle_red.active:
@@ -2033,6 +2094,8 @@ while window.running:
         window.horn_shaft_value = 12
         window.horn_prong_value = 5
         window.back_body_height_value = 5
+        window.body_length_value = 12
+        window.body_width_value = 7
         window.leg_length_value = 10
 
     # Front body (thorax) is fixed at 4 layers
@@ -2042,22 +2105,31 @@ while window.running:
     new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 4, 14)
     new_prong = window.GUI.slider_int("Horn Prong", window.horn_prong_value, 3, 7)
     new_back_body = window.GUI.slider_int("Back Body", window.back_body_height_value, 4, 8)
+    new_body_length = window.GUI.slider_int("Body Length", window.body_length_value, 8, 16)
+    new_body_width = window.GUI.slider_int("Body Width", window.body_width_value, 5, 9)
     new_leg_length = window.GUI.slider_int("Leg Length", window.leg_length_value, 6, 10)
 
     # Rebuild geometry if sliders changed
-    if new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or new_back_body != window.back_body_height_value or new_leg_length != window.leg_length_value:
-        rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_leg_length)
+    if new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or new_back_body != window.back_body_height_value or new_body_length != window.body_length_value or new_body_width != window.body_width_value or new_leg_length != window.leg_length_value:
+        rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length)
+        ti.sync()  # Ensure CPU writes complete before GPU kernels read
         window.horn_shaft_value = new_shaft
         window.horn_prong_value = new_prong
         window.back_body_height_value = new_back_body
+        window.body_length_value = new_body_length
+        window.body_width_value = new_body_width
         window.leg_length_value = new_leg_length
 
     window.GUI.text(f"Shaft: {window.horn_shaft_value} voxels")
     window.GUI.text(f"Prong: {window.horn_prong_value} voxels")
     window.GUI.text(f"Back Body: {window.back_body_height_value} layers")
+    window.GUI.text(f"Body Length: {window.body_length_value} voxels")
+    window.GUI.text(f"Body Width: {window.body_width_value} voxels")
     window.GUI.text(f"Leg Length: {window.leg_length_value} voxels")
     total_reach = window.horn_shaft_value + window.horn_prong_value
-    window.GUI.text(f"Total Reach: {total_reach} voxels")
+    total_body = 3 + window.body_length_value  # Thorax (3) + abdomen (variable)
+    window.GUI.text(f"Total Horn: {total_reach} voxels")
+    window.GUI.text(f"Total Body: {total_body} voxels")
 
     # Winner announcement and restart button
     if match_winner is not None:

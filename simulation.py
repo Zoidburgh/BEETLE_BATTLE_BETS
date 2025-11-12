@@ -3,8 +3,8 @@ import taichi as ti
 # Initialize Taichi with Vulkan (skip CUDA attempt for faster startup)
 ti.init(arch=ti.vulkan, debug=False)
 
-# 192x192x192 grid (50% larger than 128 - GPU workgroup limit at 256)
-n_grid = 192
+# 96x96x96 grid - optimized for beetle battle (reduced from 192 for better performance)
+n_grid = 96
 voxel_type = ti.field(dtype=ti.i32, shape=(n_grid, n_grid, n_grid))
 
 # Debris particle system (flying particles from destroyed voxels)
@@ -273,15 +273,15 @@ def init_beetle_arena():
     for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
         voxel_type[i, j, k] = EMPTY
 
-    # Arena center (updated for 192 grid)
-    center_x = 96
+    # Arena center (updated for 96 grid)
+    center_x = 48
     center_y = -2  # Lower floor so beetle legs touch properly
-    center_z = 96
+    center_z = 48
 
     # Arena dimensions (25% smaller for closer combat)
     arena_radius = 32
     floor_thickness = 2
-    floor_y_offset = 50  # Offset to match RENDER_Y_OFFSET in beetle_physics.py
+    floor_y_offset = 25  # Offset to match RENDER_Y_OFFSET in beetle_physics.py
 
     # Build circular floor - RAISED to allow beetles to fall below and be visible
     for i in range(center_x - arena_radius - 5, center_x + arena_radius + 5):
