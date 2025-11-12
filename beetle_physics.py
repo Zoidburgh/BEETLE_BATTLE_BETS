@@ -273,23 +273,23 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
                 y_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 20)
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
-                    # Blue beetle voxels (body, legs, and tips)
-                    if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_BLUE_LEGS or voxel == simulation.LEG_TIP_BLUE:
+                    # Blue beetle voxels (body, legs, tips, stripe, horn tips)
+                    if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_BLUE_LEGS or voxel == simulation.LEG_TIP_BLUE or voxel == simulation.BEETLE_BLUE_STRIPE or voxel == simulation.BEETLE_BLUE_HORN_TIP:
                         if gy < beetle1_y_min:
                             beetle1_y_min = gy
                         if gy > beetle1_y_max:
                             beetle1_y_max = gy
-                    # Red beetle voxels (body, legs, and tips)
-                    elif voxel == simulation.BEETLE_RED or voxel == simulation.BEETLE_RED_LEGS or voxel == simulation.LEG_TIP_RED:
+                    # Red beetle voxels (body, legs, tips, stripe, horn tips)
+                    elif voxel == simulation.BEETLE_RED or voxel == simulation.BEETLE_RED_LEGS or voxel == simulation.LEG_TIP_RED or voxel == simulation.BEETLE_RED_STRIPE or voxel == simulation.BEETLE_RED_HORN_TIP:
                         if gy < beetle2_y_min:
                             beetle2_y_min = gy
                         if gy > beetle2_y_max:
                             beetle2_y_max = gy
 
-                # Check if Y-ranges overlap or are adjacent (within 1 voxel)
+                # Check if Y-ranges overlap or are adjacent (within 2 voxels for better collision)
                 if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
-                    # Check if Y ranges are within 1 voxel of each other
-                    if beetle1_y_min <= beetle2_y_max + 1 and beetle2_y_min <= beetle1_y_max + 1:
+                    # Check if Y ranges are within 2 voxels of each other (prevents horn phasing)
+                    if beetle1_y_min <= beetle2_y_max + 2 and beetle2_y_min <= beetle1_y_max + 2:
                         collision = 1
 
     return collision
@@ -1208,7 +1208,32 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
             # Don't overwrite floor (CONCRETE) voxels
             if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
-                simulation.voxel_type[grid_x, grid_y, grid_z] = body_color
+                # Determine if this voxel should be a racing stripe (top centerline of body)
+                is_stripe = 0
+                if body_cache_x[i] < 3 and local_y >= 3 and ti.abs(local_z) <= 1.0:
+                    # Top layer centerline of body (not horn)
+                    is_stripe = 1
+
+                # Determine if this voxel is a horn prong tip (far end of horn)
+                is_horn_tip = 0
+                if body_cache_x[i] >= 16:
+                    # Far end of horn (prong tips for medium-to-max horns)
+                    is_horn_tip = 1
+
+                # Use appropriate color: horn tip > stripe > body color
+                voxel_color = body_color
+                if is_horn_tip == 1:
+                    if body_color == simulation.BEETLE_BLUE:
+                        voxel_color = simulation.BEETLE_BLUE_HORN_TIP
+                    elif body_color == simulation.BEETLE_RED:
+                        voxel_color = simulation.BEETLE_RED_HORN_TIP
+                elif is_stripe == 1:
+                    if body_color == simulation.BEETLE_BLUE:
+                        voxel_color = simulation.BEETLE_BLUE_STRIPE
+                    elif body_color == simulation.BEETLE_RED:
+                        voxel_color = simulation.BEETLE_RED_STRIPE
+
+                simulation.voxel_type[grid_x, grid_y, grid_z] = voxel_color
                 # Track this voxel for efficient clearing later
                 idx = ti.atomic_add(dirty_voxel_count[None], 1)
                 if idx < MAX_DIRTY_VOXELS:
@@ -1376,7 +1401,9 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                 vtype = simulation.voxel_type[i, j, k]
                 if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_RED or \
                    vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS or \
-                   vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED:
+                   vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED or \
+                   vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
+                   vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
     # === BEETLE 2 BOUNDING BOX ===
@@ -1398,7 +1425,9 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                 vtype = simulation.voxel_type[i, j, k]
                 if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_RED or \
                    vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS or \
-                   vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED:
+                   vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED or \
+                   vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
+                   vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 @ti.kernel
@@ -1429,10 +1458,10 @@ def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_co
                 vtype = simulation.voxel_type[i, j, k]
                 # Check if voxel belongs to target beetle
                 if beetle_color == simulation.BEETLE_BLUE:
-                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE:
+                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP:
                         found_in_column = 1
                 else:  # BEETLE_RED
-                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED:
+                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP:
                         found_in_column = 1
 
             # Add to occupied list if found (atomic increment to avoid race conditions)

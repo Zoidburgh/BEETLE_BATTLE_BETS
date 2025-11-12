@@ -35,6 +35,10 @@ BEETLE_BLUE_LEGS = 7  # Blue beetle legs (lighter blue)
 BEETLE_RED_LEGS = 8  # Red beetle legs (lighter red)
 LEG_TIP_BLUE = 9  # Blue beetle leg tips (dark blue for tracking)
 LEG_TIP_RED = 10  # Red beetle leg tips (dark red for tracking)
+BEETLE_BLUE_STRIPE = 11  # Blue beetle racing stripe (bright cyan/white)
+BEETLE_RED_STRIPE = 12  # Red beetle racing stripe (bright yellow/orange)
+BEETLE_BLUE_HORN_TIP = 13  # Blue beetle horn prong tips (bright white/cyan)
+BEETLE_RED_HORN_TIP = 14  # Red beetle horn prong tips (dark metallic)
 
 # Material property functions (for physics calculations)
 @ti.func

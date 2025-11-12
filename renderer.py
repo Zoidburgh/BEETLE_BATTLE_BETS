@@ -69,6 +69,22 @@ def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
     elif voxel_type == 10:  # LEG_TIP_RED
         color = ti.math.vec3(0.3, 0.0, 0.0)  # Very dark red
 
+    # Blue beetle racing stripe - bright cyan/white
+    elif voxel_type == 11:  # BEETLE_BLUE_STRIPE
+        color = ti.math.vec3(0.6, 0.9, 1.0)  # Bright cyan
+
+    # Red beetle racing stripe - rich gold/bronze
+    elif voxel_type == 12:  # BEETLE_RED_STRIPE
+        color = ti.math.vec3(0.85, 0.65, 0.2)  # Rich gold/bronze
+
+    # Blue beetle horn prong tips - bright electric blue (bold but harmonious)
+    elif voxel_type == 13:  # BEETLE_BLUE_HORN_TIP
+        color = ti.math.vec3(0.4, 0.75, 1.0)  # Bright electric blue
+
+    # Red beetle horn prong tips - deep crimson/burgundy (harmonious)
+    elif voxel_type == 14:  # BEETLE_RED_HORN_TIP
+        color = ti.math.vec3(0.4, 0.1, 0.1)  # Deep crimson
+
     return color
 
 @ti.kernel
