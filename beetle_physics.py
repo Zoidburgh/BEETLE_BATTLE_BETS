@@ -16,7 +16,7 @@ BACKWARD_MOVE_FORCE = 85.0  # Backward movement force (slower retreat)
 FRICTION = 0.88  # Slightly higher friction
 MAX_SPEED = 7.0  # Forward top speed
 BACKWARD_MAX_SPEED = 5.0  # Backward top speed (slower)
-ROTATION_SPEED = 2.1  # Rotation speed reduced by 30% for more controlled turning
+ROTATION_SPEED = 2.5  # Rotation speed for controlled turning
 ANGULAR_FRICTION = 0.85  # How quickly spin slows down (lower = more spin)
 MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec) from collision impacts
 TORQUE_MULTIPLIER = 1.95  # Rotational forces on collision
