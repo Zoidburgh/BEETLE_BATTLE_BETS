@@ -38,6 +38,7 @@ HORN_MIN_PITCH = math.radians(-10)  # -10 degrees vertical (down) - 20° range f
 HORN_YAW_SPEED = 2.0  # Radians per second
 HORN_MAX_YAW = math.radians(15)  # +15 degrees horizontal
 HORN_MIN_YAW = math.radians(-15)  # -15 degrees horizontal
+HORN_YAW_MIN_DISTANCE = 3.0  # Minimum distance between horn tips (voxels) to allow yaw rotation
 
 # Fixed timestep physics constants
 PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
@@ -1685,6 +1686,24 @@ def calculate_horn_tip_position(beetle):
     horn_tip_z = beetle.z + horn_length * math.sin(beetle.rotation) * math.cos(beetle.horn_pitch)
     return horn_tip_x, horn_tip_y, horn_tip_z
 
+def calculate_horn_tip_position_with_yaw(beetle, yaw_angle):
+    """Calculate horn tip position with a specific yaw angle (for predictive collision checking)"""
+    horn_length = 12.0  # Approximate forward reach in voxels
+
+    # Apply pitch rotation first (up/down tilt)
+    pitched_length_xz = horn_length * math.cos(beetle.horn_pitch)  # Horizontal component after pitch
+    pitched_length_y = horn_length * math.sin(beetle.horn_pitch)   # Vertical component from pitch
+
+    # Apply yaw rotation (left/right spread) on the pitched horizontal component
+    # Yaw rotates around Y axis relative to beetle facing direction
+    total_angle = beetle.rotation + yaw_angle
+
+    horn_tip_x = beetle.x + pitched_length_xz * math.cos(total_angle)
+    horn_tip_y = beetle.y + pitched_length_y + 3.0  # +3 for head height
+    horn_tip_z = beetle.z + pitched_length_xz * math.sin(total_angle)
+
+    return horn_tip_x, horn_tip_y, horn_tip_z
+
 def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_z, engagement_factor):
     """Calculate damping factor based on horn rotation direction (Phase 2: Horn Clipping Prevention)"""
     # Get horn tip position
@@ -2149,18 +2168,63 @@ while window.running:
                 beetle_blue.horn_pitch_velocity = 0.0
 
             # Horn yaw controls (V/B) - pincer spread for stag, horn yaw for rhino
+            # PREDICTIVE COLLISION CHECK: Calculate if new yaw would cause horn collision
             if window.is_pressed('v'):
                 # Stag: close pincers, Rhino: rotate horn left
                 effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
-                beetle_blue.horn_yaw -= effective_speed * PHYSICS_TIMESTEP
-                beetle_blue.horn_yaw = max(HORN_MIN_YAW, beetle_blue.horn_yaw)
-                beetle_blue.horn_yaw_velocity = -effective_speed
+                new_yaw = beetle_blue.horn_yaw - effective_speed * PHYSICS_TIMESTEP
+                new_yaw = max(HORN_MIN_YAW, new_yaw)
+
+                # Check if this yaw would cause collision with other beetle
+                if beetle_red.active:
+                    # Calculate horn tip positions with the new yaw
+                    blue_tip_x, blue_tip_y, blue_tip_z = calculate_horn_tip_position_with_yaw(beetle_blue, new_yaw)
+                    red_tip_x, red_tip_y, red_tip_z = calculate_horn_tip_position_with_yaw(beetle_red, beetle_red.horn_yaw)
+
+                    # Calculate distance between horn tips
+                    dx = blue_tip_x - red_tip_x
+                    dy = blue_tip_y - red_tip_y
+                    dz = blue_tip_z - red_tip_z
+                    distance = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+                    # Only allow rotation if horns won't be too close
+                    if distance >= HORN_YAW_MIN_DISTANCE:
+                        beetle_blue.horn_yaw = new_yaw
+                        beetle_blue.horn_yaw_velocity = -effective_speed
+                    else:
+                        beetle_blue.horn_yaw_velocity = 0.0  # Blocked by collision
+                else:
+                    # No other beetle - allow rotation freely
+                    beetle_blue.horn_yaw = new_yaw
+                    beetle_blue.horn_yaw_velocity = -effective_speed
             elif window.is_pressed('b'):
                 # Stag: open pincers, Rhino: rotate horn right
                 effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
-                beetle_blue.horn_yaw += effective_speed * PHYSICS_TIMESTEP
-                beetle_blue.horn_yaw = min(HORN_MAX_YAW, beetle_blue.horn_yaw)
-                beetle_blue.horn_yaw_velocity = effective_speed
+                new_yaw = beetle_blue.horn_yaw + effective_speed * PHYSICS_TIMESTEP
+                new_yaw = min(HORN_MAX_YAW, new_yaw)
+
+                # Check if this yaw would cause collision with other beetle
+                if beetle_red.active:
+                    # Calculate horn tip positions with the new yaw
+                    blue_tip_x, blue_tip_y, blue_tip_z = calculate_horn_tip_position_with_yaw(beetle_blue, new_yaw)
+                    red_tip_x, red_tip_y, red_tip_z = calculate_horn_tip_position_with_yaw(beetle_red, beetle_red.horn_yaw)
+
+                    # Calculate distance between horn tips
+                    dx = blue_tip_x - red_tip_x
+                    dy = blue_tip_y - red_tip_y
+                    dz = blue_tip_z - red_tip_z
+                    distance = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+                    # Only allow rotation if horns won't be too close
+                    if distance >= HORN_YAW_MIN_DISTANCE:
+                        beetle_blue.horn_yaw = new_yaw
+                        beetle_blue.horn_yaw_velocity = effective_speed
+                    else:
+                        beetle_blue.horn_yaw_velocity = 0.0  # Blocked by collision
+                else:
+                    # No other beetle - allow rotation freely
+                    beetle_blue.horn_yaw = new_yaw
+                    beetle_blue.horn_yaw_velocity = effective_speed
             else:
                 # Not pressing yaw keys - no velocity
                 beetle_blue.horn_yaw_velocity = 0.0
@@ -2208,18 +2272,63 @@ while window.running:
                 beetle_red.horn_pitch_velocity = 0.0
 
             # Horn yaw controls (N/M) - pincer spread for stag, horn yaw for rhino
+            # PREDICTIVE COLLISION CHECK: Calculate if new yaw would cause horn collision
             if window.is_pressed('n'):
                 # Stag: close pincers, Rhino: rotate horn left
                 effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
-                beetle_red.horn_yaw -= effective_speed * PHYSICS_TIMESTEP
-                beetle_red.horn_yaw = max(HORN_MIN_YAW, beetle_red.horn_yaw)
-                beetle_red.horn_yaw_velocity = -effective_speed
+                new_yaw = beetle_red.horn_yaw - effective_speed * PHYSICS_TIMESTEP
+                new_yaw = max(HORN_MIN_YAW, new_yaw)
+
+                # Check if this yaw would cause collision with other beetle
+                if beetle_blue.active:
+                    # Calculate horn tip positions with the new yaw
+                    red_tip_x, red_tip_y, red_tip_z = calculate_horn_tip_position_with_yaw(beetle_red, new_yaw)
+                    blue_tip_x, blue_tip_y, blue_tip_z = calculate_horn_tip_position_with_yaw(beetle_blue, beetle_blue.horn_yaw)
+
+                    # Calculate distance between horn tips
+                    dx = red_tip_x - blue_tip_x
+                    dy = red_tip_y - blue_tip_y
+                    dz = red_tip_z - blue_tip_z
+                    distance = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+                    # Only allow rotation if horns won't be too close
+                    if distance >= HORN_YAW_MIN_DISTANCE:
+                        beetle_red.horn_yaw = new_yaw
+                        beetle_red.horn_yaw_velocity = -effective_speed
+                    else:
+                        beetle_red.horn_yaw_velocity = 0.0  # Blocked by collision
+                else:
+                    # No other beetle - allow rotation freely
+                    beetle_red.horn_yaw = new_yaw
+                    beetle_red.horn_yaw_velocity = -effective_speed
             elif window.is_pressed('m'):
                 # Stag: open pincers, Rhino: rotate horn right
                 effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
-                beetle_red.horn_yaw += effective_speed * PHYSICS_TIMESTEP
-                beetle_red.horn_yaw = min(HORN_MAX_YAW, beetle_red.horn_yaw)
-                beetle_red.horn_yaw_velocity = effective_speed
+                new_yaw = beetle_red.horn_yaw + effective_speed * PHYSICS_TIMESTEP
+                new_yaw = min(HORN_MAX_YAW, new_yaw)
+
+                # Check if this yaw would cause collision with other beetle
+                if beetle_blue.active:
+                    # Calculate horn tip positions with the new yaw
+                    red_tip_x, red_tip_y, red_tip_z = calculate_horn_tip_position_with_yaw(beetle_red, new_yaw)
+                    blue_tip_x, blue_tip_y, blue_tip_z = calculate_horn_tip_position_with_yaw(beetle_blue, beetle_blue.horn_yaw)
+
+                    # Calculate distance between horn tips
+                    dx = red_tip_x - blue_tip_x
+                    dy = red_tip_y - blue_tip_y
+                    dz = red_tip_z - blue_tip_z
+                    distance = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+                    # Only allow rotation if horns won't be too close
+                    if distance >= HORN_YAW_MIN_DISTANCE:
+                        beetle_red.horn_yaw = new_yaw
+                        beetle_red.horn_yaw_velocity = effective_speed
+                    else:
+                        beetle_red.horn_yaw_velocity = 0.0  # Blocked by collision
+                else:
+                    # No other beetle - allow rotation freely
+                    beetle_red.horn_yaw = new_yaw
+                    beetle_red.horn_yaw_velocity = effective_speed
             else:
                 # Not pressing yaw keys - no velocity
                 beetle_red.horn_yaw_velocity = 0.0
