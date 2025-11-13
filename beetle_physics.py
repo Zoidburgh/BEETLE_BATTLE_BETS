@@ -1387,10 +1387,18 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
                     is_stripe = 1
 
                 # Determine if this voxel is a horn prong tip (far end of horn)
+                # For stag: color the curved prong section
+                # For rhino: color voxels beyond x=16
                 is_horn_tip = 0
-                if body_cache_x[i] >= 16:
-                    # Far end of horn (prong tips for medium-to-max horns)
-                    is_horn_tip = 1
+                if is_stag == 1:
+                    # Stag pincers: horns start at x=3, curved section is further out
+                    # Color tips for x >= 9 (covers curved sections even at minimum size)
+                    if body_cache_x[i] >= 9:
+                        is_horn_tip = 1
+                else:
+                    # Rhino horn: use fixed threshold for long horns
+                    if body_cache_x[i] >= 16:
+                        is_horn_tip = 1
 
                 # Use appropriate color: horn tip > stripe > body color
                 voxel_color = body_color
