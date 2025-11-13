@@ -93,12 +93,15 @@ def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
 
 @ti.kernel
 def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
-    """Extract non-empty voxels into render buffers (runs on GPU)"""
+    """Extract non-empty voxels into render buffers (runs on GPU) - optimized with static bounding box"""
     count = 0
     debris_count = 0
 
-    # Iterate through voxel grid and extract non-empty voxels
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    # Static bounding box optimization: only scan active arena region
+    # X/Z: 16-112 covers arena radius (32) + beetle reach (16) = ±48 from center
+    # Y: 3-60 covers falling (-30) to max lift height (+11) + horn tips (+12)
+    # Reduction: 2.1M voxels → 525K voxels (75% fewer checks)
+    for i, j, k in ti.ndrange((16, 112), (3, 60), (16, 112)):
         vtype = voxel_field[i, j, k]
         if vtype != 0:
             # Calculate world position
@@ -293,15 +296,13 @@ def render(camera, canvas, scene, voxel_field, n_grid):
     # Set up camera
     setup_camera(camera, scene)
 
-    # Forest-themed lighting setup for atmospheric depth
+    # Forest-themed lighting setup (optimized - 2 lights for performance)
     # Overhead light - soft greenish (filtering through canopy)
-    scene.point_light(pos=(0, 120, 0), color=(0.75, 0.88, 0.78))
+    scene.point_light(pos=(0, 100, 0), color=(0.8, 0.9, 0.8))
     # Key light - warm sunbeam breaking through trees
-    scene.point_light(pos=(60, 100, -80), color=(0.95, 0.85, 0.60))
-    # Fill light - cool forest shade from opposite side
-    scene.point_light(pos=(-40, 60, 60), color=(0.30, 0.48, 0.38))
-    # Forest-tinted ambient light (canopy filtering effect)
-    scene.ambient_light((0.22, 0.28, 0.24))
+    scene.point_light(pos=(60, 80, -80), color=(0.9, 0.8, 0.6))
+    # Forest-tinted ambient light (slightly brighter to compensate for removed fill light)
+    scene.ambient_light((0.25, 0.30, 0.26))
 
     # Render normal voxels (STEEL, CONCRETE, MOLTEN) - balanced radius for smooth yet defined look
     count = num_voxels[None]

@@ -16,9 +16,9 @@ BACKWARD_MOVE_FORCE = 85.0  # Backward movement force (slower retreat)
 FRICTION = 0.88  # Slightly higher friction
 MAX_SPEED = 7.0  # Forward top speed
 BACKWARD_MAX_SPEED = 5.0  # Backward top speed (slower)
-ROTATION_SPEED = 3.0  # Even slower rotation (6x slower than original) for more controlled turning
+ROTATION_SPEED = 2.1  # Rotation speed reduced by 30% for more controlled turning
 ANGULAR_FRICTION = 0.85  # How quickly spin slows down (lower = more spin)
-MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec)
+MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec) from collision impacts
 TORQUE_MULTIPLIER = 1.95  # Rotational forces on collision
 RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
 IMPULSE_MULTIPLIER = 0.7  # Linear momentum transfer
@@ -36,6 +36,19 @@ HORN_MIN_PITCH = math.radians(-10)  # -10 degrees vertical (down) - 20° range f
 # Fixed timestep physics constants
 PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
 MAX_TIMESTEP_ACCUMULATOR = 0.25  # Max accumulator to prevent spiral of death
+
+# Horn rotation damping constants (Phase 2: Horn Clipping Prevention)
+HORN_DAMPING_INTO = 0.85      # Damping when rotating into collision (0.85 = 15% speed)
+HORN_DAMPING_AWAY = 0.15      # Damping when rotating away from collision (0.15 = 85% speed)
+HORN_DAMPING_NEUTRAL = 0.30   # Damping when not actively rotating
+HORN_DAMPING_SMOOTHING = 0.3  # Smoothing rate for damping changes (0-1, higher = faster)
+HORN_DAMPING_DECAY_RATE = 5.0 # Damping decay rate when no contact (per second)
+HORN_ENGAGEMENT_CONTACT_THRESHOLD = 20.0  # Voxel count for full engagement
+HORN_ENGAGEMENT_HEIGHT_WEIGHT = 0.4  # Weight of height vs contact count (0-1)
+
+# Body rotation damping constants (Phase 3: Directional Rotation Prevention)
+BODY_ROTATION_DAMPING_STRENGTH = 0.9  # 90% damping (10% speed) when rotating into spin direction
+BODY_ROTATION_DAMPING_DECAY = 4.0     # Decay rate per second (~0.175s duration at full strength)
 
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
@@ -77,9 +90,14 @@ class Beetle:
         self.horn_pitch = HORN_DEFAULT_PITCH  # Vertical angle in radians - starts at +10°
         self.horn_yaw = 0.0    # Horizontal angle in radians (Phase 2, keep at 0.0 for now)
         self.horn_pitch_velocity = 0.0  # Rate of change of horn pitch (radians/sec)
+        self.horn_rotation_damping = 0.0  # Horn rotation resistance during collision (0.0-1.0)
 
         # Collision cooldown timers
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
+
+        # Body rotation damping state (Phase 3: Directional Rotation Prevention)
+        self.body_rotation_damping = 0.0  # Rotation resistance after collision (0.0-1.0)
+        self.collision_spin_direction = 0  # Which way collision made us spin (-1=CCW, 0=none, 1=CW)
 
         # Beetle active state (for fall death)
         self.active = True  # False when beetle has fallen off arena
@@ -116,6 +134,17 @@ class Beetle:
         # Decrement lift cooldown timer (prevents multi-frame lift application)
         if self.lift_cooldown > 0.0:
             self.lift_cooldown = max(0.0, self.lift_cooldown - dt)
+
+        # Decay horn rotation damping when not in contact (Phase 2: Horn Clipping Prevention)
+        if self.horn_rotation_damping > 0.0:
+            self.horn_rotation_damping = max(0.0, self.horn_rotation_damping - HORN_DAMPING_DECAY_RATE * dt)
+
+        # Decay body rotation damping after collision (Phase 3: Directional Rotation Prevention)
+        if self.body_rotation_damping > 0.0:
+            self.body_rotation_damping = max(0.0, self.body_rotation_damping - BODY_ROTATION_DAMPING_DECAY * dt)
+            # Clear spin direction when damping reaches zero
+            if self.body_rotation_damping == 0.0:
+                self.collision_spin_direction = 0
 
         # === GRAVITY SYSTEM (Phase 1) ===
         # Air resistance (quadratic drag - lightweight calculation)
@@ -238,7 +267,7 @@ def clear_beetles():
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 @ti.kernel
-def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti.i32:
+def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: ti.f32, y2: ti.f32) -> ti.i32:
     """Fast GPU-based collision check - returns 1 if collision, 0 otherwise"""
     collision = 0
 
@@ -249,11 +278,12 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
     center2_z = int(z2 + simulation.n_grid / 2.0)
 
     # Early rejection: If beetles too far apart, skip voxel scanning
+    # Optimized: Beetle max radius ~18 voxels (body + horn), so 2x radius + margin = 38
     dx = center1_x - center2_x
     dz = center1_z - center2_z
     dist_sq = dx * dx + dz * dz
     too_far = 0
-    if dist_sq > 2704:  # (52 voxels)^2 = beyond 2x collision margin
+    if dist_sq > 1444:  # (38 voxels)^2 = tighter threshold for better early rejection
         too_far = 1
 
     # Tighter collision bounds - only check where beetles can actually overlap
@@ -278,29 +308,32 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, x2: ti.f32, z2: ti.f32) -> ti
                 beetle2_y_max = -1
 
                 # Find Y-ranges for both beetles in this column (includes legs and tips!)
-                # Scan around the render offset where beetles are actually placed
-                # Optimized range: beetles max ~15 voxels tall (8 body + 10 legs)
-                y_start = ti.max(0, int(RENDER_Y_OFFSET) - 3)
-                y_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 20)
+                # Optimized: Use dynamic range based on beetle Y positions
+                # Beetles are max 15 voxels tall (8 body + 10 legs extending down)
+                beetle_max_height = 15
+                y_center = int(RENDER_Y_OFFSET) + int((y1 + y2) / 2.0)
+                y_start = ti.max(0, y_center - beetle_max_height)
+                y_end = ti.min(simulation.n_grid, y_center + beetle_max_height)
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
-                    # Blue beetle voxels (body, legs, tips, stripe, horn tips)
-                    if voxel == simulation.BEETLE_BLUE or voxel == simulation.BEETLE_BLUE_LEGS or voxel == simulation.LEG_TIP_BLUE or voxel == simulation.BEETLE_BLUE_STRIPE or voxel == simulation.BEETLE_BLUE_HORN_TIP:
+                    # Optimized: Range-based checks (all blue beetle types are 5-13, red are 6-14)
+                    # Blue beetle voxels (body=5, legs=7, tips=9, stripe=11, horn_tip=13)
+                    if voxel >= 5 and voxel <= 13 and (voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13):
                         if gy < beetle1_y_min:
                             beetle1_y_min = gy
                         if gy > beetle1_y_max:
                             beetle1_y_max = gy
-                    # Red beetle voxels (body, legs, tips, stripe, horn tips)
-                    elif voxel == simulation.BEETLE_RED or voxel == simulation.BEETLE_RED_LEGS or voxel == simulation.LEG_TIP_RED or voxel == simulation.BEETLE_RED_STRIPE or voxel == simulation.BEETLE_RED_HORN_TIP:
+                    # Red beetle voxels (body=6, legs=8, tips=10, stripe=12, horn_tip=14)
+                    elif voxel >= 6 and voxel <= 14 and (voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14):
                         if gy < beetle2_y_min:
                             beetle2_y_min = gy
                         if gy > beetle2_y_max:
                             beetle2_y_max = gy
 
-                # Check if Y-ranges overlap or are adjacent (within 2 voxels for better collision)
+                # Check if Y-ranges overlap or are adjacent (within 1 voxel for tighter collision)
                 if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
-                    # Check if Y ranges are within 2 voxels of each other (prevents horn phasing)
-                    if beetle1_y_min <= beetle2_y_max + 2 and beetle2_y_min <= beetle1_y_max + 2:
+                    # Reduced tolerance from 2 to 1 voxel to reduce horn clipping
+                    if beetle1_y_min <= beetle2_y_max + 1 and beetle2_y_min <= beetle1_y_max + 1:
                         collision = 1
 
     return collision
@@ -1517,10 +1550,50 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                         ti.atomic_add(collision_contact_count[None], 1)
 
 
+def calculate_horn_tip_position(beetle):
+    """Calculate approximate world position of horn tip (Phase 2: Horn Clipping Prevention)"""
+    horn_length = 12.0  # Approximate forward reach in voxels
+    horn_tip_x = beetle.x + horn_length * math.cos(beetle.rotation) * math.cos(beetle.horn_pitch)
+    horn_tip_y = beetle.y + horn_length * math.sin(beetle.horn_pitch) + 3.0  # +3 for head height
+    horn_tip_z = beetle.z + horn_length * math.sin(beetle.rotation) * math.cos(beetle.horn_pitch)
+    return horn_tip_x, horn_tip_y, horn_tip_z
+
+def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_z, engagement_factor):
+    """Calculate damping factor based on horn rotation direction (Phase 2: Horn Clipping Prevention)"""
+    # Get horn tip position
+    horn_tip_x, horn_tip_y, horn_tip_z = calculate_horn_tip_position(beetle)
+
+    # Vector from horn tip to collision point
+    to_collision_y = collision_y - horn_tip_y
+
+    # Determine rotation direction relative to collision
+    rotating_up = beetle.horn_pitch_velocity > 0.1
+    rotating_down = beetle.horn_pitch_velocity < -0.1
+    collision_above_tip = to_collision_y > 0.0
+
+    # Calculate if rotating toward or away from collision
+    rotating_toward = (rotating_up and collision_above_tip) or (rotating_down and not collision_above_tip)
+    rotating_away = (rotating_up and not collision_above_tip) or (rotating_down and collision_above_tip)
+
+    # Select damping amount based on direction
+    if rotating_toward:
+        target_damping = HORN_DAMPING_INTO * engagement_factor
+    elif rotating_away:
+        target_damping = HORN_DAMPING_AWAY * engagement_factor
+    else:
+        target_damping = HORN_DAMPING_NEUTRAL * engagement_factor
+
+    # Smooth interpolation to avoid jerky feel
+    current_damping = beetle.horn_rotation_damping
+    new_damping = current_damping + (target_damping - current_damping) * HORN_DAMPING_SMOOTHING
+
+    return new_damping
+
+
 def beetle_collision(b1, b2, params):
     """Handle collision with voxel-perfect detection, pushing, and horn leverage"""
     # Fast GPU-based collision check
-    has_collision = check_collision_kernel(b1.x, b1.z, b2.x, b2.z)
+    has_collision = check_collision_kernel(b1.x, b1.z, b1.y, b2.x, b2.z, b2.y)
 
     if has_collision:
         # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
@@ -1575,6 +1648,18 @@ def beetle_collision(b1, b2, params):
             is_horn_contact = contact_height_above_center > 2.0  # Horn contact (above body center)
 
             if is_horn_contact:
+                # === PHASE 2: HORN ROTATION DAMPING ===
+                # Calculate engagement factor (how much horn contact exists)
+                normalized_contact_count = min(contact_count / HORN_ENGAGEMENT_CONTACT_THRESHOLD, 1.0)
+                height_factor = min((contact_height_above_center - 2.0) / 8.0, 1.0)
+                engagement_factor = (normalized_contact_count * (1.0 - HORN_ENGAGEMENT_HEIGHT_WEIGHT) +
+                                    height_factor * HORN_ENGAGEMENT_HEIGHT_WEIGHT)
+
+                # Calculate damping for both beetles based on their rotation direction
+                b1.horn_rotation_damping = calculate_horn_rotation_damping(
+                    b1, collision_x, collision_y, collision_z, engagement_factor)
+                b2.horn_rotation_damping = calculate_horn_rotation_damping(
+                    b2, collision_x, collision_y, collision_z, engagement_factor)
                 # Scale up vertical component based on height - logarithmic scaling for diminishing returns
                 raw_leverage = contact_height_above_center / 3.0
                 horn_leverage = min(math.log(raw_leverage + 1.0) * 2.0, 2.5)
@@ -1780,6 +1865,23 @@ def beetle_collision(b1, b2, params):
                 angular_impulse2 = (torque2 / b2.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
                 b2.angular_velocity += angular_impulse2
 
+            # === PHASE 3: BODY ROTATION DAMPING ===
+            # Track collision-induced spin direction and set damping
+            # This prevents immediate rotation into collision direction, preventing horn clipping
+
+            # For beetle 1: if angular_velocity is significant, apply damping
+            if abs(b1.angular_velocity) > 0.3:  # Lower threshold for more responsiveness
+                # Store spin direction: 1 = clockwise (positive), -1 = counterclockwise (negative)
+                b1.collision_spin_direction = 1 if b1.angular_velocity > 0 else -1
+                # Apply full damping strength on any significant collision
+                b1.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
+
+            # For beetle 2: same logic
+            if abs(b2.angular_velocity) > 0.3:
+                b2.collision_spin_direction = 1 if b2.angular_velocity > 0 else -1
+                # Apply full damping strength on any significant collision
+                b2.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
+
 def normalize_angle(angle):
     """Normalize angle to [0, 2π)"""
     while angle < 0:
@@ -1878,13 +1980,23 @@ while window.running:
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
         if beetle_blue.active and not beetle_blue.is_falling:
-            # Rotation controls (F/H)
+            # Rotation controls (F/H) WITH PHASE 3 DIRECTIONAL DAMPING
             if window.is_pressed('f'):
-                # Rotate left (counterclockwise)
-                beetle_blue.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+                # Rotate left (counterclockwise) = negative rotation
+                # Apply damping if collision made us spin counterclockwise (-1)
+                if beetle_blue.collision_spin_direction < 0:
+                    effective_speed = ROTATION_SPEED * (1.0 - beetle_blue.body_rotation_damping)
+                else:
+                    effective_speed = ROTATION_SPEED
+                beetle_blue.rotation -= effective_speed * PHYSICS_TIMESTEP
             if window.is_pressed('h'):
-                # Rotate right (clockwise)
-                beetle_blue.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
+                # Rotate right (clockwise) = positive rotation
+                # Apply damping if collision made us spin clockwise (+1)
+                if beetle_blue.collision_spin_direction > 0:
+                    effective_speed = ROTATION_SPEED * (1.0 - beetle_blue.body_rotation_damping)
+                else:
+                    effective_speed = ROTATION_SPEED
+                beetle_blue.rotation += effective_speed * PHYSICS_TIMESTEP
 
             # Movement controls (T/G) - move in facing direction
             if window.is_pressed('t'):
@@ -1898,17 +2010,19 @@ while window.running:
                 move_z = -math.sin(beetle_blue.rotation)
                 beetle_blue.apply_force(move_x * BACKWARD_MOVE_FORCE, move_z * BACKWARD_MOVE_FORCE, PHYSICS_TIMESTEP)
 
-            # Horn controls (R/Y) - tilt up/down
+            # Horn controls (R/Y) - tilt up/down WITH PHASE 2 DAMPING
             if window.is_pressed('r'):
-                # Tilt horn up
-                beetle_blue.horn_pitch += HORN_TILT_SPEED * PHYSICS_TIMESTEP
+                # Tilt horn up with damping applied
+                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+                beetle_blue.horn_pitch += effective_speed * PHYSICS_TIMESTEP
                 beetle_blue.horn_pitch = min(HORN_MAX_PITCH, beetle_blue.horn_pitch)
-                beetle_blue.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
+                beetle_blue.horn_pitch_velocity = effective_speed
             elif window.is_pressed('y'):
-                # Tilt horn down
-                beetle_blue.horn_pitch -= HORN_TILT_SPEED * PHYSICS_TIMESTEP
+                # Tilt horn down with damping applied
+                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+                beetle_blue.horn_pitch -= effective_speed * PHYSICS_TIMESTEP
                 beetle_blue.horn_pitch = max(HORN_MIN_PITCH, beetle_blue.horn_pitch)
-                beetle_blue.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
+                beetle_blue.horn_pitch_velocity = -effective_speed
             else:
                 # Not pressing horn keys - no velocity
                 beetle_blue.horn_pitch_velocity = 0.0
@@ -1919,13 +2033,23 @@ while window.running:
 
         # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
         if beetle_red.active and not beetle_red.is_falling:
-            # Rotation controls (J/L)
+            # Rotation controls (J/L) WITH PHASE 3 DIRECTIONAL DAMPING
             if window.is_pressed('j'):
-                # Rotate left (counterclockwise)
-                beetle_red.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+                # Rotate left (counterclockwise) = negative rotation
+                # Apply damping if collision made us spin counterclockwise (-1)
+                if beetle_red.collision_spin_direction < 0:
+                    effective_speed = ROTATION_SPEED * (1.0 - beetle_red.body_rotation_damping)
+                else:
+                    effective_speed = ROTATION_SPEED
+                beetle_red.rotation -= effective_speed * PHYSICS_TIMESTEP
             if window.is_pressed('l'):
-                # Rotate right (clockwise)
-                beetle_red.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
+                # Rotate right (clockwise) = positive rotation
+                # Apply damping if collision made us spin clockwise (+1)
+                if beetle_red.collision_spin_direction > 0:
+                    effective_speed = ROTATION_SPEED * (1.0 - beetle_red.body_rotation_damping)
+                else:
+                    effective_speed = ROTATION_SPEED
+                beetle_red.rotation += effective_speed * PHYSICS_TIMESTEP
 
             # Movement controls (I/K) - move in facing direction
             if window.is_pressed('i'):
@@ -1939,17 +2063,19 @@ while window.running:
                 move_z = -math.sin(beetle_red.rotation)
                 beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE, move_z * BACKWARD_MOVE_FORCE, PHYSICS_TIMESTEP)
 
-            # Horn controls (U/O) - tilt up/down
+            # Horn controls (U/O) - tilt up/down WITH PHASE 2 DAMPING
             if window.is_pressed('u'):
-                # Tilt horn up
-                beetle_red.horn_pitch += HORN_TILT_SPEED * PHYSICS_TIMESTEP
+                # Tilt horn up with damping applied
+                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+                beetle_red.horn_pitch += effective_speed * PHYSICS_TIMESTEP
                 beetle_red.horn_pitch = min(HORN_MAX_PITCH, beetle_red.horn_pitch)
-                beetle_red.horn_pitch_velocity = HORN_TILT_SPEED  # Positive = tilting up
+                beetle_red.horn_pitch_velocity = effective_speed
             elif window.is_pressed('o'):
-                # Tilt horn down
-                beetle_red.horn_pitch -= HORN_TILT_SPEED * PHYSICS_TIMESTEP
+                # Tilt horn down with damping applied
+                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+                beetle_red.horn_pitch -= effective_speed * PHYSICS_TIMESTEP
                 beetle_red.horn_pitch = max(HORN_MIN_PITCH, beetle_red.horn_pitch)
-                beetle_red.horn_pitch_velocity = -HORN_TILT_SPEED  # Negative = tilting down
+                beetle_red.horn_pitch_velocity = -effective_speed
             else:
                 # Not pressing horn keys - no velocity
                 beetle_red.horn_pitch_velocity = 0.0
