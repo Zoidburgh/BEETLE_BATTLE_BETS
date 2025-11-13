@@ -47,8 +47,8 @@ HORN_ENGAGEMENT_CONTACT_THRESHOLD = 20.0  # Voxel count for full engagement
 HORN_ENGAGEMENT_HEIGHT_WEIGHT = 0.4  # Weight of height vs contact count (0-1)
 
 # Body rotation damping constants (Phase 3: Directional Rotation Prevention)
-BODY_ROTATION_DAMPING_STRENGTH = 0.9  # 90% damping (10% speed) when rotating into spin direction
-BODY_ROTATION_DAMPING_DECAY = 4.0     # Decay rate per second (~0.175s duration at full strength)
+BODY_ROTATION_DAMPING_STRENGTH = 0.95  # 95% damping (5% speed) when rotating into spin direction
+BODY_ROTATION_DAMPING_DECAY = 2.0      # Decay rate per second (~0.5s duration at full strength)
 
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
@@ -98,6 +98,7 @@ class Beetle:
         # Body rotation damping state (Phase 3: Directional Rotation Prevention)
         self.body_rotation_damping = 0.0  # Rotation resistance after collision (0.0-1.0)
         self.collision_spin_direction = 0  # Which way collision made us spin (-1=CCW, 0=none, 1=CW)
+        self.in_horn_collision = False  # True when actively in horn-to-horn collision
 
         # Beetle active state (for fall death)
         self.active = True  # False when beetle has fallen off arena
@@ -138,6 +139,9 @@ class Beetle:
         # Decay horn rotation damping when not in contact (Phase 2: Horn Clipping Prevention)
         if self.horn_rotation_damping > 0.0:
             self.horn_rotation_damping = max(0.0, self.horn_rotation_damping - HORN_DAMPING_DECAY_RATE * dt)
+
+        # Clear horn collision flag (will be reset each frame if still colliding)
+        self.in_horn_collision = False
 
         # Decay body rotation damping after collision (Phase 3: Directional Rotation Prevention)
         if self.body_rotation_damping > 0.0:
@@ -1648,6 +1652,10 @@ def beetle_collision(b1, b2, params):
             is_horn_contact = contact_height_above_center > 2.0  # Horn contact (above body center)
 
             if is_horn_contact:
+                # Mark both beetles as in horn collision (blocks rotation during contact)
+                b1.in_horn_collision = True
+                b2.in_horn_collision = True
+
                 # === PHASE 2: HORN ROTATION DAMPING ===
                 # Calculate engagement factor (how much horn contact exists)
                 normalized_contact_count = min(contact_count / HORN_ENGAGEMENT_CONTACT_THRESHOLD, 1.0)
@@ -1980,23 +1988,12 @@ while window.running:
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
         if beetle_blue.active and not beetle_blue.is_falling:
-            # Rotation controls (F/H) WITH PHASE 3 DIRECTIONAL DAMPING
-            if window.is_pressed('f'):
-                # Rotate left (counterclockwise) = negative rotation
-                # Apply damping if collision made us spin counterclockwise (-1)
-                if beetle_blue.collision_spin_direction < 0:
-                    effective_speed = ROTATION_SPEED * (1.0 - beetle_blue.body_rotation_damping)
-                else:
-                    effective_speed = ROTATION_SPEED
-                beetle_blue.rotation -= effective_speed * PHYSICS_TIMESTEP
-            if window.is_pressed('h'):
-                # Rotate right (clockwise) = positive rotation
-                # Apply damping if collision made us spin clockwise (+1)
-                if beetle_blue.collision_spin_direction > 0:
-                    effective_speed = ROTATION_SPEED * (1.0 - beetle_blue.body_rotation_damping)
-                else:
-                    effective_speed = ROTATION_SPEED
-                beetle_blue.rotation += effective_speed * PHYSICS_TIMESTEP
+            # Rotation controls (F/H) - BLOCKED during horn collision
+            if not beetle_blue.in_horn_collision:
+                if window.is_pressed('f'):
+                    beetle_blue.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+                if window.is_pressed('h'):
+                    beetle_blue.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
 
             # Movement controls (T/G) - move in facing direction
             if window.is_pressed('t'):
@@ -2033,23 +2030,12 @@ while window.running:
 
         # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
         if beetle_red.active and not beetle_red.is_falling:
-            # Rotation controls (J/L) WITH PHASE 3 DIRECTIONAL DAMPING
-            if window.is_pressed('j'):
-                # Rotate left (counterclockwise) = negative rotation
-                # Apply damping if collision made us spin counterclockwise (-1)
-                if beetle_red.collision_spin_direction < 0:
-                    effective_speed = ROTATION_SPEED * (1.0 - beetle_red.body_rotation_damping)
-                else:
-                    effective_speed = ROTATION_SPEED
-                beetle_red.rotation -= effective_speed * PHYSICS_TIMESTEP
-            if window.is_pressed('l'):
-                # Rotate right (clockwise) = positive rotation
-                # Apply damping if collision made us spin clockwise (+1)
-                if beetle_red.collision_spin_direction > 0:
-                    effective_speed = ROTATION_SPEED * (1.0 - beetle_red.body_rotation_damping)
-                else:
-                    effective_speed = ROTATION_SPEED
-                beetle_red.rotation += effective_speed * PHYSICS_TIMESTEP
+            # Rotation controls (J/L) - BLOCKED during horn collision
+            if not beetle_red.in_horn_collision:
+                if window.is_pressed('j'):
+                    beetle_red.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+                if window.is_pressed('l'):
+                    beetle_red.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
 
             # Movement controls (I/K) - move in facing direction
             if window.is_pressed('i'):
