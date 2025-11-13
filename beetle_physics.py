@@ -29,9 +29,15 @@ AIR_RESISTANCE = 0.02  # Air drag coefficient for vertical movement
 
 # Horn control constants
 HORN_TILT_SPEED = 2.0  # Radians per second
-HORN_DEFAULT_PITCH = math.radians(10)  # Start at +10 degrees (raised)
+HORN_DEFAULT_PITCH = math.radians(10)  # Start at +10 degrees (raised) - for rhino
+HORN_DEFAULT_PITCH_STAG = math.radians(18)  # Start at +18 degrees (raised) - for stag pincers
 HORN_MAX_PITCH = math.radians(30)  # +30 degrees vertical (up) - 20° range from default
 HORN_MIN_PITCH = math.radians(-10)  # -10 degrees vertical (down) - 20° range from default
+
+# Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
+HORN_YAW_SPEED = 2.0  # Radians per second
+HORN_MAX_YAW = math.radians(15)  # +15 degrees horizontal
+HORN_MIN_YAW = math.radians(-15)  # -15 degrees horizontal
 
 # Fixed timestep physics constants
 PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
@@ -88,8 +94,9 @@ class Beetle:
 
         # Horn control state
         self.horn_pitch = HORN_DEFAULT_PITCH  # Vertical angle in radians - starts at +10°
-        self.horn_yaw = 0.0    # Horizontal angle in radians (Phase 2, keep at 0.0 for now)
+        self.horn_yaw = 0.0    # Horizontal angle (stag=pincer spread, rhino=horn yaw) in radians
         self.horn_pitch_velocity = 0.0  # Rate of change of horn pitch (radians/sec)
+        self.horn_yaw_velocity = 0.0  # Rate of change of horn yaw (radians/sec)
         self.horn_rotation_damping = 0.0  # Horn rotation resistance during collision (0.0-1.0)
 
         # Collision cooldown timers
@@ -113,6 +120,7 @@ class Beetle:
         self.prev_pitch = 0.0
         self.prev_roll = 0.0
         self.prev_horn_pitch = HORN_DEFAULT_PITCH
+        self.prev_horn_yaw = 0.0
 
     def save_previous_state(self):
         """Save current state as previous for interpolation"""
@@ -123,6 +131,7 @@ class Beetle:
         self.prev_pitch = self.pitch
         self.prev_roll = self.roll
         self.prev_horn_pitch = self.horn_pitch
+        self.prev_horn_yaw = self.horn_yaw
 
     def apply_force(self, fx, fz, dt):
         """Add force to velocity"""
@@ -655,12 +664,13 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
 # ========== PERFORMANCE OPTIMIZATION: GEOMETRY CACHING ==========
-def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10):
+def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino"):
     """Generate beetle geometry separated into body and legs for animation
 
     Args:
         horn_shaft_len: Length of main horn shaft (default 12 voxels)
         horn_prong_len: Length of each Y-fork prong (default 5 voxels)
+        horn_type: Type of horn to generate - "rhino" or "stag" (default "rhino")
         front_body_height: Height of thorax (front body) in voxel layers (default 4, range 2-6)
         back_body_height: Height of abdomen (back body) base layers (default 5, range 2-6)
         body_length: Length of abdomen in voxels (default 12, range 8-16)
@@ -742,49 +752,56 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                 if abs(dz) <= head_base_width:
                     body_voxels.append((dx, dy, dz))
 
-    # EXAGGERATED Y-SHAPED HORN - Main shaft with overlapping layers
-    shaft_segments = int(horn_shaft_len)
-    for i in range(shaft_segments):
-        dx = 3 + i
-        height_curve = int(i * 0.3)
-        dy = 1 + height_curve
-        thickness = 1  # Changed from 2 to 1 for 3-voxel width
-        for dz in range(-thickness, thickness + 1):
-            # Add voxel at current height
-            body_voxels.append((dx, dy, dz))
-            # Add overlapping voxel below (unless at bottom)
-            if dy > 1:
+    # HORN GENERATION - Choose between rhino or stag beetle type
+    if horn_type == "stag":
+        # STAG BEETLE PINCERS - Horizontal mandibles
+        pincer_voxels = generate_stag_pincers(horn_shaft_len - 2, horn_prong_len)
+        body_voxels.extend(pincer_voxels)
+    else:
+        # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
+        # Main shaft with overlapping layers
+        shaft_segments = int(horn_shaft_len)
+        for i in range(shaft_segments):
+            dx = 3 + i
+            height_curve = int(i * 0.3)
+            dy = 1 + height_curve
+            thickness = 1  # Changed from 2 to 1 for 3-voxel width
+            for dz in range(-thickness, thickness + 1):
+                # Add voxel at current height
+                body_voxels.append((dx, dy, dz))
+                # Add overlapping voxel below (unless at bottom)
+                if dy > 1:
+                    body_voxels.append((dx, dy - 1, dz))
+
+        # Y-fork - Left prong with overlapping layers
+        prong_segments = int(horn_prong_len)
+        prong_start_x = 3 + shaft_segments  # Start where shaft ends
+        prong_start_y = 1 + int(shaft_segments * 0.3)  # Continue from shaft height curve
+
+        for i in range(prong_segments):
+            dx = prong_start_x + i
+            dy = prong_start_y + i
+            center_dz = -i
+            # Use range(-1, 1) to create 2-voxel width prong on left side
+            for dz_offset in range(-1, 1):
+                dz = center_dz + dz_offset
+                # Add voxel at current height
+                body_voxels.append((dx, dy, dz))
+                # Add overlapping voxel below
                 body_voxels.append((dx, dy - 1, dz))
 
-    # EXAGGERATED Y-fork - Left prong with overlapping layers
-    prong_segments = int(horn_prong_len)
-    prong_start_x = 3 + shaft_segments  # Start where shaft ends
-    prong_start_y = 1 + int(shaft_segments * 0.3)  # Continue from shaft height curve
-
-    for i in range(prong_segments):
-        dx = prong_start_x + i
-        dy = prong_start_y + i
-        center_dz = -i
-        # Use range(-1, 1) to create 2-voxel width prong on left side
-        for dz_offset in range(-1, 1):
-            dz = center_dz + dz_offset
-            # Add voxel at current height
-            body_voxels.append((dx, dy, dz))
-            # Add overlapping voxel below
-            body_voxels.append((dx, dy - 1, dz))
-
-    # Right prong with overlapping layers
-    for i in range(prong_segments):
-        dx = prong_start_x + i
-        dy = prong_start_y + i
-        center_dz = i
-        # Use range(0, 2) to create 2-voxel width prong on right side
-        for dz_offset in range(0, 2):
-            dz = center_dz + dz_offset
-            # Add voxel at current height
-            body_voxels.append((dx, dy, dz))
-            # Add overlapping voxel below
-            body_voxels.append((dx, dy - 1, dz))
+        # Right prong with overlapping layers
+        for i in range(prong_segments):
+            dx = prong_start_x + i
+            dy = prong_start_y + i
+            center_dz = i
+            # Use range(0, 2) to create 2-voxel width prong on right side
+            for dz_offset in range(0, 2):
+                dz = center_dz + dz_offset
+                # Add voxel at current height
+                body_voxels.append((dx, dy, dz))
+                # Add overlapping voxel below
+                body_voxels.append((dx, dy - 1, dz))
 
     # IMPROVED LEGS (6 total) - Separated for animation
     # Leg order: [front_left, front_right, middle_left, middle_right, rear_left, rear_right]
@@ -999,12 +1016,12 @@ for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
     leg_tip_end_idx[leg_id] = offset
 
 # Function to rebuild beetle geometry with new parameters
-def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10):
+def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino"):
     """Rebuild beetle geometry cache with new horn, body, and leg parameters"""
     global BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS
 
     # Generate new geometry
-    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length)
+    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type)
 
     # Update body cache
     body_cache_size[None] = len(BEETLE_BODY)
@@ -1040,6 +1057,74 @@ def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body
         leg_tip_end_idx[leg_id] = offset
 
     print(f"Rebuilt beetle: {len(BEETLE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
+
+def generate_stag_pincers(shaft_length, curve_length):
+    """Generate stag beetle pincers with dynamic sizing (horizontal mandibles)
+
+    Args:
+        shaft_length: Length of straight horizontal segment close to body
+        curve_length: Length of curved inward segment at tips
+
+    Returns list of (x, y, z) voxel coordinates for both pincers.
+    Pivot point: (x=3, y=1, z=0) same as rhinoceros horn
+    """
+    pincer_voxels = []
+
+    # Convert to int for voxel generation
+    shaft_length = int(shaft_length)
+    curve_length = int(curve_length)
+
+    # LEFT PINCER (extends in -Z direction, curves inward toward +Z)
+    # Straight shaft section extending left
+    for i in range(shaft_length):
+        dx = 3 + i  # Extends forward
+        dy = 1      # Same height as pivot
+        dz = -i - 1 # Extends left (-Z direction), offset by -1 to avoid center overlap
+
+        # Make it 2-3 voxels thick for solidity
+        for dy_offset in range(2):  # Add vertical thickness
+            for dz_offset in range(-1, 1):  # Add some width
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
+
+    # Curved tip section (curves inward)
+    curve_start_x = 3 + shaft_length
+    curve_start_z = -shaft_length - 1  # Match the offset
+    for i in range(curve_length):
+        dx = curve_start_x + i
+        dy = 1
+        dz = curve_start_z + int(i * 0.36)  # Curves back toward center at 110° angle (+Z direction)
+
+        # Maintain thickness
+        for dy_offset in range(2):
+            for dz_offset in range(-1, 1):
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
+
+    # RIGHT PINCER (extends in +Z direction, curves inward toward -Z)
+    # Straight shaft section extending right
+    for i in range(shaft_length):
+        dx = 3 + i  # Extends forward
+        dy = 1      # Same height as pivot
+        dz = i + 1  # Extends right (+Z direction), offset by +1 to avoid center overlap
+
+        # Make it 2-3 voxels thick for solidity
+        for dy_offset in range(2):
+            for dz_offset in range(-1, 1):
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
+
+    # Curved tip section (curves inward)
+    curve_start_x = 3 + shaft_length
+    curve_start_z = shaft_length + 1  # Match the offset
+    for i in range(curve_length):
+        dx = curve_start_x + i
+        dy = 1
+        dz = curve_start_z - int(i * 0.36)  # Curves back toward center at 110° angle (-Z direction)
+
+        # Maintain thickness
+        for dy_offset in range(2):
+            for dz_offset in range(-1, 1):
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
+
+    return pincer_voxels
 
 @ti.kernel
 def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
@@ -1186,8 +1271,13 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     return lowest_y
 
 @ti.kernel
-def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32):
-    """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs"""
+def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, is_stag: ti.i32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32):
+    """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
+
+    Args:
+        horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino=horn yaw)
+        is_stag: 1 for stag beetle (pincers), 0 for rhino beetle (horn)
+    """
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
     base_y = int(world_y + RENDER_Y_OFFSET)  # Apply Y offset for rendering below floor
@@ -1214,21 +1304,54 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
         local_y = body_cache_y[i]
         local_z = float(body_cache_z[i])
 
-        # Apply horn pitch rotation ONLY to horn voxels (dx >= 3)
+        # Apply horn pitch and yaw rotation ONLY to horn voxels (dx >= 3)
         if body_cache_x[i] >= 3:
-            # This is a horn voxel - apply pitch rotation around pivot point
-            # Translate to pivot, rotate, translate back
+            # This is a horn voxel - apply pitch and yaw rotations around pivot point
+            # Translate to pivot
             rel_x = local_x - horn_pivot_x
             rel_y = float(local_y - horn_pivot_y)
+            rel_z = local_z  # Z is already centered at 0
 
-            # Pitch rotation (around Z-axis in beetle local space, before body rotation)
+            # STEP 1: Pitch rotation (around Z-axis in beetle local space)
             # Positive pitch = horn rotates up
-            pitched_x = rel_x * cos_pitch - rel_y * sin_pitch
-            pitched_y = rel_x * sin_pitch + rel_y * cos_pitch
+            cos_horn_pitch = ti.cos(horn_pitch)
+            sin_horn_pitch = ti.sin(horn_pitch)
+            pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+            pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+            pitched_z = rel_z  # Z unchanged by pitch
+
+            # STEP 2: Yaw rotation (around Y-axis in beetle local space)
+            # Behavior differs based on beetle type
+            cos_horn_yaw = ti.cos(horn_yaw)
+            sin_horn_yaw = ti.sin(horn_yaw)
+
+            # Initialize yaw results (required for Taichi)
+            yawed_x = pitched_x
+            yawed_y = pitched_y
+            yawed_z = pitched_z
+
+            if is_stag == 1:
+                # STAG BEETLE: Apply opposite rotations to left vs right pincers
+                # Left pincer (z < 0): positive horn_yaw opens outward (more negative Z)
+                # Right pincer (z > 0): positive horn_yaw opens outward (more positive Z)
+                if pitched_z < -0.1:
+                    # Left pincer - apply rotation as-is
+                    yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+                    yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+                elif pitched_z > 0.1:
+                    # Right pincer - apply inverse rotation
+                    yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+                    yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+                # else: Center voxels - keep initialized values (no yaw rotation)
+            else:
+                # RHINO BEETLE: Apply uniform rotation to entire horn
+                yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+                yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
 
             # Translate back from pivot
-            local_x = pitched_x + horn_pivot_x
-            local_y = int(ti.round(pitched_y + float(horn_pivot_y)))
+            local_x = yawed_x + horn_pivot_x
+            local_y = int(ti.round(yawed_y + float(horn_pivot_y)))
+            local_z = yawed_z  # Already centered at 0
 
         # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
         # Convert local_y to float for rotation
@@ -1957,6 +2080,7 @@ physics_params = {
 
 last_time = time.time()
 accumulator = 0.0  # Time accumulator for fixed timestep physics
+horn_type = "rhino"  # Current horn type: "rhino" or "stag"
 
 while window.running:
     current_time = time.time()
@@ -2024,6 +2148,23 @@ while window.running:
                 # Not pressing horn keys - no velocity
                 beetle_blue.horn_pitch_velocity = 0.0
 
+            # Horn yaw controls (V/B) - pincer spread for stag, horn yaw for rhino
+            if window.is_pressed('v'):
+                # Stag: close pincers, Rhino: rotate horn left
+                effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+                beetle_blue.horn_yaw -= effective_speed * PHYSICS_TIMESTEP
+                beetle_blue.horn_yaw = max(HORN_MIN_YAW, beetle_blue.horn_yaw)
+                beetle_blue.horn_yaw_velocity = -effective_speed
+            elif window.is_pressed('b'):
+                # Stag: open pincers, Rhino: rotate horn right
+                effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+                beetle_blue.horn_yaw += effective_speed * PHYSICS_TIMESTEP
+                beetle_blue.horn_yaw = min(HORN_MAX_YAW, beetle_blue.horn_yaw)
+                beetle_blue.horn_yaw_velocity = effective_speed
+            else:
+                # Not pressing yaw keys - no velocity
+                beetle_blue.horn_yaw_velocity = 0.0
+
             # Always add physics-driven rotation from collisions
             beetle_blue.rotation += beetle_blue.angular_velocity * PHYSICS_TIMESTEP
             beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
@@ -2065,6 +2206,23 @@ while window.running:
             else:
                 # Not pressing horn keys - no velocity
                 beetle_red.horn_pitch_velocity = 0.0
+
+            # Horn yaw controls (N/M) - pincer spread for stag, horn yaw for rhino
+            if window.is_pressed('n'):
+                # Stag: close pincers, Rhino: rotate horn left
+                effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+                beetle_red.horn_yaw -= effective_speed * PHYSICS_TIMESTEP
+                beetle_red.horn_yaw = max(HORN_MIN_YAW, beetle_red.horn_yaw)
+                beetle_red.horn_yaw_velocity = -effective_speed
+            elif window.is_pressed('m'):
+                # Stag: open pincers, Rhino: rotate horn right
+                effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+                beetle_red.horn_yaw += effective_speed * PHYSICS_TIMESTEP
+                beetle_red.horn_yaw = min(HORN_MAX_YAW, beetle_red.horn_yaw)
+                beetle_red.horn_yaw_velocity = effective_speed
+            else:
+                # Not pressing yaw keys - no velocity
+                beetle_red.horn_yaw_velocity = 0.0
 
             # Always add physics-driven rotation from collisions
             beetle_red.rotation += beetle_red.angular_velocity * PHYSICS_TIMESTEP
@@ -2178,6 +2336,7 @@ while window.running:
     blue_render_pitch = lerp_angle(beetle_blue.prev_pitch, beetle_blue.pitch, alpha)
     blue_render_roll = lerp_angle(beetle_blue.prev_roll, beetle_blue.roll, alpha)
     blue_render_horn_pitch = lerp_angle(beetle_blue.prev_horn_pitch, beetle_blue.horn_pitch, alpha)
+    blue_render_horn_yaw = lerp_angle(beetle_blue.prev_horn_yaw, beetle_blue.horn_yaw, alpha)
 
     # Interpolate red beetle state for rendering
     red_render_x = beetle_red.prev_x + (beetle_red.x - beetle_red.prev_x) * alpha
@@ -2187,6 +2346,7 @@ while window.running:
     red_render_pitch = lerp_angle(beetle_red.prev_pitch, beetle_red.pitch, alpha)
     red_render_roll = lerp_angle(beetle_red.prev_roll, beetle_red.roll, alpha)
     red_render_horn_pitch = lerp_angle(beetle_red.prev_horn_pitch, beetle_red.horn_pitch, alpha)
+    red_render_horn_yaw = lerp_angle(beetle_red.prev_horn_yaw, beetle_red.horn_yaw, alpha)
 
     # Update walk animation based on velocity (uses real-time frame_dt)
     blue_speed = math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2)
@@ -2215,9 +2375,9 @@ while window.running:
     clear_dirty_voxels()  # Clear voxels from previous frame (only ~600 voxels)
     reset_dirty_voxels()  # Reset counter for this frame's tracking
     if beetle_blue.active:
-        place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0)
+        place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, 1 if horn_type == "stag" else 0, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0)
     if beetle_red.active:
-        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0)
+        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, 1 if horn_type == "stag" else 0, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0)
 
     canvas.set_background_color((0.18, 0.40, 0.22))  # Lighter forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
@@ -2230,11 +2390,12 @@ while window.running:
 
     # Blue beetle status
     if beetle_blue.active:
-        window.GUI.text("BLUE BEETLE (TFGH + RY)")
+        window.GUI.text("BLUE BEETLE (TFGH + RY + VB)")
         window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.y:.1f}, {beetle_blue.z:.1f})")
         window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
         window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
-        window.GUI.text(f"  Horn: {math.degrees(beetle_blue.horn_pitch):.1f}°")
+        window.GUI.text(f"  Horn pitch: {math.degrees(beetle_blue.horn_pitch):.1f}°")
+        window.GUI.text(f"  Horn yaw: {math.degrees(beetle_blue.horn_yaw):.1f}°")
     else:
         window.GUI.text("BLUE BEETLE: FALLEN")
 
@@ -2242,11 +2403,12 @@ while window.running:
 
     # Red beetle status
     if beetle_red.active:
-        window.GUI.text("RED BEETLE (IJKL + UO)")
+        window.GUI.text("RED BEETLE (IJKL + UO + NM)")
         window.GUI.text(f"  Pos: ({beetle_red.x:.1f}, {beetle_red.y:.1f}, {beetle_red.z:.1f})")
         window.GUI.text(f"  Speed: {math.sqrt(beetle_red.vx**2 + beetle_red.vz**2):.1f}")
         window.GUI.text(f"  Facing: {math.degrees(beetle_red.rotation):.0f}°")
-        window.GUI.text(f"  Horn: {math.degrees(beetle_red.horn_pitch):.1f}°")
+        window.GUI.text(f"  Horn pitch: {math.degrees(beetle_red.horn_pitch):.1f}°")
+        window.GUI.text(f"  Horn yaw: {math.degrees(beetle_red.horn_yaw):.1f}°")
     else:
         window.GUI.text("RED BEETLE: FALLEN")
     window.GUI.text("")
@@ -2278,7 +2440,7 @@ while window.running:
     front_body_height = 4
 
     # Use slider_int for discrete voxel values (max 18 voxel reach: shaft 12 + prong 6)
-    new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 4, 12)
+    new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 5, 12)
     new_prong = window.GUI.slider_int("Horn Prong", window.horn_prong_value, 3, 6)
     new_back_body = window.GUI.slider_int("Back Body", window.back_body_height_value, 4, 8)
     new_body_length = window.GUI.slider_int("Body Length", window.body_length_value, 8, 16)
@@ -2287,7 +2449,7 @@ while window.running:
 
     # Rebuild geometry if sliders changed
     if new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or new_back_body != window.back_body_height_value or new_body_length != window.body_length_value or new_body_width != window.body_width_value or new_leg_length != window.leg_length_value:
-        rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length)
+        rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length, horn_type)
         ti.sync()  # Ensure CPU writes complete before GPU kernels read
         window.horn_shaft_value = new_shaft
         window.horn_prong_value = new_prong
@@ -2306,6 +2468,41 @@ while window.running:
     total_body = 3 + window.body_length_value  # Thorax (3) + abdomen (variable)
     window.GUI.text(f"Total Horn: {total_reach} voxels")
     window.GUI.text(f"Total Body: {total_body} voxels")
+
+    # Horn type toggle button
+    window.GUI.text("")
+    button_text = "Switch to STAG" if horn_type == "rhino" else "Switch to RHINO"
+    if window.GUI.button(button_text):
+        # Toggle horn type
+        horn_type = "stag" if horn_type == "rhino" else "rhino"
+        print(f"Switching to {horn_type.upper()} beetle...")
+
+        # Update horn pitch based on beetle type
+        if horn_type == "stag":
+            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_STAG
+            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_STAG
+            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
+            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
+        else:
+            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
+            beetle_red.horn_pitch = HORN_DEFAULT_PITCH
+            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH
+            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
+
+        # Rebuild geometry with current slider values and new horn type
+        rebuild_beetle_geometry(
+            window.horn_shaft_value,
+            window.horn_prong_value,
+            front_body_height,
+            window.back_body_height_value,
+            window.body_length_value,
+            window.body_width_value,
+            window.leg_length_value,
+            horn_type
+        )
+        ti.sync()
+
+        print(f"{horn_type.upper()} beetle activated! Shaft={window.horn_shaft_value}, Prong={window.horn_prong_value}")
 
     # Winner announcement and restart button
     if match_winner is not None:
