@@ -1397,8 +1397,8 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
                         is_horn_tip = 1
                 else:
                     # Rhino horn: prongs start around x=8+ (shaft + prongs)
-                    # Color tips for x >= 11 (covers Y-fork prongs at all sizes)
-                    if body_cache_x[i] >= 11:
+                    # Color tips for x >= 13 (covers just the outer prong sections)
+                    if body_cache_x[i] >= 13:
                         is_horn_tip = 1
 
                 # Use appropriate color: horn tip > stripe > body color
