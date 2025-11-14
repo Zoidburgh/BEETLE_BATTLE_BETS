@@ -41,6 +41,12 @@ HORN_MIN_YAW = math.radians(-15)  # -15 degrees horizontal
 HORN_YAW_MIN_DISTANCE = 1.0  # Minimum distance between horn tips (voxels) to allow yaw rotation
 HORN_PITCH_MIN_DISTANCE = 1.0  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
+# Edge tipping constants
+EDGE_TIPPING_STRENGTH = 0.5  # Force multiplier per over-edge voxel
+ARENA_CENTER_X = 64.0  # Arena center X coordinate
+ARENA_CENTER_Z = 64.0  # Arena center Z coordinate
+ARENA_EDGE_RADIUS = 32.0  # Arena edge radius (voxels beyond this trigger tipping)
+
 # Fixed timestep physics constants
 PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
 MAX_TIMESTEP_ACCUMULATOR = 0.25  # Max accumulator to prevent spiral of death
@@ -106,6 +112,11 @@ class Beetle:
         self.horn_prong_len = 5   # Default horn prong length in voxels
         self.horn_length = 17.0   # Cached total horn reach (updated when geometry changes)
         self.horn_type = "rhino"  # Horn type: "rhino" (single horn) or "stag" (dual pincers)
+
+        # Center of gravity tracking (for edge tipping physics)
+        self.cog_x = x  # Center of gravity X
+        self.cog_y = 1.0 + 3.0  # Center of gravity Y (approximate beetle center)
+        self.cog_z = z  # Center of gravity Z
 
         # Collision cooldown timers
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
@@ -982,6 +993,11 @@ collision_point_y = ti.field(ti.f32, shape=())
 collision_point_z = ti.field(ti.f32, shape=())
 collision_contact_count = ti.field(ti.i32, shape=())
 
+# Edge tipping calculation fields
+edge_tipping_vy = ti.field(ti.f32, shape=())  # Downward velocity to apply
+edge_tipping_pitch_vel = ti.field(ti.f32, shape=())  # Pitch angular velocity
+edge_tipping_roll_vel = ti.field(ti.f32, shape=())  # Roll angular velocity
+
 # Dirty voxel tracking for efficient clearing
 # Instead of scanning 250K voxels, track only the ~600 voxels we actually place
 # Max voxels per beetle: body(600) + legs(180) + tips(40) = 820
@@ -1844,6 +1860,140 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
     # Return minimum distance across all combinations
     return min(dist_ll, dist_lr, dist_rl, dist_rr)
 
+@ti.kernel
+def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32, dt: ti.f32, pitch_inertia: ti.f32, roll_inertia: ti.f32):
+    """GPU-accelerated edge tipping calculation"""
+    # Reset outputs
+    edge_tipping_vy[None] = 0.0
+    edge_tipping_pitch_vel[None] = 0.0
+    edge_tipping_roll_vel[None] = 0.0
+
+    # Scan beetle voxels to calculate COG
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+    y_base = int(RENDER_Y_OFFSET)
+
+    x_min = ti.max(0, center_x - 20)
+    x_max = ti.min(simulation.n_grid, center_x + 20)
+    z_min = ti.max(0, center_z - 20)
+    z_max = ti.min(simulation.n_grid, center_z + 20)
+    y_min = ti.max(0, y_base - 5)
+    y_max = ti.min(simulation.n_grid, y_base + 30)
+
+    # First pass: calculate center of gravity
+    sum_x = 0.0
+    sum_y = 0.0
+    sum_z = 0.0
+    voxel_count = 0
+
+    for i in range(x_min, x_max):
+        for k in range(z_min, z_max):
+            for j in range(y_min, y_max):
+                vtype = simulation.voxel_type[i, j, k]
+                is_beetle = 0
+
+                if beetle_color == simulation.BEETLE_BLUE:
+                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP:
+                        is_beetle = 1
+                else:
+                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP:
+                        is_beetle = 1
+
+                if is_beetle == 1:
+                    world_x_v = float(i) - simulation.n_grid / 2.0
+                    world_y_v = float(j) - RENDER_Y_OFFSET
+                    world_z_v = float(k) - simulation.n_grid / 2.0
+
+                    sum_x += world_x_v
+                    sum_y += world_y_v
+                    sum_z += world_z_v
+                    voxel_count += 1
+
+    # Only continue if voxels were found
+    if voxel_count > 0:
+        cog_x = sum_x / float(voxel_count)
+        cog_y = sum_y / float(voxel_count)
+        cog_z = sum_z / float(voxel_count)
+
+        # Second pass: find max lever distance for over-edge voxels
+        over_edge_count = 0
+        max_lever_dist = 0.0
+        arena_center_x = ARENA_CENTER_X - simulation.n_grid / 2.0
+        arena_center_z = ARENA_CENTER_Z - simulation.n_grid / 2.0
+
+        for i in range(x_min, x_max):
+            for k in range(z_min, z_max):
+                for j in range(y_min, y_max):
+                    vtype = simulation.voxel_type[i, j, k]
+                    is_beetle = 0
+
+                    if beetle_color == simulation.BEETLE_BLUE:
+                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP:
+                            is_beetle = 1
+                    else:
+                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP:
+                            is_beetle = 1
+
+                    if is_beetle == 1:
+                        world_x_v = float(i) - simulation.n_grid / 2.0
+                        world_z_v = float(k) - simulation.n_grid / 2.0
+
+                        dist_from_center = ti.sqrt((world_x_v - arena_center_x)**2 + (world_z_v - arena_center_z)**2)
+
+                        if dist_from_center > ARENA_EDGE_RADIUS:
+                            over_edge_count += 1
+                            lever_dist = ti.sqrt((world_x_v - cog_x)**2 + (world_z_v - cog_z)**2)
+                            if lever_dist > max_lever_dist:
+                                max_lever_dist = lever_dist
+
+        # Only continue if voxels are over edge
+        if over_edge_count > 0:
+            tipping_force = float(over_edge_count) * EDGE_TIPPING_STRENGTH
+
+            # Third pass: apply torque at farthest voxels (within 90% of max distance)
+            total_vy = 0.0
+            total_pitch = 0.0
+            total_roll = 0.0
+            num_far_voxels = 0
+
+            for i in range(x_min, x_max):
+                for k in range(z_min, z_max):
+                    for j in range(y_min, y_max):
+                        vtype = simulation.voxel_type[i, j, k]
+                        is_beetle = 0
+
+                        if beetle_color == simulation.BEETLE_BLUE:
+                            if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP:
+                                is_beetle = 1
+                        else:
+                            if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP:
+                                is_beetle = 1
+
+                        if is_beetle == 1:
+                            world_x_v = float(i) - simulation.n_grid / 2.0
+                            world_z_v = float(k) - simulation.n_grid / 2.0
+
+                            dist_from_center = ti.sqrt((world_x_v - arena_center_x)**2 + (world_z_v - arena_center_z)**2)
+
+                            if dist_from_center > ARENA_EDGE_RADIUS:
+                                lever_dist = ti.sqrt((world_x_v - cog_x)**2 + (world_z_v - cog_z)**2)
+
+                                if lever_dist > max_lever_dist * 0.9 and lever_dist > 0.0 and num_far_voxels < 3:
+                                    lever_x = world_x_v - cog_x
+                                    lever_z = world_z_v - cog_z
+
+                                    lever_x_norm = lever_x / lever_dist
+                                    lever_z_norm = lever_z / lever_dist
+
+                                    total_vy -= tipping_force * dt
+                                    total_pitch += (lever_z_norm * tipping_force * lever_dist / pitch_inertia) * dt
+                                    total_roll += (lever_x_norm * tipping_force * lever_dist / roll_inertia) * dt
+                                    num_far_voxels += 1
+
+            edge_tipping_vy[None] = total_vy
+            edge_tipping_pitch_vel[None] = total_pitch
+            edge_tipping_roll_vel[None] = total_roll
+
 def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_z, engagement_factor):
     """Calculate damping factor based on horn rotation direction (Phase 2: Horn Clipping Prevention)"""
     # Get horn tip position
@@ -2532,6 +2682,25 @@ while window.running:
                     beetle_red.on_ground = True
                 elif lowest_point_red < floor_surface + 0.5:
                     beetle_red.on_ground = True
+
+        # Apply edge tipping physics (GPU-accelerated)
+        if beetle_blue.active and not beetle_blue.is_falling:
+            floor_y_blue_check = check_floor_collision(beetle_blue.x, beetle_blue.z)
+            if floor_y_blue_check <= -100.0:  # No floor support
+                calculate_edge_tipping_kernel(beetle_blue.x, beetle_blue.z, simulation.BEETLE_BLUE,
+                                              PHYSICS_TIMESTEP, beetle_blue.pitch_inertia, beetle_blue.roll_inertia)
+                beetle_blue.vy += edge_tipping_vy[None]
+                beetle_blue.pitch_velocity += edge_tipping_pitch_vel[None]
+                beetle_blue.roll_velocity += edge_tipping_roll_vel[None]
+
+        if beetle_red.active and not beetle_red.is_falling:
+            floor_y_red_check = check_floor_collision(beetle_red.x, beetle_red.z)
+            if floor_y_red_check <= -100.0:  # No floor support
+                calculate_edge_tipping_kernel(beetle_red.x, beetle_red.z, simulation.BEETLE_RED,
+                                              PHYSICS_TIMESTEP, beetle_red.pitch_inertia, beetle_red.roll_inertia)
+                beetle_red.vy += edge_tipping_vy[None]
+                beetle_red.pitch_velocity += edge_tipping_pitch_vel[None]
+                beetle_red.roll_velocity += edge_tipping_roll_vel[None]
 
         # Beetle collision (voxel-perfect) - only if both beetles are active
         if beetle_blue.active and beetle_red.active:
