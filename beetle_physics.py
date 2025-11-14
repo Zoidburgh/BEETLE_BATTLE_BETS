@@ -42,10 +42,10 @@ HORN_YAW_MIN_DISTANCE = 1.0  # Minimum distance between horn tips (voxels) to al
 HORN_PITCH_MIN_DISTANCE = 1.0  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
 # Edge tipping constants
-EDGE_TIPPING_STRENGTH = 0.5  # Force multiplier per over-edge voxel
+EDGE_TIPPING_STRENGTH = 0.45  # Force multiplier per over-edge voxel
 ARENA_CENTER_X = 64.0  # Arena center X coordinate
 ARENA_CENTER_Z = 64.0  # Arena center Z coordinate
-ARENA_EDGE_RADIUS = 32.0  # Arena edge radius (voxels beyond this trigger tipping)
+ARENA_EDGE_RADIUS = 30.0  # Arena edge radius (voxels beyond this trigger tipping)
 
 # Fixed timestep physics constants
 PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
@@ -1868,17 +1868,17 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
     edge_tipping_pitch_vel[None] = 0.0
     edge_tipping_roll_vel[None] = 0.0
 
-    # Scan beetle voxels to calculate COG
+    # Scan beetle voxels to calculate COG (reduced scan area for performance)
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
     y_base = int(RENDER_Y_OFFSET)
 
-    x_min = ti.max(0, center_x - 20)
-    x_max = ti.min(simulation.n_grid, center_x + 20)
-    z_min = ti.max(0, center_z - 20)
-    z_max = ti.min(simulation.n_grid, center_z + 20)
-    y_min = ti.max(0, y_base - 5)
-    y_max = ti.min(simulation.n_grid, y_base + 30)
+    x_min = ti.max(0, center_x - 15)
+    x_max = ti.min(simulation.n_grid, center_x + 15)
+    z_min = ti.max(0, center_z - 15)
+    z_max = ti.min(simulation.n_grid, center_z + 15)
+    y_min = ti.max(0, y_base - 3)
+    y_max = ti.min(simulation.n_grid, y_base + 20)
 
     # First pass: calculate center of gravity
     sum_x = 0.0

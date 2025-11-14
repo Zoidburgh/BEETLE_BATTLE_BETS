@@ -49,13 +49,13 @@ def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
     elif voxel_type == 4:  # DEBRIS
         color = ti.math.vec3(0.4, 0.35, 0.3)
 
-    # Beetle voxels are blue
+    # Beetle voxels are blue - desaturated for richer depth
     elif voxel_type == 5:  # BEETLE_BLUE
-        color = ti.math.vec3(0.2, 0.5, 1.0)
+        color = ti.math.vec3(0.25, 0.55, 0.95)
 
-    # Second beetle is red
+    # Second beetle is red - desaturated for richer depth
     elif voxel_type == 6:  # BEETLE_RED
-        color = ti.math.vec3(1.0, 0.2, 0.2)
+        color = ti.math.vec3(0.95, 0.25, 0.15)
 
     # Blue beetle legs - lighter cyan/blue
     elif voxel_type == 7:  # BEETLE_BLUE_LEGS
@@ -98,10 +98,10 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
     debris_count = 0
 
     # Static bounding box optimization: only scan active arena region
-    # X/Z: 16-112 covers arena radius (32) + beetle reach (16) = ±48 from center
-    # Y: 3-60 covers falling (-30) to max lift height (+11) + horn tips (+12)
-    # Reduction: 2.1M voxels → 525K voxels (75% fewer checks)
-    for i, j, k in ti.ndrange((16, 112), (3, 60), (16, 112)):
+    # X/Z: 2-126 covers arena radius (30) + beetle reach + fully extended horns (32) = ±62 from center
+    # Y: 1-68 covers falling (-32) to max lift height (+11) + horn tips (+18)
+    # Reduction: 2.1M voxels → 820K voxels (still ~60% fewer checks)
+    for i, j, k in ti.ndrange((2, 126), (1, 68), (2, 126)):
         vtype = voxel_field[i, j, k]
         if vtype != 0:
             # Calculate world position
@@ -167,10 +167,10 @@ def extract_projectiles():
 @ti.kernel
 def init_gradient_background():
     """Initialize gradient background (forest canopy at top, forest floor at bottom)"""
-    # Top color - lighter forest green (canopy)
-    top_color = ti.math.vec3(0.35, 0.55, 0.40)
-    # Bottom color - darker forest green (floor)
-    bottom_color = ti.math.vec3(0.15, 0.30, 0.18)
+    # Top color - deeper forest green (canopy)
+    top_color = ti.math.vec3(0.25, 0.45, 0.35)
+    # Bottom color - much darker forest green (floor)
+    bottom_color = ti.math.vec3(0.12, 0.25, 0.16)
 
     # First triangle: bottom-left, bottom-right, top-left
     gradient_positions[0] = ti.math.vec2(0.0, 0.0)
@@ -296,13 +296,15 @@ def render(camera, canvas, scene, voxel_field, n_grid):
     # Set up camera
     setup_camera(camera, scene)
 
-    # Forest-themed lighting setup (optimized - 2 lights for performance)
-    # Overhead light - soft greenish (filtering through canopy)
-    scene.point_light(pos=(0, 100, 0), color=(0.8, 0.9, 0.8))
-    # Key light - warm sunbeam breaking through trees
-    scene.point_light(pos=(60, 80, -80), color=(0.9, 0.8, 0.6))
-    # Forest-tinted ambient light (slightly brighter to compensate for removed fill light)
-    scene.ambient_light((0.25, 0.30, 0.26))
+    # Forest-themed lighting setup with rim light for depth
+    # Overhead light - cooler overhead (moonlight feel)
+    scene.point_light(pos=(0, 100, 0), color=(0.9, 0.95, 1.0))
+    # Key light - brighter warm sunbeam for contrast
+    scene.point_light(pos=(80, 70, -60), color=(1.4, 1.1, 0.7))
+    # Rim light - cool backlight for depth separation
+    scene.point_light(pos=(-60, 50, 70), color=(0.3, 0.4, 0.6))
+    # Lower ambient light for dramatic depth
+    scene.ambient_light((0.15, 0.18, 0.16))
 
     # Render normal voxels (STEEL, CONCRETE, MOLTEN) - balanced radius for smooth yet defined look
     count = num_voxels[None]
