@@ -38,8 +38,8 @@ HORN_MIN_PITCH = math.radians(-10)  # -10 degrees vertical (down) - 20° range f
 HORN_YAW_SPEED = 2.0  # Radians per second
 HORN_MAX_YAW = math.radians(15)  # +15 degrees horizontal
 HORN_MIN_YAW = math.radians(-15)  # -15 degrees horizontal
-HORN_YAW_MIN_DISTANCE = 3.0  # Minimum distance between horn tips (voxels) to allow yaw rotation
-HORN_PITCH_MIN_DISTANCE = 3.0  # Minimum distance between horn tips (voxels) to allow pitch rotation
+HORN_YAW_MIN_DISTANCE = 1.0  # Minimum distance between horn tips (voxels) to allow yaw rotation
+HORN_PITCH_MIN_DISTANCE = 1.0  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
 # Fixed timestep physics constants
 PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
