@@ -129,6 +129,7 @@ class Beetle:
         # Beetle active state (for fall death)
         self.active = True  # False when beetle has fallen off arena
         self.is_falling = False  # True when beetle has passed point of no return
+        self.has_exploded = False  # True when death particle explosion has been triggered
         self.is_lifted_high = False  # True when lifted significantly above ground (for leg spaz animation)
 
         # Previous state for fixed timestep interpolation
@@ -315,17 +316,17 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
     dz = center1_z - center2_z
     dist_sq = dx * dx + dz * dz
     too_far = 0
-    if dist_sq > 1444:  # (38 voxels)^2 = tighter threshold for better early rejection
+    if dist_sq > 3600:  # (60 voxels)^2 = 2 * 30 voxel max reach for tip-to-tip collision
         too_far = 1
 
     # Tighter collision bounds - only check where beetles can actually overlap
-    # Beetles are max 26 voxels from center (max horn reach: shaft 14 + prong 7 = 21, plus diagonal tilt extension)
-    x_min = ti.max(ti.max(0, center1_x - 26), ti.max(0, center2_x - 26))
-    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 26),
-                   ti.min(simulation.n_grid, center2_x + 26))
-    z_min = ti.max(ti.max(0, center1_z - 26), ti.max(0, center2_z - 26))
-    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 26),
-                   ti.min(simulation.n_grid, center2_z + 26))
+    # Beetles are max 30 voxels from center (long horns: 3+14+7=24 + 3 safety buffer + 3 rotation margin)
+    x_min = ti.max(ti.max(0, center1_x - 30), ti.max(0, center2_x - 30))
+    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 30),
+                   ti.min(simulation.n_grid, center2_x + 30))
+    z_min = ti.max(ti.max(0, center1_z - 30), ti.max(0, center2_z - 30))
+    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 30),
+                   ti.min(simulation.n_grid, center2_z + 30))
 
     # Scan for colliding voxels - TRUE 3D collision detection (only if not too far)
     # Track Y-ranges for each beetle in each XZ column
@@ -341,8 +342,8 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
 
                 # Find Y-ranges for both beetles in this column (includes legs and tips!)
                 # Optimized: Use dynamic range based on beetle Y positions
-                # Beetles are max 15 voxels tall (8 body + 10 legs extending down)
-                beetle_max_height = 15
+                # Beetles are max 25 voxels tall (8 body + 10 legs + 10 horn vertical reach when tilted)
+                beetle_max_height = 25
                 y_center = int(RENDER_Y_OFFSET) + int((y1 + y2) / 2.0)
                 y_start = ti.max(0, y_center - beetle_max_height)
                 y_end = ti.min(simulation.n_grid, y_center + beetle_max_height)
@@ -992,6 +993,7 @@ collision_point_x = ti.field(ti.f32, shape=())
 collision_point_y = ti.field(ti.f32, shape=())
 collision_point_z = ti.field(ti.f32, shape=())
 collision_contact_count = ti.field(ti.i32, shape=())
+collision_has_horn_tips = ti.field(ti.i32, shape=())  # 1 if horn tip voxels involved, 0 otherwise
 
 # Edge tipping calculation fields
 edge_tipping_vy = ti.field(ti.f32, shape=())  # Downward velocity to apply
@@ -1698,6 +1700,7 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
     collision_point_y[None] = 0.0
     collision_point_z[None] = 0.0
     collision_contact_count[None] = 0
+    collision_has_horn_tips[None] = 0  # Reset horn tip detection
 
     # Scan through overlapping voxel columns
     y_scan_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
@@ -1718,6 +1721,10 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                 for vy_grid in range(y_scan_start, y_scan_end):
                     vtype = simulation.voxel_type[vx1, vy_grid, vz1]
                     if vtype != 0:  # Non-empty voxel
+                        # Check if this is a horn tip voxel
+                        if vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP:
+                            collision_has_horn_tips[None] = 1
+
                         # Accumulate collision position
                         ti.atomic_add(collision_point_x[None], float(vx1) - simulation.n_grid / 2.0)
                         ti.atomic_add(collision_point_z[None], float(vz1) - simulation.n_grid / 2.0)
@@ -1747,84 +1754,302 @@ beetle_red.horn_prong_len = default_prong
 beetle_red.horn_length = initial_horn_length
 
 def calculate_horn_tip_position(beetle):
-    """Calculate approximate world position of horn tip (Phase 2: Horn Clipping Prevention)"""
-    horn_length = beetle.horn_length  # Use actual horn geometry
-    horn_tip_x = beetle.x + horn_length * math.cos(beetle.rotation) * math.cos(beetle.horn_pitch)
-    horn_tip_y = beetle.y + horn_length * math.sin(beetle.horn_pitch) + 3.0  # +3 for head height
-    horn_tip_z = beetle.z + horn_length * math.sin(beetle.rotation) * math.cos(beetle.horn_pitch)
-    return horn_tip_x, horn_tip_y, horn_tip_z
+    """Calculate world position of horn tip using exact voxel placement transform chain"""
+    # Horn tip in local coordinates (furthest voxel + safety margin)
+    # For both rhino and stag: max_x = 3 + shaft_len + prong_len (approx)
+    tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0  # Actual furthest voxel + margin
+    tip_local_y = 1.0  # Base height at pivot
+    tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len  # Stag pincers extend sideways
+
+    # Add safety buffer for tip width (2-3 voxels wide) + voxel edge + rotation margin
+    if beetle.horn_type == "stag":
+        tip_local_z += 3.0  # Stag tips extend further in Z (was 1.5)
+    else:
+        tip_local_x += 3.0  # Rhino tips extend further in X (was 1.0)
+
+    # Step 1: Translate to horn pivot (3.0, 1, 0)
+    rel_x = tip_local_x - 3.0
+    rel_y = tip_local_y - 1.0
+    rel_z = tip_local_z
+
+    # Step 2: Apply horn pitch rotation (around Z-axis)
+    cos_horn_pitch = math.cos(beetle.horn_pitch)
+    sin_horn_pitch = math.sin(beetle.horn_pitch)
+    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+    pitched_z = rel_z
+
+    # Step 3: Apply horn yaw rotation (around Y-axis)
+    cos_horn_yaw = math.cos(beetle.horn_yaw)
+    sin_horn_yaw = math.sin(beetle.horn_yaw)
+
+    if beetle.horn_type == "stag":
+        # Stag: use the right pincer position (maximum extent)
+        yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    else:
+        # Rhino: standard yaw rotation
+        yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+        yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    yawed_y = pitched_y
+
+    # Step 4: Translate back from pivot
+    local_x = yawed_x + 3.0
+    local_y = yawed_y + 1.0
+    local_z = yawed_z
+
+    # Step 5: Apply beetle body yaw rotation (around Y-axis)
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    rotated_x = local_x * cos_rotation - local_z * sin_rotation
+    rotated_z = local_x * sin_rotation + local_z * cos_rotation
+    rotated_y = local_y
+
+    # Step 6: Translate to world position
+    world_x = beetle.x + rotated_x
+    world_y = beetle.y + rotated_y
+    world_z = beetle.z + rotated_z
+
+    return world_x, world_y, world_z
 
 def calculate_horn_tip_position_with_yaw(beetle, yaw_angle):
     """Calculate horn tip position with a specific yaw angle (for predictive collision checking)"""
-    horn_length = beetle.horn_length  # Use actual horn geometry
+    # Horn tip in local coordinates (same as base function)
+    tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
+    tip_local_y = 1.0
+    tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
-    # Apply pitch rotation first (up/down tilt)
-    pitched_length_xz = horn_length * math.cos(beetle.horn_pitch)  # Horizontal component after pitch
-    pitched_length_y = horn_length * math.sin(beetle.horn_pitch)   # Vertical component from pitch
+    # Add safety buffer for tip width + voxel edge + rotation margin
+    if beetle.horn_type == "stag":
+        tip_local_z += 3.0  # (was 1.5)
+    else:
+        tip_local_x += 3.0  # (was 1.0)
 
-    # Apply yaw rotation (left/right spread) on the pitched horizontal component
-    # Yaw rotates around Y axis relative to beetle facing direction
-    total_angle = beetle.rotation + yaw_angle
+    # Step 1: Translate to horn pivot
+    rel_x = tip_local_x - 3.0
+    rel_y = tip_local_y - 1.0
+    rel_z = tip_local_z
 
-    horn_tip_x = beetle.x + pitched_length_xz * math.cos(total_angle)
-    horn_tip_y = beetle.y + pitched_length_y + 3.0  # +3 for head height
-    horn_tip_z = beetle.z + pitched_length_xz * math.sin(total_angle)
+    # Step 2: Apply horn pitch rotation (around Z-axis) - use current pitch
+    cos_horn_pitch = math.cos(beetle.horn_pitch)
+    sin_horn_pitch = math.sin(beetle.horn_pitch)
+    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+    pitched_z = rel_z
 
-    return horn_tip_x, horn_tip_y, horn_tip_z
+    # Step 3: Apply horn yaw rotation (around Y-axis) - use PROPOSED yaw_angle
+    cos_horn_yaw = math.cos(yaw_angle)
+    sin_horn_yaw = math.sin(yaw_angle)
+
+    if beetle.horn_type == "stag":
+        yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    else:
+        yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+        yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    yawed_y = pitched_y
+
+    # Step 4: Translate back from pivot
+    local_x = yawed_x + 3.0
+    local_y = yawed_y + 1.0
+    local_z = yawed_z
+
+    # Step 5: Apply beetle body yaw rotation
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    rotated_x = local_x * cos_rotation - local_z * sin_rotation
+    rotated_z = local_x * sin_rotation + local_z * cos_rotation
+    rotated_y = local_y
+
+    # Step 6: Translate to world position
+    world_x = beetle.x + rotated_x
+    world_y = beetle.y + rotated_y
+    world_z = beetle.z + rotated_z
+
+    return world_x, world_y, world_z
 
 def calculate_horn_tip_position_with_pitch(beetle, pitch_angle):
     """Calculate horn tip position with a specific pitch angle (for predictive collision checking)"""
-    horn_length = beetle.horn_length  # Use actual horn geometry
+    # Horn tip in local coordinates (same as base function)
+    tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
+    tip_local_y = 1.0
+    tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
-    # Apply pitch rotation first (up/down tilt) - using the proposed new pitch
-    pitched_length_xz = horn_length * math.cos(pitch_angle)  # Horizontal component after pitch
-    pitched_length_y = horn_length * math.sin(pitch_angle)   # Vertical component from pitch
+    # Add safety buffer for tip width + voxel edge + rotation margin
+    if beetle.horn_type == "stag":
+        tip_local_z += 3.0  # (was 1.5)
+    else:
+        tip_local_x += 3.0  # (was 1.0)
 
-    # Apply current yaw rotation (left/right spread)
-    total_angle = beetle.rotation + beetle.horn_yaw
+    # Step 1: Translate to horn pivot
+    rel_x = tip_local_x - 3.0
+    rel_y = tip_local_y - 1.0
+    rel_z = tip_local_z
 
-    horn_tip_x = beetle.x + pitched_length_xz * math.cos(total_angle)
-    horn_tip_y = beetle.y + pitched_length_y + 3.0  # +3 for head height
-    horn_tip_z = beetle.z + pitched_length_xz * math.sin(total_angle)
+    # Step 2: Apply horn pitch rotation (around Z-axis) - use PROPOSED pitch_angle
+    cos_horn_pitch = math.cos(pitch_angle)
+    sin_horn_pitch = math.sin(pitch_angle)
+    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+    pitched_z = rel_z
 
-    return horn_tip_x, horn_tip_y, horn_tip_z
+    # Step 3: Apply horn yaw rotation (around Y-axis) - use current yaw
+    cos_horn_yaw = math.cos(beetle.horn_yaw)
+    sin_horn_yaw = math.sin(beetle.horn_yaw)
+
+    if beetle.horn_type == "stag":
+        yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    else:
+        yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+        yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    yawed_y = pitched_y
+
+    # Step 4: Translate back from pivot
+    local_x = yawed_x + 3.0
+    local_y = yawed_y + 1.0
+    local_z = yawed_z
+
+    # Step 5: Apply beetle body yaw rotation
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    rotated_x = local_x * cos_rotation - local_z * sin_rotation
+    rotated_z = local_x * sin_rotation + local_z * cos_rotation
+    rotated_y = local_y
+
+    # Step 6: Translate to world position
+    world_x = beetle.x + rotated_x
+    world_y = beetle.y + rotated_y
+    world_z = beetle.z + rotated_z
+
+    return world_x, world_y, world_z
 
 def calculate_horn_tip_position_with_both(beetle, pitch_angle, yaw_angle):
     """Calculate horn tip position with both pitch and yaw (optimized for combined movements)"""
-    horn_length = beetle.horn_length  # Use actual horn geometry
+    # Horn tip in local coordinates (same as base function)
+    tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
+    tip_local_y = 1.0
+    tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
-    # Apply pitch rotation first (up/down tilt)
-    pitched_length_xz = horn_length * math.cos(pitch_angle)
-    pitched_length_y = horn_length * math.sin(pitch_angle)
+    # Add safety buffer for tip width + voxel edge + rotation margin
+    if beetle.horn_type == "stag":
+        tip_local_z += 3.0  # (was 1.5)
+    else:
+        tip_local_x += 3.0  # (was 1.0)
 
-    # Apply yaw rotation (left/right spread)
-    total_angle = beetle.rotation + yaw_angle
+    # Step 1: Translate to horn pivot
+    rel_x = tip_local_x - 3.0
+    rel_y = tip_local_y - 1.0
+    rel_z = tip_local_z
 
-    horn_tip_x = beetle.x + pitched_length_xz * math.cos(total_angle)
-    horn_tip_y = beetle.y + pitched_length_y + 3.0  # +3 for head height
-    horn_tip_z = beetle.z + pitched_length_xz * math.sin(total_angle)
+    # Step 2: Apply horn pitch rotation (around Z-axis) - use PROPOSED pitch_angle
+    cos_horn_pitch = math.cos(pitch_angle)
+    sin_horn_pitch = math.sin(pitch_angle)
+    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+    pitched_z = rel_z
 
-    return horn_tip_x, horn_tip_y, horn_tip_z
+    # Step 3: Apply horn yaw rotation (around Y-axis) - use PROPOSED yaw_angle
+    cos_horn_yaw = math.cos(yaw_angle)
+    sin_horn_yaw = math.sin(yaw_angle)
+
+    if beetle.horn_type == "stag":
+        yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    else:
+        yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+        yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    yawed_y = pitched_y
+
+    # Step 4: Translate back from pivot
+    local_x = yawed_x + 3.0
+    local_y = yawed_y + 1.0
+    local_z = yawed_z
+
+    # Step 5: Apply beetle body yaw rotation
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    rotated_x = local_x * cos_rotation - local_z * sin_rotation
+    rotated_z = local_x * sin_rotation + local_z * cos_rotation
+    rotated_y = local_y
+
+    # Step 6: Translate to world position
+    world_x = beetle.x + rotated_x
+    world_y = beetle.y + rotated_y
+    world_z = beetle.z + rotated_z
+
+    return world_x, world_y, world_z
 
 def calculate_stag_pincer_tips(beetle, pitch_angle, yaw_angle):
     """Calculate both left and right pincer tip positions for stag beetles"""
-    horn_length = beetle.horn_length
+    # Stag pincer tips in local coordinates
+    tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
+    tip_local_y = 1.0
+    tip_local_z = beetle.horn_prong_len + 3.0  # Pincers extend sideways + safety buffer (was 1.5)
 
-    # Apply pitch rotation
-    pitched_length_xz = horn_length * math.cos(pitch_angle)
-    pitched_length_y = horn_length * math.sin(pitch_angle)
+    # === LEFT PINCER (extends in -Z direction) ===
+    # Step 1: Translate to horn pivot
+    rel_x = tip_local_x - 3.0
+    rel_y = tip_local_y - 1.0
+    rel_z = -tip_local_z  # Negative Z for left pincer
 
-    # Left pincer: beetle.rotation + yaw_angle (positive yaw spreads left)
-    left_angle = beetle.rotation + yaw_angle
-    left_tip_x = beetle.x + pitched_length_xz * math.cos(left_angle)
-    left_tip_y = beetle.y + pitched_length_y + 3.0
-    left_tip_z = beetle.z + pitched_length_xz * math.sin(left_angle)
+    # Step 2: Apply horn pitch rotation
+    cos_horn_pitch = math.cos(pitch_angle)
+    sin_horn_pitch = math.sin(pitch_angle)
+    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+    pitched_z = rel_z
 
-    # Right pincer: beetle.rotation - yaw_angle (negative yaw spreads right)
-    right_angle = beetle.rotation - yaw_angle
-    right_tip_x = beetle.x + pitched_length_xz * math.cos(right_angle)
-    right_tip_y = beetle.y + pitched_length_y + 3.0
-    right_tip_z = beetle.z + pitched_length_xz * math.sin(right_angle)
+    # Step 3: Apply horn yaw rotation (positive yaw opens left pincer outward)
+    cos_horn_yaw = math.cos(yaw_angle)
+    sin_horn_yaw = math.sin(yaw_angle)
+    yawed_x_left = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+    yawed_z_left = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    yawed_y_left = pitched_y
+
+    # Step 4: Translate back from pivot
+    local_x_left = yawed_x_left + 3.0
+    local_y_left = yawed_y_left + 1.0
+    local_z_left = yawed_z_left
+
+    # Step 5: Apply beetle body yaw rotation
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    rotated_x_left = local_x_left * cos_rotation - local_z_left * sin_rotation
+    rotated_z_left = local_x_left * sin_rotation + local_z_left * cos_rotation
+    rotated_y_left = local_y_left
+
+    # Step 6: Translate to world position
+    left_tip_x = beetle.x + rotated_x_left
+    left_tip_y = beetle.y + rotated_y_left
+    left_tip_z = beetle.z + rotated_z_left
+
+    # === RIGHT PINCER (extends in +Z direction) ===
+    # Step 1: Translate to horn pivot
+    rel_z = tip_local_z  # Positive Z for right pincer
+
+    # Step 2: Pitch rotation (same as left)
+    pitched_z = rel_z
+
+    # Step 3: Apply horn yaw rotation (inverse rotation for right pincer)
+    yawed_x_right = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+    yawed_z_right = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    yawed_y_right = pitched_y
+
+    # Step 4: Translate back from pivot
+    local_x_right = yawed_x_right + 3.0
+    local_y_right = yawed_y_right + 1.0
+    local_z_right = yawed_z_right
+
+    # Step 5: Apply beetle body yaw rotation
+    rotated_x_right = local_x_right * cos_rotation - local_z_right * sin_rotation
+    rotated_z_right = local_x_right * sin_rotation + local_z_right * cos_rotation
+    rotated_y_right = local_y_right
+
+    # Step 6: Translate to world position
+    right_tip_x = beetle.x + rotated_x_right
+    right_tip_y = beetle.y + rotated_y_right
+    right_tip_z = beetle.z + rotated_z_right
 
     return (left_tip_x, left_tip_y, left_tip_z), (right_tip_x, right_tip_y, right_tip_z)
 
@@ -1994,6 +2219,72 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
             edge_tipping_pitch_vel[None] = total_pitch
             edge_tipping_roll_vel[None] = total_roll
 
+@ti.kernel
+def update_debris_particles(dt: ti.f32):
+    """Update debris particle physics - position, velocity, lifetime (GPU parallel)"""
+    gravity = 20.0  # Gravity acceleration
+
+    # Update all active particles in parallel
+    for idx in range(simulation.num_debris[None]):
+        # Age the particle
+        simulation.debris_lifetime[idx] -= dt
+
+        # Update physics for alive particles
+        if simulation.debris_lifetime[idx] > 0.0:
+            # Apply gravity
+            simulation.debris_vel[idx].y -= gravity * dt
+
+            # Update position
+            simulation.debris_pos[idx] += simulation.debris_vel[idx] * dt
+
+@ti.kernel
+def cleanup_dead_debris():
+    """Remove dead particles by compacting array (serial due to compaction)"""
+    write_idx = 0
+
+    for read_idx in range(simulation.num_debris[None]):
+        if simulation.debris_lifetime[read_idx] > 0.0:
+            # Particle still alive, keep it
+            if write_idx != read_idx:
+                simulation.debris_pos[write_idx] = simulation.debris_pos[read_idx]
+                simulation.debris_vel[write_idx] = simulation.debris_vel[read_idx]
+                simulation.debris_material[write_idx] = simulation.debris_material[read_idx]
+                simulation.debris_lifetime[write_idx] = simulation.debris_lifetime[read_idx]
+            write_idx += 1
+
+    simulation.num_debris[None] = write_idx
+
+@ti.kernel
+def spawn_death_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32, beetle_color: ti.i32):
+    """Dramatic particle burst when beetle dies - optimized"""
+    num_particles = 100  # Optimized count for performance (was 180)
+
+    # Pre-compute golden angle constant
+    golden_angle = 3.14159 * (1.0 + ti.sqrt(5.0))
+
+    for i in range(num_particles):
+        # Simplified spherical distribution
+        t = (i + 0.5) / num_particles
+        phi = ti.acos(1.0 - 2.0 * t)  # Vertical angle
+        theta = golden_angle * i  # Golden angle for horizontal
+
+        # Higher speed to compensate for fewer particles (more spread)
+        speed = 90.0 + ti.random() * 110.0  # 90-200 units/sec - faster burst
+
+        # Convert spherical to Cartesian with upward bias
+        sin_phi = ti.sin(phi)
+        vx = sin_phi * ti.cos(theta) * speed
+        vy = ti.abs(ti.cos(phi)) * speed * 1.5  # Upward bias (1.5x vertical)
+        vz = sin_phi * ti.sin(theta) * speed
+
+        # Add particle to debris system
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            simulation.debris_material[idx] = beetle_color
+            simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.3  # 0.4-0.7 sec - faster cleanup
+
 def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_z, engagement_factor):
     """Calculate damping factor based on horn rotation direction (Phase 2: Horn Clipping Prevention)"""
     # Get horn tip position
@@ -2041,11 +2332,12 @@ def beetle_collision(b1, b2, params):
         # GPU-ACCELERATED: Calculate collision point on GPU (no CPU transfer!)
         calculate_collision_point_kernel(0)  # overlap_count not used in kernel
 
-        # Read results from GPU (minimal data transfer - just 4 values!)
+        # Read results from GPU (minimal data transfer - just 5 values!)
         collision_x = collision_point_x[None]
         collision_y = collision_point_y[None]
         collision_z = collision_point_z[None]
         contact_count = collision_contact_count[None]
+        has_horn_tips = collision_has_horn_tips[None]
 
         # Collision detected! Calculate 3D collision geometry
         dx = b1.x - b2.x
@@ -2094,6 +2386,11 @@ def beetle_collision(b1, b2, params):
                 height_factor = min((contact_height_above_center - 2.0) / 8.0, 1.0)
                 engagement_factor = (normalized_contact_count * (1.0 - HORN_ENGAGEMENT_HEIGHT_WEIGHT) +
                                     height_factor * HORN_ENGAGEMENT_HEIGHT_WEIGHT)
+
+                # Boost engagement for tip collisions - tips should feel solid even with few voxels
+                MIN_TIP_ENGAGEMENT = 0.65  # Minimum engagement when horn tips are involved
+                if has_horn_tips == 1:
+                    engagement_factor = max(engagement_factor, MIN_TIP_ENGAGEMENT)
 
                 # Calculate damping for both beetles based on their rotation direction
                 b1.horn_rotation_damping = calculate_horn_rotation_damping(
@@ -2390,6 +2687,7 @@ physics_params = {
 last_time = time.time()
 accumulator = 0.0  # Time accumulator for fixed timestep physics
 horn_type = "rhino"  # Current horn type: "rhino" or "stag"
+physics_frame = 0  # Frame counter for periodic cleanup
 
 while window.running:
     current_time = time.time()
@@ -2607,6 +2905,13 @@ while window.running:
         beetle_blue.update_physics(PHYSICS_TIMESTEP)
         beetle_red.update_physics(PHYSICS_TIMESTEP)
 
+        # Update debris particles (physics, aging)
+        update_debris_particles(PHYSICS_TIMESTEP)
+
+        # Cleanup dead debris every 10 frames (reduce overhead)
+        if physics_frame % 10 == 0:
+            cleanup_dead_debris()
+
         # Fall death detection - two-stage system
         POINT_OF_NO_RETURN = -5.0  # Once below this, can't recover (5 voxels below floor)
         FALL_DEATH_Y = -30.0  # Fully removed at this point (30 voxels below floor)
@@ -2618,6 +2923,17 @@ while window.running:
         if beetle_red.active and not beetle_red.is_falling and beetle_red.y < POINT_OF_NO_RETURN:
             beetle_red.is_falling = True
             print("RED BEETLE IS FALLING!")
+
+        # Stage 1.5: Death explosion - dramatic particle burst midway through fall
+        EXPLOSION_TRIGGER_Y = -25.0  # Trigger explosion after falling 25 voxels
+        if beetle_blue.is_falling and not beetle_blue.has_exploded and beetle_blue.y < EXPLOSION_TRIGGER_Y:
+            spawn_death_explosion(beetle_blue.x, beetle_blue.y + 19.0, beetle_blue.z, simulation.BEETLE_BLUE)
+            beetle_blue.has_exploded = True
+            print("BLUE BEETLE EXPLODED!")
+        if beetle_red.is_falling and not beetle_red.has_exploded and beetle_red.y < EXPLOSION_TRIGGER_Y:
+            spawn_death_explosion(beetle_red.x, beetle_red.y + 19.0, beetle_red.z, simulation.BEETLE_RED)
+            beetle_red.has_exploded = True
+            print("RED BEETLE EXPLODED!")
 
         # Stage 2: Full removal - deactivate completely
         if beetle_blue.active and beetle_blue.y < FALL_DEATH_Y:
@@ -2708,6 +3024,7 @@ while window.running:
 
         # Subtract fixed timestep from accumulator
         accumulator -= PHYSICS_TIMESTEP
+        physics_frame += 1  # Increment frame counter
 
     # ===== END FIXED TIMESTEP PHYSICS LOOP =====
 

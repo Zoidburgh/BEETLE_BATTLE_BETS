@@ -141,7 +141,21 @@ def extract_debris_particles():
 
         # Get color based on material type
         material_type = simulation.debris_material[idx]
-        debris_colors[idx] = get_voxel_color(material_type)
+        base_color = get_voxel_color(material_type)
+
+        # Calculate fade based on remaining lifetime (smooth fadeout in last 0.25 seconds)
+        # Fade color intensity while maintaining hue for smooth transparency effect
+        lifetime = simulation.debris_lifetime[idx]
+        fade_start = 0.25  # Start fading when 0.25 seconds left (optimized for shorter lifetime)
+
+        if lifetime < fade_start:
+            # Smooth fade: reduce intensity but keep hue (don't go to black)
+            fade_factor = lifetime / fade_start
+            # Fade to 30% brightness minimum to avoid pure black
+            fade_factor = 0.3 + fade_factor * 0.7
+            debris_colors[idx] = base_color * fade_factor
+        else:
+            debris_colors[idx] = base_color
 
     # Set debris count for rendering
     num_debris[None] = ti.min(count, MAX_VOXELS)
@@ -316,12 +330,12 @@ def render(camera, canvas, scene, voxel_field, n_grid):
             index_count=count
         )
 
-    # Render debris voxels - smaller size
+    # Render debris voxels - visible size for explosions (with smooth color fade)
     debris_count = num_debris[None]
     if debris_count > 0:
         scene.particles(
             debris_positions,
-            radius=0.15,  # Half size of normal voxels
+            radius=0.35,  # Fixed radius, fade via color intensity
             per_vertex_color=debris_colors,
             index_count=debris_count
         )
