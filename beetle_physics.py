@@ -1139,6 +1139,7 @@ def generate_stag_pincers(shaft_length, curve_length):
 
     Returns list of (x, y, z) voxel coordinates for both pincers.
     Pivot point: (x=3, y=1, z=0) same as rhinoceros horn
+    Angled 10° upward from horizontal
     """
     pincer_voxels = []
 
@@ -1147,10 +1148,10 @@ def generate_stag_pincers(shaft_length, curve_length):
     curve_length = int(curve_length)
 
     # LEFT PINCER (extends in -Z direction, curves inward toward +Z)
-    # Straight shaft section extending left
+    # Straight shaft section extending left, angled 10° upward
     for i in range(shaft_length):
         dx = 3 + i  # Extends forward
-        dy = 1      # Same height as pivot
+        dy = 1 + int(i * 0.176)  # 10° upward angle (tan(10°) ≈ 0.176)
         dz = -i - 1 # Extends left (-Z direction), offset by -1 to avoid center overlap
 
         # Make it 2-3 voxels thick for solidity
@@ -1161,9 +1162,10 @@ def generate_stag_pincers(shaft_length, curve_length):
     # Curved tip section (curves inward)
     curve_start_x = 3 + shaft_length
     curve_start_z = -shaft_length - 1  # Match the offset
+    base_height = 1 + int(shaft_length * 0.176)  # Continue from shaft's final height
     for i in range(curve_length):
         dx = curve_start_x + i
-        dy = 1
+        dy = base_height + int(i * 0.176)  # Continue 10° upward angle
         dz = curve_start_z + int(i * 0.36)  # Curves back toward center at 110° angle (+Z direction)
 
         # Maintain thickness
@@ -1172,10 +1174,10 @@ def generate_stag_pincers(shaft_length, curve_length):
                 pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
 
     # RIGHT PINCER (extends in +Z direction, curves inward toward -Z)
-    # Straight shaft section extending right
+    # Straight shaft section extending right, angled 10° upward
     for i in range(shaft_length):
         dx = 3 + i  # Extends forward
-        dy = 1      # Same height as pivot
+        dy = 1 + int(i * 0.176)  # 10° upward angle (tan(10°) ≈ 0.176)
         dz = i + 1  # Extends right (+Z direction), offset by +1 to avoid center overlap
 
         # Make it 2-3 voxels thick for solidity
@@ -1186,9 +1188,10 @@ def generate_stag_pincers(shaft_length, curve_length):
     # Curved tip section (curves inward)
     curve_start_x = 3 + shaft_length
     curve_start_z = shaft_length + 1  # Match the offset
+    base_height = 1 + int(shaft_length * 0.176)  # Continue from shaft's final height
     for i in range(curve_length):
         dx = curve_start_x + i
-        dy = 1
+        dy = base_height + int(i * 0.176)  # Continue 10° upward angle
         dz = curve_start_z - int(i * 0.36)  # Curves back toward center at 110° angle (-Z direction)
 
         # Maintain thickness
@@ -1222,7 +1225,7 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
     # Slow reduction formula: max length at slider 12, but reduces slowly when decreasing slider
     # Angled 20° upward (tan(20°) ≈ 0.364)
     # Then rotated up 10° from base position
-    MAX_TOP_LENGTH = 18  # Length at max slider (12)
+    MAX_TOP_LENGTH = 17  # Length at max slider (12)
     MAX_SLIDER = 12
     actual_top_len = int(MAX_TOP_LENGTH - (MAX_SLIDER - top_horn_len) * 0.5)
 
@@ -1583,10 +1586,12 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
                     yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
                 # else: Center voxels - keep initialized values (no yaw rotation)
             elif horn_type_id == 2:
-                # HERCULES BEETLE: Both horns rotate together (dual-jaw pincer)
-                # Top horn (y > 3) and bottom horn (y < 3) both get same yaw
-                yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-                yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+                # HERCULES BEETLE: Roll/twist both horns around X-axis (forward axis)
+                # Like twisting a ball held between top and bottom hands
+                # Both horns roll in same direction (B key = both twist right, V key = both twist left)
+                yawed_x = pitched_x  # X unchanged (axis of rotation)
+                yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
+                yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
             else:
                 # RHINO BEETLE (horn_type_id == 0): Apply uniform rotation to entire horn
                 yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
@@ -1998,19 +2003,25 @@ def calculate_horn_tip_position(beetle):
     pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
     pitched_z = rel_z
 
-    # Step 3: Apply horn yaw rotation (around Y-axis)
+    # Step 3: Apply horn yaw rotation - behavior differs by beetle type
     cos_horn_yaw = math.cos(beetle.horn_yaw)
     sin_horn_yaw = math.sin(beetle.horn_yaw)
 
     if beetle.horn_type == "stag":
-        # Stag: use the right pincer position (maximum extent)
+        # Stag: Y-axis rotation (use right pincer position - maximum extent)
         yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
         yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        yawed_y = pitched_y
+    elif beetle.horn_type == "hercules":
+        # Hercules: X-axis rotation (roll/twist around forward axis)
+        yawed_x = pitched_x
+        yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
     else:
-        # Rhino: standard yaw rotation
+        # Rhino: Y-axis rotation (horizontal sweep)
         yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
         yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-    yawed_y = pitched_y
+        yawed_y = pitched_y
 
     # Step 4: Translate back from pivot
     local_x = yawed_x + 3.0
@@ -2056,17 +2067,25 @@ def calculate_horn_tip_position_with_yaw(beetle, yaw_angle):
     pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
     pitched_z = rel_z
 
-    # Step 3: Apply horn yaw rotation (around Y-axis) - use PROPOSED yaw_angle
+    # Step 3: Apply horn yaw rotation - behavior differs by beetle type
     cos_horn_yaw = math.cos(yaw_angle)
     sin_horn_yaw = math.sin(yaw_angle)
 
     if beetle.horn_type == "stag":
+        # Stag: Y-axis rotation (left/right pincers spread)
         yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
         yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        yawed_y = pitched_y
+    elif beetle.horn_type == "hercules":
+        # Hercules: X-axis rotation (roll/twist around forward axis)
+        yawed_x = pitched_x
+        yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
     else:
+        # Rhino: Y-axis rotation (horizontal sweep)
         yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
         yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-    yawed_y = pitched_y
+        yawed_y = pitched_y
 
     # Step 4: Translate back from pivot
     local_x = yawed_x + 3.0
@@ -2112,17 +2131,25 @@ def calculate_horn_tip_position_with_pitch(beetle, pitch_angle):
     pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
     pitched_z = rel_z
 
-    # Step 3: Apply horn yaw rotation (around Y-axis) - use current yaw
+    # Step 3: Apply horn yaw rotation - behavior differs by beetle type (use current yaw)
     cos_horn_yaw = math.cos(beetle.horn_yaw)
     sin_horn_yaw = math.sin(beetle.horn_yaw)
 
     if beetle.horn_type == "stag":
+        # Stag: Y-axis rotation (left/right pincers spread)
         yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
         yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        yawed_y = pitched_y
+    elif beetle.horn_type == "hercules":
+        # Hercules: X-axis rotation (roll/twist around forward axis)
+        yawed_x = pitched_x
+        yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
     else:
+        # Rhino: Y-axis rotation (horizontal sweep)
         yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
         yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-    yawed_y = pitched_y
+        yawed_y = pitched_y
 
     # Step 4: Translate back from pivot
     local_x = yawed_x + 3.0
@@ -2168,17 +2195,25 @@ def calculate_horn_tip_position_with_both(beetle, pitch_angle, yaw_angle):
     pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
     pitched_z = rel_z
 
-    # Step 3: Apply horn yaw rotation (around Y-axis) - use PROPOSED yaw_angle
+    # Step 3: Apply horn yaw rotation - behavior differs by beetle type
     cos_horn_yaw = math.cos(yaw_angle)
     sin_horn_yaw = math.sin(yaw_angle)
 
     if beetle.horn_type == "stag":
+        # Stag: Y-axis rotation (left/right pincers spread)
         yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
         yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        yawed_y = pitched_y
+    elif beetle.horn_type == "hercules":
+        # Hercules: X-axis rotation (roll/twist around forward axis)
+        yawed_x = pitched_x
+        yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
     else:
+        # Rhino: Y-axis rotation (horizontal sweep)
         yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
         yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-    yawed_y = pitched_y
+        yawed_y = pitched_y
 
     # Step 4: Translate back from pivot
     local_x = yawed_x + 3.0
@@ -2272,47 +2307,283 @@ def calculate_stag_pincer_tips(beetle, pitch_angle, yaw_angle):
 
     return (left_tip_x, left_tip_y, left_tip_z), (right_tip_x, right_tip_y, right_tip_z)
 
+def calculate_hercules_jaw_tips(beetle, pitch_angle, yaw_angle):
+    """Calculate both top and bottom jaw tip positions for Hercules beetles"""
+    import math
+
+    # Calculate actual horn lengths using slow-reduction formula (same as geometry generation)
+    MAX_TOP_LENGTH = 17
+    MAX_SLIDER = 12
+    actual_top_len = int(MAX_TOP_LENGTH - (MAX_SLIDER - beetle.horn_shaft_len) * 0.5)
+
+    MAX_BOTTOM_LENGTH = 13
+    MAX_PRONG_SLIDER = 6
+    actual_bottom_len = int(MAX_BOTTOM_LENGTH - (MAX_PRONG_SLIDER - beetle.horn_prong_len) * 1.0)
+
+    # === TOP JAW (extends from Y=7, rotated +10° around pivot (3,7)) ===
+    # Calculate EXACT position of the last voxel (using same formula as geometry generation)
+    i = actual_top_len - 1  # Last voxel index
+    progress = float(i) / float(actual_top_len) if actual_top_len > 0 else 0.0
+
+    dx = 3 + i  # Extends forward from pivot
+    base_angle_rise = int(i * 0.364)  # 20 degree base angle
+
+    # Height curve: rises in first 40%, levels 40-70%, hooks down 70-100%
+    if progress < 0.4:
+        # Rising section
+        dy = 7 + base_angle_rise + int(i * 0.4)
+    elif progress < 0.7:
+        # Level section at peak
+        dy = 7 + base_angle_rise + int(actual_top_len * 0.4 * 0.4)
+    else:
+        # Downward hook at tip
+        hook_progress = (progress - 0.7) / 0.3
+        peak_height = 7 + int(actual_top_len * 0.4 * 0.4)
+        dy = base_angle_rise + peak_height - int(hook_progress * actual_top_len * 0.15)
+
+    # Step 1: Translate to top horn pivot (3, 7)
+    top_pivot_x = 3.0
+    top_pivot_y = 7.0
+    top_rel_x = float(dx) - top_pivot_x
+    top_rel_y = float(dy) - top_pivot_y
+    top_rel_z = 0.0
+
+    # Step 2: Apply +10° rotation around top pivot (same as geometry generation)
+    top_rotation_angle = math.radians(10)
+    cos_top_rot = math.cos(top_rotation_angle)
+    sin_top_rot = math.sin(top_rotation_angle)
+    top_rotated_x = top_rel_x * cos_top_rot - top_rel_y * sin_top_rot
+    top_rotated_y = top_rel_x * sin_top_rot + top_rel_y * cos_top_rot
+    top_rotated_z = top_rel_z
+
+    # Get center position after rotation
+    center_x = top_rotated_x + top_pivot_x
+    center_y = top_rotated_y + top_pivot_y
+
+    # Account for 2x2x2 block placement (dx_off: [0,1], dy_off: [0,1], dz: [-1,0])
+    # The furthest voxel is at int(center_x) + 1 in X, int(center_y) + 1 in Y
+    # Z voxels at -1 and 0 can rotate to extend Y when roll applied
+    top_tip_local_x = float(int(center_x) + 1) + 1.5  # +1 for block, +1.5 for width
+    top_tip_local_y = float(int(center_y) + 1) + 1.5  # +1 for block, +1.5 for width + rotation
+    top_tip_local_z = 0.0
+
+    # Recalculate rotation from the buffered tip position
+    top_rel_x = top_tip_local_x - 3.0
+    top_rel_y = top_tip_local_y - 7.0
+    top_rel_z = top_tip_local_z
+
+    top_rotated_x = top_rel_x
+    top_rotated_y = top_rel_y
+    top_rotated_z = top_rel_z
+
+    # Step 3: Apply yaw/roll (X-axis rotation) - top horn does NOT apply pitch
+    cos_horn_yaw = math.cos(yaw_angle)
+    sin_horn_yaw = math.sin(yaw_angle)
+    top_yawed_x = top_rotated_x
+    top_yawed_y = top_rotated_y * cos_horn_yaw - top_rotated_z * sin_horn_yaw
+    top_yawed_z = top_rotated_y * sin_horn_yaw + top_rotated_z * cos_horn_yaw
+
+    # Step 4: Translate back from top pivot (add 7 to Y, 3 to X)
+    top_local_x = top_yawed_x + 3.0
+    top_local_y = top_yawed_y + 7.0
+    top_local_z = top_yawed_z
+
+    # Step 5: Apply beetle body rotation
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    top_rotated_x_body = top_local_x * cos_rotation - top_local_z * sin_rotation
+    top_rotated_z_body = top_local_x * sin_rotation + top_local_z * cos_rotation
+    top_rotated_y_body = top_local_y
+
+    # Step 6: Translate to world position
+    top_tip_x = beetle.x + top_rotated_x_body
+    top_tip_y = beetle.y + top_rotated_y_body
+    top_tip_z = beetle.z + top_rotated_z_body
+
+    # === BOTTOM JAW (extends from Y=1, rotated -30° around pivot (3,1)) ===
+    # Calculate EXACT position of the last voxel (using same formula as geometry generation)
+    i_bottom = actual_bottom_len - 1  # Last voxel index
+
+    dx_bottom = 3 + i_bottom  # Extends forward from pivot
+    base_angle_rise_bottom = int(i_bottom * 0.364)  # 20 degree base angle
+    curve_rise_bottom = int((i_bottom * i_bottom) / float(actual_bottom_len) * 0.5)  # Accelerating upward curve
+    dy_bottom = 1 + base_angle_rise_bottom + curve_rise_bottom
+
+    # Step 1: Translate to bottom horn pivot (3, 1)
+    bottom_pivot_x = 3.0
+    bottom_pivot_y = 1.0
+    bottom_rel_x_pre = float(dx_bottom) - bottom_pivot_x
+    bottom_rel_y_pre = float(dy_bottom) - bottom_pivot_y
+    bottom_rel_z_pre = 0.0
+
+    # Step 2: Apply -30° rotation around bottom pivot (same as geometry generation)
+    bottom_rotation_angle = math.radians(-30)
+    cos_bottom_rot = math.cos(bottom_rotation_angle)
+    sin_bottom_rot = math.sin(bottom_rotation_angle)
+    bottom_pre_rotated_x = bottom_rel_x_pre * cos_bottom_rot - bottom_rel_y_pre * sin_bottom_rot
+    bottom_pre_rotated_y = bottom_rel_x_pre * sin_bottom_rot + bottom_rel_y_pre * cos_bottom_rot
+    bottom_pre_rotated_z = bottom_rel_z_pre
+
+    # Get center position after -30° rotation
+    center_x_bottom = bottom_pre_rotated_x + bottom_pivot_x
+    center_y_bottom = bottom_pre_rotated_y + bottom_pivot_y
+
+    # Account for 2x2x2 block placement - furthest voxel is at int(center_x) + 1, int(center_y) + 1
+    # Z voxels at -1 and 0 can rotate to extend Y when roll applied
+    bottom_tip_local_x = float(int(center_x_bottom) + 1) + 1.5  # +1 for block, +1.5 for width
+    bottom_tip_local_y = float(int(center_y_bottom) + 1) + 1.5  # +1 for block, +1.5 for width + rotation
+    bottom_tip_local_z = 0.0
+
+    # Recalculate from buffered tip position for pitch/yaw application
+    bottom_rel_x = bottom_tip_local_x - 3.0
+    bottom_rel_y = bottom_tip_local_y - 1.0
+    bottom_rel_z = bottom_tip_local_z
+
+    # Step 3: Apply pitch rotation (R/Y keys) - ONLY bottom jaw rotates with pitch
+    cos_horn_pitch = math.cos(pitch_angle)
+    sin_horn_pitch = math.sin(pitch_angle)
+    bottom_pitched_x = bottom_rel_x * cos_horn_pitch - bottom_rel_y * sin_horn_pitch
+    bottom_pitched_y = bottom_rel_x * sin_horn_pitch + bottom_rel_y * cos_horn_pitch
+    bottom_pitched_z = bottom_rel_z
+
+    # Don't re-apply the -30° rotation - it's already baked into the tip position
+    bottom_rotated_x = bottom_pitched_x
+    bottom_rotated_y = bottom_pitched_y
+    bottom_rotated_z = bottom_pitched_z
+
+    # Step 4: Apply yaw/roll (X-axis rotation)
+    bottom_yawed_x = bottom_rotated_x
+    bottom_yawed_y = bottom_rotated_y * cos_horn_yaw - bottom_rotated_z * sin_horn_yaw
+    bottom_yawed_z = bottom_rotated_y * sin_horn_yaw + bottom_rotated_z * cos_horn_yaw
+
+    # Step 5: Translate back from bottom pivot (add 1 to Y, 3 to X)
+    bottom_local_x = bottom_yawed_x + 3.0
+    bottom_local_y = bottom_yawed_y + 1.0
+    bottom_local_z = bottom_yawed_z
+
+    # Step 6: Apply beetle body rotation
+    bottom_rotated_x_body = bottom_local_x * cos_rotation - bottom_local_z * sin_rotation
+    bottom_rotated_z_body = bottom_local_x * sin_rotation + bottom_local_z * cos_rotation
+    bottom_rotated_y_body = bottom_local_y
+
+    # Step 7: Translate to world position
+    bottom_tip_x = beetle.x + bottom_rotated_x_body
+    bottom_tip_y = beetle.y + bottom_rotated_y_body
+    bottom_tip_z = beetle.z + bottom_rotated_z_body
+
+    return (top_tip_x, top_tip_y, top_tip_z), (bottom_tip_x, bottom_tip_y, bottom_tip_z)
+
 def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
-    """Calculate minimum distance between horn tips (handles both stag and rhino)"""
-    # Fast path: if either beetle is rhino, use single center point
-    if beetle1.horn_type != "stag" or beetle2.horn_type != "stag":
-        # At least one rhino - use center point collision
+    """Calculate minimum distance between horn tips (handles stag, rhino, and hercules)"""
+
+    # CASE 1: Both rhino - simple single tip collision
+    if beetle1.horn_type == "rhino" and beetle2.horn_type == "rhino":
         tip1_x, tip1_y, tip1_z = calculate_horn_tip_position_with_both(beetle1, pitch1, yaw1)
         tip2_x, tip2_y, tip2_z = calculate_horn_tip_position_with_both(beetle2, pitch2, yaw2)
-
         dx = tip1_x - tip2_x
         dy = tip1_y - tip2_y
         dz = tip1_z - tip2_z
         return math.sqrt(dx*dx + dy*dy + dz*dz)
 
-    # Both stag - check all 4 tip combinations
-    (b1_left_x, b1_left_y, b1_left_z), (b1_right_x, b1_right_y, b1_right_z) = calculate_stag_pincer_tips(beetle1, pitch1, yaw1)
-    (b2_left_x, b2_left_y, b2_left_z), (b2_right_x, b2_right_y, b2_right_z) = calculate_stag_pincer_tips(beetle2, pitch2, yaw2)
+    # CASE 2: Both stag - check all 4 pincer tip combinations
+    if beetle1.horn_type == "stag" and beetle2.horn_type == "stag":
+        (b1_left_x, b1_left_y, b1_left_z), (b1_right_x, b1_right_y, b1_right_z) = calculate_stag_pincer_tips(beetle1, pitch1, yaw1)
+        (b2_left_x, b2_left_y, b2_left_z), (b2_right_x, b2_right_y, b2_right_z) = calculate_stag_pincer_tips(beetle2, pitch2, yaw2)
 
-    # Calculate all 4 distances
-    # Calculate all 4 distances inline (no nested function to avoid Python introspection issues)
-    dx = b1_left_x - b2_left_x
-    dy = b1_left_y - b2_left_y
-    dz = b1_left_z - b2_left_z
-    dist_ll = math.sqrt(dx*dx + dy*dy + dz*dz)
+        # Calculate all 4 distances inline
+        dx = b1_left_x - b2_left_x
+        dy = b1_left_y - b2_left_y
+        dz = b1_left_z - b2_left_z
+        dist_ll = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-    dx = b1_left_x - b2_right_x
-    dy = b1_left_y - b2_right_y
-    dz = b1_left_z - b2_right_z
-    dist_lr = math.sqrt(dx*dx + dy*dy + dz*dz)
+        dx = b1_left_x - b2_right_x
+        dy = b1_left_y - b2_right_y
+        dz = b1_left_z - b2_right_z
+        dist_lr = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-    dx = b1_right_x - b2_left_x
-    dy = b1_right_y - b2_left_y
-    dz = b1_right_z - b2_left_z
-    dist_rl = math.sqrt(dx*dx + dy*dy + dz*dz)
+        dx = b1_right_x - b2_left_x
+        dy = b1_right_y - b2_left_y
+        dz = b1_right_z - b2_left_z
+        dist_rl = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-    dx = b1_right_x - b2_right_x
-    dy = b1_right_y - b2_right_y
-    dz = b1_right_z - b2_right_z
-    dist_rr = math.sqrt(dx*dx + dy*dy + dz*dz)
+        dx = b1_right_x - b2_right_x
+        dy = b1_right_y - b2_right_y
+        dz = b1_right_z - b2_right_z
+        dist_rr = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-    # Return minimum distance across all combinations
-    return min(dist_ll, dist_lr, dist_rl, dist_rr)
+        return min(dist_ll, dist_lr, dist_rl, dist_rr)
+
+    # CASE 3: Both hercules - check all 4 jaw tip combinations
+    if beetle1.horn_type == "hercules" and beetle2.horn_type == "hercules":
+        (b1_top_x, b1_top_y, b1_top_z), (b1_bot_x, b1_bot_y, b1_bot_z) = calculate_hercules_jaw_tips(beetle1, pitch1, yaw1)
+        (b2_top_x, b2_top_y, b2_top_z), (b2_bot_x, b2_bot_y, b2_bot_z) = calculate_hercules_jaw_tips(beetle2, pitch2, yaw2)
+
+        # Calculate all 4 distances: top-top, top-bottom, bottom-top, bottom-bottom
+        dx = b1_top_x - b2_top_x
+        dy = b1_top_y - b2_top_y
+        dz = b1_top_z - b2_top_z
+        dist_tt = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        dx = b1_top_x - b2_bot_x
+        dy = b1_top_y - b2_bot_y
+        dz = b1_top_z - b2_bot_z
+        dist_tb = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        dx = b1_bot_x - b2_top_x
+        dy = b1_bot_y - b2_top_y
+        dz = b1_bot_z - b2_top_z
+        dist_bt = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        dx = b1_bot_x - b2_bot_x
+        dy = b1_bot_y - b2_bot_y
+        dz = b1_bot_z - b2_bot_z
+        dist_bb = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        return min(dist_tt, dist_tb, dist_bt, dist_bb)
+
+    # CASE 4: Mixed types - check dual-tip beetle against single or other dual-tip
+    # Handle: stag vs rhino, hercules vs rhino, stag vs hercules
+
+    # Get tips for beetle1
+    if beetle1.horn_type == "stag":
+        (b1_tip1_x, b1_tip1_y, b1_tip1_z), (b1_tip2_x, b1_tip2_y, b1_tip2_z) = calculate_stag_pincer_tips(beetle1, pitch1, yaw1)
+    elif beetle1.horn_type == "hercules":
+        (b1_tip1_x, b1_tip1_y, b1_tip1_z), (b1_tip2_x, b1_tip2_y, b1_tip2_z) = calculate_hercules_jaw_tips(beetle1, pitch1, yaw1)
+    else:  # rhino
+        b1_tip1_x, b1_tip1_y, b1_tip1_z = calculate_horn_tip_position_with_both(beetle1, pitch1, yaw1)
+        b1_tip2_x, b1_tip2_y, b1_tip2_z = b1_tip1_x, b1_tip1_y, b1_tip1_z  # Same tip twice for rhino
+
+    # Get tips for beetle2
+    if beetle2.horn_type == "stag":
+        (b2_tip1_x, b2_tip1_y, b2_tip1_z), (b2_tip2_x, b2_tip2_y, b2_tip2_z) = calculate_stag_pincer_tips(beetle2, pitch2, yaw2)
+    elif beetle2.horn_type == "hercules":
+        (b2_tip1_x, b2_tip1_y, b2_tip1_z), (b2_tip2_x, b2_tip2_y, b2_tip2_z) = calculate_hercules_jaw_tips(beetle2, pitch2, yaw2)
+    else:  # rhino
+        b2_tip1_x, b2_tip1_y, b2_tip1_z = calculate_horn_tip_position_with_both(beetle2, pitch2, yaw2)
+        b2_tip2_x, b2_tip2_y, b2_tip2_z = b2_tip1_x, b2_tip1_y, b2_tip1_z  # Same tip twice for rhino
+
+    # Calculate all 4 distances (even if some are duplicates for rhino)
+    dx = b1_tip1_x - b2_tip1_x
+    dy = b1_tip1_y - b2_tip1_y
+    dz = b1_tip1_z - b2_tip1_z
+    dist_11 = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    dx = b1_tip1_x - b2_tip2_x
+    dy = b1_tip1_y - b2_tip2_y
+    dz = b1_tip1_z - b2_tip2_z
+    dist_12 = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    dx = b1_tip2_x - b2_tip1_x
+    dy = b1_tip2_y - b2_tip1_y
+    dz = b1_tip2_z - b2_tip1_z
+    dist_21 = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    dx = b1_tip2_x - b2_tip2_x
+    dy = b1_tip2_y - b2_tip2_y
+    dz = b1_tip2_z - b2_tip2_z
+    dist_22 = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    return min(dist_11, dist_12, dist_21, dist_22)
 
 @ti.kernel
 def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32, dt: ti.f32, pitch_inertia: ti.f32, roll_inertia: ti.f32):
