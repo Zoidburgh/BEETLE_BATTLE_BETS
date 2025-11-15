@@ -736,7 +736,10 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     dz_max = width_half + 1
 
     for dx in range(-body_length, -1):
-        length_pos = (dx + 6.5) / 5.0
+        # Scale taper formula to body_length so abdomen grows properly
+        taper_center = -body_length / 2.0  # Center of abdomen
+        taper_scale = body_length / 2.5     # Scale factor for smooth taper
+        length_pos = (dx - taper_center) / taper_scale
         length_taper = 1.0 - (length_pos * length_pos)
         if length_taper > 0:
             length_taper_sqrt = math.sqrt(length_taper)  # Calculate sqrt once per dx
