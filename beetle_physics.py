@@ -341,12 +341,19 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                 beetle2_y_max = -1
 
                 # Find Y-ranges for both beetles in this column (includes legs and tips!)
-                # Optimized: Use dynamic range based on beetle Y positions
-                # Beetles are max 35 voxels tall (10 legs + 8 body + 12 horn vertical reach + 5 safety margin)
-                beetle_max_height = 35
-                y_center = int(RENDER_Y_OFFSET) + int((y1 + y2) / 2.0)
-                y_start = ti.max(0, y_center - beetle_max_height)
-                y_end = ti.min(simulation.n_grid, y_center + beetle_max_height)
+                # Calculate independent ranges for each beetle (asymmetric: legs down, body/horn up)
+                beetle_max_reach_down = 12  # Legs (max 10) + safety margin
+                beetle_max_reach_up = 28    # Body (8) + horn vertical reach (20) + safety margin
+
+                # Find grid Y for each beetle
+                beetle1_grid_y = int(RENDER_Y_OFFSET + y1)
+                beetle2_grid_y = int(RENDER_Y_OFFSET + y2)
+
+                # Take union of both beetles' ranges
+                y_start = ti.max(0, ti.min(beetle1_grid_y - beetle_max_reach_down,
+                                            beetle2_grid_y - beetle_max_reach_down))
+                y_end = ti.min(simulation.n_grid, ti.max(beetle1_grid_y + beetle_max_reach_up,
+                                                          beetle2_grid_y + beetle_max_reach_up))
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
                     # Optimized: Range-based checks (all blue beetle types are 5-13, red are 6-14)
@@ -3160,10 +3167,6 @@ while window.running:
 
     # Rebuild geometry if sliders changed
     if new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or new_back_body != window.back_body_height_value or new_body_length != window.body_length_value or new_body_width != window.body_width_value or new_leg_length != window.leg_length_value:
-        # Clear old beetle voxels before rebuilding geometry to prevent ghost voxels
-        clear_beetles_bounded(beetle_blue.x, beetle_blue.y, beetle_blue.z,
-                             beetle_red.x, beetle_red.y, beetle_red.z)
-        reset_dirty_voxels()
         rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length, horn_type)
         ti.sync()  # Ensure CPU writes complete before GPU kernels read
         window.horn_shaft_value = new_shaft
