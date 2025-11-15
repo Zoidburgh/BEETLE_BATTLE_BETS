@@ -1018,7 +1018,7 @@ dirty_voxel_z = ti.field(ti.i32, shape=MAX_DIRTY_VOXELS)
 dirty_voxel_count = ti.field(ti.i32, shape=())
 
 # Animation parameters
-WALK_CYCLE_SPEED = 0.8  # Radians per second at normal walk speed (slowed down 5X)
+WALK_CYCLE_SPEED = 1.0  # Radians per second at normal walk speed
 
 # Copy body geometry to GPU
 for i, (dx, dy, dz) in enumerate(BEETLE_BODY):
@@ -2921,7 +2921,7 @@ while window.running:
 
         # Fall death detection - two-stage system
         POINT_OF_NO_RETURN = -5.0  # Once below this, can't recover (5 voxels below floor)
-        FALL_DEATH_Y = -30.0  # Fully removed at this point (30 voxels below floor)
+        FALL_DEATH_Y = -25.0  # Fully removed at this point (25 voxels below floor)
 
         # Stage 1: Point of no return - disable controls but keep rendering
         if beetle_blue.active and not beetle_blue.is_falling and beetle_blue.y < POINT_OF_NO_RETURN:
@@ -2932,13 +2932,13 @@ while window.running:
             print("RED BEETLE IS FALLING!")
 
         # Stage 1.5: Death explosion - dramatic particle burst midway through fall
-        EXPLOSION_TRIGGER_Y = -25.0  # Trigger explosion after falling 25 voxels
+        EXPLOSION_TRIGGER_Y = -20.0  # Trigger explosion after falling 20 voxels
         if beetle_blue.is_falling and not beetle_blue.has_exploded and beetle_blue.y < EXPLOSION_TRIGGER_Y:
-            spawn_death_explosion(beetle_blue.x, beetle_blue.y + 19.0, beetle_blue.z, simulation.BEETLE_BLUE)
+            spawn_death_explosion(beetle_blue.x, beetle_blue.y + 21.0, beetle_blue.z, simulation.BEETLE_BLUE)
             beetle_blue.has_exploded = True
             print("BLUE BEETLE EXPLODED!")
         if beetle_red.is_falling and not beetle_red.has_exploded and beetle_red.y < EXPLOSION_TRIGGER_Y:
-            spawn_death_explosion(beetle_red.x, beetle_red.y + 19.0, beetle_red.z, simulation.BEETLE_RED)
+            spawn_death_explosion(beetle_red.x, beetle_red.y + 21.0, beetle_red.z, simulation.BEETLE_RED)
             beetle_red.has_exploded = True
             print("RED BEETLE EXPLODED!")
 
