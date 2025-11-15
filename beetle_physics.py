@@ -837,10 +837,11 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     # Leg order: [front_left, front_right, middle_left, middle_right, rear_left, rear_right]
 
     # Calculate leg segment lengths based on leg_length parameter
-    # Total leg = coxa (20%) + femur (40%) + tibia (40%)
-    coxa_len = max(1, int(leg_length * 0.2))   # Minimum 1 voxel
-    femur_len = max(2, int(leg_length * 0.4))  # Minimum 2 voxels
-    tibia_len = max(2, int(leg_length * 0.4))  # Minimum 2 voxels
+    # Use leg_length directly as total, distributed as coxa (20%) + femur (40%) + tibia (remainder)
+    total_length = leg_length
+    coxa_len = max(1, total_length // 5)  # ~20%
+    femur_len = max(1, (total_length * 2) // 5)  # ~40%
+    tibia_len = max(1, total_length - coxa_len - femur_len)  # Remainder ensures exact total
 
     # Calculate Z positions for each segment
     coxa_start = 3
@@ -2081,16 +2082,26 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
     (b2_left_x, b2_left_y, b2_left_z), (b2_right_x, b2_right_y, b2_right_z) = calculate_stag_pincer_tips(beetle2, pitch2, yaw2)
 
     # Calculate all 4 distances
-    def dist(x1, y1, z1, x2, y2, z2):
-        dx = x1 - x2
-        dy = y1 - y2
-        dz = z1 - z2
-        return math.sqrt(dx*dx + dy*dy + dz*dz)
+    # Calculate all 4 distances inline (no nested function to avoid Python introspection issues)
+    dx = b1_left_x - b2_left_x
+    dy = b1_left_y - b2_left_y
+    dz = b1_left_z - b2_left_z
+    dist_ll = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-    dist_ll = dist(b1_left_x, b1_left_y, b1_left_z, b2_left_x, b2_left_y, b2_left_z)
-    dist_lr = dist(b1_left_x, b1_left_y, b1_left_z, b2_right_x, b2_right_y, b2_right_z)
-    dist_rl = dist(b1_right_x, b1_right_y, b1_right_z, b2_left_x, b2_left_y, b2_left_z)
-    dist_rr = dist(b1_right_x, b1_right_y, b1_right_z, b2_right_x, b2_right_y, b2_right_z)
+    dx = b1_left_x - b2_right_x
+    dy = b1_left_y - b2_right_y
+    dz = b1_left_z - b2_right_z
+    dist_lr = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    dx = b1_right_x - b2_left_x
+    dy = b1_right_y - b2_left_y
+    dz = b1_right_z - b2_left_z
+    dist_rl = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    dx = b1_right_x - b2_right_x
+    dy = b1_right_y - b2_right_y
+    dz = b1_right_z - b2_right_z
+    dist_rr = math.sqrt(dx*dx + dy*dy + dz*dz)
 
     # Return minimum distance across all combinations
     return min(dist_ll, dist_lr, dist_rl, dist_rr)
