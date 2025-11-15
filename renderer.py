@@ -28,8 +28,8 @@ gradient_positions = ti.Vector.field(2, dtype=ti.f32, shape=6)
 gradient_colors = ti.Vector.field(3, dtype=ti.f32, shape=6)
 
 @ti.func
-def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
-    """Get color for voxel type (GPU function)"""
+def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.math.vec3:
+    """Get color for voxel type with metallic sheen (GPU function)"""
     # Default color (steel/concrete)
     color = ti.math.vec3(0.7, 0.7, 0.75)
 
@@ -89,6 +89,12 @@ def get_voxel_color(voxel_type: ti.i32) -> ti.math.vec3:
     elif voxel_type == 14:  # BEETLE_RED_HORN_TIP
         color = ti.math.vec3(0.4, 0.1, 0.1)  # Deep crimson
 
+    # Add metallic sheen to beetle voxels only (performance optimized)
+    if voxel_type >= 5 and voxel_type <= 14:  # All beetle parts
+        # Subtle metallic shimmer using fast hardware-accelerated sin
+        shimmer = 0.85 + 0.105 * ti.sin(world_x * 0.35 + world_z * 0.45)
+        color *= shimmer
+
     return color
 
 @ti.kernel
@@ -110,8 +116,8 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
                 float(j),
                 float(k) - n_grid / 2.0
             )
-            # Get color
-            color = get_voxel_color(vtype)
+            # Get color with metallic sheen
+            color = get_voxel_color(vtype, world_pos.x, world_pos.z)
 
             # Separate debris from normal voxels
             if vtype == 4:  # DEBRIS
@@ -137,11 +143,12 @@ def extract_debris_particles():
     # Copy debris particles to render buffers (count is already bounded by MAX_DEBRIS)
     for idx in range(count):
         # Get position from physics system
-        debris_positions[idx] = simulation.debris_pos[idx]
+        debris_pos = simulation.debris_pos[idx]
+        debris_positions[idx] = debris_pos
 
-        # Get color based on material type
+        # Get color based on material type with metallic sheen
         material_type = simulation.debris_material[idx]
-        base_color = get_voxel_color(material_type)
+        base_color = get_voxel_color(material_type, debris_pos.x, debris_pos.z)
 
         # Calculate alpha transparency fade based on remaining lifetime
         # Fade to transparent instead of darker for smooth disappearance

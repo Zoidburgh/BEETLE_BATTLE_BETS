@@ -845,71 +845,71 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     tibia_start = femur_start + femur_len
     tibia_end = tibia_start + tibia_len
 
-    # Front left leg (leg 0) - MOVED FORWARD 1 VOXEL
+    # Front left leg (leg 0) - MOVED BACK 1 VOXEL
     front_left = []
     front_left_tips = []  # Separate tips for black coloring
     side = -1
     # COXA
     for i in range(coxa_len):
         for extra_y in range(2):
-            front_left.append((2, 1 + extra_y, side * (coxa_start + i)))
+            front_left.append((1, 1 + extra_y, side * (coxa_start + i)))
     # FEMUR
     for i in range(femur_len):
         for extra_y in range(2):
-            front_left.append((2, 0 + extra_y, side * (femur_start + i)))
+            front_left.append((1, 0 + extra_y, side * (femur_start + i)))
     # TIBIA (tips - will be rendered black)
     for i in range(tibia_len):
-        tip_x = 2 + min(i // 2, 2)  # Extend forward gradually
+        tip_x = 1 + min(i // 2, 2)  # Extend forward gradually
         front_left_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(front_left)
 
-    # Front right leg (leg 1) - MOVED FORWARD 1 VOXEL
+    # Front right leg (leg 1) - MOVED BACK 1 VOXEL
     front_right = []
     front_right_tips = []
     side = 1
     for i in range(coxa_len):
         for extra_y in range(2):
-            front_right.append((2, 1 + extra_y, side * (coxa_start + i)))
+            front_right.append((1, 1 + extra_y, side * (coxa_start + i)))
     for i in range(femur_len):
         for extra_y in range(2):
-            front_right.append((2, 0 + extra_y, side * (femur_start + i)))
+            front_right.append((1, 0 + extra_y, side * (femur_start + i)))
     for i in range(tibia_len):
-        tip_x = 2 + min(i // 2, 2)
+        tip_x = 1 + min(i // 2, 2)
         front_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(front_right)
 
-    # Middle left leg (leg 2)
+    # Middle left leg (leg 2) - MOVED BACK 1 VOXEL
     middle_left = []
     middle_left_tips = []
     side = -1
     for i in range(coxa_len):
         for extra_y in range(2):
-            middle_left.append((-2, 1 + extra_y, side * (coxa_start + i)))
+            middle_left.append((-3, 1 + extra_y, side * (coxa_start + i)))
     for i in range(femur_len):
         for extra_y in range(2):
-            middle_left.append((-2, 0 + extra_y, side * (femur_start + i)))
+            middle_left.append((-3, 0 + extra_y, side * (femur_start + i)))
     for i in range(tibia_len):
-        tip_x = -2 - min(i // 2, 2)  # Extend backward gradually
+        tip_x = -3 - min(i // 2, 2)  # Extend backward gradually
         middle_left_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(middle_left)
 
-    # Middle right leg (leg 3)
+    # Middle right leg (leg 3) - MOVED BACK 1 VOXEL
     middle_right = []
     middle_right_tips = []
     side = 1
     for i in range(coxa_len):
         for extra_y in range(2):
-            middle_right.append((-2, 1 + extra_y, side * (coxa_start + i)))
+            middle_right.append((-3, 1 + extra_y, side * (coxa_start + i)))
     for i in range(femur_len):
         for extra_y in range(2):
-            middle_right.append((-2, 0 + extra_y, side * (femur_start + i)))
+            middle_right.append((-3, 0 + extra_y, side * (femur_start + i)))
     for i in range(tibia_len):
-        tip_x = -2 - min(i // 2, 2)
+        tip_x = -3 - min(i // 2, 2)
         middle_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(middle_right)
 
-    # Rear left leg (leg 4) - Position proportional to body length
-    rear_leg_attach_x = -(body_length // 2)  # Proportional to abdomen length
+    # Rear left leg (leg 4) - Position proportional to body length - MOVED BACK 1 VOXEL
+    rear_leg_attach_x = -(body_length // 2) - 1  # Proportional to abdomen length
     rear_left = []
     rear_left_tips = []
     side = -1
@@ -3161,7 +3161,7 @@ while window.running:
     new_shaft = window.GUI.slider_int("Horn Shaft", window.horn_shaft_value, 5, 12)
     new_prong = window.GUI.slider_int("Horn Prong", window.horn_prong_value, 3, 6)
     new_back_body = window.GUI.slider_int("Back Body", window.back_body_height_value, 4, 8)
-    new_body_length = window.GUI.slider_int("Body Length", window.body_length_value, 8, 16)
+    new_body_length = window.GUI.slider_int("Body Length", window.body_length_value, 9, 14)
     new_body_width = window.GUI.slider_int("Body Width", window.body_width_value, 5, 9)
     new_leg_length = window.GUI.slider_int("Leg Length", window.leg_length_value, 6, 10)
 
