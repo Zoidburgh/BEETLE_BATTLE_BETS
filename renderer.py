@@ -16,7 +16,7 @@ voxel_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 # Separate fields for debris (so we can render at different size)
 num_debris = ti.field(dtype=ti.i32, shape=())
 debris_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
-debris_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
+debris_colors = ti.Vector.field(4, dtype=ti.f32, shape=MAX_VOXELS)  # RGBA for alpha transparency
 
 # Projectile rendering (cannonballs)
 num_projectiles_render = ti.field(dtype=ti.i32, shape=())
@@ -118,7 +118,7 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
                 idx = ti.atomic_add(debris_count, 1)
                 if idx < MAX_VOXELS:
                     debris_positions[idx] = world_pos
-                    debris_colors[idx] = color
+                    debris_colors[idx] = ti.Vector([color.x, color.y, color.z, 1.0])  # Add alpha=1.0
             else:  # Normal voxels (STEEL, CONCRETE, MOLTEN)
                 idx = ti.atomic_add(count, 1)
                 if idx < MAX_VOXELS:
@@ -134,8 +134,8 @@ def extract_debris_particles():
     # Get number of active debris particles from simulation
     count = simulation.num_debris[None]
 
-    # Copy debris particles to render buffers
-    for idx in range(ti.min(count, MAX_VOXELS)):
+    # Copy debris particles to render buffers (count is already bounded by MAX_DEBRIS)
+    for idx in range(count):
         # Get position from physics system
         debris_positions[idx] = simulation.debris_pos[idx]
 
@@ -143,22 +143,20 @@ def extract_debris_particles():
         material_type = simulation.debris_material[idx]
         base_color = get_voxel_color(material_type)
 
-        # Calculate fade based on remaining lifetime (smooth fadeout in last 0.25 seconds)
-        # Fade color intensity while maintaining hue for smooth transparency effect
+        # Calculate alpha transparency fade based on remaining lifetime
+        # Fade to transparent instead of darker for smooth disappearance
         lifetime = simulation.debris_lifetime[idx]
-        fade_start = 0.25  # Start fading when 0.25 seconds left (optimized for shorter lifetime)
+        fade_start = 0.25  # Start fading when 0.25 seconds left (optimized for 0.4-0.7s lifetime)
 
+        # Calculate alpha (1.0 = opaque, 0.0 = transparent) and set RGBA
         if lifetime < fade_start:
-            # Smooth fade: reduce intensity but keep hue (don't go to black)
-            fade_factor = lifetime / fade_start
-            # Fade to 30% brightness minimum to avoid pure black
-            fade_factor = 0.3 + fade_factor * 0.7
-            debris_colors[idx] = base_color * fade_factor
+            alpha_value = lifetime / fade_start  # Linear fade from 1.0 to 0.0
+            debris_colors[idx] = ti.Vector([base_color.x, base_color.y, base_color.z, alpha_value])
         else:
-            debris_colors[idx] = base_color
+            debris_colors[idx] = ti.Vector([base_color.x, base_color.y, base_color.z, 1.0])
 
     # Set debris count for rendering
-    num_debris[None] = ti.min(count, MAX_VOXELS)
+    num_debris[None] = count
 
 @ti.kernel
 def extract_projectiles():

@@ -316,17 +316,17 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
     dz = center1_z - center2_z
     dist_sq = dx * dx + dz * dz
     too_far = 0
-    if dist_sq > 3600:  # (60 voxels)^2 = 2 * 30 voxel max reach for tip-to-tip collision
+    if dist_sq > 5776:  # (76 voxels)^2 = 2 * 38 voxel max reach for collision detection
         too_far = 1
 
     # Tighter collision bounds - only check where beetles can actually overlap
-    # Beetles are max 30 voxels from center (long horns: 3+14+7=24 + 3 safety buffer + 3 rotation margin)
-    x_min = ti.max(ti.max(0, center1_x - 30), ti.max(0, center2_x - 30))
-    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 30),
-                   ti.min(simulation.n_grid, center2_x + 30))
-    z_min = ti.max(ti.max(0, center1_z - 30), ti.max(0, center2_z - 30))
-    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 30),
-                   ti.min(simulation.n_grid, center2_z + 30))
+    # Beetles are max 38 voxels from center (max body back: 16 + max horn forward: 21 = 37 + 1 safety margin)
+    x_min = ti.max(ti.max(0, center1_x - 38), ti.max(0, center2_x - 38))
+    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 38),
+                   ti.min(simulation.n_grid, center2_x + 38))
+    z_min = ti.max(ti.max(0, center1_z - 38), ti.max(0, center2_z - 38))
+    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 38),
+                   ti.min(simulation.n_grid, center2_z + 38))
 
     # Scan for colliding voxels - TRUE 3D collision detection (only if not too far)
     # Track Y-ranges for each beetle in each XZ column
@@ -342,8 +342,8 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
 
                 # Find Y-ranges for both beetles in this column (includes legs and tips!)
                 # Optimized: Use dynamic range based on beetle Y positions
-                # Beetles are max 25 voxels tall (8 body + 10 legs + 10 horn vertical reach when tilted)
-                beetle_max_height = 25
+                # Beetles are max 35 voxels tall (10 legs + 8 body + 12 horn vertical reach + 5 safety margin)
+                beetle_max_height = 35
                 y_center = int(RENDER_Y_OFFSET) + int((y1 + y2) / 2.0)
                 y_start = ti.max(0, y_center - beetle_max_height)
                 y_end = ti.min(simulation.n_grid, y_center + beetle_max_height)
@@ -2226,16 +2226,16 @@ def update_debris_particles(dt: ti.f32):
 
     # Update all active particles in parallel
     for idx in range(simulation.num_debris[None]):
+        # Skip dead particles early to save GPU cycles
+        if simulation.debris_lifetime[idx] <= 0.0:
+            continue
+
         # Age the particle
         simulation.debris_lifetime[idx] -= dt
 
-        # Update physics for alive particles
-        if simulation.debris_lifetime[idx] > 0.0:
-            # Apply gravity
-            simulation.debris_vel[idx].y -= gravity * dt
-
-            # Update position
-            simulation.debris_pos[idx] += simulation.debris_vel[idx] * dt
+        # Update physics (gravity + position)
+        simulation.debris_vel[idx].y -= gravity * dt
+        simulation.debris_pos[idx] += simulation.debris_vel[idx] * dt
 
 @ti.kernel
 def cleanup_dead_debris():
@@ -2908,8 +2908,8 @@ while window.running:
         # Update debris particles (physics, aging)
         update_debris_particles(PHYSICS_TIMESTEP)
 
-        # Cleanup dead debris every 10 frames (reduce overhead)
-        if physics_frame % 10 == 0:
+        # Cleanup dead debris every 2 frames (aggressive cleanup for better performance)
+        if physics_frame % 2 == 0:
             cleanup_dead_debris()
 
         # Fall death detection - two-stage system
@@ -3160,6 +3160,10 @@ while window.running:
 
     # Rebuild geometry if sliders changed
     if new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or new_back_body != window.back_body_height_value or new_body_length != window.body_length_value or new_body_width != window.body_width_value or new_leg_length != window.leg_length_value:
+        # Clear old beetle voxels before rebuilding geometry to prevent ghost voxels
+        clear_beetles_bounded(beetle_blue.x, beetle_blue.y, beetle_blue.z,
+                             beetle_red.x, beetle_red.y, beetle_red.z)
+        reset_dirty_voxels()
         rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length, horn_type)
         ti.sync()  # Ensure CPU writes complete before GPU kernels read
         window.horn_shaft_value = new_shaft
