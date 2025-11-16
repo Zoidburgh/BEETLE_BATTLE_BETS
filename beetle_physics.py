@@ -32,6 +32,7 @@ HORN_TILT_SPEED = 2.0  # Radians per second
 HORN_DEFAULT_PITCH = math.radians(10)  # Start at +10 degrees (raised) - for rhino
 HORN_DEFAULT_PITCH_STAG = math.radians(18)  # Start at +18 degrees (raised) - for stag pincers
 HORN_DEFAULT_PITCH_HERCULES = math.radians(15)  # Start at +15 degrees (jaws slightly open) - for hercules
+HORN_DEFAULT_PITCH_SCORPION = math.radians(20)  # Start at +20 degrees (raised) - for scorpion claws
 HORN_MAX_PITCH = math.radians(30)  # +30 degrees vertical (up) - 20° range from default
 HORN_MIN_PITCH = math.radians(-10)  # -10 degrees vertical (down) - 20° range from default
 # Hercules-specific limits (±15° range from default)
@@ -115,7 +116,8 @@ class Beetle:
         self.horn_shaft_len = 12  # Default horn shaft length in voxels
         self.horn_prong_len = 5   # Default horn prong length in voxels
         self.horn_length = 17.0   # Cached total horn reach (updated when geometry changes)
-        self.horn_type = "rhino"  # Horn type: "rhino" (single horn) or "stag" (dual pincers)
+        self.horn_type = "rhino"  # Horn type: "rhino" (single horn), "stag" (dual pincers), "hercules" (dual jaws), or "scorpion"
+        self.body_pitch_offset = 0.0  # Static body tilt angle (radians) - calculated from leg geometry for scorpion
 
         # Center of gravity tracking (for edge tipping physics)
         self.cog_x = x  # Center of gravity X
@@ -747,13 +749,23 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         length_taper = 1.0 - (length_pos * length_pos)
         if length_taper > 0:
             length_taper_sqrt = math.sqrt(length_taper)  # Calculate sqrt once per dx
+
+            # SCORPION: Add Y offset that increases toward the rear (tail up)
+            if horn_type == "scorpion":
+                # Calculate how far back we are (0.0 at front, 1.0 at rear)
+                rear_progress = (dx - (-1)) / (-body_length - (-1))  # 0.0 at dx=-1, 1.0 at dx=-body_length
+                # Rear should be 4 voxels higher than front
+                y_offset = int(rear_progress * 4)
+            else:
+                y_offset = 0
+
             for dy in range(0, back_body_height):
                 width_at_height = width_at_height_cache[dy]
                 if width_at_height > 0:
                     max_width = width_at_height * length_taper_sqrt
                     for dz in range(dz_min, dz_max):
                         if abs(dz) <= max_width:
-                            body_voxels.append((dx, dy, dz))
+                            body_voxels.append((dx, dy + y_offset, dz))
 
     # THORAX (middle) - LEAN with small pronotum bump, scales with body_width
     # Height directly controlled by front_body_height parameter
@@ -786,8 +798,85 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                 if abs(dz) <= head_base_width:
                     body_voxels.append((dx, dy, dz))
 
-    # HORN GENERATION - Choose between rhino, stag, or hercules beetle type
-    if horn_type == "stag":
+    # HORN GENERATION - Choose between rhino, stag, hercules, or scorpion (claws)
+    if horn_type == "scorpion":
+        # SCORPION - Dense, curved claws with thick arms (pedipalps)
+        # Arms extend forward and upward from front of body
+        arm_length = 6
+
+        # LEFT ARM + CLAW
+        # Dense arm that extends forward, upward, and outward
+        for i in range(arm_length):
+            dx = 2 + i
+            dy_base = 2 + (i // 2)  # Rises from 2 to 4
+            dz_base = -(i + 2)  # Extends leftward
+
+            # 2x2 cross-section for thick arms (less bulky than 3x3)
+            for dy_off in range(0, 2):
+                for dz_off in range(0, 2):
+                    body_voxels.append((dx, dy_base + dy_off, dz_base - dz_off))
+
+        # Left claw - dense curved pincers at end of arm
+        claw_base_x = 2 + arm_length
+        claw_base_z = -(arm_length + 2)
+
+        # Upper pincer - curves down and inward naturally
+        upper_pincer = [
+            # Base (wide)
+            (0, 5, 0), (0, 5, -1), (0, 6, 0), (0, 6, -1),
+            (0, 4, 0), (0, 4, -1),
+            # Mid (curving)
+            (1, 5, 0), (1, 5, 1), (1, 4, 0), (1, 4, 1),
+            (2, 5, 1), (2, 4, 1), (2, 4, 2),
+            # Curve
+            (3, 4, 2), (3, 4, 3), (3, 3, 2), (3, 3, 3),
+            # Tip (narrower, pointing inward)
+            (4, 4, 3), (4, 3, 3), (4, 3, 4),
+            (5, 3, 4), (5, 3, 5),
+        ]
+        for offset in upper_pincer:
+            body_voxels.append((claw_base_x + offset[0], offset[1], claw_base_z + offset[2]))
+
+        # Lower pincer - curves up and inward naturally
+        lower_pincer = [
+            # Base (wide) - raised to Y=2 minimum to avoid ground clipping
+            (0, 2, 0), (0, 2, -1), (0, 2, 0), (0, 2, -1),
+            (0, 3, 0), (0, 3, -1),
+            # Mid (curving)
+            (1, 2, 0), (1, 2, 1), (1, 3, 0), (1, 3, 1),
+            (2, 2, 1), (2, 3, 1), (2, 3, 2),
+            # Curve
+            (3, 3, 2), (3, 3, 3), (3, 4, 2), (3, 4, 3),
+            # Tip (narrower, pointing inward)
+            (4, 3, 3), (4, 4, 3), (4, 4, 4),
+            (5, 4, 4), (5, 4, 5),
+        ]
+        for offset in lower_pincer:
+            body_voxels.append((claw_base_x + offset[0], offset[1], claw_base_z + offset[2]))
+
+        # RIGHT ARM + CLAW (mirror of left)
+        # Dense arm that extends forward, upward, and outward
+        for i in range(arm_length):
+            dx = 2 + i
+            dy_base = 2 + (i // 2)
+            dz_base = (i + 2)  # Extends rightward
+
+            # 2x2 cross-section for thick arms (less bulky than 3x3)
+            for dy_off in range(0, 2):
+                for dz_off in range(0, 2):
+                    body_voxels.append((dx, dy_base + dy_off, dz_base + dz_off))
+
+        # Right claw - mirror the left claw
+        claw_base_z_right = (arm_length + 2)
+
+        # Upper pincer (mirrored)
+        for offset in upper_pincer:
+            body_voxels.append((claw_base_x + offset[0], offset[1], claw_base_z_right - offset[2]))
+
+        # Lower pincer (mirrored)
+        for offset in lower_pincer:
+            body_voxels.append((claw_base_x + offset[0], offset[1], claw_base_z_right - offset[2]))
+    elif horn_type == "stag":
         # STAG BEETLE PINCERS - Horizontal mandibles
         pincer_voxels = generate_stag_pincers(horn_shaft_len - 2, horn_prong_len)
         body_voxels.extend(pincer_voxels)
@@ -841,21 +930,31 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                 # Add overlapping voxel below
                 body_voxels.append((dx, dy - 1, dz))
 
-    # IMPROVED LEGS (6 total) - Separated for animation
-    # Leg order: [front_left, front_right, middle_left, middle_right, rear_left, rear_right]
+    # IMPROVED LEGS (6 for beetles, 8 for scorpion) - Separated for animation
+    # Leg order: [front_left, front_right, middle_left, middle_right, rear_left, rear_right, rear2_left*, rear2_right*]
+    # *Only for scorpion type
 
-    # Calculate leg segment lengths based on leg_length parameter
-    # Use leg_length directly as total, distributed as coxa (20%) + femur (40%) + tibia (remainder)
-    total_length = leg_length
-    coxa_len = max(1, total_length // 5)  # ~20%
-    femur_len = max(1, (total_length * 2) // 5)  # ~40%
-    tibia_len = max(1, total_length - coxa_len - femur_len)  # Remainder ensures exact total
+    # Helper function to calculate leg segment lengths with optional length multiplier
+    def calc_leg_segments(base_leg_length, length_multiplier=1.0):
+        """Calculate coxa, femur, tibia lengths for a leg with optional multiplier"""
+        total_length = int(base_leg_length * length_multiplier)
+        coxa = max(1, total_length // 5)  # ~20%
+        femur = max(1, (total_length * 2) // 5)  # ~40%
+        tibia = max(1, total_length - coxa - femur)  # Remainder ensures exact total
+        return coxa, femur, tibia
 
-    # Calculate Z positions for each segment
+    # For scorpion: graduated leg lengths (front shortest, rear longest)
+    # For beetles: all legs same length (multiplier = 1.0)
+    if horn_type == "scorpion":
+        leg_multipliers = [1.0, 1.0, 1.1, 1.1, 1.2, 1.2, 1.3, 1.3]  # Graduated lengths
+    else:
+        leg_multipliers = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # All same length for beetles
+
+    # Calculate segment lengths for front legs (legs 0, 1) - use multiplier[0]
+    coxa_len, femur_len, tibia_len = calc_leg_segments(leg_length, leg_multipliers[0])
     coxa_start = 3
     femur_start = coxa_start + coxa_len
     tibia_start = femur_start + femur_len
-    tibia_end = tibia_start + tibia_len
 
     # Front left leg (leg 0) - MOVED BACK 1 VOXEL
     front_left = []
@@ -890,6 +989,12 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         front_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(front_right)
 
+    # Calculate segment lengths for middle legs (legs 2, 3) - use multiplier[2]
+    coxa_len, femur_len, tibia_len = calc_leg_segments(leg_length, leg_multipliers[2])
+    coxa_start = 3
+    femur_start = coxa_start + coxa_len
+    tibia_start = femur_start + femur_len
+
     # Middle left leg (leg 2) - MOVED BACK 1 VOXEL
     middle_left = []
     middle_left_tips = []
@@ -919,6 +1024,12 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         tip_x = -3 - min(i // 2, 2)
         middle_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(middle_right)
+
+    # Calculate segment lengths for rear legs (legs 4, 5) - use multiplier[4]
+    coxa_len, femur_len, tibia_len = calc_leg_segments(leg_length, leg_multipliers[4])
+    coxa_start = 3
+    femur_start = coxa_start + coxa_len
+    tibia_start = femur_start + femur_len
 
     # Rear left leg (leg 4) - Position proportional to body length - MOVED BACK 1 VOXEL
     rear_leg_attach_x = -(body_length // 2) - 1  # Proportional to abdomen length
@@ -951,9 +1062,61 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         rear_right_tips.append((tip_x, 0, side * (tibia_start + i)))
     leg_voxels.append(rear_right)
 
-    # Collect all leg tips into single list (6 legs × 4 tips = 24 tip voxels)
-    leg_tips = [front_left_tips, front_right_tips, middle_left_tips,
-                middle_right_tips, rear_left_tips, rear_right_tips]
+    # SCORPION ONLY: Add two extra rear legs (legs 6, 7) - furthest back, longest, raised attachment
+    if horn_type == "scorpion":
+        # Calculate segment lengths for extra rear legs (legs 6, 7) - use multiplier[6]
+        coxa_len, femur_len, tibia_len = calc_leg_segments(leg_length, leg_multipliers[6])
+        coxa_start = 3
+        femur_start = coxa_start + coxa_len
+        tibia_start = femur_start + femur_len
+
+        # Rear-2 left leg (leg 6) - Position furthest back, attach higher (Y=2)
+        rear2_leg_attach_x = -(body_length * 3 // 4) - 2  # 75% back along abdomen, plus 2 voxels
+        rear2_left = []
+        rear2_left_tips = []
+        side = -1
+        # Add extra connector voxels to bridge from body to leg attachment
+        for bridge_z in range(1, coxa_start + 1):  # Z from 1 to leg start (skip z=0 next to body)
+            for extra_y in range(3):  # Y=2,3,4 - connects to tilted body
+                rear2_left.append((rear2_leg_attach_x, 2 + extra_y, side * bridge_z))
+        for i in range(coxa_len):
+            for extra_y in range(2):
+                rear2_left.append((rear2_leg_attach_x, 2 + extra_y, side * (coxa_start + i)))  # Y=2 (raised)
+        for i in range(femur_len):
+            for extra_y in range(2):
+                rear2_left.append((rear2_leg_attach_x - i, 1 + extra_y, side * (femur_start + i)))  # Y=1
+        for i in range(tibia_len):
+            tip_x = rear2_leg_attach_x - femur_len - min(i // 2, 2)
+            rear2_left_tips.append((tip_x, 0, side * (tibia_start + i)))
+        leg_voxels.append(rear2_left)
+
+        # Rear-2 right leg (leg 7) - Position furthest back, attach higher (Y=2)
+        rear2_right = []
+        rear2_right_tips = []
+        side = 1
+        # Add extra connector voxels to bridge from body to leg attachment
+        for bridge_z in range(1, coxa_start + 1):  # Z from 1 to leg start (skip z=0 next to body)
+            for extra_y in range(3):  # Y=2,3,4 - connects to tilted body
+                rear2_right.append((rear2_leg_attach_x, 2 + extra_y, side * bridge_z))
+        for i in range(coxa_len):
+            for extra_y in range(2):
+                rear2_right.append((rear2_leg_attach_x, 2 + extra_y, side * (coxa_start + i)))  # Y=2 (raised)
+        for i in range(femur_len):
+            for extra_y in range(2):
+                rear2_right.append((rear2_leg_attach_x - i, 1 + extra_y, side * (femur_start + i)))  # Y=1
+        for i in range(tibia_len):
+            tip_x = rear2_leg_attach_x - femur_len - min(i // 2, 2)
+            rear2_right_tips.append((tip_x, 0, side * (tibia_start + i)))
+        leg_voxels.append(rear2_right)
+
+        # Collect all leg tips into single list (8 legs for scorpion)
+        leg_tips = [front_left_tips, front_right_tips, middle_left_tips,
+                    middle_right_tips, rear_left_tips, rear_right_tips,
+                    rear2_left_tips, rear2_right_tips]
+    else:
+        # Collect all leg tips into single list (6 legs for beetles)
+        leg_tips = [front_left_tips, front_right_tips, middle_left_tips,
+                    middle_right_tips, rear_left_tips, rear_right_tips]
 
     return body_voxels, leg_voxels, leg_tips
 
@@ -975,26 +1138,26 @@ body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 # Store all leg voxels flattened with offsets to know where each leg starts
 # Max leg length=14: coxa(3) + femur(6) + tibia(6) = 15 voxels per segment
 # Each segment has 2 height layers, so 15*2 = 30 voxels max per leg
-# 6 legs × 30 voxels = 180 voxels max
-MAX_LEG_VOXELS = 180
+# 8 legs × 30 voxels = 240 voxels max (scorpion has 8 legs)
+MAX_LEG_VOXELS = 240
 leg_cache_x = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
 leg_cache_y = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
 leg_cache_z = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
 
-# Leg start indices for each of the 6 legs
-leg_start_idx = ti.field(ti.i32, shape=6)
-leg_end_idx = ti.field(ti.i32, shape=6)
+# Leg start indices for each of the 8 legs (beetles have 6, scorpion has 8)
+leg_start_idx = ti.field(ti.i32, shape=8)
+leg_end_idx = ti.field(ti.i32, shape=8)
 
 # Create OVERSIZED Taichi fields for leg tip geometry cache
-# Max leg length=14: tibia(6) tips per leg × 6 legs = 36 tip voxels max
-MAX_LEG_TIP_VOXELS = 40
+# Max leg length=14: tibia(6) tips per leg × 8 legs = 48 tip voxels max
+MAX_LEG_TIP_VOXELS = 50
 leg_tip_cache_x = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
 leg_tip_cache_y = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
 leg_tip_cache_z = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
 
-# Leg tip start indices for each of the 6 legs
-leg_tip_start_idx = ti.field(ti.i32, shape=6)
-leg_tip_end_idx = ti.field(ti.i32, shape=6)
+# Leg tip start indices for each of the 8 legs (beetles have 6, scorpion has 8)
+leg_tip_start_idx = ti.field(ti.i32, shape=8)
+leg_tip_end_idx = ti.field(ti.i32, shape=8)
 
 # Collision detection fields - store occupied voxels for each beetle (GPU-resident)
 # Each beetle can occupy up to ~1600 voxels in a 40x40 area
@@ -1103,6 +1266,12 @@ def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body
         offset += len(leg_voxels)
         leg_end_idx[leg_id] = offset
 
+    # Clear extra legs (6 & 7) when switching from scorpion to 6-legged beetles
+    num_legs = len(BEETLE_LEGS)
+    for leg_id in range(num_legs, 8):
+        leg_start_idx[leg_id] = 0
+        leg_end_idx[leg_id] = 0
+
     # Update leg tip cache
     offset = 0
     for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
@@ -1113,6 +1282,11 @@ def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body
             leg_tip_cache_z[offset + i] = dz
         offset += len(leg_tip_voxels)
         leg_tip_end_idx[leg_id] = offset
+
+    # Clear extra leg tips (6 & 7) when switching from scorpion to 6-legged beetles
+    for leg_id in range(num_legs, 8):
+        leg_tip_start_idx[leg_id] = 0
+        leg_tip_end_idx[leg_id] = 0
 
     # Update beetle horn dimensions for accurate collision detection
     horn_length = calculate_horn_length(shaft_len, prong_len, horn_type)
@@ -1127,6 +1301,10 @@ def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body
     beetle_red.horn_prong_len = prong_len
     beetle_red.horn_length = horn_length
     beetle_red.horn_type = horn_type
+
+    # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
+    beetle_blue.body_pitch_offset = 0.0
+    beetle_red.body_pitch_offset = 0.0
 
     print(f"Rebuilt beetle: {len(BEETLE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
@@ -1423,8 +1601,8 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
         if grid_y < lowest_y:
             lowest_y = grid_y
 
-    # Check all leg voxels
-    for leg_id in range(6):
+    # Check all leg voxels (up to 8 for scorpion, 6 for others)
+    for leg_id in range(8):
         start_idx = leg_start_idx[leg_id]
         end_idx = leg_end_idx[leg_id]
 
@@ -1453,8 +1631,8 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
             if grid_y < lowest_y:
                 lowest_y = grid_y
 
-    # Check all leg tip voxels (these are typically the lowest points)
-    for leg_id in range(6):
+    # Check all leg tip voxels (these are typically the lowest points) (up to 8 for scorpion)
+    for leg_id in range(8):
         tip_start_idx = leg_tip_start_idx[leg_id]
         tip_end_idx = leg_tip_end_idx[leg_id]
 
@@ -1486,12 +1664,13 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     return lowest_y
 
 @ti.kernel
-def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, horn_type_id: ti.i32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32):
+def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
         horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules
+        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion
+        body_pitch_offset: Static body tilt angle for scorpion (radians)
     """
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
@@ -1500,8 +1679,10 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
     # Rotation matrices for yaw, pitch, roll
     cos_yaw = ti.cos(rotation)
     sin_yaw = ti.sin(rotation)
-    cos_pitch_body = ti.cos(pitch)
-    sin_pitch_body = ti.sin(pitch)
+    # Combine physics pitch with static body tilt offset (for scorpion stance)
+    total_pitch = pitch + body_pitch_offset
+    cos_pitch_body = ti.cos(total_pitch)
+    sin_pitch_body = ti.sin(total_pitch)
     cos_roll = ti.cos(roll)
     sin_roll = ti.sin(roll)
 
@@ -1509,8 +1690,9 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
     cos_pitch = ti.cos(horn_pitch)
     sin_pitch = ti.sin(horn_pitch)
 
-    # Horn pivot point in local coordinates (where horn attaches to head)
-    horn_pivot_x = 3.0
+    # Horn/claw pivot point in local coordinates (where horn/claw attaches to head)
+    # Scorpion claws pivot at X=2, beetle horns pivot at X=3
+    horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
     horn_pivot_y = 1
 
     # 1. Place body with horn pitch applied
@@ -1519,8 +1701,15 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
         local_y = body_cache_y[i]
         local_z = float(body_cache_z[i])
 
-        # Apply horn pitch and yaw rotation ONLY to horn voxels (dx >= 3)
-        if body_cache_x[i] >= 3:
+        # Apply horn pitch and yaw rotation ONLY to horn voxels (dx >= 2 for scorpion claws, dx >= 3 for others)
+        # Scorpion claws start at dx=2, beetle horns start at dx=3
+        should_rotate = False
+        if horn_type_id == 3:  # Scorpion - rotate claws (dx >= 2)
+            should_rotate = body_cache_x[i] >= 2
+        elif body_cache_x[i] >= 3:  # Beetles - rotate horns (dx >= 3)
+            should_rotate = True
+
+        if should_rotate:
             # This is a horn voxel - apply pitch and yaw rotations around pivot point
             # Translate to pivot
             rel_x = local_x - horn_pivot_x
@@ -1539,7 +1728,36 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
             pitched_z = rel_z
 
             # Apply pitch rotation based on beetle type and horn position
-            if horn_type_id == 2:
+            if horn_type_id == 3:
+                # SCORPION: Both claws start at default angle, then alternate when R/Y pressed
+                # Calculate deviation from default (neutral) position
+                pitch_deviation = horn_pitch - default_horn_pitch
+
+                # First apply default pitch to both claws equally
+                cos_default = ti.cos(default_horn_pitch)
+                sin_default = ti.sin(default_horn_pitch)
+                temp_x = rel_x * cos_default - rel_y * sin_default
+                temp_y = rel_x * sin_default + rel_y * cos_default
+
+                # Then apply alternating deviation
+                if pitch_deviation != 0.0:
+                    cos_deviation = ti.cos(pitch_deviation)
+                    sin_deviation = ti.sin(pitch_deviation)
+
+                    if rel_z < -1.0:  # Left claw - invert deviation
+                        pitched_x = temp_x * cos_deviation + temp_y * sin_deviation
+                        pitched_y = -temp_x * sin_deviation + temp_y * cos_deviation
+                    elif rel_z > 1.0:  # Right claw - normal deviation
+                        pitched_x = temp_x * cos_deviation - temp_y * sin_deviation
+                        pitched_y = temp_x * sin_deviation + temp_y * cos_deviation
+                    else:  # Center voxels use default only
+                        pitched_x = temp_x
+                        pitched_y = temp_y
+                else:  # No deviation, just use default
+                    pitched_x = temp_x
+                    pitched_y = temp_y
+                # else: center voxels don't rotate
+            elif horn_type_id == 2:
                 # HERCULES: Only rotate bottom horn, top horn stays fixed
                 # After -30 degree rotation, bottom horn is mostly Y < 3, with tip reaching ~Y=5
                 # Top horn: After +10 degree rotation, starts at Y~8, goes up to Y=20+
@@ -1679,14 +1897,23 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
     # 2. Place legs (animated with tripod gait) - DIFFERENT COLOR
     # Tripod gait: legs 0, 3, 4 move together (Group A), legs 1, 2, 5 move together (Group B)
     # leg_id: 0=front_left, 1=front_right, 2=middle_left, 3=middle_right, 4=rear_left, 5=rear_right
+    # Scorpion adds: 6=rear2_left, 7=rear2_right
 
-    for leg_id in range(6):
-        # Determine leg phase offset for tripod gait
-        # Group A (0, 3, 4): phase_offset = 0
-        # Group B (1, 2, 5): phase_offset = π
+    for leg_id in range(8):  # Up to 8 legs for scorpion, 6 for beetles
+        # Determine leg phase offset for gait pattern
+        # SCORPION (horn_type_id == 3): Alternating wave gait
+        #   Even legs (0,2,4,6): phase_offset = 0
+        #   Odd legs (1,3,5,7): phase_offset = π
+        # BEETLE: Tripod gait
+        #   Group A (0, 3, 4): phase_offset = 0
+        #   Group B (1, 2, 5): phase_offset = π
         phase_offset = 0.0
-        if leg_id == 1 or leg_id == 2 or leg_id == 5:
-            phase_offset = 3.14159265359  # π
+        if horn_type_id == 3:  # Scorpion: alternating gait
+            if leg_id % 2 == 1:  # Odd legs
+                phase_offset = 3.14159265359  # π
+        else:  # Beetle: tripod gait
+            if leg_id == 1 or leg_id == 2 or leg_id == 5:
+                phase_offset = 3.14159265359  # π
 
         leg_phase = walk_phase + phase_offset
 
@@ -3594,13 +3821,23 @@ while window.running:
     clear_dirty_voxels()  # Clear voxels from previous frame (only ~600 voxels)
     reset_dirty_voxels()  # Reset counter for this frame's tracking
 
-    # Convert horn_type string to horn_type_id: 0=rhino, 1=stag, 2=hercules
-    horn_type_id = 1 if horn_type == "stag" else (2 if horn_type == "hercules" else 0)
+    # Convert horn_type string to horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion
+    horn_type_id = 1 if horn_type == "stag" else (2 if horn_type == "hercules" else (3 if horn_type == "scorpion" else 0))
+
+    # Get default horn pitch for current beetle type
+    if horn_type == "scorpion":
+        default_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+    elif horn_type == "stag":
+        default_horn_pitch = HORN_DEFAULT_PITCH_STAG
+    elif horn_type == "hercules":
+        default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+    else:
+        default_horn_pitch = HORN_DEFAULT_PITCH
 
     if beetle_blue.active:
-        place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, horn_type_id, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0)
+        place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, default_horn_pitch)
     if beetle_red.active:
-        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, horn_type_id, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0)
+        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, default_horn_pitch)
 
     canvas.set_background_color((0.18, 0.40, 0.22))  # Lighter forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
@@ -3698,22 +3935,32 @@ while window.running:
         button_text = "Horn Type: RHINO (click for STAG)"
     elif horn_type == "stag":
         button_text = "Horn Type: STAG (click for HERCULES)"
-    else:  # hercules
-        button_text = "Horn Type: HERCULES (click for RHINO)"
+    elif horn_type == "hercules":
+        button_text = "Horn Type: HERCULES (click for SCORPION)"
+    else:  # scorpion
+        button_text = "Horn Type: SCORPION (click for RHINO)"
 
     if window.GUI.button(button_text):
-        # Cycle horn type
+        # Cycle horn type: rhino → stag → hercules → scorpion → rhino
         if horn_type == "rhino":
             horn_type = "stag"
         elif horn_type == "stag":
             horn_type = "hercules"
+        elif horn_type == "hercules":
+            horn_type = "scorpion"
         else:
             horn_type = "rhino"
 
         print(f"Switching to {horn_type.upper()} beetle...")
 
         # Update horn pitch based on beetle type
-        if horn_type == "stag":
+        if horn_type == "scorpion":
+            # Scorpion claws angled up 20 degrees by default
+            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+        elif horn_type == "stag":
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_STAG
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH_STAG
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
