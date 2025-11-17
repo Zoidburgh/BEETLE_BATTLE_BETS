@@ -715,8 +715,8 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         leg_length: Total length of legs in voxels (default 10, range 6-14)
     """
     # Constrain all parameters to integers to prevent floating voxels from float arithmetic
-    horn_shaft_len = int(horn_shaft_len)
-    horn_prong_len = int(horn_prong_len)
+    horn_shaft_len = round(horn_shaft_len)
+    horn_prong_len = round(horn_prong_len)
     front_body_height = int(front_body_height)
     back_body_height = int(back_body_height)
     body_length = int(body_length)
@@ -903,7 +903,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     else:
         # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
         # Main shaft with overlapping layers
-        shaft_segments = int(horn_shaft_len)
+        shaft_segments = round(horn_shaft_len)
         for i in range(shaft_segments):
             dx = 3 + i
             height_curve = int(i * 0.3)
@@ -917,7 +917,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                     body_voxels.append((dx, dy - 1, dz))
 
         # Y-fork - Left prong with overlapping layers
-        prong_segments = int(horn_prong_len)
+        prong_segments = round(horn_prong_len)
         prong_start_x = 3 + shaft_segments  # Start where shaft ends
         prong_start_y = 1 + int(shaft_segments * 0.3)  # Continue from shaft height curve
 
@@ -1351,8 +1351,8 @@ def generate_stag_pincers(shaft_length, curve_length):
     pincer_voxels = []
 
     # Convert to int for voxel generation
-    shaft_length = int(shaft_length)
-    curve_length = int(curve_length)
+    shaft_length = round(shaft_length)
+    curve_length = round(curve_length)
 
     # LEFT PINCER (extends in -Z direction, curves inward toward +Z)
     # Straight shaft section extending left, angled 10° upward
@@ -1423,18 +1423,17 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
     horn_voxels = []
 
     # Convert to int for voxel generation
-    top_horn_len = int(top_horn_len)
-    bottom_horn_len = int(bottom_horn_len)
+    top_horn_len = round(top_horn_len)
+    bottom_horn_len = round(bottom_horn_len)
 
     # TOP HORN (Thoracic - upper jaw from thorax)
     # Long curved arc that rises then hooks downward like excavator claw
     # Origin: Y=7 (top of body), extends forward with upward curve then downward hook
-    # Slow reduction formula: max length at slider 12, but reduces slowly when decreasing slider
+    # 1:1 linear slider response, scaled to maintain original max length of 17
+    # Slider 5→10 voxels, Slider 12→17 voxels (every increment changes size)
     # Angled 20° upward (tan(20°) ≈ 0.364)
     # Then rotated up 10° from base position
-    MAX_TOP_LENGTH = 17  # Length at max slider (12)
-    MAX_SLIDER = 12
-    actual_top_len = int(MAX_TOP_LENGTH - (MAX_SLIDER - top_horn_len) * 0.5)
+    actual_top_len = 5 + top_horn_len
 
     import math
     top_rotation_angle = math.radians(10)  # Rotate up 10 degrees
@@ -1501,12 +1500,11 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
     # BOTTOM HORN (Cephalic - lower jaw from head)
     # Clean, smooth upward curve from below head to meet top horn
     # Origin: Y=1 (head level), extends forward with upward arc
-    # Slow reduction formula: max length at slider 6, but reduces slowly when decreasing slider
+    # 1:1 linear slider response, scaled to maintain original max length of 13
+    # Slider 0→7 voxels, Slider 6→13 voxels (every increment changes size)
     # Angled 20° upward base + additional upward curve
     # Then rotated down 30° from base position
-    MAX_BOTTOM_LENGTH = 13  # Length at max slider (6)
-    MAX_PRONG_SLIDER = 6
-    actual_bottom_len = int(MAX_BOTTOM_LENGTH - (MAX_PRONG_SLIDER - bottom_horn_len) * 1.0)
+    actual_bottom_len = 7 + bottom_horn_len
 
     import math
     rotation_angle = math.radians(-30)  # Rotate down 30 degrees
@@ -1558,7 +1556,7 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
         body_length: Body length for parametric attachment
         back_body_height: Rear body height for parametric attachment
         stinger_curvature: Dynamic curvature offset (-1.0 to +1.0) controlled by VB/NM keys
-        tail_rotation_angle: Dynamic tail rotation angle in degrees (-15 to +15) controlled by VB/NM keys
+        tail_rotation_angle: Dynamic tail rotation angle in degrees (-20 to +20) controlled by VB/NM keys
 
     Returns:
         List of (dx, dy, dz) voxel positions for stinger
@@ -1744,7 +1742,7 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
 
     # Rotate entire tail upward by 15 degrees (base) + dynamic tail_rotation_angle around attachment point
     # Rotation in X-Y plane (around Z-axis)
-    # tail_rotation_angle: -15 (down) to +15 (up)
+    # tail_rotation_angle: -20 (down) to +20 (up)
     angle_deg = 15.0 + tail_rotation_angle
     angle_rad = math.radians(angle_deg)
     cos_a = math.cos(angle_rad)
@@ -2825,14 +2823,9 @@ def calculate_hercules_jaw_tips(beetle, pitch_angle, yaw_angle):
     """Calculate both top and bottom jaw tip positions for Hercules beetles"""
     import math
 
-    # Calculate actual horn lengths using slow-reduction formula (same as geometry generation)
-    MAX_TOP_LENGTH = 17
-    MAX_SLIDER = 12
-    actual_top_len = int(MAX_TOP_LENGTH - (MAX_SLIDER - beetle.horn_shaft_len) * 0.5)
-
-    MAX_BOTTOM_LENGTH = 13
-    MAX_PRONG_SLIDER = 6
-    actual_bottom_len = int(MAX_BOTTOM_LENGTH - (MAX_PRONG_SLIDER - beetle.horn_prong_len) * 1.0)
+    # Calculate actual horn lengths using 1:1 linear slider response with scaling (same as geometry generation)
+    actual_top_len = 5 + beetle.horn_shaft_len  # Slider 5→10, Slider 12→17
+    actual_bottom_len = 7 + beetle.horn_prong_len  # Slider 0→7, Slider 6→13
 
     # === TOP JAW (extends from Y=7, rotated +10° around pivot (3,7)) ===
     # Calculate EXACT position of the last voxel (using same formula as geometry generation)
@@ -3788,11 +3781,11 @@ while window.running:
                 if window.is_pressed('v'):
                     # V = Rotate tail up
                     beetle_blue.tail_rotation_angle += TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.tail_rotation_angle = min(15.0, beetle_blue.tail_rotation_angle)
+                    beetle_blue.tail_rotation_angle = min(20.0, beetle_blue.tail_rotation_angle)
                 elif window.is_pressed('b'):
                     # B = Rotate tail down
                     beetle_blue.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.tail_rotation_angle = max(-15.0, beetle_blue.tail_rotation_angle)
+                    beetle_blue.tail_rotation_angle = max(-20.0, beetle_blue.tail_rotation_angle)
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -3900,11 +3893,11 @@ while window.running:
                 if window.is_pressed('n'):
                     # N = Rotate tail up
                     beetle_red.tail_rotation_angle += TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.tail_rotation_angle = min(15.0, beetle_red.tail_rotation_angle)
+                    beetle_red.tail_rotation_angle = min(20.0, beetle_red.tail_rotation_angle)
                 elif window.is_pressed('m'):
                     # M = Rotate tail down
                     beetle_red.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.tail_rotation_angle = max(-15.0, beetle_red.tail_rotation_angle)
+                    beetle_red.tail_rotation_angle = max(-20.0, beetle_red.tail_rotation_angle)
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -4237,12 +4230,6 @@ while window.running:
         new_body_width != window.body_width_value or new_leg_length != window.leg_length_value or
         (horn_type == "scorpion" and abs(beetle_blue.stinger_curvature - previous_stinger_curvature) > 0.01)):
 
-        # Map horn shaft slider to shorter geometry range with slower decay (only when rebuilding)
-        # Slider 5→5, Slider 12→9, with power curve for slower decay at high end
-        slider_normalized = (new_shaft - 5) / 7.0  # Normalize to 0-1
-        curved = slider_normalized ** 0.6  # Power < 1 gives slower decay
-        mapped_shaft = int(round(5 + curved * 4))  # Map to 5-9 range
-
         # For scorpion type, use blue beetle's values (both beetles share same geometry, only blue controls it)
         current_stinger_curvature = 0.0
         current_tail_rotation = 0.0
@@ -4250,7 +4237,7 @@ while window.running:
             current_stinger_curvature = beetle_blue.stinger_curvature
             current_tail_rotation = beetle_blue.tail_rotation_angle
 
-        rebuild_beetle_geometry(mapped_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length, horn_type, current_stinger_curvature, current_tail_rotation)
+        rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length, horn_type, current_stinger_curvature, current_tail_rotation)
         ti.sync()  # Ensure CPU writes complete before GPU kernels read
         window.horn_shaft_value = new_shaft
         window.horn_prong_value = new_prong
@@ -4320,13 +4307,8 @@ while window.running:
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
 
         # Rebuild geometry with current slider values and new horn type
-        # Apply horn shaft mapping (slider 5-12 → geometry 5-9)
-        slider_normalized = (window.horn_shaft_value - 5) / (12 - 5)
-        curved = slider_normalized ** 0.6
-        mapped_shaft = int(round(5 + curved * (9 - 5)))
-
         rebuild_beetle_geometry(
-            mapped_shaft,
+            window.horn_shaft_value,
             window.horn_prong_value,
             front_body_height,
             window.back_body_height_value,
