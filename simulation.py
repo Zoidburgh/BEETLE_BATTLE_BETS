@@ -39,6 +39,7 @@ BEETLE_BLUE_STRIPE = 11  # Blue beetle racing stripe (bright cyan/white)
 BEETLE_RED_STRIPE = 12  # Red beetle racing stripe (bright yellow/orange)
 BEETLE_BLUE_HORN_TIP = 13  # Blue beetle horn prong tips (bright white/cyan)
 BEETLE_RED_HORN_TIP = 14  # Red beetle horn prong tips (dark metallic)
+STINGER_TIP_BLACK = 15  # Scorpion stinger tips (black/dark)
 
 # Material property functions (for physics calculations)
 @ti.func

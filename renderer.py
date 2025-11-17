@@ -89,8 +89,12 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 14:  # BEETLE_RED_HORN_TIP
         color = ti.math.vec3(0.4, 0.1, 0.1)  # Deep crimson
 
+    # Scorpion stinger tips - black/dark grey
+    elif voxel_type == 15:  # STINGER_TIP_BLACK
+        color = ti.math.vec3(0.15, 0.15, 0.15)  # Dark grey/black
+
     # Add metallic sheen to beetle voxels only (performance optimized)
-    if voxel_type >= 5 and voxel_type <= 14:  # All beetle parts
+    if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts
         # Subtle metallic shimmer using fast hardware-accelerated sin
         shimmer = 0.85 + 0.105 * ti.sin(world_x * 0.35 + world_z * 0.45)
         color *= shimmer
