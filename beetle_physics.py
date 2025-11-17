@@ -121,6 +121,7 @@ class Beetle:
 
         # Scorpion stinger control (VB/NM keys)
         self.stinger_curvature = 0.0  # Stinger curvature offset (-1.0 to +1.0): negative=dart forward, positive=pull back, 0=neutral
+        self.tail_rotation_angle = 0.0  # Tail rotation angle in degrees (VB=down, NM=up)
 
         # Center of gravity tracking (for edge tipping physics)
         self.cog_x = x  # Center of gravity X
@@ -700,7 +701,7 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
 # ========== PERFORMANCE OPTIMIZATION: GEOMETRY CACHING ==========
-def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino", stinger_curvature=0.0):
+def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Generate beetle geometry separated into body and legs for animation
 
     Args:
@@ -881,12 +882,14 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             body_voxels.append((claw_base_x + offset[0], offset[1], claw_base_z_right - offset[2]))
 
         # SCORPION STINGER/TAIL - Curved tail extending from rear
+        # NOTE: tail_rotation_angle is now applied at runtime, not baked into geometry
         stinger_voxels = generate_scorpion_stinger(
             shaft_len=horn_shaft_len,
             prong_len=horn_prong_len,
             body_length=body_length,
             back_body_height=back_body_height,
-            stinger_curvature=stinger_curvature
+            stinger_curvature=stinger_curvature,
+            tail_rotation_angle=0.0  # Runtime rotation applied in rendering kernel
         )
         body_voxels.extend(stinger_voxels)
     elif horn_type == "stag":
@@ -1139,8 +1142,8 @@ print(f"Beetle geometry cached: {len(BEETLE_BODY)} body voxels + {sum(len(leg) f
 
 # Create OVERSIZED Taichi fields for body geometry cache (to allow dynamic resizing)
 # Hercules beetle with max settings can reach ~606 voxels
-# Increased to 900 to provide headroom for scorpion with thick interpolated stinger
-MAX_BODY_VOXELS = 900
+# Scorpion with Y-overlap for gap-free tail can reach ~2000 voxels at max length (3x multiplier in Y)
+MAX_BODY_VOXELS = 2500
 body_cache_size = ti.field(ti.i32, shape=())  # Track actual size
 body_cache_size[None] = len(BEETLE_BODY)
 body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
@@ -1163,8 +1166,8 @@ leg_end_idx = ti.field(ti.i32, shape=8)
 
 # Create OVERSIZED Taichi fields for leg tip geometry cache
 # Max leg length=14: tibia tips per leg × 8 legs
-# Increased to 60 to provide headroom for scorpion's 8 legs with thicker tip rendering
-MAX_LEG_TIP_VOXELS = 60
+# Increased to 65 to provide headroom for scorpion's 8 legs with thicker tip rendering
+MAX_LEG_TIP_VOXELS = 65
 leg_tip_cache_x = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
 leg_tip_cache_y = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
 leg_tip_cache_z = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
@@ -1200,7 +1203,7 @@ edge_tipping_roll_vel = ti.field(ti.f32, shape=())  # Roll angular velocity
 # Instead of scanning 250K voxels, track only the ~600 voxels we actually place
 # Max voxels per beetle: body(600) + legs(180) + tips(40) = 820
 # Two beetles: 1640, use 2000 for safety
-MAX_DIRTY_VOXELS = 2000
+MAX_DIRTY_VOXELS = 5000  # Increased to handle 2 beetles at max size (back_body_height=8, with horns/tail/legs)
 dirty_voxel_x = ti.field(ti.i32, shape=MAX_DIRTY_VOXELS)
 dirty_voxel_y = ti.field(ti.i32, shape=MAX_DIRTY_VOXELS)
 dirty_voxel_z = ti.field(ti.i32, shape=MAX_DIRTY_VOXELS)
@@ -1238,12 +1241,12 @@ for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
     leg_tip_end_idx[leg_id] = offset
 
 # Function to rebuild beetle geometry with new parameters
-def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino", stinger_curvature=0.0):
+def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild beetle geometry cache with new horn, body, and leg parameters"""
     global BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS
 
     # Generate new geometry
-    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature)
+    BEETLE_BODY, BEETLE_LEGS, BEETLE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
 
     # Update body cache
     if len(BEETLE_BODY) > MAX_BODY_VOXELS:
@@ -1286,6 +1289,12 @@ def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body
         leg_start_idx[leg_id] = 0
         leg_end_idx[leg_id] = 0
 
+    # Zero out any leftover leg voxels from previous geometry (offset = total new leg voxels)
+    for i in range(offset, MAX_LEG_VOXELS):
+        leg_cache_x[i] = 0
+        leg_cache_y[i] = 0
+        leg_cache_z[i] = 0
+
     # Update leg tip cache
     offset = 0
     for leg_id, leg_tip_voxels in enumerate(BEETLE_LEG_TIPS):
@@ -1301,6 +1310,12 @@ def rebuild_beetle_geometry(shaft_len, prong_len, front_body_height=4, back_body
     for leg_id in range(num_legs, 8):
         leg_tip_start_idx[leg_id] = 0
         leg_tip_end_idx[leg_id] = 0
+
+    # Zero out any leftover leg tip voxels from previous geometry (offset = total new leg tip voxels)
+    for i in range(offset, MAX_LEG_TIP_VOXELS):
+        leg_tip_cache_x[i] = 0
+        leg_tip_cache_y[i] = 0
+        leg_tip_cache_z[i] = 0
 
     # Update beetle horn dimensions for accurate collision detection
     horn_length = calculate_horn_length(shaft_len, prong_len, horn_type)
@@ -1533,7 +1548,7 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
 
     return horn_voxels
 
-def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_body_height=5, stinger_curvature=0.0):
+def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_body_height=5, stinger_curvature=0.0, tail_rotation_angle=0.0):
     """
     Generate scorpion tail/stinger - Simple version for debugging
 
@@ -1543,6 +1558,7 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
         body_length: Body length for parametric attachment
         back_body_height: Rear body height for parametric attachment
         stinger_curvature: Dynamic curvature offset (-1.0 to +1.0) controlled by VB/NM keys
+        tail_rotation_angle: Dynamic tail rotation angle in degrees (-15 to +15) controlled by VB/NM keys
 
     Returns:
         List of (dx, dy, dz) voxel positions for stinger
@@ -1575,7 +1591,7 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
     # Simple 4-point arc - NO SHARP CORNERS, gentle curve
     control_points = [
         (start_x, start_y),  # Base attachment
-        (start_x + int(shaft_len * 0.4) - curl, start_y + int(shaft_len * 0.7)),  # Rising
+        (start_x + int(shaft_len * 0.4) - curl, start_y + int(shaft_len * 0.95)),  # Rising (angled up ~10deg more)
         (start_x + int(shaft_len * 1.2) - curl, start_y + height),  # Peak
         (start_x + forward - curl, start_y + height - int(shaft_len * 0.2)),  # End slightly lower
     ]
@@ -1638,9 +1654,10 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
                 inter_x = int(prev_x + dx * inter_t)
                 inter_y = int(prev_y + dy * inter_t)
 
-                # 3 VOXELS THICK (in Z direction)
-                for dz in range(-1, 2):  # -1, 0, 1 = 3 layers
-                    stinger_voxels.append((inter_x, inter_y, z + dz))
+                # 3 VOXELS THICK (in Z direction) + Y-overlap for continuity at all angles
+                for dz in range(-1, 2):  # -1, 0, 1 = 3 layers in Z
+                    for dy_overlap in range(-1, 2):  # -1, 0, 1 = 3 layers in Y for overlap
+                        stinger_voxels.append((inter_x, inter_y + dy_overlap, z + dz))
 
         prev_x, prev_y = x, y
 
@@ -1691,35 +1708,65 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
 
                     # Taper: starts at 5 voxels thick, narrows to 1 voxel at the tip
                     if progress < 0.5:
-                        # Base section: 5 voxels thick (fuller stinger)
+                        # Base section: 5 voxels thick (fuller stinger) + Y-overlap
                         for dz in range(-2, 3):  # -2, -1, 0, 1, 2
-                            stinger_voxels.append((inter_x, inter_y, tip_start_z + dz))
+                            for dy_overlap in range(-1, 2):  # Y-overlap for continuity
+                                stinger_voxels.append((inter_x, inter_y + dy_overlap, tip_start_z + dz))
                     elif progress < 0.8:
-                        # Middle section: 3 voxels thick
+                        # Middle section: 3 voxels thick + Y-overlap
                         for dz in range(-1, 2):  # -1, 0, 1
-                            stinger_voxels.append((inter_x, inter_y, tip_start_z + dz))
+                            for dy_overlap in range(-1, 2):  # Y-overlap for continuity
+                                stinger_voxels.append((inter_x, inter_y + dy_overlap, tip_start_z + dz))
                     else:
-                        # Tip section: 1 voxel thick (point)
-                        stinger_voxels.append((inter_x, inter_y, tip_start_z))
+                        # Tip section: 1 voxel thick (point) + minimal Y-overlap
+                        for dy_overlap in range(-1, 2):
+                            stinger_voxels.append((inter_x, inter_y + dy_overlap, tip_start_z))
 
             # Always add the current position voxels
             if progress < 0.5:
-                # Base section: 5 voxels thick (fuller stinger)
+                # Base section: 5 voxels thick (fuller stinger) + Y-overlap
                 for dz in range(-2, 3):  # -2, -1, 0, 1, 2
-                    stinger_voxels.append((tip_x, tip_y, tip_start_z + dz))
+                    for dy_overlap in range(-1, 2):  # Y-overlap for continuity
+                        stinger_voxels.append((tip_x, tip_y + dy_overlap, tip_start_z + dz))
             elif progress < 0.8:
-                # Middle section: 3 voxels thick
+                # Middle section: 3 voxels thick + Y-overlap
                 for dz in range(-1, 2):  # -1, 0, 1
-                    stinger_voxels.append((tip_x, tip_y, tip_start_z + dz))
+                    for dy_overlap in range(-1, 2):  # Y-overlap for continuity
+                        stinger_voxels.append((tip_x, tip_y + dy_overlap, tip_start_z + dz))
             else:
-                # Tip section: 1 voxel thick (point)
-                stinger_voxels.append((tip_x, tip_y, tip_start_z))
+                # Tip section: 1 voxel thick (point) + minimal Y-overlap
+                for dy_overlap in range(-1, 2):
+                    stinger_voxels.append((tip_x, tip_y + dy_overlap, tip_start_z))
 
             # Update last position for next iteration
             last_tip_x = tip_x
             last_tip_y = tip_y
 
-    return stinger_voxels
+    # Rotate entire tail upward by 15 degrees (base) + dynamic tail_rotation_angle around attachment point
+    # Rotation in X-Y plane (around Z-axis)
+    # tail_rotation_angle: -15 (down) to +15 (up)
+    angle_deg = 15.0 + tail_rotation_angle
+    angle_rad = math.radians(angle_deg)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+
+    rotated_voxels = []
+    for (vx, vy, vz) in stinger_voxels:
+        # Translate to origin (attachment point)
+        rel_x = vx - start_x
+        rel_y = vy - start_y
+
+        # Rotate in X-Y plane (around Z-axis) - tilts tail upward
+        new_x = rel_x * cos_a - rel_y * sin_a
+        new_y = rel_x * sin_a + rel_y * cos_a
+
+        # Translate back
+        final_x = int(round(new_x + start_x))
+        final_y = int(round(new_y + start_y))
+
+        rotated_voxels.append((final_x, final_y, vz))
+
+    return rotated_voxels
 
 @ti.kernel
 def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
@@ -1866,11 +1913,12 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     return lowest_y
 
 @ti.kernel
-def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32):
+def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
         horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
+        tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
         horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion
         body_pitch_offset: Static body tilt angle for scorpion (radians)
     """
@@ -2021,6 +2069,38 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
             local_x = yawed_x + horn_pivot_x
             local_y = int(ti.round(yawed_y + float(horn_pivot_y)))
             local_z = yawed_z  # Already centered at 0
+
+        # SCORPION TAIL ROTATION: Apply runtime tail rotation to tail voxels (not claws or body)
+        # Tail starts at x = -body_length + 1 and extends forward, curving UPWARD
+        if horn_type_id == 3:  # Scorpion only
+            # Detect tail voxels: X range at rear, Y starting 3 voxels above attachment, Z near centerline
+            # Tail is at centerline (z = -1, 0, 1) while claws are at sides (larger |z|)
+            # This combination isolates tail from body/claws regardless of back_body_height
+            is_tail_voxel = (body_cache_x[i] >= -body_length) and (body_cache_x[i] <= -body_length + 30) and (body_cache_y[i] >= back_body_height + 3) and (abs(body_cache_z[i]) <= 2)
+
+            if is_tail_voxel:
+                # Tail attachment point in body-local coordinates (from generate_scorpion_stinger)
+                # Attachment is at top of abdomen: x = -body_length + 1, y = back_body_height, z = 0
+                # Body cache uses positive X forward, so attachment is at negative X
+                tail_pivot_x = -body_length + 1.0
+                tail_pivot_y = float(back_body_height)
+
+                # Translate to tail pivot
+                tail_rel_x = local_x - tail_pivot_x
+                tail_rel_y = float(local_y) - tail_pivot_y
+
+                # Apply tail rotation in X-Y plane (around Z-axis)
+                # tail_pitch is already in radians and includes base 15 degrees + dynamic adjustment
+                cos_tail = ti.cos(tail_pitch)
+                sin_tail = ti.sin(tail_pitch)
+
+                rotated_tail_x = tail_rel_x * cos_tail - tail_rel_y * sin_tail
+                rotated_tail_y = tail_rel_x * sin_tail + tail_rel_y * cos_tail
+
+                # Translate back from tail pivot
+                local_x = rotated_tail_x + tail_pivot_x
+                local_y = int(ti.round(rotated_tail_y + tail_pivot_y))
+                # local_z unchanged (rotation around Z-axis)
 
         # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
         # Convert local_y to float for rotation
@@ -3623,6 +3703,7 @@ accumulator = 0.0  # Time accumulator for fixed timestep physics
 horn_type = "rhino"  # Current horn type: "rhino" or "stag"
 physics_frame = 0  # Frame counter for periodic cleanup
 previous_stinger_curvature = 0.0  # Track stinger curvature for scorpion tail animation
+previous_tail_rotation = 0.0  # Track tail rotation angle for scorpion tail animation
 
 while window.running:
     current_time = time.time()
@@ -3700,18 +3781,18 @@ while window.running:
                 pitch_speed = -effective_speed
 
             # Calculate new yaw if yaw keys pressed
-            # For scorpion type, V/B control tail curvature instead of horn yaw
+            # For scorpion type, V/B control tail rotation angle instead of horn yaw
             if beetle_blue.horn_type == "scorpion":
-                # SCORPION: V/B control tail position (curvature)
-                STINGER_SPEED = 2.0  # How fast tail moves
+                # SCORPION: V/B control blue beetle's tail rotation
+                TAIL_ROTATION_SPEED = 30.0  # Degrees per second
                 if window.is_pressed('v'):
-                    # V = Dart forward (negative curvature)
-                    beetle_blue.stinger_curvature -= STINGER_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.stinger_curvature = max(-1.0, beetle_blue.stinger_curvature)
+                    # V = Rotate tail up
+                    beetle_blue.tail_rotation_angle += TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_blue.tail_rotation_angle = min(15.0, beetle_blue.tail_rotation_angle)
                 elif window.is_pressed('b'):
-                    # B = Pull back (positive curvature)
-                    beetle_blue.stinger_curvature += STINGER_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.stinger_curvature = min(1.0, beetle_blue.stinger_curvature)
+                    # B = Rotate tail down
+                    beetle_blue.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_blue.tail_rotation_angle = max(-15.0, beetle_blue.tail_rotation_angle)
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -3812,18 +3893,18 @@ while window.running:
                 pitch_speed = -effective_speed
 
             # Calculate new yaw if yaw keys pressed
-            # For scorpion type, N/M control tail curvature instead of horn yaw
+            # For scorpion type, N/M control tail rotation angle instead of horn yaw
             if beetle_red.horn_type == "scorpion":
-                # SCORPION: N/M control tail position (curvature)
-                STINGER_SPEED = 2.0  # How fast tail moves
+                # SCORPION: N/M control red beetle's tail rotation
+                TAIL_ROTATION_SPEED = 30.0  # Degrees per second
                 if window.is_pressed('n'):
-                    # N = Dart forward (negative curvature)
-                    beetle_red.stinger_curvature -= STINGER_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.stinger_curvature = max(-1.0, beetle_red.stinger_curvature)
+                    # N = Rotate tail up
+                    beetle_red.tail_rotation_angle += TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_red.tail_rotation_angle = min(15.0, beetle_red.tail_rotation_angle)
                 elif window.is_pressed('m'):
-                    # M = Pull back (positive curvature)
-                    beetle_red.stinger_curvature += STINGER_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.stinger_curvature = min(1.0, beetle_red.stinger_curvature)
+                    # M = Rotate tail down
+                    beetle_red.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_red.tail_rotation_angle = max(-15.0, beetle_red.tail_rotation_angle)
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -4023,6 +4104,7 @@ while window.running:
     blue_render_roll = lerp_angle(beetle_blue.prev_roll, beetle_blue.roll, alpha)
     blue_render_horn_pitch = lerp_angle(beetle_blue.prev_horn_pitch, beetle_blue.horn_pitch, alpha)
     blue_render_horn_yaw = lerp_angle(beetle_blue.prev_horn_yaw, beetle_blue.horn_yaw, alpha)
+    blue_render_tail_pitch = math.radians(15.0 + beetle_blue.tail_rotation_angle)  # Convert degrees to radians (base 15 + dynamic)
 
     # Interpolate red beetle state for rendering
     red_render_x = beetle_red.prev_x + (beetle_red.x - beetle_red.prev_x) * alpha
@@ -4031,6 +4113,7 @@ while window.running:
     red_render_rotation = lerp_angle(beetle_red.prev_rotation, beetle_red.rotation, alpha)
     red_render_pitch = lerp_angle(beetle_red.prev_pitch, beetle_red.pitch, alpha)
     red_render_roll = lerp_angle(beetle_red.prev_roll, beetle_red.roll, alpha)
+    red_render_tail_pitch = math.radians(15.0 + beetle_red.tail_rotation_angle)  # Convert degrees to radians (base 15 + dynamic)
     red_render_horn_pitch = lerp_angle(beetle_red.prev_horn_pitch, beetle_red.horn_pitch, alpha)
     red_render_horn_yaw = lerp_angle(beetle_red.prev_horn_yaw, beetle_red.horn_yaw, alpha)
 
@@ -4074,10 +4157,19 @@ while window.running:
     else:
         default_horn_pitch = HORN_DEFAULT_PITCH
 
+    # Initialize persistent slider values (needed for kernel parameters)
+    if not hasattr(window, 'horn_shaft_value'):
+        window.horn_shaft_value = 12
+        window.horn_prong_value = 5
+        window.back_body_height_value = 5
+        window.body_length_value = 12
+        window.body_width_value = 7
+        window.leg_length_value = 10
+
     if beetle_blue.active:
-        place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, default_horn_pitch)
+        place_animated_beetle(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, default_horn_pitch, window.body_length_value, window.back_body_height_value)
     if beetle_red.active:
-        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, default_horn_pitch)
+        place_animated_beetle(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, default_horn_pitch, window.body_length_value, window.back_body_height_value)
 
     canvas.set_background_color((0.18, 0.40, 0.22))  # Lighter forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
@@ -4127,15 +4219,6 @@ while window.running:
     window.GUI.text("")
     window.GUI.text("=== GENETICS TEST ===")
 
-    # Initialize persistent slider values
-    if not hasattr(window, 'horn_shaft_value'):
-        window.horn_shaft_value = 12
-        window.horn_prong_value = 5
-        window.back_body_height_value = 5
-        window.body_length_value = 12
-        window.body_width_value = 7
-        window.leg_length_value = 10
-
     # Front body (thorax) is fixed at 4 layers
     front_body_height = 4
 
@@ -4147,20 +4230,27 @@ while window.running:
     new_body_width = window.GUI.slider_int("Body Width", window.body_width_value, 5, 9)
     new_leg_length = window.GUI.slider_int("Leg Length", window.leg_length_value, 6, 10)
 
-    # For scorpion type, calculate average stinger curvature from both beetles
-    current_stinger_curvature = 0.0
-    if horn_type == "scorpion":
-        # Use average of both beetles' curvature (both share same geometry)
-        current_stinger_curvature = (beetle_blue.stinger_curvature + beetle_red.stinger_curvature) / 2.0
-
     # Rebuild geometry if sliders changed OR if scorpion tail curvature changed
-    sliders_changed = (new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or
-                      new_back_body != window.back_body_height_value or new_body_length != window.body_length_value or
-                      new_body_width != window.body_width_value or new_leg_length != window.leg_length_value)
-    stinger_changed = (horn_type == "scorpion" and abs(current_stinger_curvature - previous_stinger_curvature) > 0.01)
+    # Only check scorpion-specific values when horn_type is scorpion (optimization: skip for other beetles)
+    if (new_shaft != window.horn_shaft_value or new_prong != window.horn_prong_value or
+        new_back_body != window.back_body_height_value or new_body_length != window.body_length_value or
+        new_body_width != window.body_width_value or new_leg_length != window.leg_length_value or
+        (horn_type == "scorpion" and abs(beetle_blue.stinger_curvature - previous_stinger_curvature) > 0.01)):
 
-    if sliders_changed or stinger_changed:
-        rebuild_beetle_geometry(new_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length, horn_type, current_stinger_curvature)
+        # Map horn shaft slider to shorter geometry range with slower decay (only when rebuilding)
+        # Slider 5→5, Slider 12→9, with power curve for slower decay at high end
+        slider_normalized = (new_shaft - 5) / 7.0  # Normalize to 0-1
+        curved = slider_normalized ** 0.6  # Power < 1 gives slower decay
+        mapped_shaft = int(round(5 + curved * 4))  # Map to 5-9 range
+
+        # For scorpion type, use blue beetle's values (both beetles share same geometry, only blue controls it)
+        current_stinger_curvature = 0.0
+        current_tail_rotation = 0.0
+        if horn_type == "scorpion":
+            current_stinger_curvature = beetle_blue.stinger_curvature
+            current_tail_rotation = beetle_blue.tail_rotation_angle
+
+        rebuild_beetle_geometry(mapped_shaft, new_prong, front_body_height, new_back_body, new_body_length, new_body_width, new_leg_length, horn_type, current_stinger_curvature, current_tail_rotation)
         ti.sync()  # Ensure CPU writes complete before GPU kernels read
         window.horn_shaft_value = new_shaft
         window.horn_prong_value = new_prong
@@ -4169,6 +4259,7 @@ while window.running:
         window.body_width_value = new_body_width
         window.leg_length_value = new_leg_length
         previous_stinger_curvature = current_stinger_curvature
+        previous_tail_rotation = current_tail_rotation
 
     window.GUI.text(f"Shaft: {window.horn_shaft_value} voxels")
     window.GUI.text(f"Prong: {window.horn_prong_value} voxels")
@@ -4229,8 +4320,13 @@ while window.running:
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
 
         # Rebuild geometry with current slider values and new horn type
+        # Apply horn shaft mapping (slider 5-12 → geometry 5-9)
+        slider_normalized = (window.horn_shaft_value - 5) / (12 - 5)
+        curved = slider_normalized ** 0.6
+        mapped_shaft = int(round(5 + curved * (9 - 5)))
+
         rebuild_beetle_geometry(
-            window.horn_shaft_value,
+            mapped_shaft,
             window.horn_prong_value,
             front_body_height,
             window.back_body_height_value,

@@ -105,9 +105,9 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
 
     # Static bounding box optimization: only scan active arena region
     # X/Z: 2-126 covers arena radius (30) + beetle reach + fully extended horns (32) = ±62 from center
-    # Y: 1-68 covers falling (-32) to max lift height (+11) + horn tips (+18)
-    # Reduction: 2.1M voxels → 820K voxels (still ~60% fewer checks)
-    for i, j, k in ti.ndrange((2, 126), (1, 68), (2, 126)):
+    # Y: 1-100 covers falling (-32) to max velocity throws (+20) + scorpion tail reach (+23) with Y_OFFSET=33
+    # Reduction: 2.1M voxels → 1.23M voxels (still ~40% fewer checks)
+    for i, j, k in ti.ndrange((2, 126), (1, 100), (2, 126)):
         vtype = voxel_field[i, j, k]
         if vtype != 0:
             # Calculate world position
