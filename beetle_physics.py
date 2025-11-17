@@ -2186,15 +2186,17 @@ def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rot
 
     for leg_id in range(8):  # Up to 8 legs for scorpion, 6 for beetles
         # Determine leg phase offset for gait pattern
-        # SCORPION (horn_type_id == 3): Alternating wave gait
-        #   Even legs (0,2,4,6): phase_offset = 0
-        #   Odd legs (1,3,5,7): phase_offset = π
+        # SCORPION (horn_type_id == 3): Quadrupod gait (like tripod but for 8 legs)
+        #   Group A (0, 3, 4, 7): phase_offset = 0
+        #   Group B (1, 2, 5, 6): phase_offset = π
         # BEETLE: Tripod gait
         #   Group A (0, 3, 4): phase_offset = 0
         #   Group B (1, 2, 5): phase_offset = π
         phase_offset = 0.0
-        if horn_type_id == 3:  # Scorpion: alternating gait
-            if leg_id % 2 == 1:  # Odd legs
+        if horn_type_id == 3:  # Scorpion: quadrupod gait (similar to tripod but for 8 legs)
+            # Group A (0, 3, 4, 7): phase_offset = 0
+            # Group B (1, 2, 5, 6): phase_offset = π
+            if leg_id == 1 or leg_id == 2 or leg_id == 5 or leg_id == 6:
                 phase_offset = 3.14159265359  # π
         else:  # Beetle: tripod gait
             if leg_id == 1 or leg_id == 2 or leg_id == 5:
