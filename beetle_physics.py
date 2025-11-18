@@ -289,7 +289,7 @@ match_winner = None  # "BLUE" or "RED" when a beetle dies
 
 def reset_match():
     """Reset beetles to starting positions for new match"""
-    global beetle_blue, beetle_red, match_winner, previous_stinger_curvature, previous_tail_rotation, horn_type
+    global beetle_blue, beetle_red, match_winner, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
     beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
     beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
     match_winner = None
@@ -298,9 +298,9 @@ def reset_match():
     previous_stinger_curvature = 0.0
     previous_tail_rotation = 0.0
 
-    # Preserve horn_type on reset so control mapping stays correct
-    beetle_blue.horn_type = horn_type
-    beetle_red.horn_type = horn_type
+    # Preserve each beetle's horn_type on reset so control mapping stays correct
+    beetle_blue.horn_type = blue_horn_type
+    beetle_red.horn_type = red_horn_type
 
     print("\n" + "="*50)
     print("NEW MATCH STARTED!")
@@ -360,19 +360,22 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                 beetle2_y_max = -1
 
                 # Find Y-ranges for both beetles in this column (includes legs and tips!)
-                # Calculate independent ranges for each beetle (asymmetric: legs down, body/horn up)
-                beetle_max_reach_down = 12  # Legs (max 10) + safety margin
-                beetle_max_reach_up = 28    # Body (8) + horn vertical reach (20) + safety margin
-
+                # OPTIMIZED: Adaptive Y-range based on beetle height (grounded vs airborne)
                 # Find grid Y for each beetle
                 beetle1_grid_y = int(RENDER_Y_OFFSET + y1)
                 beetle2_grid_y = int(RENDER_Y_OFFSET + y2)
 
-                # Take union of both beetles' ranges
-                y_start = ti.max(0, ti.min(beetle1_grid_y - beetle_max_reach_down,
-                                            beetle2_grid_y - beetle_max_reach_down))
-                y_end = ti.min(simulation.n_grid, ti.max(beetle1_grid_y + beetle_max_reach_up,
-                                                          beetle2_grid_y + beetle_max_reach_up))
+                # Adaptive reach: grounded beetles need less vertical scan upward
+                beetle1_max_up = 22 if y1 < 2.0 else 28  # Grounded: reduced scan, Airborne: full scan
+                beetle1_max_down = 12 if y1 >= 2.0 else 10  # Airborne: increase down, Grounded: reduce
+                beetle2_max_up = 22 if y2 < 2.0 else 28
+                beetle2_max_down = 12 if y2 >= 2.0 else 10
+
+                # Take union of both beetles' adaptive ranges
+                y_start = ti.max(0, ti.min(beetle1_grid_y - beetle1_max_down,
+                                            beetle2_grid_y - beetle2_max_down))
+                y_end = ti.min(simulation.n_grid, ti.max(beetle1_grid_y + beetle1_max_up,
+                                                          beetle2_grid_y + beetle2_max_up))
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
                     # Optimized: Range-based checks (all blue beetle types are 5-13, red are 6-14)
@@ -710,7 +713,7 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
 # ========== PERFORMANCE OPTIMIZATION: GEOMETRY CACHING ==========
-def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
+def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Generate beetle geometry separated into body and legs for animation
 
     Args:
@@ -1320,7 +1323,7 @@ for leg_id, leg_tip_voxels in enumerate(RED_LEG_TIPS):
     red_leg_tip_end_idx[leg_id] = offset
 
 # Function to rebuild blue beetle geometry with new parameters
-def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
+def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild blue beetle geometry cache with new horn, body, and leg parameters"""
     global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS
 
@@ -1410,7 +1413,7 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
     print(f"Rebuilt blue beetle: {len(BLUE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
 # Function to rebuild red beetle geometry with new parameters
-def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=5, body_length=12, body_width=7, leg_length=10, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
+def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild red beetle geometry cache with new horn, body, and leg parameters"""
     global RED_BODY, RED_LEGS, RED_LEG_TIPS
 
@@ -2334,11 +2337,29 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                 # Use appropriate color: horn tip > stripe > body color
                 voxel_color = body_color
                 if is_horn_tip == 1:
-                    # All horn tips (including scorpion claws and stinger) use colored tips
-                    if body_color == simulation.BEETLE_BLUE:
-                        voxel_color = simulation.BEETLE_BLUE_HORN_TIP
-                    elif body_color == simulation.BEETLE_RED:
-                        voxel_color = simulation.BEETLE_RED_HORN_TIP
+                    # For scorpion, check if this is the VERY tip (dark) or regular tip (bright)
+                    is_very_tip = 0
+                    if horn_type_id == 3:  # Scorpion - dual-layer tip coloring
+                        if abs(body_cache_z[i]) > 2:
+                            # Claw very tips: x >= 12 (furthest forward voxels)
+                            if body_cache_x[i] >= 12:
+                                is_very_tip = 1
+                        else:
+                            # Stinger very tip: x >= 3 (furthest forward voxels)
+                            if body_cache_x[i] >= 3:
+                                is_very_tip = 1
+
+                    # Apply color based on tip type
+                    if is_very_tip == 1:  # VERY tips: dark leg tip color
+                        if body_color == simulation.BEETLE_BLUE:
+                            voxel_color = simulation.LEG_TIP_BLUE
+                        elif body_color == simulation.BEETLE_RED:
+                            voxel_color = simulation.LEG_TIP_RED
+                    else:  # Regular tips: bright horn tip color (all beetles including scorpion)
+                        if body_color == simulation.BEETLE_BLUE:
+                            voxel_color = simulation.BEETLE_BLUE_HORN_TIP
+                        elif body_color == simulation.BEETLE_RED:
+                            voxel_color = simulation.BEETLE_RED_HORN_TIP
                 elif is_stripe == 1:
                     if body_color == simulation.BEETLE_BLUE:
                         voxel_color = simulation.BEETLE_BLUE_STRIPE
@@ -2745,11 +2766,29 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 # Use appropriate color: horn tip > stripe > body color
                 voxel_color = body_color
                 if is_horn_tip == 1:
-                    # All horn tips (including scorpion claws and stinger) use colored tips
-                    if body_color == simulation.BEETLE_BLUE:
-                        voxel_color = simulation.BEETLE_BLUE_HORN_TIP
-                    elif body_color == simulation.BEETLE_RED:
-                        voxel_color = simulation.BEETLE_RED_HORN_TIP
+                    # For scorpion, check if this is the VERY tip (dark) or regular tip (bright)
+                    is_very_tip = 0
+                    if horn_type_id == 3:  # Scorpion - dual-layer tip coloring
+                        if abs(body_cache_z[i]) > 2:
+                            # Claw very tips: x >= 12 (furthest forward voxels)
+                            if body_cache_x[i] >= 12:
+                                is_very_tip = 1
+                        else:
+                            # Stinger very tip: x >= 3 (furthest forward voxels)
+                            if body_cache_x[i] >= 3:
+                                is_very_tip = 1
+
+                    # Apply color based on tip type
+                    if is_very_tip == 1:  # VERY tips: dark leg tip color
+                        if body_color == simulation.BEETLE_BLUE:
+                            voxel_color = simulation.LEG_TIP_BLUE
+                        elif body_color == simulation.BEETLE_RED:
+                            voxel_color = simulation.LEG_TIP_RED
+                    else:  # Regular tips: bright horn tip color (all beetles including scorpion)
+                        if body_color == simulation.BEETLE_BLUE:
+                            voxel_color = simulation.BEETLE_BLUE_HORN_TIP
+                        elif body_color == simulation.BEETLE_RED:
+                            voxel_color = simulation.BEETLE_RED_HORN_TIP
                 elif is_stripe == 1:
                     if body_color == simulation.BEETLE_BLUE:
                         voxel_color = simulation.BEETLE_BLUE_STRIPE
@@ -2901,8 +2940,8 @@ def reset_dirty_voxels():
 
 @ti.kernel
 def clear_dirty_voxels():
-    """Clear only the voxels we tracked during placement (400x faster than scanning 250K voxels)"""
-    for i in range(dirty_voxel_count[None]):
+    """Clear only the voxels we tracked during placement (400x faster than scanning 250K voxels) - Parallel GPU execution"""
+    for i in ti.ndrange(dirty_voxel_count[None]):  # Parallel iteration on GPU
         vtype = simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]]
         # Only clear beetle voxels (not floor/concrete)
         if vtype >= simulation.BEETLE_BLUE:  # All beetle colors are >= BEETLE_BLUE
@@ -4384,11 +4423,11 @@ while window.running:
                 if window.is_pressed('v'):
                     # V = Rotate tail up
                     beetle_blue.tail_rotation_angle += TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.tail_rotation_angle = min(20.0, beetle_blue.tail_rotation_angle)
+                    beetle_blue.tail_rotation_angle = min(25.0, beetle_blue.tail_rotation_angle)
                 elif window.is_pressed('b'):
                     # B = Rotate tail down
                     beetle_blue.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.tail_rotation_angle = max(-20.0, beetle_blue.tail_rotation_angle)
+                    beetle_blue.tail_rotation_angle = max(-25.0, beetle_blue.tail_rotation_angle)
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -4496,11 +4535,11 @@ while window.running:
                 if window.is_pressed('n'):
                     # N = Rotate tail up
                     beetle_red.tail_rotation_angle += TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.tail_rotation_angle = min(20.0, beetle_red.tail_rotation_angle)
+                    beetle_red.tail_rotation_angle = min(25.0, beetle_red.tail_rotation_angle)
                 elif window.is_pressed('m'):
                     # M = Rotate tail down
                     beetle_red.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.tail_rotation_angle = max(-20.0, beetle_red.tail_rotation_angle)
+                    beetle_red.tail_rotation_angle = max(-25.0, beetle_red.tail_rotation_angle)
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -4767,28 +4806,28 @@ while window.running:
     # Initialize persistent slider values (needed for kernel parameters) - separate for each beetle
     if not hasattr(window, 'blue_horn_shaft_value'):
         # Blue beetle sliders
-        window.blue_horn_shaft_value = 12
+        window.blue_horn_shaft_value = 9
         window.blue_horn_prong_value = 5
-        window.blue_back_body_height_value = 5
+        window.blue_back_body_height_value = 6
         window.blue_body_length_value = 12
         window.blue_body_width_value = 7
-        window.blue_leg_length_value = 10
+        window.blue_leg_length_value = 8
 
         # Red beetle sliders
-        window.red_horn_shaft_value = 12
+        window.red_horn_shaft_value = 9
         window.red_horn_prong_value = 5
-        window.red_back_body_height_value = 5
+        window.red_back_body_height_value = 6
         window.red_body_length_value = 12
         window.red_body_width_value = 7
-        window.red_leg_length_value = 10
+        window.red_leg_length_value = 8
 
         # Old slider variables (for compatibility with existing UI - they update BOTH beetles)
-        window.horn_shaft_value = 12
+        window.horn_shaft_value = 9
         window.horn_prong_value = 5
-        window.back_body_height_value = 5
+        window.back_body_height_value = 6
         window.body_length_value = 12
         window.body_width_value = 7
-        window.leg_length_value = 10
+        window.leg_length_value = 8
 
     if beetle_blue.active:
         # Render blue beetle using its own cache
