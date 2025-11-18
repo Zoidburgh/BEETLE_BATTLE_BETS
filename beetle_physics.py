@@ -4829,6 +4829,20 @@ while window.running:
         window.body_width_value = 7
         window.leg_length_value = 8
 
+        # Blue beetle colors (RGB values 0.0-1.0)
+        window.blue_body_color = (0.25, 0.55, 0.95)
+        window.blue_leg_color = (0.4, 0.7, 1.0)
+        window.blue_leg_tip_color = (0.0, 0.0, 0.3)
+        window.blue_stripe_color = (0.6, 0.9, 1.0)
+        window.blue_horn_tip_color = (0.4, 0.75, 1.0)
+
+        # Red beetle colors (RGB values 0.0-1.0)
+        window.red_body_color = (0.95, 0.25, 0.15)
+        window.red_leg_color = (1.0, 0.5, 0.3)
+        window.red_leg_tip_color = (0.3, 0.0, 0.0)
+        window.red_stripe_color = (0.85, 0.65, 0.2)
+        window.red_horn_tip_color = (0.4, 0.1, 0.1)
+
     if beetle_blue.active:
         # Render blue beetle using its own cache
         place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value)
@@ -4979,6 +4993,35 @@ while window.running:
         )
         ti.sync()
 
+    # Blue beetle color pickers
+    window.GUI.text("")
+    window.GUI.text("=== BLUE BEETLE COLORS ===")
+
+    new_blue_body_color = window.GUI.color_edit_3("Blue Body", window.blue_body_color)
+    if new_blue_body_color != window.blue_body_color:
+        window.blue_body_color = new_blue_body_color
+        simulation.blue_body_color[None] = ti.Vector([new_blue_body_color[0], new_blue_body_color[1], new_blue_body_color[2]])
+
+    new_blue_leg_color = window.GUI.color_edit_3("Blue Legs", window.blue_leg_color)
+    if new_blue_leg_color != window.blue_leg_color:
+        window.blue_leg_color = new_blue_leg_color
+        simulation.blue_leg_color[None] = ti.Vector([new_blue_leg_color[0], new_blue_leg_color[1], new_blue_leg_color[2]])
+
+    new_blue_leg_tip_color = window.GUI.color_edit_3("Blue Leg Tips", window.blue_leg_tip_color)
+    if new_blue_leg_tip_color != window.blue_leg_tip_color:
+        window.blue_leg_tip_color = new_blue_leg_tip_color
+        simulation.blue_leg_tip_color[None] = ti.Vector([new_blue_leg_tip_color[0], new_blue_leg_tip_color[1], new_blue_leg_tip_color[2]])
+
+    new_blue_stripe_color = window.GUI.color_edit_3("Blue Stripe", window.blue_stripe_color)
+    if new_blue_stripe_color != window.blue_stripe_color:
+        window.blue_stripe_color = new_blue_stripe_color
+        simulation.blue_stripe_color[None] = ti.Vector([new_blue_stripe_color[0], new_blue_stripe_color[1], new_blue_stripe_color[2]])
+
+    new_blue_horn_tip_color = window.GUI.color_edit_3("Blue Horn Tips", window.blue_horn_tip_color)
+    if new_blue_horn_tip_color != window.blue_horn_tip_color:
+        window.blue_horn_tip_color = new_blue_horn_tip_color
+        simulation.blue_horn_tip_color[None] = ti.Vector([new_blue_horn_tip_color[0], new_blue_horn_tip_color[1], new_blue_horn_tip_color[2]])
+
     window.GUI.text("")
     window.GUI.text("=== RED BEETLE GENETICS ===")
 
@@ -5072,6 +5115,35 @@ while window.running:
             stinger_curvature=0.0
         )
         ti.sync()
+
+    # Red beetle color pickers
+    window.GUI.text("")
+    window.GUI.text("=== RED BEETLE COLORS ===")
+
+    new_red_body_color = window.GUI.color_edit_3("Red Body", window.red_body_color)
+    if new_red_body_color != window.red_body_color:
+        window.red_body_color = new_red_body_color
+        simulation.red_body_color[None] = ti.Vector([new_red_body_color[0], new_red_body_color[1], new_red_body_color[2]])
+
+    new_red_leg_color = window.GUI.color_edit_3("Red Legs", window.red_leg_color)
+    if new_red_leg_color != window.red_leg_color:
+        window.red_leg_color = new_red_leg_color
+        simulation.red_leg_color[None] = ti.Vector([new_red_leg_color[0], new_red_leg_color[1], new_red_leg_color[2]])
+
+    new_red_leg_tip_color = window.GUI.color_edit_3("Red Leg Tips", window.red_leg_tip_color)
+    if new_red_leg_tip_color != window.red_leg_tip_color:
+        window.red_leg_tip_color = new_red_leg_tip_color
+        simulation.red_leg_tip_color[None] = ti.Vector([new_red_leg_tip_color[0], new_red_leg_tip_color[1], new_red_leg_tip_color[2]])
+
+    new_red_stripe_color = window.GUI.color_edit_3("Red Stripe", window.red_stripe_color)
+    if new_red_stripe_color != window.red_stripe_color:
+        window.red_stripe_color = new_red_stripe_color
+        simulation.red_stripe_color[None] = ti.Vector([new_red_stripe_color[0], new_red_stripe_color[1], new_red_stripe_color[2]])
+
+    new_red_horn_tip_color = window.GUI.color_edit_3("Red Horn Tips", window.red_horn_tip_color)
+    if new_red_horn_tip_color != window.red_horn_tip_color:
+        window.red_horn_tip_color = new_red_horn_tip_color
+        simulation.red_horn_tip_color[None] = ti.Vector([new_red_horn_tip_color[0], new_red_horn_tip_color[1], new_red_horn_tip_color[2]])
 
     # Winner announcement and restart button
     if match_winner is not None:

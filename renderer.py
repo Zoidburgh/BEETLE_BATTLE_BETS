@@ -49,45 +49,45 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 4:  # DEBRIS
         color = ti.math.vec3(0.4, 0.35, 0.3)
 
-    # Beetle voxels are blue - desaturated for richer depth
+    # Beetle voxels are blue - customizable via color picker
     elif voxel_type == 5:  # BEETLE_BLUE
-        color = ti.math.vec3(0.25, 0.55, 0.95)
+        color = simulation.blue_body_color[None]
 
-    # Second beetle is red - desaturated for richer depth
+    # Second beetle is red - customizable via color picker
     elif voxel_type == 6:  # BEETLE_RED
-        color = ti.math.vec3(0.95, 0.25, 0.15)
+        color = simulation.red_body_color[None]
 
-    # Blue beetle legs - lighter cyan/blue
+    # Blue beetle legs - customizable via color picker
     elif voxel_type == 7:  # BEETLE_BLUE_LEGS
-        color = ti.math.vec3(0.4, 0.7, 1.0)
+        color = simulation.blue_leg_color[None]
 
-    # Red beetle legs - lighter orange/red
+    # Red beetle legs - customizable via color picker
     elif voxel_type == 8:  # BEETLE_RED_LEGS
-        color = ti.math.vec3(1.0, 0.5, 0.3)
+        color = simulation.red_leg_color[None]
 
-    # Blue beetle leg tips - dark blue with slight tint
+    # Blue beetle leg tips - customizable via color picker
     elif voxel_type == 9:  # LEG_TIP_BLUE
-        color = ti.math.vec3(0.0, 0.0, 0.3)  # Very dark blue
+        color = simulation.blue_leg_tip_color[None]
 
-    # Red beetle leg tips - dark red with slight tint
+    # Red beetle leg tips - customizable via color picker
     elif voxel_type == 10:  # LEG_TIP_RED
-        color = ti.math.vec3(0.3, 0.0, 0.0)  # Very dark red
+        color = simulation.red_leg_tip_color[None]
 
-    # Blue beetle racing stripe - bright cyan/white
+    # Blue beetle racing stripe - customizable via color picker
     elif voxel_type == 11:  # BEETLE_BLUE_STRIPE
-        color = ti.math.vec3(0.6, 0.9, 1.0)  # Bright cyan
+        color = simulation.blue_stripe_color[None]
 
-    # Red beetle racing stripe - rich gold/bronze
+    # Red beetle racing stripe - customizable via color picker
     elif voxel_type == 12:  # BEETLE_RED_STRIPE
-        color = ti.math.vec3(0.85, 0.65, 0.2)  # Rich gold/bronze
+        color = simulation.red_stripe_color[None]
 
-    # Blue beetle horn prong tips - bright electric blue (bold but harmonious)
+    # Blue beetle horn prong tips - customizable via color picker
     elif voxel_type == 13:  # BEETLE_BLUE_HORN_TIP
-        color = ti.math.vec3(0.4, 0.75, 1.0)  # Bright electric blue
+        color = simulation.blue_horn_tip_color[None]
 
-    # Red beetle horn prong tips - deep crimson/burgundy (harmonious)
+    # Red beetle horn prong tips - customizable via color picker
     elif voxel_type == 14:  # BEETLE_RED_HORN_TIP
-        color = ti.math.vec3(0.4, 0.1, 0.1)  # Deep crimson
+        color = simulation.red_horn_tip_color[None]
 
     # Scorpion stinger tips - black/dark grey
     elif voxel_type == 15:  # STINGER_TIP_BLACK

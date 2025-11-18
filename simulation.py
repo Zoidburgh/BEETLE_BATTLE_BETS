@@ -41,6 +41,34 @@ BEETLE_BLUE_HORN_TIP = 13  # Blue beetle horn prong tips (bright white/cyan)
 BEETLE_RED_HORN_TIP = 14  # Red beetle horn prong tips (dark metallic)
 STINGER_TIP_BLACK = 15  # Scorpion stinger tips (black/dark)
 
+# Customizable beetle colors (RGB values in range 0.0-1.0)
+# Blue beetle colors
+blue_body_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_leg_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_leg_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_horn_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+# Red beetle colors
+red_body_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_leg_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_leg_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_horn_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+# Initialize default colors
+blue_body_color[None] = ti.Vector([0.25, 0.55, 0.95])  # Desaturated blue
+blue_leg_color[None] = ti.Vector([0.4, 0.7, 1.0])  # Lighter cyan/blue
+blue_leg_tip_color[None] = ti.Vector([0.0, 0.0, 0.3])  # Very dark blue
+blue_stripe_color[None] = ti.Vector([0.6, 0.9, 1.0])  # Bright cyan
+blue_horn_tip_color[None] = ti.Vector([0.4, 0.75, 1.0])  # Bright electric blue
+
+red_body_color[None] = ti.Vector([0.95, 0.25, 0.15])  # Desaturated red
+red_leg_color[None] = ti.Vector([1.0, 0.5, 0.3])  # Lighter orange/red
+red_leg_tip_color[None] = ti.Vector([0.3, 0.0, 0.0])  # Very dark red
+red_stripe_color[None] = ti.Vector([0.85, 0.65, 0.2])  # Rich gold/bronze
+red_horn_tip_color[None] = ti.Vector([0.4, 0.1, 0.1])  # Deep crimson
+
 # Material property functions (for physics calculations)
 @ti.func
 def get_material_hardness(voxel_type: ti.i32) -> ti.f32:
