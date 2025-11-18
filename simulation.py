@@ -44,6 +44,7 @@ BEETLE_BLUE_HORN_TIP = 13  # Blue beetle horn prong tips (bright white/cyan)
 BEETLE_RED_HORN_TIP = 14  # Red beetle horn prong tips (dark metallic)
 STINGER_TIP_BLACK = 15  # Scorpion stinger tips (black/dark)
 BALL = 16  # Soccer ball (bright orange/yellow)
+BALL_STRIPE = 17  # Soccer ball stripe pattern (darker for contrast)
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors
