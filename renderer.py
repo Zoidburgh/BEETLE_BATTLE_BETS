@@ -93,6 +93,10 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 15:  # STINGER_TIP_BLACK
         color = ti.math.vec3(0.15, 0.15, 0.15)  # Dark grey/black
 
+    # Soccer ball - bright orange/yellow
+    elif voxel_type == 16:  # BALL
+        color = ti.math.vec3(1.0, 0.6, 0.0)  # Bright orange
+
     # Add metallic sheen to beetle voxels only (performance optimized)
     if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts
         # Subtle metallic shimmer using fast hardware-accelerated sin

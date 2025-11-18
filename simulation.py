@@ -23,6 +23,9 @@ projectile_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_PROJECTILES)
 projectile_active = ti.field(dtype=ti.i32, shape=MAX_PROJECTILES)  # 1 = active, 0 = inactive
 projectile_radius = ti.field(dtype=ti.f32, shape=MAX_PROJECTILES)  # Collision radius
 
+# Ball system (beetle soccer ball) - now handled by beetle_ball Beetle object in beetle_physics.py
+# (No longer using Taichi fields; ball is a Beetle with horn_type="ball")
+
 # Voxel types
 EMPTY = 0
 STEEL = 1
@@ -40,6 +43,7 @@ BEETLE_RED_STRIPE = 12  # Red beetle racing stripe (bright yellow/orange)
 BEETLE_BLUE_HORN_TIP = 13  # Blue beetle horn prong tips (bright white/cyan)
 BEETLE_RED_HORN_TIP = 14  # Red beetle horn prong tips (dark metallic)
 STINGER_TIP_BLACK = 15  # Scorpion stinger tips (black/dark)
+BALL = 16  # Soccer ball (bright orange/yellow)
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors

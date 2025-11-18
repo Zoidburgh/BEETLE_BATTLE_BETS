@@ -72,6 +72,12 @@ BODY_ROTATION_DAMPING_DECAY = 2.0      # Decay rate per second (~0.5s duration a
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
 
+# Ball physics constants
+BALL_BOUNCE_COEFFICIENT = 0.7  # Energy retained after bounce (70%)
+BALL_FRICTION = 0.85  # Velocity multiplier per frame (85% = 15% friction per frame)
+BALL_MASS = 0.5  # Ball mass (lighter than beetles for easy pushing)
+BALL_COLLISION_TRANSFER = 0.3  # How much beetle velocity transfers to ball
+
 # Beetle state with physics
 class Beetle:
     def __init__(self, x, z, rotation, color):
@@ -309,6 +315,10 @@ def reset_match():
 # Create beetles - closer together for smaller arena (horn dimensions set later)
 beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)  # Facing right (toward red)
 beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (toward blue)
+beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of arena, no rotation matters)
+beetle_ball.horn_type = "ball"  # Special type for sphere rendering
+beetle_ball.active = False  # Ball starts disabled
+beetle_ball.radius = 3.0  # Start at minimum size
 
 @ti.kernel
 def clear_beetles():
@@ -319,7 +329,7 @@ def clear_beetles():
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 @ti.kernel
-def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: ti.f32, y2: ti.f32) -> ti.i32:
+def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: ti.f32, y2: ti.f32, color1: ti.i32, color2: ti.i32) -> ti.i32:
     """Fast GPU-based collision check - returns 1 if collision, 0 otherwise"""
     collision = 0
 
@@ -359,7 +369,7 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                 beetle2_y_min = 999
                 beetle2_y_max = -1
 
-                # Find Y-ranges for both beetles in this column (includes legs and tips!)
+                # Find Y-ranges for both beetles/ball in this column (includes legs and tips!)
                 # OPTIMIZED: Adaptive Y-range based on beetle height (grounded vs airborne)
                 # Find grid Y for each beetle
                 beetle1_grid_y = int(RENDER_Y_OFFSET + y1)
@@ -378,15 +388,39 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                                                           beetle2_grid_y + beetle2_max_up))
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
-                    # Optimized: Range-based checks (all blue beetle types are 5-13, red are 6-14)
-                    # Blue beetle voxels (body=5, legs=7, tips=9, stripe=11, horn_tip=13)
-                    if voxel >= 5 and voxel <= 13 and (voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13):
+
+                    # Check if voxel belongs to entity 1 (based on color1)
+                    belongs_to_1 = 0
+                    if color1 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13)
+                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13:
+                            belongs_to_1 = 1
+                    elif color1 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14)
+                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14:
+                            belongs_to_1 = 1
+                    elif color1 == simulation.BALL:  # Ball (16)
+                        if voxel == 16:
+                            belongs_to_1 = 1
+
+                    # Check if voxel belongs to entity 2 (based on color2)
+                    belongs_to_2 = 0
+                    if color2 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13)
+                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13:
+                            belongs_to_2 = 1
+                    elif color2 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14)
+                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14:
+                            belongs_to_2 = 1
+                    elif color2 == simulation.BALL:  # Ball (16)
+                        if voxel == 16:
+                            belongs_to_2 = 1
+
+                    # Update Y-ranges based on ownership
+                    if belongs_to_1 == 1:
                         if gy < beetle1_y_min:
                             beetle1_y_min = gy
                         if gy > beetle1_y_max:
                             beetle1_y_max = gy
-                    # Red beetle voxels (body=6, legs=8, tips=10, stripe=12, horn_tip=14)
-                    elif voxel >= 6 and voxel <= 14 and (voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14):
+
+                    if belongs_to_2 == 1:
                         if gy < beetle2_y_min:
                             beetle2_y_min = gy
                         if gy > beetle2_y_max:
@@ -3031,12 +3065,15 @@ def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_co
             found_in_column = 0
             for j in range(y_min, y_max):
                 vtype = simulation.voxel_type[i, j, k]
-                # Check if voxel belongs to target beetle
+                # Check if voxel belongs to target beetle/ball
                 if beetle_color == simulation.BEETLE_BLUE:
                     if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
                         found_in_column = 1
-                else:  # BEETLE_RED
+                elif beetle_color == simulation.BEETLE_RED:
                     if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                        found_in_column = 1
+                elif beetle_color == simulation.BALL:  # Ball
+                    if vtype == simulation.BALL:
                         found_in_column = 1
 
             # Add to occupied list if found (atomic increment to avoid race conditions)
@@ -3105,6 +3142,177 @@ def calculate_horn_length(shaft_len, prong_len, horn_type):
     else:  # rhino
         # Rhino horn: full shaft + prong
         return float(shaft_len + prong_len)
+
+# ========== BALL SYSTEM (Beetle Soccer) ==========
+
+def generate_sphere_voxels(radius):
+    """Generate voxel coordinates for a sphere (Python function, runs on CPU)"""
+    voxels = []
+    r_int = int(radius) + 1
+    for x in range(-r_int, r_int + 1):
+        for y in range(-r_int, r_int + 1):
+            for z in range(-r_int, r_int + 1):
+                # Check if point is inside sphere
+                dist = math.sqrt(x*x + y*y + z*z)
+                if dist <= radius:
+                    voxels.append((x, y, z))
+    return voxels
+
+@ti.kernel
+def update_ball_physics(dt: ti.f32, gravity: ti.f32):
+    """Update ball physics with gravity, bounce, and friction (GPU kernel)"""
+    if simulation.ball_active[None] == 1:
+        # Apply gravity
+        simulation.ball_vel[None][1] -= gravity * dt
+
+        # Update position
+        simulation.ball_pos[None] += simulation.ball_vel[None] * dt
+
+        # Floor collision (bounce)
+        ball_y = simulation.ball_pos[None][1]
+        ball_radius = simulation.ball_radius[None]
+        if ball_y <= ball_radius:
+            simulation.ball_pos[None][1] = ball_radius
+            simulation.ball_vel[None][1] = -simulation.ball_vel[None][1] * BALL_BOUNCE_COEFFICIENT
+
+        # Apply friction (slow down horizontal velocity)
+        simulation.ball_vel[None][0] *= BALL_FRICTION
+        simulation.ball_vel[None][2] *= BALL_FRICTION
+
+@ti.kernel
+def check_ball_beetle_collision_kernel(beetle_x: ti.f32, beetle_y: ti.f32, beetle_z: ti.f32) -> ti.i32:
+    """Voxel-perfect ball-beetle collision detection (GPU kernel) - returns 1 if collision"""
+    collision = 0
+
+    if simulation.ball_active[None] == 1:
+        ball_x = simulation.ball_pos[None][0]
+        ball_y = simulation.ball_pos[None][1]
+        ball_z = simulation.ball_pos[None][2]
+        radius = simulation.ball_radius[None]
+
+        # Convert to grid coordinates
+        ball_grid_x = int(ball_x + simulation.n_grid / 2.0)
+        ball_grid_y = int(ball_y + RENDER_Y_OFFSET)
+        ball_grid_z = int(ball_z + simulation.n_grid / 2.0)
+
+        beetle_grid_x = int(beetle_x + simulation.n_grid / 2.0)
+        beetle_grid_y = int(beetle_y + RENDER_Y_OFFSET)
+        beetle_grid_z = int(beetle_z + simulation.n_grid / 2.0)
+
+        # Early rejection: if ball and beetle are too far apart
+        dx = ball_grid_x - beetle_grid_x
+        dy = ball_grid_y - beetle_grid_y
+        dz = ball_grid_z - beetle_grid_z
+        dist_sq = dx * dx + dy * dy + dz * dz
+
+        # Ball radius + beetle max radius (~20 voxels with horns)
+        max_dist = int(radius) + 25
+        if dist_sq < max_dist * max_dist:
+            # Check ball sphere volume for overlaps with beetle voxels
+            r_int = int(radius) + 1
+            for sphere_dx in range(-r_int, r_int + 1):
+                for sphere_dy in range(-r_int, r_int + 1):
+                    for sphere_dz in range(-r_int, r_int + 1):
+                        if collision == 0:  # Early exit if collision found
+                            sphere_dist_sq = sphere_dx*sphere_dx + sphere_dy*sphere_dy + sphere_dz*sphere_dz
+                            if sphere_dist_sq <= radius * radius:
+                                vx = ball_grid_x + sphere_dx
+                                vy = ball_grid_y + sphere_dy
+                                vz = ball_grid_z + sphere_dz
+
+                                if 0 <= vx < simulation.n_grid and 0 <= vy < simulation.n_grid and 0 <= vz < simulation.n_grid:
+                                    voxel = simulation.voxel_type[vx, vy, vz]
+                                    # Check if this voxel contains a beetle (blue: 5-13, red: 6-14)
+                                    if (5 <= voxel <= 14) and voxel != simulation.BALL:
+                                        collision = 1
+
+    return collision
+
+@ti.kernel
+def clear_ball():
+    """Clear all ball voxels from the grid (GPU kernel)"""
+    # Clear all BALL voxels
+    for i, j, k in simulation.voxel_type:
+        if simulation.voxel_type[i, j, k] == simulation.BALL:
+            simulation.voxel_type[i, j, k] = 0
+
+@ti.kernel
+def render_ball(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, radius: ti.f32):
+    """Render ball as sphere voxels (GPU kernel)"""
+    # Convert to grid coordinates
+    grid_x = int(ball_x + simulation.n_grid / 2.0)
+    grid_y = int(ball_y + RENDER_Y_OFFSET)
+    grid_z = int(ball_z + simulation.n_grid / 2.0)
+
+    # Render sphere voxels
+    r_int = int(radius) + 1
+    for dx in range(-r_int, r_int + 1):
+        for dy in range(-r_int, r_int + 1):
+            for dz in range(-r_int, r_int + 1):
+                # Check if point is inside sphere
+                dist_sq = dx*dx + dy*dy + dz*dz
+                if dist_sq <= radius * radius:
+                    vx = grid_x + dx
+                    vy = grid_y + dy
+                    vz = grid_z + dz
+
+                    # Bounds check and only set if voxel is empty (don't overwrite floor/other objects)
+                    if 0 <= vx < simulation.n_grid and 0 <= vy < simulation.n_grid and 0 <= vz < simulation.n_grid:
+                        if simulation.voxel_type[vx, vy, vz] == 0:  # Only set if empty
+                            simulation.voxel_type[vx, vy, vz] = simulation.BALL
+
+def check_ball_beetle_collision(beetle_x, beetle_y, beetle_z, beetle_vx, beetle_vz):
+    """Check if ball collides with beetle using voxel-perfect detection and apply impulse"""
+    if simulation.ball_active[None] == 0:
+        return 0
+
+    # Use GPU-based voxel-perfect collision detection (like beetles do)
+    has_collision = check_ball_beetle_collision_kernel(beetle_x, beetle_y, beetle_z)
+    return has_collision
+
+def apply_ball_collision_response(beetle, multi_collision):
+    """Apply collision response between ball and beetle (action-reaction)"""
+    ball_pos = simulation.ball_pos[None]
+    ball_radius = simulation.ball_radius[None]
+
+    # Calculate separation vector (ball center - beetle center)
+    dx = ball_pos[0] - beetle.x
+    dy = ball_pos[1] - beetle.y
+    dz = ball_pos[2] - beetle.z
+    dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    if dist > 0.1:  # Avoid division by zero
+        # Normalize collision direction
+        nx = dx / dist
+        ny = dy / dist
+        nz = dz / dist
+
+        # Push ball away from beetle (separation force based on penetration)
+        expected_separation = ball_radius + 10.0  # Ball radius + beetle body radius
+        penetration = max(0.0, expected_separation - dist)
+
+        # If both beetles colliding, apply MUCH stronger separation and reduce velocity transfer
+        if multi_collision:
+            separation_strength = penetration * 12.0  # Extra strong to prevent clipping
+            velocity_transfer = 0.3  # Reduced transfer when squeezed
+        else:
+            separation_strength = penetration * 5.0
+            velocity_transfer = 0.7
+
+        # ACTION: Push ball away from beetle
+        simulation.ball_vel[None][0] += nx * separation_strength
+        simulation.ball_vel[None][1] += ny * separation_strength * 0.3
+        simulation.ball_vel[None][2] += nz * separation_strength
+
+        # Transfer beetle velocity to ball
+        simulation.ball_vel[None][0] += beetle.vx * velocity_transfer
+        simulation.ball_vel[None][2] += beetle.vz * velocity_transfer
+
+        # REACTION: Push beetle away from ball (Newton's 3rd law)
+        # Ball pushes back on beetle with equal and opposite force
+        reaction_strength = separation_strength * 0.5  # Ball is lighter, so less pushback
+        beetle.vx -= nx * reaction_strength
+        beetle.vz -= nz * reaction_strength
 
 # Initialize beetle horn dimensions with default geometry values (must be after calculate_horn_length definition)
 default_shaft = 12
@@ -3956,13 +4164,13 @@ def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_
 def beetle_collision(b1, b2, params):
     """Handle collision with voxel-perfect detection, pushing, and horn leverage"""
     # Fast GPU-based collision check
-    has_collision = check_collision_kernel(b1.x, b1.z, b1.y, b2.x, b2.z, b2.y)
+    has_collision = check_collision_kernel(b1.x, b1.z, b1.y, b2.x, b2.z, b2.y, b1.color, b2.color)
 
     if has_collision:
         # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
-        calculate_occupied_voxels_kernel(b1.x, b1.z, simulation.BEETLE_BLUE,
+        calculate_occupied_voxels_kernel(b1.x, b1.z, b1.color,
                                         beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
-        calculate_occupied_voxels_kernel(b2.x, b2.z, simulation.BEETLE_RED,
+        calculate_occupied_voxels_kernel(b2.x, b2.z, b2.color,
                                         beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
 
         # GPU-ACCELERATED: Calculate collision point on GPU (no CPU transfer!)
@@ -4340,6 +4548,8 @@ red_previous_tail_rotation = 0.0       # Track red beetle tail rotation
 previous_stinger_curvature = blue_previous_stinger_curvature
 previous_tail_rotation = blue_previous_tail_rotation
 
+# Ball state now handled by beetle_ball Beetle object (created at line ~318)
+
 while window.running:
     current_time = time.time()
     frame_dt = current_time - last_time
@@ -4596,6 +4806,14 @@ while window.running:
         beetle_blue.update_physics(PHYSICS_TIMESTEP)
         beetle_red.update_physics(PHYSICS_TIMESTEP)
 
+        # Ball physics update (uses same beetle physics now)
+        if beetle_ball.active:
+            beetle_ball.update_physics(PHYSICS_TIMESTEP)
+
+            # Ball-beetle collision (uses same collision system as beetle-beetle)
+            beetle_collision(beetle_blue, beetle_ball, physics_params)
+            beetle_collision(beetle_red, beetle_ball, physics_params)
+
         # Update debris particles (physics, aging)
         update_debris_particles(PHYSICS_TIMESTEP)
 
@@ -4689,6 +4907,26 @@ while window.running:
                     beetle_red.on_ground = True
                 elif lowest_point_red < floor_surface + 0.5:
                     beetle_red.on_ground = True
+
+        # Ball floor collision (same as beetles)
+        if beetle_ball.active:
+            floor_y_ball = check_floor_collision(beetle_ball.x, beetle_ball.z)
+            if floor_y_ball > -100.0:  # Floor detected under ball
+                # Ball's lowest point is center Y minus radius
+                lowest_point_ball = beetle_ball.y - beetle_ball.radius
+                floor_surface = floor_y_ball + 0.5  # Top of floor voxel in world space
+
+                if lowest_point_ball < floor_surface:  # Ball penetrating floor
+                    # Push ball upward to sit on floor
+                    beetle_ball.y = floor_surface + beetle_ball.radius
+
+                    # Stop downward motion
+                    if beetle_ball.vy < 0:
+                        beetle_ball.vy = 0.0
+
+                    beetle_ball.on_ground = True
+                elif lowest_point_ball < floor_surface + 0.5:  # Close to ground
+                    beetle_ball.on_ground = True
 
         # Apply edge tipping physics (GPU-accelerated)
         if beetle_blue.active and not beetle_blue.is_falling:
@@ -4850,6 +5088,11 @@ while window.running:
     if beetle_red.active:
         # Render red beetle using its own cache
         place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value)
+
+    # Render ball (beetle soccer ball) - clear old voxels first to prevent trail
+    if beetle_ball.active:
+        clear_ball()
+        render_ball(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.radius)
 
     canvas.set_background_color((0.18, 0.40, 0.22))  # Lighter forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
@@ -5144,6 +5387,31 @@ while window.running:
     if new_red_horn_tip_color != window.red_horn_tip_color:
         window.red_horn_tip_color = new_red_horn_tip_color
         simulation.red_horn_tip_color[None] = ti.Vector([new_red_horn_tip_color[0], new_red_horn_tip_color[1], new_red_horn_tip_color[2]])
+
+    # Ball controls (beetle soccer)
+    window.GUI.text("")
+    window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
+
+    # Ball toggle button
+    ball_button_text = "Disable Ball" if beetle_ball.active else "Enable Ball"
+    if window.GUI.button(ball_button_text):
+        beetle_ball.active = not beetle_ball.active
+        if beetle_ball.active:
+            # Reset ball to center when enabling
+            beetle_ball.x = 0.0
+            beetle_ball.y = 10.0
+            beetle_ball.z = 0.0
+            beetle_ball.vx = 0.0
+            beetle_ball.vy = 0.0
+            beetle_ball.vz = 0.0
+
+    # Ball radius slider (only show when ball is enabled)
+    if beetle_ball.active:
+        new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
+        if new_ball_radius != int(beetle_ball.radius):
+            beetle_ball.radius = float(new_ball_radius)
+        window.GUI.text(f"Ball Position: ({beetle_ball.x:.1f}, {beetle_ball.y:.1f}, {beetle_ball.z:.1f})")
+        window.GUI.text(f"Ball Velocity: ({beetle_ball.vx:.1f}, {beetle_ball.vy:.1f}, {beetle_ball.vz:.1f})")
 
     # Winner announcement and restart button
     if match_winner is not None:
