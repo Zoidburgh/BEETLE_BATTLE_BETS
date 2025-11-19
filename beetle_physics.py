@@ -16,9 +16,14 @@ BACKWARD_MOVE_FORCE = 85.0  # Backward movement force (slower retreat)
 FRICTION = 0.88  # Slightly higher friction
 MAX_SPEED = 7.0  # Forward top speed
 BACKWARD_MAX_SPEED = 5.0  # Backward top speed (slower)
-ROTATION_SPEED = 2.5  # Rotation speed for controlled turning
+# Mutable rotation parameters (can be adjusted with GUI sliders)
+rotation_params = {
+    "ROTATION_SPEED": 2.5,  # Rotation speed for controlled turning
+    "MAX_ANGULAR_SPEED": 8.0  # Max spin speed (radians/sec) from collision impacts
+}
+ROTATION_SPEED = rotation_params["ROTATION_SPEED"]  # For compatibility
+MAX_ANGULAR_SPEED = rotation_params["MAX_ANGULAR_SPEED"]  # For compatibility
 ANGULAR_FRICTION = 0.85  # How quickly spin slows down (lower = more spin)
-MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec) from collision impacts
 TORQUE_MULTIPLIER = 1.95  # Rotational forces on collision
 RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
 IMPULSE_MULTIPLIER = 0.7  # Linear momentum transfer
@@ -145,6 +150,7 @@ class Beetle:
 
         # Collision cooldown timers
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
+        self.collision_cooldown = 0.0  # Time remaining before next collision momentum can be applied (seconds)
 
         # Body rotation damping state (Phase 3: Directional Rotation Prevention)
         self.body_rotation_damping = 0.0  # Rotation resistance after collision (0.0-1.0)
@@ -185,10 +191,14 @@ class Beetle:
 
     def update_physics(self, dt):
         """Apply friction and update position"""
-        # === COLLISION COOLDOWN TIMER ===
+        # === COLLISION COOLDOWN TIMERS ===
         # Decrement lift cooldown timer (prevents multi-frame lift application)
         if self.lift_cooldown > 0.0:
             self.lift_cooldown = max(0.0, self.lift_cooldown - dt)
+
+        # Decrement collision cooldown timer (prevents rapid momentum buildup)
+        if self.collision_cooldown > 0.0:
+            self.collision_cooldown = max(0.0, self.collision_cooldown - dt)
 
         # Decay horn rotation damping when not in contact (Phase 2: Horn Clipping Prevention)
         if self.horn_rotation_damping > 0.0:
@@ -262,8 +272,8 @@ class Beetle:
                     self.vz = (self.vz / speed) * BACKWARD_MAX_SPEED
 
         # Clamp angular speeds (yaw, pitch, roll)
-        if abs(self.angular_velocity) > MAX_ANGULAR_SPEED:
-            self.angular_velocity = MAX_ANGULAR_SPEED if self.angular_velocity > 0 else -MAX_ANGULAR_SPEED
+        if abs(self.angular_velocity) > rotation_params["MAX_ANGULAR_SPEED"]:
+            self.angular_velocity = rotation_params["MAX_ANGULAR_SPEED"] if self.angular_velocity > 0 else -rotation_params["MAX_ANGULAR_SPEED"]
 
         MAX_TILT_SPEED = 8.0  # Slower than yaw to prevent violent flipping
         if abs(self.pitch_velocity) > MAX_TILT_SPEED:
@@ -964,7 +974,7 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
             dx = 3 + i
             height_curve = int(i * 0.3)
             dy = 1 + height_curve
-            thickness = 1  # Changed from 2 to 1 for 3-voxel width
+            thickness = 2  # Increased thickness for more solid collisions (5-voxel width)
             for dz in range(-thickness, thickness + 1):
                 # Add voxel at current height
                 body_voxels.append((dx, dy, dz))
@@ -981,8 +991,8 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
             dx = prong_start_x + i
             dy = prong_start_y + i
             center_dz = -i
-            # Use range(-1, 1) to create 2-voxel width prong on left side
-            for dz_offset in range(-1, 1):
+            # Use range(-1, 2) to create 3-voxel width prong on left side
+            for dz_offset in range(-1, 2):
                 dz = center_dz + dz_offset
                 # Add voxel at current height
                 body_voxels.append((dx, dy, dz))
@@ -994,8 +1004,8 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
             dx = prong_start_x + i
             dy = prong_start_y + i
             center_dz = i
-            # Use range(0, 2) to create 2-voxel width prong on right side
-            for dz_offset in range(0, 2):
+            # Use range(-1, 2) to create 3-voxel width prong on right side
+            for dz_offset in range(-1, 2):
                 dz = center_dz + dz_offset
                 # Add voxel at current height
                 body_voxels.append((dx, dy, dz))
@@ -1570,9 +1580,9 @@ def generate_stag_pincers(shaft_length, curve_length):
         dy = 1 + int(i * 0.176)  # 10° upward angle (tan(10°) ≈ 0.176)
         dz = -i - 1 # Extends left (-Z direction), offset by -1 to avoid center overlap
 
-        # Make it 2-3 voxels thick for solidity
-        for dy_offset in range(2):  # Add vertical thickness
-            for dz_offset in range(-1, 1):  # Add some width
+        # Make it 3 voxels thick for more solid collisions
+        for dy_offset in range(3):  # Add vertical thickness (3 voxels)
+            for dz_offset in range(-1, 2):  # Add horizontal width (3 voxels)
                 pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
 
     # Curved tip section (curves inward)
@@ -1585,8 +1595,8 @@ def generate_stag_pincers(shaft_length, curve_length):
         dz = curve_start_z + int(i * 0.36)  # Curves back toward center at 110° angle (+Z direction)
 
         # Maintain thickness
-        for dy_offset in range(2):
-            for dz_offset in range(-1, 1):
+        for dy_offset in range(3):
+            for dz_offset in range(-1, 2):
                 pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
 
     # RIGHT PINCER (extends in +Z direction, curves inward toward -Z)
@@ -1596,9 +1606,9 @@ def generate_stag_pincers(shaft_length, curve_length):
         dy = 1 + int(i * 0.176)  # 10° upward angle (tan(10°) ≈ 0.176)
         dz = i + 1  # Extends right (+Z direction), offset by +1 to avoid center overlap
 
-        # Make it 2-3 voxels thick for solidity
-        for dy_offset in range(2):
-            for dz_offset in range(-1, 1):
+        # Make it 3 voxels thick for more solid collisions
+        for dy_offset in range(3):  # Add vertical thickness (3 voxels)
+            for dz_offset in range(-1, 2):  # Add horizontal width (3 voxels)
                 pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
 
     # Curved tip section (curves inward)
@@ -1611,8 +1621,8 @@ def generate_stag_pincers(shaft_length, curve_length):
         dz = curve_start_z - int(i * 0.36)  # Curves back toward center at 110° angle (-Z direction)
 
         # Maintain thickness
-        for dy_offset in range(2):
-            for dz_offset in range(-1, 1):
+        for dy_offset in range(3):
+            for dz_offset in range(-1, 2):
                 pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
 
     return pincer_voxels
@@ -4189,8 +4199,73 @@ def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_
     return new_damping
 
 
+def swept_sphere_collision(b1, b2, params):
+    """
+    Continuous Collision Detection: Predict and prevent voxel overlap before it happens.
+    Uses swept sphere collision to catch fast-moving beetles before voxels clip.
+    Only applies separation when beetles are moving TOWARD each other.
+    """
+    if not params["CCD_ENABLED"]:
+        return  # CCD disabled, skip
+
+    # Calculate current distance between beetle centers
+    dx = b2.x - b1.x
+    dz = b2.z - b1.z
+    dy = b2.y - b1.y
+    current_dist = math.sqrt(dx*dx + dz*dz + dy*dy)
+
+    # Collision radii with buffer zone
+    buffer = params["CCD_BUFFER_DISTANCE"]
+    r1 = BEETLE_RADIUS + buffer
+    r2 = BEETLE_RADIUS + buffer
+    collision_distance = r1 + r2
+
+    # Check if already too close (would overlap)
+    if current_dist < collision_distance and current_dist > 0.001:
+        # Calculate relative velocity (how fast beetles are approaching)
+        rel_vx = b2.vx - b1.vx
+        rel_vz = b2.vz - b1.vz
+        rel_vy = b2.vy - b1.vy
+
+        # Dot product: are they moving toward each other?
+        # If positive, they're approaching; if negative, they're separating
+        approach_rate = (dx * rel_vx + dz * rel_vz + dy * rel_vy) / current_dist
+
+        # Only apply separation if moving toward each other (preserves sumo grappling)
+        if approach_rate > 0:
+            # Calculate how much overlap there is
+            penetration = collision_distance - current_dist
+
+            # Normalize direction vector (from b1 to b2)
+            nx = dx / current_dist
+            nz = dz / current_dist
+            ny = dy / current_dist
+
+            # Apply separation force (push apart along line connecting centers)
+            strength = params["CCD_STRENGTH"]
+            separation = penetration * strength * 0.5  # 0.5 = each beetle moves half
+
+            # Cap the separation speed to prevent "skipping" apart
+            max_sep_speed = params["CCD_MAX_SEPARATION_SPEED"]
+            if separation > max_sep_speed:
+                separation = max_sep_speed
+
+            b1.x -= nx * separation
+            b1.z -= nz * separation
+            b2.x += nx * separation
+            b2.z += nz * separation
+
+            # Vertical separation only if both airborne (prevents floor clipping)
+            if not b1.on_ground and not b2.on_ground:
+                b1.y -= ny * separation
+                b2.y += ny * separation
+
+
 def beetle_collision(b1, b2, params):
     """Handle collision with voxel-perfect detection, pushing, and horn leverage"""
+    # Collision cooldown constant
+    COLLISION_COOLDOWN_DURATION = 0.05  # Seconds between collision momentum applications
+
     # Detect if this is a ball collision (ball uses different, gentler physics)
     is_ball_collision = (b1.horn_type == "ball" or b2.horn_type == "ball")
 
@@ -4263,10 +4338,10 @@ def beetle_collision(b1, b2, params):
                 engagement_factor = (normalized_contact_count * (1.0 - HORN_ENGAGEMENT_HEIGHT_WEIGHT) +
                                     height_factor * HORN_ENGAGEMENT_HEIGHT_WEIGHT)
 
-                # Boost engagement for tip collisions - tips should feel solid even with few voxels
-                MIN_TIP_ENGAGEMENT = 0.65  # Minimum engagement when horn tips are involved
-                if has_horn_tips == 1:
-                    engagement_factor = max(engagement_factor, MIN_TIP_ENGAGEMENT)
+                # DISABLED: Horn tip physics boost - all horn voxels now have same physics
+                # MIN_TIP_ENGAGEMENT = 0.65  # Minimum engagement when horn tips are involved
+                # if has_horn_tips == 1:
+                #     engagement_factor = max(engagement_factor, MIN_TIP_ENGAGEMENT)
 
                 # Calculate damping for both beetles based on their rotation direction
                 b1.horn_rotation_damping = calculate_horn_rotation_damping(
@@ -4402,40 +4477,18 @@ def beetle_collision(b1, b2, params):
                 torque_b1 = dx_to_b1 * normal_z - dz_to_b1 * normal_x
                 angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 2.0
                 b1.angular_velocity += angular_impulse_b1
+                # Cap angular velocity immediately after collision to prevent extreme spin
+                if abs(b1.angular_velocity) > 6.0:
+                    b1.angular_velocity = 6.0 if b1.angular_velocity > 0 else -6.0
 
                 dx_to_b2 = collision_x - b2.x
                 dz_to_b2 = collision_z - b2.z
                 torque_b2 = dx_to_b2 * normal_z - dz_to_b2 * normal_x
                 angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 2.0
                 b2.angular_velocity -= angular_impulse_b2  # Opposite direction
-
-            # STRONG separation to prevent stuck collisions (now 3D!)
-            # Use gentler separation for ball collisions
-            if is_ball_collision:
-                separation_force = params["BALL_SEPARATION_FORCE"]  # Much gentler for smooth rolling
-            else:
-                separation_force = params["SEPARATION_FORCE"]  # Full strength for beetle combat
-
-            b1.x += normal_x * separation_force
-            b1.z += normal_z * separation_force
-            b2.x -= normal_x * separation_force
-            b2.z -= normal_z * separation_force
-
-            # VERTICAL SEPARATION - only when both beetles are airborne
-            # This prevents floor voxel destruction and maintains symmetry
-            if not b1.on_ground and not b2.on_ground:
-                b1.y += normal_y * separation_force
-                b2.y -= normal_y * separation_force
-
-            # Safety clamp to prevent going below floor voxel layer
-            # (Main floor collision handles proper positioning above floor)
-            MIN_Y = 0.5  # Minimum Y to prevent center going below floor at y=0
-            if b1.y < MIN_Y:
-                b1.y = MIN_Y
-                b1.vy = 0.0
-            if b2.y < MIN_Y:
-                b2.y = MIN_Y
-                b2.vy = 0.0
+                # Cap angular velocity immediately after collision to prevent extreme spin
+                if abs(b2.angular_velocity) > 6.0:
+                    b2.angular_velocity = 6.0 if b2.angular_velocity > 0 else -6.0
 
             # Calculate 3D relative velocity
             rel_vx = b1.vx - b2.vx
@@ -4454,40 +4507,80 @@ def beetle_collision(b1, b2, params):
                     # Beetle collision: use beetle combat physics
                     impulse = -(1 + params["RESTITUTION"]) * vel_along_normal * params["IMPULSE_MULTIPLIER"]
 
-                # Apply 3D linear impulse
-                impulse_x = impulse * normal_x
-                impulse_z = impulse * normal_z
+                # === COLLISION MOMENTUM APPLICATION (with cooldown) ===
+                # Only apply momentum if both beetles' cooldowns have expired
+                if b1.collision_cooldown <= 0.0 and b2.collision_cooldown <= 0.0:
+                    # Apply 3D linear impulse
+                    impulse_x = impulse * normal_x
+                    impulse_z = impulse * normal_z
 
-                # For horn contact, lifting logic handles vertical forces explicitly
-                # Only apply vertical impulse for non-horn collisions
-                if is_horn_contact:
-                    impulse_y = 0.0  # Disable vertical impulse - lifting logic handles it
-                else:
-                    impulse_y = impulse * normal_y
+                    # For horn contact, lifting logic handles vertical forces explicitly
+                    # Only apply vertical impulse for non-horn collisions
+                    if is_horn_contact:
+                        impulse_y = 0.0  # Disable vertical impulse - lifting logic handles it
+                    else:
+                        impulse_y = impulse * normal_y
 
-                b1.vx += impulse_x
-                b1.vy += impulse_y
-                b1.vz += impulse_z
-                b2.vx -= impulse_x
-                b2.vy -= impulse_y
-                b2.vz -= impulse_z
+                    b1.vx += impulse_x
+                    b1.vy += impulse_y
+                    b1.vz += impulse_z
+                    b2.vx -= impulse_x
+                    b2.vy -= impulse_y
+                    b2.vz -= impulse_z
 
-                # Calculate and apply torque (angular impulse)
-                # Torque = r × F (cross product in 2D: rx*Fz - rz*Fx)
+                    # Calculate and apply torque (angular impulse)
+                    # Torque = r × F (cross product in 2D: rx*Fz - rz*Fx)
 
-                # For beetle 1: collision point relative to its center
-                r1_x = collision_x - b1.x
-                r1_z = collision_z - b1.z
-                torque1 = r1_x * impulse_z - r1_z * impulse_x
-                angular_impulse1 = (torque1 / b1.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
-                b1.angular_velocity += angular_impulse1
+                    # For beetle 1: collision point relative to its center
+                    r1_x = collision_x - b1.x
+                    r1_z = collision_z - b1.z
+                    torque1 = r1_x * impulse_z - r1_z * impulse_x
+                    angular_impulse1 = (torque1 / b1.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
+                    b1.angular_velocity += angular_impulse1
+                    # Cap angular velocity immediately after collision to prevent extreme spin
+                    if abs(b1.angular_velocity) > 6.0:
+                        b1.angular_velocity = 6.0 if b1.angular_velocity > 0 else -6.0
 
-                # For beetle 2: collision point relative to its center
-                r2_x = collision_x - b2.x
-                r2_z = collision_z - b2.z
-                torque2 = r2_x * (-impulse_z) - r2_z * (-impulse_x)
-                angular_impulse2 = (torque2 / b2.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
-                b2.angular_velocity += angular_impulse2
+                    # For beetle 2: collision point relative to its center
+                    r2_x = collision_x - b2.x
+                    r2_z = collision_z - b2.z
+                    torque2 = r2_x * (-impulse_z) - r2_z * (-impulse_x)
+                    angular_impulse2 = (torque2 / b2.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
+                    b2.angular_velocity += angular_impulse2
+                    # Cap angular velocity immediately after collision to prevent extreme spin
+                    if abs(b2.angular_velocity) > 6.0:
+                        b2.angular_velocity = 6.0 if b2.angular_velocity > 0 else -6.0
+
+                    # Set collision cooldown for both beetles
+                    b1.collision_cooldown = COLLISION_COOLDOWN_DURATION
+                    b2.collision_cooldown = COLLISION_COOLDOWN_DURATION
+
+                    # === SEPARATION FORCE (position displacement to prevent stuck collisions) ===
+                    # STRONG separation to prevent stuck collisions (now 3D!)
+                    # Use gentler separation for ball collisions
+                    if is_ball_collision:
+                        separation_force = params["BALL_SEPARATION_FORCE"]  # Much gentler for smooth rolling
+                    else:
+                        separation_force = params["SEPARATION_FORCE"]  # Full strength for beetle combat
+
+                    b1.x += normal_x * separation_force
+                    b1.z += normal_z * separation_force
+                    b2.x -= normal_x * separation_force
+                    b2.z -= normal_z * separation_force
+
+                    # VERTICAL SEPARATION - only when both beetles are airborne
+                    if not b1.on_ground and not b2.on_ground:
+                        b1.y += normal_y * separation_force
+                        b2.y -= normal_y * separation_force
+
+                    # Safety clamp to prevent going below floor voxel layer
+                    MIN_Y = 0.5  # Minimum Y to prevent center going below floor at y=0
+                    if b1.y < MIN_Y:
+                        b1.y = MIN_Y
+                        b1.vy = 0.0
+                    if b2.y < MIN_Y:
+                        b2.y = MIN_Y
+                        b2.vy = 0.0
 
                 # === BALL PHYSICS: TORQUE/LIFT/TIP (realistic contact-based forces) ===
                 # Apply special physics when ball is involved (hit from side = spin, from below = lift, from above = tip)
@@ -4532,6 +4625,10 @@ def beetle_collision(b1, b2, params):
                         ball.angular_velocity += ball_angular_impulse
                     else:
                         ball.angular_velocity -= ball_angular_impulse  # Reverse sign for b2
+
+                    # Cap ball angular velocity immediately after collision to prevent extreme spin
+                    if abs(ball.angular_velocity) > 6.0:
+                        ball.angular_velocity = 6.0 if ball.angular_velocity > 0 else -6.0
 
             # === PHASE 3: BODY ROTATION DAMPING ===
             # Track collision-induced spin direction and set damping
@@ -4614,6 +4711,12 @@ physics_params = {
     "GRAVITY": 20.0,  # Adjustable gravity for testing horn lifting
     "SEPARATION_FORCE": 1.15,  # Instant position separation on collision (set to 0 for smooth)
 
+    # Continuous Collision Detection (CCD) parameters
+    "CCD_ENABLED": True,  # Enable/disable continuous collision detection
+    "CCD_BUFFER_DISTANCE": 0.75,  # Buffer zone in voxels (catches collisions early)
+    "CCD_STRENGTH": 1.5,  # How aggressively to prevent overlap (0.5-3.0)
+    "CCD_MAX_SEPARATION_SPEED": 0.5,  # Max speed of separation per frame (prevents skipping)
+
     # Ball physics parameters (tunable via sliders for smooth rolling/bouncing)
     "BALL_SEPARATION_FORCE": BALL_SEPARATION_FORCE,  # How hard ball pushes away from beetles
     "BALL_MOMENTUM_TRANSFER": BALL_MOMENTUM_TRANSFER,  # How much beetle velocity transfers to ball
@@ -4686,9 +4789,9 @@ while window.running:
             # Rotation controls (F/H) - BLOCKED during horn collision
             if not beetle_blue.in_horn_collision:
                 if window.is_pressed('f'):
-                    beetle_blue.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_blue.rotation -= rotation_params["ROTATION_SPEED"] * PHYSICS_TIMESTEP
                 if window.is_pressed('h'):
-                    beetle_blue.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_blue.rotation += rotation_params["ROTATION_SPEED"] * PHYSICS_TIMESTEP
 
             # Movement controls (T/G) - move in facing direction
             if window.is_pressed('t'):
@@ -4798,9 +4901,9 @@ while window.running:
             # Rotation controls (J/L) - BLOCKED during horn collision
             if not beetle_red.in_horn_collision:
                 if window.is_pressed('j'):
-                    beetle_red.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_red.rotation -= rotation_params["ROTATION_SPEED"] * PHYSICS_TIMESTEP
                 if window.is_pressed('l'):
-                    beetle_red.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_red.rotation += rotation_params["ROTATION_SPEED"] * PHYSICS_TIMESTEP
 
             # Movement controls (I/K) - move in facing direction
             if window.is_pressed('i'):
@@ -4911,21 +5014,28 @@ while window.running:
 
         # Ball physics update (uses same beetle physics now)
         if beetle_ball.active:
+            # Reset on_ground flag each frame (will be set to True by collision detection if ball is grounded)
+            beetle_ball.on_ground = False
             beetle_ball.update_physics(PHYSICS_TIMESTEP)
 
             # Apply extra gravity to ball for faster, more natural falling (on top of normal gravity)
             extra_gravity = physics_params["GRAVITY"] * (physics_params["BALL_GRAVITY_MULTIPLIER"] - 1.0)
             beetle_ball.vy -= extra_gravity * PHYSICS_TIMESTEP
 
-            # Apply rolling friction to ball (stronger than beetle friction for realistic slowing)
-            beetle_ball.vx *= physics_params["BALL_ROLLING_FRICTION"]
-            beetle_ball.vz *= physics_params["BALL_ROLLING_FRICTION"]
+            # Apply rolling friction to ball ONLY when on ground (not while airborne for natural arc trajectory)
+            if beetle_ball.on_ground:
+                beetle_ball.vx *= physics_params["BALL_ROLLING_FRICTION"]
+                beetle_ball.vz *= physics_params["BALL_ROLLING_FRICTION"]
 
             # Update ball rotation from angular velocity (makes stripes spin)
             beetle_ball.rotation += beetle_ball.angular_velocity * PHYSICS_TIMESTEP
             beetle_ball.rotation = normalize_angle(beetle_ball.rotation)
 
             # Ball-beetle collision (uses same collision system as beetle-beetle)
+            # CCD pre-check to prevent clipping
+            swept_sphere_collision(beetle_blue, beetle_ball, physics_params)
+            swept_sphere_collision(beetle_red, beetle_ball, physics_params)
+            # Voxel-perfect collision
             beetle_collision(beetle_blue, beetle_ball, physics_params)
             beetle_collision(beetle_red, beetle_ball, physics_params)
 
@@ -5040,12 +5150,13 @@ while window.running:
                     # Apply bounce (reverse velocity with bounce coefficient)
                     if beetle_ball.vy < 0:
                         beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
-                        # If bounce is very small, stop bouncing and settle
-                        if abs(beetle_ball.vy) < 0.5:
+                        # If downward bounce is very small, stop bouncing and settle
+                        # Only stop small DOWNWARD bounces - allow upward velocities (from lift forces) to pass through
+                        if beetle_ball.vy >= 0 and beetle_ball.vy < 0.5:
                             beetle_ball.vy = 0.0
 
                     beetle_ball.on_ground = True
-                elif lowest_point_ball < floor_surface + 0.5:  # Close to ground
+                elif lowest_point_ball < floor_surface + 0.5 and beetle_ball.vy >= -0.5:  # Close to ground AND not falling fast
                     beetle_ball.on_ground = True
 
         # Apply edge tipping physics (GPU-accelerated)
@@ -5069,6 +5180,9 @@ while window.running:
 
         # Beetle collision (voxel-perfect) - only if both beetles are active
         if beetle_blue.active and beetle_red.active:
+            # CCD pre-check to prevent clipping
+            swept_sphere_collision(beetle_blue, beetle_red, physics_params)
+            # Voxel-perfect collision
             beetle_collision(beetle_blue, beetle_red, physics_params)
 
         # Subtract fixed timestep from accumulator
@@ -5569,6 +5683,48 @@ while window.running:
             physics_params["BALL_GROUND_BOUNCE"] = new_ground_bounce
 
         # Ball contact physics (torque/lift/tip based on hit location)
+        # CCD (Continuous Collision Detection) tuning sliders
+        window.GUI.text("")
+        window.GUI.text("=== ANTI-CLIPPING (CCD) ===")
+
+        # CCD Enable/Disable checkbox
+        physics_params["CCD_ENABLED"] = window.GUI.checkbox("Enable CCD", physics_params["CCD_ENABLED"])
+        window.GUI.text(f"  (Prevents voxel overlap)")
+
+        # Only show tuning sliders if CCD is enabled
+        if physics_params["CCD_ENABLED"]:
+            # CCD Buffer Distance slider
+            new_buffer = window.GUI.slider_float(
+                "CCD Buffer Distance",
+                physics_params["CCD_BUFFER_DISTANCE"],
+                0.0, 2.0
+            )
+            if new_buffer != physics_params["CCD_BUFFER_DISTANCE"]:
+                physics_params["CCD_BUFFER_DISTANCE"] = new_buffer
+            window.GUI.text(f"  (Early detection zone)")
+
+            # CCD Strength slider
+            new_strength = window.GUI.slider_float(
+                "CCD Strength",
+                physics_params["CCD_STRENGTH"],
+                0.5, 3.0
+            )
+            if new_strength != physics_params["CCD_STRENGTH"]:
+                physics_params["CCD_STRENGTH"] = new_strength
+            window.GUI.text(f"  (Separation force)")
+
+            # CCD Max Separation Speed slider
+            new_max_sep = window.GUI.slider_float(
+                "Max Separation Speed",
+                physics_params["CCD_MAX_SEPARATION_SPEED"],
+                0.1, 2.0
+            )
+            if new_max_sep != physics_params["CCD_MAX_SEPARATION_SPEED"]:
+                physics_params["CCD_MAX_SEPARATION_SPEED"] = new_max_sep
+            window.GUI.text(f"  (Prevents skipping)")
+        else:
+            window.GUI.text(f"CCD disabled - voxels may clip")
+
         window.GUI.text("")
         window.GUI.text("--- Ball Contact Physics ---")
 
@@ -5604,6 +5760,46 @@ while window.running:
         window.GUI.text("")
         if window.GUI.button("RESTART MATCH"):
             reset_match()
+
+    # Rotation speed tuning sliders
+    window.GUI.text("")
+    window.GUI.text("=== ROTATION SPEED TUNING ===")
+
+    # Live adjustable sliders using rotation_params dictionary
+    rotation_params["ROTATION_SPEED"] = window.GUI.slider_float(
+        "Voluntary Turn Speed",
+        rotation_params["ROTATION_SPEED"],
+        1.0, 5.0
+    )
+    window.GUI.text(f"  (F/H, J/L keys)")
+
+    rotation_params["MAX_ANGULAR_SPEED"] = window.GUI.slider_float(
+        "Max Angular Velocity",
+        rotation_params["MAX_ANGULAR_SPEED"],
+        4.0, 10.0
+    )
+    window.GUI.text(f"  (Collision spin cap)")
+
+    window.GUI.text("")
+    window.GUI.text("--- Collision Caps ---")
+    window.GUI.text(f"Post-collision cap: 6.0 rad/s")
+    window.GUI.text(f"Global maximum: {rotation_params['MAX_ANGULAR_SPEED']:.1f} rad/s")
+
+    # Physics tip velocity calculation
+    window.GUI.text("")
+    window.GUI.text("--- Horn Tip Velocity ---")
+    blue_tip_distance = blue_total_reach + 3  # Approx distance from center
+    red_tip_distance = red_total_reach + 3
+    blue_tip_vel = (rotation_params["MAX_ANGULAR_SPEED"] * blue_tip_distance) / 60.0  # voxels/frame at 60Hz
+    red_tip_vel = (rotation_params["MAX_ANGULAR_SPEED"] * red_tip_distance) / 60.0
+    window.GUI.text(f"Blue tip: {blue_tip_vel:.2f} voxels/frame")
+    window.GUI.text(f"Red tip: {red_tip_vel:.2f} voxels/frame")
+
+    # Color code the warning if over threshold
+    if blue_tip_vel > 2.0 or red_tip_vel > 2.0:
+        window.GUI.text(f"WARNING: Safe threshold is <2.0 voxels/frame")
+    else:
+        window.GUI.text(f"Safe threshold: <2.0 voxels/frame")
 
     # Physics parameter sliders (commented out - can re-enable later if needed)
     # window.GUI.text("")
