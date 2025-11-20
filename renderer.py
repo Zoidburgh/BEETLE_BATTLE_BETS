@@ -156,18 +156,19 @@ def extract_debris_particles():
             base_color = simulation.debris_material[idx]
 
             # Calculate alpha fade based on remaining lifetime
-            # Exponential fade - smooth at start, rapid at end for natural disappearance
+            # Smooth fade with gentler curve for less jarring disappearance
             lifetime = simulation.debris_lifetime[idx]
-            fade_start = 0.4  # Start fading when 0.4 seconds left
+            fade_start = 0.6  # Start fading earlier (when 0.6 seconds left)
 
-            # Exponential fade for smoother visual effect (lerp to background for transparency effect)
+            # Gentler fade curve (square root instead of square for slower initial fade)
             if lifetime < fade_start:
                 linear_fade = lifetime / fade_start  # 1.0 to 0.0
-                # Square the fade factor for exponential curve (stays visible longer, then fades quickly)
-                alpha = linear_fade * linear_fade
-                # Lerp towards sky/background color (light blue-gray) to simulate transparency
-                bg_color = ti.math.vec3(0.4, 0.5, 0.55)  # Sky color from gradient background
-                voxel_colors[write_idx] = base_color * alpha + bg_color * (1.0 - alpha)
+                # Square root for gentler exponential curve (fades more gradually throughout)
+                alpha = ti.sqrt(linear_fade)
+                # Fade by darkening slightly but keep some brightness to avoid black particles
+                # Use a lighter gray/white target instead of pure background color
+                fade_target = ti.math.vec3(0.6, 0.65, 0.7)  # Light gray-blue (brighter than background)
+                voxel_colors[write_idx] = base_color * alpha + fade_target * (1.0 - alpha)
             else:
                 voxel_colors[write_idx] = base_color
 

@@ -64,7 +64,7 @@ PHYSICS_TIMESTEP = 1.0 / 60.0  # 60 Hz physics update rate (16.67ms per step)
 MAX_TIMESTEP_ACCUMULATOR = 0.25  # Max accumulator to prevent spiral of death
 
 # Horn rotation damping constants (Phase 2: Horn Clipping Prevention)
-HORN_DAMPING_INTO = 0.70      # Damping when rotating into collision (0.70 = 30% speed, reduced from 0.85 for less restrictive feel)
+HORN_DAMPING_INTO = 0.80      # Damping when rotating into collision (0.80 = 20% speed, high resistance when pushing into collision)
 HORN_DAMPING_AWAY = 0.15      # Damping when rotating away from collision (0.15 = 85% speed)
 HORN_DAMPING_NEUTRAL = 0.30   # Damping when not actively rotating
 HORN_DAMPING_SMOOTHING = 0.3  # Smoothing rate for damping changes (0-1, higher = faster)
@@ -126,6 +126,8 @@ class Beetle:
         # Animation state for procedural leg movement
         self.walk_phase = 0.0  # Current walk cycle phase (0 to 2π)
         self.is_moving = False  # Whether beetle is actively walking
+        self.is_rotating_only = False  # True when rotating without forward movement
+        self.rotation_direction = 0  # -1 = left, 0 = none, 1 = right
 
         # Horn control state
         self.horn_pitch = HORN_DEFAULT_PITCH  # Vertical angle in radians - starts at +10°
@@ -2322,7 +2324,7 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     return lowest_y
 
 @ti.kernel
-def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32):
+def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
@@ -2672,15 +2674,34 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             if leg_id == 1 or leg_id == 2 or leg_id == 5:
                 phase_offset = 3.14159265359  # π
 
-        leg_phase = walk_phase + phase_offset
+        # Apply asymmetric leg timing for rotation-only movement
+        leg_phase_offset = phase_offset
+        if is_rotating_only == 1:
+            # Asymmetric timing: inside legs (toward turn direction) lag behind
+            if rotation_direction == -1:  # Turning left
+                # Left legs (leg_id 0,1,2) lag, right legs (3,4,5) normal
+                if leg_id == 0 or leg_id == 1 or leg_id == 2:
+                    leg_phase_offset += 0.6  # ~35 degree phase lag
+            elif rotation_direction == 1:  # Turning right
+                # Right legs lag, left legs normal
+                if leg_id == 3 or leg_id == 4 or leg_id == 5:
+                    leg_phase_offset += 0.6  # ~35 degree phase lag
+
+        leg_phase = walk_phase + leg_phase_offset
 
         # Calculate animation transforms (vertical lift and minimal forward/back sweep)
         # sin(leg_phase) ranges from -1 to 1
         # We want: lift when sin > 0 (leg in air), on ground when sin <= 0
-        lift = ti.max(0.0, ti.sin(leg_phase)) * 2.5  # Lift up to 2.5 voxels
+        base_lift = 2.5  # Normal lift height
+        base_sweep = 0.5  # Normal sweep distance
 
-        # Subtle forward/back sweep (1 voxel range) - inverted so legs push backward when grounded
-        sweep = -ti.cos(leg_phase) * 0.5  # ±0.5 voxel sweep (negative = correct walk direction)
+        # Reduce amplitude when rotating only (60% of normal)
+        if is_rotating_only == 1:
+            base_lift *= 0.6
+            base_sweep *= 0.6
+
+        lift = ti.max(0.0, ti.sin(leg_phase)) * base_lift  # Lift (reduced during rotation)
+        sweep = -ti.cos(leg_phase) * base_sweep  # Sweep (reduced during rotation)
 
         # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
         if is_lifted_high == 1:
@@ -2780,7 +2801,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                         dirty_voxel_z[idx] = grid_z
 
 @ti.kernel
-def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32):
+def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
@@ -3130,15 +3151,34 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             if leg_id == 1 or leg_id == 2 or leg_id == 5:
                 phase_offset = 3.14159265359  # π
 
-        leg_phase = walk_phase + phase_offset
+        # Apply asymmetric leg timing for rotation-only movement
+        leg_phase_offset = phase_offset
+        if is_rotating_only == 1:
+            # Asymmetric timing: inside legs (toward turn direction) lag behind
+            if rotation_direction == -1:  # Turning left
+                # Left legs (leg_id 0,1,2) lag, right legs (3,4,5) normal
+                if leg_id == 0 or leg_id == 1 or leg_id == 2:
+                    leg_phase_offset += 0.6  # ~35 degree phase lag
+            elif rotation_direction == 1:  # Turning right
+                # Right legs lag, left legs normal
+                if leg_id == 3 or leg_id == 4 or leg_id == 5:
+                    leg_phase_offset += 0.6  # ~35 degree phase lag
+
+        leg_phase = walk_phase + leg_phase_offset
 
         # Calculate animation transforms (vertical lift and minimal forward/back sweep)
         # sin(leg_phase) ranges from -1 to 1
         # We want: lift when sin > 0 (leg in air), on ground when sin <= 0
-        lift = ti.max(0.0, ti.sin(leg_phase)) * 2.5  # Lift up to 2.5 voxels
+        base_lift = 2.5  # Normal lift height
+        base_sweep = 0.5  # Normal sweep distance
 
-        # Subtle forward/back sweep (1 voxel range) - inverted so legs push backward when grounded
-        sweep = -ti.cos(leg_phase) * 0.5  # ±0.5 voxel sweep (negative = correct walk direction)
+        # Reduce amplitude when rotating only (60% of normal)
+        if is_rotating_only == 1:
+            base_lift *= 0.6
+            base_sweep *= 0.6
+
+        lift = ti.max(0.0, ti.sin(leg_phase)) * base_lift  # Lift (reduced during rotation)
+        sweep = -ti.cos(leg_phase) * base_sweep  # Sweep (reduced during rotation)
 
         # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
         if is_lifted_high == 1:
@@ -4542,7 +4582,7 @@ def beetle_collision(b1, b2, params):
             # SKIP HORN PHYSICS FOR BALL COLLISIONS - ball needs gentle rolling, not combat lifts
             center_y = (b1.y + b2.y) / 2.0
             contact_height_above_center = collision_y - center_y
-            is_horn_contact = contact_height_above_center > 2.0 and not is_ball_collision  # Horn contact (above body center)
+            is_horn_contact = contact_height_above_center > 0.0 and not is_ball_collision  # Horn contact (at or above center height - includes low horn collisions)
 
             if is_horn_contact:
                 # Mark both beetles as in horn collision (blocks rotation during contact)
@@ -4910,7 +4950,7 @@ physics_params = {
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
     "GRAVITY": 26.0,  # Adjustable gravity (30% stronger: 20.0 * 1.3 = 26.0)
-    "SEPARATION_FORCE": 0.6,  # Gradual position separation on collision (reduced from 1.15 for smoother sumo-style resistance)
+    "SEPARATION_FORCE": 0.7,  # Gradual position separation on collision (increased for slightly faster separation)
 
     # Ball physics parameters (tunable via sliders for smooth rolling/bouncing)
     "BALL_SEPARATION_FORCE": BALL_SEPARATION_FORCE,  # How hard ball pushes away from beetles
@@ -5494,22 +5534,65 @@ while window.running:
     red_render_horn_pitch = lerp_angle(beetle_red.prev_horn_pitch, beetle_red.horn_pitch, alpha)
     red_render_horn_yaw = lerp_angle(beetle_red.prev_horn_yaw, beetle_red.horn_yaw, alpha)
 
-    # Update walk animation based on velocity (uses real-time frame_dt)
+    # Update walk animation based on velocity and rotation (uses real-time frame_dt)
+    # Detect blue beetle rotation-only input
+    blue_rotating = window.is_pressed('f') or window.is_pressed('h')
+    blue_moving = window.is_pressed('t') or window.is_pressed('g')
     blue_speed = math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2)
-    if blue_speed > 0.5:  # Only animate if moving
-        beetle_blue.walk_phase += blue_speed * WALK_CYCLE_SPEED * frame_dt
-        beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)  # Keep in [0, 2π]
+
+    # Check if rotating without moving forward/backward
+    if blue_rotating and not blue_moving:
+        # Rotation-only animation (use constant rotation speed)
+        # Use ROTATION_SPEED constant for animation phase
+        rotation_animation_speed = 13.5  # 2x faster than 6.75
+        beetle_blue.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
+        beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
         beetle_blue.is_moving = True
+        beetle_blue.is_rotating_only = True
+        # Detect rotation direction
+        if window.is_pressed('f'):
+            beetle_blue.rotation_direction = -1  # Turning left
+        else:
+            beetle_blue.rotation_direction = 1   # Turning right
+    elif blue_speed > 0.5:  # Normal forward/backward movement
+        beetle_blue.walk_phase += blue_speed * WALK_CYCLE_SPEED * frame_dt
+        beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
+        beetle_blue.is_moving = True
+        beetle_blue.is_rotating_only = False
+        beetle_blue.rotation_direction = 0
     else:
         beetle_blue.is_moving = False
+        beetle_blue.is_rotating_only = False
+        beetle_blue.rotation_direction = 0
 
+    # Detect red beetle rotation-only input
+    red_rotating = window.is_pressed('j') or window.is_pressed('l')
+    red_moving = window.is_pressed('i') or window.is_pressed('k')
     red_speed = math.sqrt(beetle_red.vx**2 + beetle_red.vz**2)
-    if red_speed > 0.5:
+
+    # Check if rotating without moving forward/backward
+    if red_rotating and not red_moving:
+        # Rotation-only animation (use constant rotation speed)
+        rotation_animation_speed = 13.5  # 2x faster than 6.75
+        beetle_red.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
+        beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
+        beetle_red.is_moving = True
+        beetle_red.is_rotating_only = True
+        # Detect rotation direction
+        if window.is_pressed('j'):
+            beetle_red.rotation_direction = -1  # Turning left
+        else:
+            beetle_red.rotation_direction = 1   # Turning right
+    elif red_speed > 0.5:  # Normal forward/backward movement
         beetle_red.walk_phase += red_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
         beetle_red.is_moving = True
+        beetle_red.is_rotating_only = False
+        beetle_red.rotation_direction = 0
     else:
         beetle_red.is_moving = False
+        beetle_red.is_rotating_only = False
+        beetle_red.rotation_direction = 0
 
     # Detect if beetles are lifted high (for leg spaz animation)
     LIFT_THRESHOLD = 5.0  # 4 voxels above normal ground
@@ -5591,11 +5674,11 @@ while window.running:
 
     if beetle_blue.active:
         # Render blue beetle using its own cache
-        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value)
+        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction)
 
     if beetle_red.active:
         # Render red beetle using its own cache
-        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value)
+        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction)
 
     # Render ball (beetle soccer ball) - clear old voxels first to prevent trail
     if beetle_ball.active:
