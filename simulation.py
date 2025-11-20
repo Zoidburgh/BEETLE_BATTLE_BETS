@@ -45,6 +45,8 @@ BEETLE_RED_HORN_TIP = 14  # Red beetle horn prong tips (dark metallic)
 STINGER_TIP_BLACK = 15  # Scorpion stinger tips (black/dark)
 BALL = 16  # Soccer ball (bright orange/yellow)
 BALL_STRIPE = 17  # Soccer ball stripe pattern (darker for contrast)
+STAG_HOOK_INTERIOR_BLUE = 18  # Blue beetle stag hook interior (curved inward section)
+STAG_HOOK_INTERIOR_RED = 19  # Red beetle stag hook interior (curved inward section)
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors

@@ -17,7 +17,7 @@ FRICTION = 0.88  # Slightly higher friction
 MAX_SPEED = 7.0  # Forward top speed
 BACKWARD_MAX_SPEED = 5.0  # Backward top speed (slower)
 ROTATION_SPEED = 2.5  # Rotation speed for controlled turning
-ANGULAR_FRICTION = 0.75  # How quickly spin slows down (lower value = more friction, less spin)
+ANGULAR_FRICTION = 0.7  # How quickly spin slows down (lower value = more friction, less spin)
 MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec) from collision impacts
 TORQUE_MULTIPLIER = 1.95  # Rotational forces on collision
 RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
@@ -43,8 +43,8 @@ HORN_MIN_PITCH_HERCULES = math.radians(2)   # +2 degrees (jaws fully closed)
 HORN_YAW_SPEED = 2.0  # Radians per second
 HORN_MAX_YAW = math.radians(15)  # +15 degrees horizontal
 HORN_MIN_YAW = math.radians(-15)  # -15 degrees horizontal
-HORN_YAW_MIN_DISTANCE = 1.0  # Minimum distance between horn tips (voxels) to allow yaw rotation
-HORN_PITCH_MIN_DISTANCE = 1.0  # Minimum distance between horn tips (voxels) to allow pitch rotation
+HORN_YAW_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow yaw rotation
+HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
 # Edge tipping constants
 EDGE_TIPPING_STRENGTH = 0.45  # Force multiplier per over-edge voxel
@@ -156,6 +156,9 @@ class Beetle:
         self.is_falling = False  # True when beetle has passed point of no return
         self.has_exploded = False  # True when death particle explosion has been triggered
         self.is_lifted_high = False  # True when lifted significantly above ground (for leg spaz animation)
+
+        # Hook interior tracking for stag beetles (parallel to body geometry cache)
+        self.body_hook_interior_flags = []  # 1=hook interior, 0=regular (4th element from stag pincer voxels)
 
         # Previous state for fixed timestep interpolation
         self.prev_x = x
@@ -396,16 +399,24 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                                             beetle2_grid_y - beetle2_max_down))
                 y_end = ti.min(simulation.n_grid, ti.max(beetle1_grid_y + beetle1_max_up,
                                                           beetle2_grid_y + beetle2_max_up))
+
+                # Track if hook interior voxels are present in this column
+                has_hook_interior = 0
+
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
 
+                    # Check for hook interior voxels
+                    if voxel == simulation.STAG_HOOK_INTERIOR_BLUE or voxel == simulation.STAG_HOOK_INTERIOR_RED:
+                        has_hook_interior = 1
+
                     # Check if voxel belongs to entity 1 (based on color1)
                     belongs_to_1 = 0
-                    if color1 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13)
-                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13:
+                    if color1 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
+                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
                             belongs_to_1 = 1
-                    elif color1 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14)
-                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14:
+                    elif color1 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
+                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
                             belongs_to_1 = 1
                     elif color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
@@ -413,11 +424,11 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
 
                     # Check if voxel belongs to entity 2 (based on color2)
                     belongs_to_2 = 0
-                    if color2 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13)
-                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13:
+                    if color2 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
+                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
                             belongs_to_2 = 1
-                    elif color2 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14)
-                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14:
+                    elif color2 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
+                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
                             belongs_to_2 = 1
                     elif color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
@@ -436,11 +447,13 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                         if gy > beetle2_y_max:
                             beetle2_y_max = gy
 
-                # Check if Y-ranges overlap or are adjacent (within 1.5 voxels for softer engagement)
+                # Check if Y-ranges overlap or are adjacent (variable tolerance based on voxel types)
                 if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
-                    # Increased tolerance from 1 to 1.5 voxels for better glancing blow detection and sumo feel
-                    # Using floor division: 1.5 voxels ≈ checking within 2 voxels but with tighter XZ bounds
-                    if beetle1_y_min <= beetle2_y_max + 2 and beetle2_y_min <= beetle1_y_max + 2:
+                    # Use stricter tolerance (±4 voxels) for hook interior collisions to catch them earlier
+                    # Use normal tolerance (±2 voxels) for regular collisions
+                    tolerance = 4 if has_hook_interior == 1 else 2
+
+                    if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
                         collision = 1
 
     return collision
@@ -781,6 +794,7 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
     leg_length = int(leg_length)
 
     body_voxels = []
+    hook_interior_flags = []  # Track which body voxels are hook interiors (for stag beetles)
     leg_voxels = []  # Will be organized as list of 6 legs, each containing voxel offsets
 
     # ABDOMEN (rear) - LEAN ellipse
@@ -952,7 +966,15 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
     elif horn_type == "stag":
         # STAG BEETLE PINCERS - Horizontal mandibles
         pincer_voxels = generate_stag_pincers(horn_shaft_len - 2, horn_prong_len)
-        body_voxels.extend(pincer_voxels)
+        # Extract voxels and hook interior flags (4-tuples: x, y, z, is_hook)
+        for voxel_data in pincer_voxels:
+            if len(voxel_data) == 4:  # New format with hook interior flag
+                x, y, z, is_hook = voxel_data
+                body_voxels.append((x, y, z))
+                hook_interior_flags.append(is_hook)
+            else:  # Old format (backward compatibility)
+                body_voxels.append(voxel_data)
+                hook_interior_flags.append(0)
     elif horn_type == "hercules":
         # HERCULES BEETLE HORNS - Vertical dual-jaw pincer system
         hercules_voxels = generate_hercules_horns(horn_shaft_len, horn_prong_len, front_body_height, back_body_height)
@@ -1191,11 +1213,15 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
         leg_tips = [front_left_tips, front_right_tips, middle_left_tips,
                     middle_right_tips, rear_left_tips, rear_right_tips]
 
-    return body_voxels, leg_voxels, leg_tips
+    # Ensure hook_interior_flags matches body_voxels length (fill with 0s if needed)
+    while len(hook_interior_flags) < len(body_voxels):
+        hook_interior_flags.append(0)
+
+    return body_voxels, leg_voxels, leg_tips, hook_interior_flags
 
 # Generate separate geometry for blue and red beetles (start with same default params)
-BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS = generate_beetle_geometry()
-RED_BODY, RED_LEGS, RED_LEG_TIPS = generate_beetle_geometry()
+BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS = generate_beetle_geometry()
+RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS = generate_beetle_geometry()
 print(f"Blue beetle geometry cached: {len(BLUE_BODY)} body voxels + {sum(len(leg) for leg in BLUE_LEGS)} leg voxels + {sum(len(tips) for tips in BLUE_LEG_TIPS)} tip voxels")
 print(f"Red beetle geometry cached: {len(RED_BODY)} body voxels + {sum(len(leg) for leg in RED_LEGS)} leg voxels + {sum(len(tips) for tips in RED_LEG_TIPS)} tip voxels")
 
@@ -1210,6 +1236,7 @@ blue_body_cache_size[None] = len(BLUE_BODY)
 blue_body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 blue_body_cache_y = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 blue_body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
+blue_body_hook_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # Hook interior flags for stag beetles
 
 # Separate body cache fields for red beetle
 red_body_cache_size = ti.field(ti.i32, shape=())
@@ -1217,6 +1244,7 @@ red_body_cache_size[None] = len(RED_BODY)
 red_body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 red_body_cache_y = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 red_body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
+red_body_hook_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # Hook interior flags for stag beetles
 
 # Create OVERSIZED Taichi fields for leg geometry cache (6 legs)
 # Store all leg voxels flattened with offsets to know where each leg starts
@@ -1292,6 +1320,7 @@ collision_point_y = ti.field(ti.f32, shape=())
 collision_point_z = ti.field(ti.f32, shape=())
 collision_contact_count = ti.field(ti.i32, shape=())
 collision_has_horn_tips = ti.field(ti.i32, shape=())  # 1 if horn tip voxels involved, 0 otherwise
+collision_has_hook_interiors = ti.field(ti.i32, shape=())  # 1 if stag hook interior voxels involved, 0 otherwise
 
 # Edge tipping calculation fields
 edge_tipping_vy = ti.field(ti.f32, shape=())  # Downward velocity to apply
@@ -1316,6 +1345,11 @@ for i, (dx, dy, dz) in enumerate(BLUE_BODY):
     blue_body_cache_x[i] = dx
     blue_body_cache_y[i] = dy
     blue_body_cache_z[i] = dz
+    # Copy hook interior flags (0 if not available)
+    if i < len(BLUE_HOOK_FLAGS):
+        blue_body_hook_flags[i] = BLUE_HOOK_FLAGS[i]
+    else:
+        blue_body_hook_flags[i] = 0
 
 # Copy blue beetle leg geometry to GPU
 offset = 0
@@ -1344,6 +1378,11 @@ for i, (dx, dy, dz) in enumerate(RED_BODY):
     red_body_cache_x[i] = dx
     red_body_cache_y[i] = dy
     red_body_cache_z[i] = dz
+    # Copy hook interior flags (0 if not available)
+    if i < len(RED_HOOK_FLAGS):
+        red_body_hook_flags[i] = RED_HOOK_FLAGS[i]
+    else:
+        red_body_hook_flags[i] = 0
 
 # Copy red beetle leg geometry to GPU
 offset = 0
@@ -1373,7 +1412,10 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
     global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS
 
     # Generate new geometry
-    BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+    BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+
+    # Update beetle's hook interior flags
+    beetle_blue.body_hook_interior_flags = list(BLUE_HOOK_FLAGS)
 
     # Update body cache
     if len(BLUE_BODY) > MAX_BODY_VOXELS:
@@ -1463,7 +1505,10 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
     global RED_BODY, RED_LEGS, RED_LEG_TIPS
 
     # Generate new geometry
-    RED_BODY, RED_LEGS, RED_LEG_TIPS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+    RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+
+    # Update beetle's hook interior flags
+    beetle_red.body_hook_interior_flags = list(RED_HOOK_FLAGS)
 
     # Update body cache
     if len(RED_BODY) > MAX_BODY_VOXELS:
@@ -1568,53 +1613,59 @@ def generate_stag_pincers(shaft_length, curve_length):
     # Straight shaft section extending left, angled 10° upward
     for i in range(shaft_length):
         dx = 3 + i  # Extends forward
-        dy = 1 + int(i * 0.176)  # 10° upward angle (tan(10°) ≈ 0.176)
+        dy = 1  # Horizontal (0° angle, no upward tilt)
         dz = -i - 1 # Extends left (-Z direction), offset by -1 to avoid center overlap
 
         # Make it 2-3 voxels thick for solidity
         for dy_offset in range(2):  # Add vertical thickness
             for dz_offset in range(-1, 1):  # Add some width
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular shaft)
 
     # Curved tip section (curves inward)
     curve_start_x = 3 + shaft_length
     curve_start_z = -shaft_length - 1  # Match the offset
-    base_height = 1 + int(shaft_length * 0.176)  # Continue from shaft's final height
+    base_height = 1  # Horizontal (0° angle, no upward tilt)
     for i in range(curve_length):
         dx = curve_start_x + i
-        dy = base_height + int(i * 0.176)  # Continue 10° upward angle
+        dy = base_height  # Horizontal (no upward tilt)
         dz = curve_start_z + int(i * 0.36)  # Curves back toward center at 110° angle (+Z direction)
 
         # Maintain thickness
         for dy_offset in range(2):
             for dz_offset in range(-1, 1):
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
+                # HOOK INTERIOR: inner face (dz_offset >= 0) of curved section (skip first 2 voxels)
+                is_hook_interior = (i >= 2) and (dz_offset >= 0)
+                flag = 1 if is_hook_interior else 0
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, flag))
 
     # RIGHT PINCER (extends in +Z direction, curves inward toward -Z)
     # Straight shaft section extending right, angled 10° upward
     for i in range(shaft_length):
         dx = 3 + i  # Extends forward
-        dy = 1 + int(i * 0.176)  # 10° upward angle (tan(10°) ≈ 0.176)
+        dy = 1  # Horizontal (0° angle, no upward tilt)
         dz = i + 1  # Extends right (+Z direction), offset by +1 to avoid center overlap
 
         # Make it 2-3 voxels thick for solidity
         for dy_offset in range(2):
             for dz_offset in range(-1, 1):
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular shaft)
 
     # Curved tip section (curves inward)
     curve_start_x = 3 + shaft_length
     curve_start_z = shaft_length + 1  # Match the offset
-    base_height = 1 + int(shaft_length * 0.176)  # Continue from shaft's final height
+    base_height = 1  # Horizontal (0° angle, no upward tilt)
     for i in range(curve_length):
         dx = curve_start_x + i
-        dy = base_height + int(i * 0.176)  # Continue 10° upward angle
+        dy = base_height  # Horizontal (no upward tilt)
         dz = curve_start_z - int(i * 0.36)  # Curves back toward center at 110° angle (-Z direction)
 
         # Maintain thickness
         for dy_offset in range(2):
             for dz_offset in range(-1, 1):
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset))
+                # HOOK INTERIOR: inner face (dz_offset <= 0) of curved section (skip first 2 voxels)
+                is_hook_interior = (i >= 2) and (dz_offset <= 0)
+                flag = 1 if is_hook_interior else 0
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, flag))
 
     return pincer_voxels
 
@@ -2379,9 +2430,18 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                     if body_cache_x[i] >= 13:
                         is_horn_tip = 1
 
-                # Use appropriate color: horn tip > stripe > body color
+                # Use appropriate color: hook interior > horn tip > stripe > body color
                 voxel_color = body_color
-                if is_horn_tip == 1:
+
+                # Check if this is a hook interior voxel (only for stag beetles)
+                is_hook_interior = 0
+                if horn_type_id == 1 and i < blue_body_cache_size[None]:
+                    is_hook_interior = blue_body_hook_flags[i]
+
+                if is_hook_interior == 1:
+                    # Hook interior voxels use special type
+                    voxel_color = simulation.STAG_HOOK_INTERIOR_BLUE
+                elif is_horn_tip == 1:
                     # For scorpion, check if this is the VERY tip (dark) or regular tip (bright)
                     is_very_tip = 0
                     if horn_type_id == 3:  # Scorpion - dual-layer tip coloring
@@ -2808,9 +2868,18 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                     if red_body_cache_x[i] >= 13:
                         is_horn_tip = 1
 
-                # Use appropriate color: horn tip > stripe > body color
+                # Use appropriate color: hook interior > horn tip > stripe > body color
                 voxel_color = body_color
-                if is_horn_tip == 1:
+
+                # Check if this is a hook interior voxel (only for stag beetles)
+                is_hook_interior = 0
+                if horn_type_id == 1 and i < red_body_cache_size[None]:
+                    is_hook_interior = red_body_hook_flags[i]
+
+                if is_hook_interior == 1:
+                    # Hook interior voxels use special type
+                    voxel_color = simulation.STAG_HOOK_INTERIOR_RED
+                elif is_horn_tip == 1:
                     # For scorpion, check if this is the VERY tip (dark) or regular tip (bright)
                     is_very_tip = 0
                     if horn_type_id == 3:  # Scorpion - dual-layer tip coloring
@@ -3022,7 +3091,8 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                    vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED or \
                    vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
                    vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
-                   vtype == simulation.STINGER_TIP_BLACK:
+                   vtype == simulation.STINGER_TIP_BLACK or \
+                   vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
     # === BEETLE 2 BOUNDING BOX ===
@@ -3047,7 +3117,8 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                    vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED or \
                    vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
                    vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
-                   vtype == simulation.STINGER_TIP_BLACK:
+                   vtype == simulation.STINGER_TIP_BLACK or \
+                   vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 @ti.kernel
@@ -3103,6 +3174,7 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
     collision_point_z[None] = 0.0
     collision_contact_count[None] = 0
     collision_has_horn_tips[None] = 0  # Reset horn tip detection
+    collision_has_hook_interiors[None] = 0  # Reset hook interior detection
 
     # Scan through overlapping voxel columns
     y_scan_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
@@ -3127,6 +3199,10 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                         if vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
                            vtype == simulation.STINGER_TIP_BLACK:
                             collision_has_horn_tips[None] = 1
+
+                        # Check if this is a hook interior voxel
+                        if vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                            collision_has_hook_interiors[None] = 1
 
                         # Accumulate collision position
                         ti.atomic_add(collision_point_x[None], float(vx1) - simulation.n_grid / 2.0)
@@ -4411,9 +4487,14 @@ def beetle_collision(b1, b2, params):
                 b2.angular_velocity -= angular_impulse_b2  # Opposite direction
 
             # STRONG separation to prevent stuck collisions (now 3D!)
-            # Use gentler separation for ball collisions
+            # Read hook interior collision status
+            has_hook_interiors = collision_has_hook_interiors[None]
+
+            # Use gentler separation for ball collisions, 2x stronger for hook interiors
             if is_ball_collision:
                 separation_force = params["BALL_SEPARATION_FORCE"]  # Much gentler for smooth rolling
+            elif has_hook_interiors == 1:
+                separation_force = params["SEPARATION_FORCE"] * 2.0  # 2x stronger for hook interior collisions
             else:
                 separation_force = params["SEPARATION_FORCE"]  # Full strength for beetle combat
 
@@ -4613,7 +4694,7 @@ physics_params = {
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
     "GRAVITY": 20.0,  # Adjustable gravity for testing horn lifting
-    "SEPARATION_FORCE": 0.7,  # Gradual position separation on collision (reduced from 1.15 for smoother sumo-style resistance)
+    "SEPARATION_FORCE": 0.6,  # Gradual position separation on collision (reduced from 1.15 for smoother sumo-style resistance)
 
     # Ball physics parameters (tunable via sliders for smooth rolling/bouncing)
     "BALL_SEPARATION_FORCE": BALL_SEPARATION_FORCE,  # How hard ball pushes away from beetles
