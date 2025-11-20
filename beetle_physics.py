@@ -17,7 +17,7 @@ FRICTION = 0.88  # Slightly higher friction
 MAX_SPEED = 7.0  # Forward top speed
 BACKWARD_MAX_SPEED = 5.0  # Backward top speed (slower)
 ROTATION_SPEED = 2.5  # Rotation speed for controlled turning
-ANGULAR_FRICTION = 0.7  # How quickly spin slows down (lower value = more friction, less spin)
+ANGULAR_FRICTION = 0.65  # How quickly spin slows down (lower value = more friction, less spin)
 MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec) from collision impacts
 TORQUE_MULTIPLIER = 1.95  # Rotational forces on collision
 RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
@@ -33,6 +33,7 @@ HORN_DEFAULT_PITCH = math.radians(10)  # Start at +10 degrees (raised) - for rhi
 HORN_DEFAULT_PITCH_STAG = math.radians(18)  # Start at +18 degrees (raised) - for stag pincers
 HORN_DEFAULT_PITCH_HERCULES = math.radians(15)  # Start at +15 degrees (jaws slightly open) - for hercules
 HORN_DEFAULT_PITCH_SCORPION = math.radians(20)  # Start at +20 degrees (raised) - for scorpion claws
+HORN_DEFAULT_PITCH_ATLAS = math.radians(-33)  # Start at -33 degrees (angled down toward ground) - for atlas beetle
 HORN_MAX_PITCH = math.radians(40)  # +40 degrees vertical (up) - increased by 10° for stag pincers
 HORN_MIN_PITCH = math.radians(-5)  # -5 degrees vertical (down) - reduced downward by 5° for stag pincers
 # Rhino-specific limits (shifted 5° higher to keep horn from going too low)
@@ -41,6 +42,9 @@ HORN_MIN_PITCH_RHINO = math.radians(-5)  # -5 degrees vertical (down) - 5° less
 # Hercules-specific limits (±15° range from default, shifted up to prevent ground clipping)
 HORN_MAX_PITCH_HERCULES = math.radians(35)  # +35 degrees (jaws fully open)
 HORN_MIN_PITCH_HERCULES = math.radians(2)   # +2 degrees (jaws fully closed)
+# Atlas-specific limits (optimized for scoop-and-lift combat mechanics)
+HORN_MAX_PITCH_ATLAS = math.radians(20)  # +20 degrees (full upward lift)
+HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward ground)
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
 HORN_YAW_SPEED = 2.0  # Radians per second
@@ -158,6 +162,10 @@ class Beetle:
         self.active = True  # False when beetle has fallen off arena
         self.is_falling = False  # True when beetle has passed point of no return
         self.has_exploded = False  # True when death particle explosion has been triggered
+        self.explosion_timer = 0.0  # Timer for gradual particle spawning (0.3 seconds)
+        self.explosion_pos_x = 0.0  # Store explosion position
+        self.explosion_pos_y = 0.0
+        self.explosion_pos_z = 0.0
         self.is_lifted_high = False  # True when lifted significantly above ground (for leg spaz animation)
 
         # Hook interior tracking for stag beetles (parallel to body geometry cache)
@@ -982,6 +990,18 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
         # HERCULES BEETLE HORNS - Vertical dual-jaw pincer system
         hercules_voxels = generate_hercules_horns(horn_shaft_len, horn_prong_len, front_body_height, back_body_height)
         body_voxels.extend(hercules_voxels)
+    elif horn_type == "atlas":
+        # ATLAS BEETLE - Three-horn system (two stationary + one movable)
+        # PRONOTUM HORNS (stationary, top): Two upward-curving horns from shoulders
+        # Controlled by prong_len slider
+        pronotum_horns = generate_atlas_pronotum_horns(horn_prong_len)
+        body_voxels.extend(pronotum_horns)
+
+        # CEPHALIC HORN (movable, bottom): Forward-projecting horn with upward curve
+        # Controlled by shaft_len slider and R/Y keys (pitch control)
+        # This horn will be rotated in place_animated_beetle based on horn_pitch
+        cephalic_horn = generate_atlas_cephalic_horn(horn_shaft_len)
+        body_voxels.extend(cephalic_horn)
     else:
         # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
         # Main shaft with overlapping layers
@@ -2030,6 +2050,133 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
 
     return rotated_voxels
 
+def generate_atlas_pronotum_horns(prong_len=5):
+    """
+    Generate Atlas beetle dual stationary pronotum horns with head piece
+
+    Args:
+        prong_len: Horn length parameter (5-8) - controls how long the horns are
+
+    Returns:
+        List of (dx, dy, dz) voxel positions for both horns (left + right) plus head piece
+
+    The Atlas beetle has TWO STATIONARY HORNS that curve upward and forward from
+    the beetle's shoulders (pronotum). These horns are part of the body geometry
+    and do NOT rotate with horn pitch/yaw controls.
+    """
+    horn_voxels = []
+
+    # HEAD PIECE - Raised section between horns and body
+    # Creates a 2-voxel thick "head" that the horns attach to
+    # This fills the gap between the horns and makes attachment look natural
+    for dx in [2, 3]:  # 2 voxels forward from front of body
+        for dy in [3, 4, 5]:  # Sticks up above body (height 3-5)
+            for dz in [-3, -2, -1, 0, 1, 2, 3]:  # Spans wider to connect with horn bases at ±4
+                horn_voxels.append((dx, dy, dz))
+
+    # Calculate horn length based on prong_len slider
+    # Scale by 2x to make horns longer, but still add gradually
+    # prong_len=5 → 10 segments, prong_len=10 → 20 segments
+    horn_length = int(prong_len * 2)  # 2x scaling for longer horns
+
+    # LEFT PRONOTUM HORN
+    for i in range(horn_length):
+        # Forward and upward arc
+        dx = 3 + i  # Forward from front of body
+        # Parabolic upward curve: y = base + linear_component + quadratic_component
+        # Raised by +1 voxel (changed from 4 to 5)
+        # Increased linear component from 0.5 to 0.67 for ~10° steeper angle
+        dy = 5 + int(i * 0.67 + (i * i) * 0.02)
+
+        # Curved lateral spread: starts at -4, curves outward, then back inward at tips
+        # Similar to stag curve but less intense
+        progress = i / float(max(horn_length - 1, 1))  # 0.0 to 1.0
+        # Outward spread peaks at middle (progress=0.5), returns toward center at tips
+        # Increased multiplier from 4.0 to 12.0 for more visible curve
+        lateral_curve = progress * (1.0 - progress) * 12.0  # Peaks at 3.0 when progress=0.5
+        dz = -4 - int(lateral_curve)
+
+        # Keep 2x2 thickness throughout - NO single voxel tips
+        # This prevents floating single voxels and keeps horns solid
+        for dy_off in [0, 1]:
+            for dz_off in [0, -1]:
+                horn_voxels.append((dx, dy + dy_off, dz + dz_off))
+
+    # RIGHT PRONOTUM HORN (mirror of left)
+    for i in range(horn_length):
+        dx = 3 + i
+        # Raised by +1 voxel (changed from 4 to 5)
+        # Increased linear component from 0.5 to 0.67 for ~10° steeper angle
+        dy = 5 + int(i * 0.67 + (i * i) * 0.02)
+
+        # Curved lateral spread (mirrored to positive Z)
+        progress = i / float(max(horn_length - 1, 1))
+        # Increased multiplier from 4.0 to 12.0 for more visible curve
+        lateral_curve = progress * (1.0 - progress) * 12.0
+        dz = 4 + int(lateral_curve)
+
+        # Keep 2x2 thickness throughout - NO single voxel tips
+        for dy_off in [0, 1]:
+            for dz_off in [0, 1]:
+                horn_voxels.append((dx, dy + dy_off, dz + dz_off))
+
+    return horn_voxels
+
+def generate_atlas_cephalic_horn(shaft_len=5):
+    """
+    Generate Atlas beetle movable cephalic (head) horn - the bottom horn
+
+    Args:
+        shaft_len: Horn length parameter (5-10) - controls how long the horn is
+
+    Returns:
+        List of (dx, dy, dz) voxel positions for cephalic horn
+
+    This is the MOVABLE horn that tilts up/down with R/Y keys (pitch control).
+    It projects forward and curves gently upward - used for scooping opponents.
+    Thicker and broader than the pronotum horns (3x3 base vs 2x2).
+    """
+    horn_voxels = []
+
+    # Scale horn length - cephalic horn is 1.3x shaft_len (6-13 voxels)
+    horn_length = int(shaft_len * 1.3)
+
+    # Base attachment point (will be rotated by horn_pitch in rendering)
+    base_x = 3  # Matches horn pivot point
+    base_y = 2  # Slightly raised above body floor
+    base_z = 0  # Centered on midline (no lateral curve)
+
+    for i in range(horn_length):
+        # Forward extension
+        dx = base_x + i
+
+        # Gentle parabolic upward curve (less steep than pronotum horns)
+        # Starts nearly horizontal, gradually curves upward
+        dy = base_y + int(i * 0.4 + (i * i) * 0.04)
+
+        # No lateral curve - stays centered (unlike pronotum horns)
+        dz = base_z
+
+        # Thickness tapering: 3x3 base → 3x2 mid → 2x2 tip
+        # Thicker than pronotum horns for visual distinction
+        if i < 4:
+            # Base section: 3x3 cross-section (thick and robust)
+            for dy_off in [0, 1, 2]:
+                for dz_off in [-1, 0, 1]:
+                    horn_voxels.append((dx, dy + dy_off, dz + dz_off))
+        elif i < 8:
+            # Mid section: 3x2 cross-section (blade-like)
+            for dy_off in [0, 1, 2]:
+                for dz_off in [-1, 0]:
+                    horn_voxels.append((dx, dy + dy_off, dz + dz_off))
+        else:
+            # Tip section: 3x2 cross-section (thicker tip)
+            for dy_off in [0, 1, 2]:
+                for dz_off in [-1, 0]:
+                    horn_voxels.append((dx, dy + dy_off, dz + dz_off))
+
+    return horn_voxels
+
 @ti.kernel
 def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
     """Check if beetle would collide with floor - returns highest floor Y coordinate in WORLD space"""
@@ -2218,7 +2365,11 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         should_rotate = False
         if horn_type_id == 3:  # Scorpion - rotate claws (dx >= 2 AND |dz| > 2 to exclude centered tail)
             should_rotate = body_cache_x[i] >= 2 and abs(local_z) > 2.0
-        elif body_cache_x[i] >= 3:  # Beetles - rotate horns (dx >= 3)
+        elif horn_type_id == 4:  # Atlas - only rotate cephalic horn (centered Z position)
+            # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
+            # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
+            should_rotate = body_cache_x[i] >= 3 and abs(local_z) <= 1.5
+        elif body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
             should_rotate = True
 
         if should_rotate:
@@ -2284,6 +2435,11 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                     pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
                     pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
                 # else: Y >= 8 or near base - top horn stays fixed
+            elif horn_type_id == 4:
+                # ATLAS: Only rotate cephalic horn (centered), pronotum horns (sides) stay fixed
+                # should_rotate already filtered for |Z| <= 1.5, so just apply rotation
+                pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
             else:
                 # STAG/RHINO: Rotate entire horn
                 pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
@@ -2322,6 +2478,12 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                 yawed_x = pitched_x  # X unchanged (axis of rotation)
                 yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
                 yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
+            elif horn_type_id == 4:
+                # ATLAS BEETLE: Apply yaw rotation to cephalic horn (scanning left/right)
+                # Same as rhino - uniform rotation around Y-axis
+                # V/B keys scan the cephalic horn left/right (±15°)
+                yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+                yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
             else:
                 # RHINO BEETLE (horn_type_id == 0): Apply uniform rotation to entire horn
                 yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
@@ -2427,6 +2589,11 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                             is_horn_tip = 1
                         else:
                             is_horn_tip = 0
+                elif horn_type_id == 4:
+                    # Atlas: color tips of both pronotum horns (forward curved sections)
+                    # Horns extend forward, tips are at x >= 11 (last ~3 voxels of each horn)
+                    if body_cache_x[i] >= 11:
+                        is_horn_tip = 1
                 else:
                     # Rhino horn: prongs start around x=8+ (shaft + prongs)
                     # Color tips for x >= 13 (covers just the outer prong sections)
@@ -2656,7 +2823,11 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         should_rotate = False
         if horn_type_id == 3:  # Scorpion - rotate claws (dx >= 2 AND |dz| > 2 to exclude centered tail)
             should_rotate = red_body_cache_x[i] >= 2 and abs(local_z) > 2.0
-        elif red_body_cache_x[i] >= 3:  # Beetles - rotate horns (dx >= 3)
+        elif horn_type_id == 4:  # Atlas - only rotate cephalic horn (centered Z position)
+            # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
+            # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
+            should_rotate = red_body_cache_x[i] >= 3 and abs(local_z) <= 1.5
+        elif red_body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
             should_rotate = True
 
         if should_rotate:
@@ -2722,6 +2893,11 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                     pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
                     pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
                 # else: Y >= 8 or near base - top horn stays fixed
+            elif horn_type_id == 4:
+                # ATLAS: Only rotate cephalic horn (centered), pronotum horns (sides) stay fixed
+                # should_rotate already filtered for |Z| <= 1.5, so just apply rotation
+                pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
             else:
                 # STAG/RHINO: Rotate entire horn
                 pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
@@ -2760,6 +2936,12 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 yawed_x = pitched_x  # X unchanged (axis of rotation)
                 yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
                 yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
+            elif horn_type_id == 4:
+                # ATLAS BEETLE: Apply yaw rotation to cephalic horn (scanning left/right)
+                # Same as rhino - uniform rotation around Y-axis
+                # V/B keys scan the cephalic horn left/right (±15°)
+                yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+                yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
             else:
                 # RHINO BEETLE (horn_type_id == 0): Apply uniform rotation to entire horn
                 yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
@@ -2865,6 +3047,11 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                             is_horn_tip = 1
                         else:
                             is_horn_tip = 0
+                elif horn_type_id == 4:
+                    # Atlas: color tips of both pronotum horns (forward curved sections)
+                    # Horns extend forward, tips are at x >= 11 (last ~3 voxels of each horn)
+                    if red_body_cache_x[i] >= 11:
+                        is_horn_tip = 1
                 else:
                     # Rhino horn: prongs start around x=8+ (shaft + prongs)
                     # Color tips for x >= 13 (covers just the outer prong sections)
@@ -3220,7 +3407,7 @@ def calculate_horn_length(shaft_len, prong_len, horn_type):
     Args:
         shaft_len: Horn shaft length parameter
         prong_len: Horn prong length parameter
-        horn_type: "rhino", "stag", or "hercules"
+        horn_type: "rhino", "stag", "hercules", "scorpion", or "atlas"
     """
     if horn_type == "stag":
         # Stag pincers: shaft is reduced by 2 for pivot, then prong extends
@@ -3229,8 +3416,13 @@ def calculate_horn_length(shaft_len, prong_len, horn_type):
         # Hercules dual-jaw: top horn is shaft_len, bottom horn is prong_len
         # Return the longer top horn length as the reach
         return float(shaft_len)
-    else:  # rhino
+    elif horn_type == "atlas":
+        # Atlas pronotum horns: length based on prong_len only (stationary horns)
+        # 2x scaling for longer horns - each slider tick adds 2 voxels
+        return float(prong_len * 2)
+    else:  # rhino or scorpion
         # Rhino horn: full shaft + prong
+        # Scorpion: shaft controls tail length, prong controls curvature
         return float(shaft_len + prong_len)
 
 # ========== BALL SYSTEM (Beetle Soccer) ==========
@@ -4175,6 +4367,7 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
 def update_debris_particles(dt: ti.f32):
     """Update debris particle physics - position, velocity, lifetime (GPU parallel)"""
     gravity = 20.0  # Gravity acceleration
+    air_drag = 0.96  # Air resistance per frame (0.96 = 4% drag per frame)
 
     # Update all active particles in parallel
     for idx in range(simulation.num_debris[None]):
@@ -4185,8 +4378,12 @@ def update_debris_particles(dt: ti.f32):
         # Age the particle
         simulation.debris_lifetime[idx] -= dt
 
-        # Update physics (gravity + position)
+        # Update physics (gravity + air drag + position)
         simulation.debris_vel[idx].y -= gravity * dt
+
+        # Apply air drag for more natural motion (slows particles over time)
+        simulation.debris_vel[idx] *= air_drag
+
         simulation.debris_pos[idx] += simulation.debris_vel[idx] * dt
 
 @ti.kernel
@@ -4207,35 +4404,51 @@ def cleanup_dead_debris():
     simulation.num_debris[None] = write_idx
 
 @ti.kernel
-def spawn_death_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32, beetle_color: ti.i32):
-    """Dramatic particle burst when beetle dies - optimized"""
-    num_particles = 100  # Optimized count for performance (was 180)
-
+def spawn_death_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
+                                  body_r: ti.f32, body_g: ti.f32, body_b: ti.f32,
+                                  leg_r: ti.f32, leg_g: ti.f32, leg_b: ti.f32,
+                                  stripe_r: ti.f32, stripe_g: ti.f32, stripe_b: ti.f32,
+                                  tip_r: ti.f32, tip_g: ti.f32, tip_b: ti.f32,
+                                  batch_offset: ti.i32, batch_size: ti.i32, total_particles: ti.i32):
+    """Spawn a batch of death explosion particles with adaptive beetle colors - called multiple times for gradual effect"""
     # Pre-compute golden angle constant
     golden_angle = 3.14159 * (1.0 + ti.sqrt(5.0))
 
-    for i in range(num_particles):
-        # Simplified spherical distribution
-        t = (i + 0.5) / num_particles
-        phi = ti.acos(1.0 - 2.0 * t)  # Vertical angle
-        theta = golden_angle * i  # Golden angle for horizontal
+    for batch_idx in range(batch_size):
+        i = batch_offset + batch_idx
+        if i < total_particles:
+            # Simplified spherical distribution
+            t = (i + 0.5) / total_particles
+            phi = ti.acos(1.0 - 2.0 * t)  # Vertical angle
+            theta = golden_angle * i  # Golden angle for horizontal
 
-        # Higher speed to compensate for fewer particles (more spread)
-        speed = 90.0 + ti.random() * 110.0  # 90-200 units/sec - faster burst
+            # 3.12x faster than original (2x * 1.2 * 1.3) for 56% more distance total
+            speed = 140.4 + ti.random() * 171.6  # 140-312 units/sec
 
-        # Convert spherical to Cartesian with upward bias
-        sin_phi = ti.sin(phi)
-        vx = sin_phi * ti.cos(theta) * speed
-        vy = ti.abs(ti.cos(phi)) * speed * 1.5  # Upward bias (1.5x vertical)
-        vz = sin_phi * ti.sin(theta) * speed
+            # Convert spherical to Cartesian with upward bias
+            sin_phi = ti.sin(phi)
+            vx = sin_phi * ti.cos(theta) * speed
+            vy = ti.abs(ti.cos(phi)) * speed * 1.5  # Upward bias (1.5x vertical)
+            vz = sin_phi * ti.sin(theta) * speed
 
-        # Add particle to debris system
-        idx = ti.atomic_add(simulation.num_debris[None], 1)
-        if idx < simulation.MAX_DEBRIS:
-            simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
-            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-            simulation.debris_material[idx] = beetle_color
-            simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.3  # 0.4-0.7 sec - faster cleanup
+            # Sample color from all beetle colors for maximum variety
+            # 55% body, 20% leg, 15% stripe, 10% tip
+            rand = ti.random()
+            particle_color = ti.math.vec3(body_r, body_g, body_b)  # Default to body
+            if rand >= 0.55 and rand < 0.75:
+                particle_color = ti.math.vec3(leg_r, leg_g, leg_b)
+            elif rand >= 0.75 and rand < 0.90:
+                particle_color = ti.math.vec3(stripe_r, stripe_g, stripe_b)
+            elif rand >= 0.90:
+                particle_color = ti.math.vec3(tip_r, tip_g, tip_b)
+
+            # Add particle to debris system
+            idx = ti.atomic_add(simulation.num_debris[None], 1)
+            if idx < simulation.MAX_DEBRIS:
+                simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
+                simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+                simulation.debris_material[idx] = particle_color
+                simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.5  # 0.5-1.0 sec - varied lifetime for more random fade timing
 
 def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_z, engagement_factor):
     """Calculate damping factor based on horn rotation direction (Phase 2: Horn Clipping Prevention)"""
@@ -4696,7 +4909,7 @@ physics_params = {
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
-    "GRAVITY": 20.0,  # Adjustable gravity for testing horn lifting
+    "GRAVITY": 26.0,  # Adjustable gravity (30% stronger: 20.0 * 1.3 = 26.0)
     "SEPARATION_FORCE": 0.6,  # Gradual position separation on collision (reduced from 1.15 for smoother sumo-style resistance)
 
     # Ball physics parameters (tunable via sliders for smooth rolling/bouncing)
@@ -4735,6 +4948,11 @@ previous_stinger_curvature = blue_previous_stinger_curvature
 previous_tail_rotation = blue_previous_tail_rotation
 
 # Ball state now handled by beetle_ball Beetle object (created at line ~318)
+
+# Warm up death explosion kernel to avoid first-time JIT compilation stutter
+# Call with dummy data during initialization to pre-compile GPU kernel
+spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 1)
+print("Death explosion kernel warmed up (pre-compiled)")
 
 while window.running:
     current_time = time.time()
@@ -4805,6 +5023,9 @@ while window.running:
             elif beetle_blue.horn_type == "rhino":
                 max_pitch_limit = HORN_MAX_PITCH_RHINO
                 min_pitch_limit = HORN_MIN_PITCH_RHINO
+            elif beetle_blue.horn_type == "atlas":
+                max_pitch_limit = HORN_MAX_PITCH_ATLAS
+                min_pitch_limit = HORN_MIN_PITCH_ATLAS
             else:
                 max_pitch_limit = HORN_MAX_PITCH
                 min_pitch_limit = HORN_MIN_PITCH
@@ -4924,6 +5145,9 @@ while window.running:
             elif beetle_red.horn_type == "rhino":
                 max_pitch_limit = HORN_MAX_PITCH_RHINO
                 min_pitch_limit = HORN_MIN_PITCH_RHINO
+            elif beetle_red.horn_type == "atlas":
+                max_pitch_limit = HORN_MAX_PITCH_ATLAS
+                min_pitch_limit = HORN_MIN_PITCH_ATLAS
             else:
                 max_pitch_limit = HORN_MAX_PITCH
                 min_pitch_limit = HORN_MIN_PITCH
@@ -5047,16 +5271,77 @@ while window.running:
             beetle_red.is_falling = True
             print("RED BEETLE IS FALLING!")
 
-        # Stage 1.5: Death explosion - dramatic particle burst midway through fall
+        # Stage 1.5: Death explosion - gradual particle burst over 0.7 seconds
         EXPLOSION_TRIGGER_Y = -20.0  # Trigger explosion after falling 20 voxels
+        EXPLOSION_DURATION = 0.7  # Spawn particles over 0.7 seconds
+        TOTAL_PARTICLES = 1012  # 50% more than 675 (675 * 1.5 = 1012)
+        PARTICLES_PER_FRAME = int(TOTAL_PARTICLES / (EXPLOSION_DURATION * 60))  # ~24 particles per frame at 60 FPS
+
+        # Blue beetle explosion
         if beetle_blue.is_falling and not beetle_blue.has_exploded and beetle_blue.y < EXPLOSION_TRIGGER_Y:
-            spawn_death_explosion(beetle_blue.x, beetle_blue.y + 21.0, beetle_blue.z, simulation.BEETLE_BLUE)
+            # Start explosion - store position
+            beetle_blue.explosion_pos_x = beetle_blue.x
+            beetle_blue.explosion_pos_y = beetle_blue.y + 21.0
+            beetle_blue.explosion_pos_z = beetle_blue.z
+            beetle_blue.explosion_timer = EXPLOSION_DURATION
             beetle_blue.has_exploded = True
-            print("BLUE BEETLE EXPLODED!")
+            print("BLUE BEETLE EXPLOSION STARTED!")
+
+        # Continue spawning particles during explosion
+        if beetle_blue.has_exploded and beetle_blue.explosion_timer > 0.0:
+            beetle_blue.explosion_timer -= PHYSICS_TIMESTEP
+            # Calculate which batch to spawn
+            progress = 1.0 - (beetle_blue.explosion_timer / EXPLOSION_DURATION)
+            particles_spawned = int(progress * TOTAL_PARTICLES)
+            batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
+            batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
+
+            if batch_size > 0:
+                # Get blue beetle colors from window
+                blue_body = window.blue_body_color
+                blue_leg = window.blue_leg_color
+                blue_stripe = window.blue_stripe_color
+                blue_tip = window.blue_leg_tip_color
+                spawn_death_explosion_batch(beetle_blue.explosion_pos_x, beetle_blue.explosion_pos_y,
+                                           beetle_blue.explosion_pos_z,
+                                           blue_body[0], blue_body[1], blue_body[2],
+                                           blue_leg[0], blue_leg[1], blue_leg[2],
+                                           blue_stripe[0], blue_stripe[1], blue_stripe[2],
+                                           blue_tip[0], blue_tip[1], blue_tip[2],
+                                           batch_offset, batch_size, TOTAL_PARTICLES)
+
+        # Red beetle explosion
         if beetle_red.is_falling and not beetle_red.has_exploded and beetle_red.y < EXPLOSION_TRIGGER_Y:
-            spawn_death_explosion(beetle_red.x, beetle_red.y + 21.0, beetle_red.z, simulation.BEETLE_RED)
+            # Start explosion - store position
+            beetle_red.explosion_pos_x = beetle_red.x
+            beetle_red.explosion_pos_y = beetle_red.y + 21.0
+            beetle_red.explosion_pos_z = beetle_red.z
+            beetle_red.explosion_timer = EXPLOSION_DURATION
             beetle_red.has_exploded = True
-            print("RED BEETLE EXPLODED!")
+            print("RED BEETLE EXPLOSION STARTED!")
+
+        # Continue spawning particles during explosion
+        if beetle_red.has_exploded and beetle_red.explosion_timer > 0.0:
+            beetle_red.explosion_timer -= PHYSICS_TIMESTEP
+            # Calculate which batch to spawn
+            progress = 1.0 - (beetle_red.explosion_timer / EXPLOSION_DURATION)
+            particles_spawned = int(progress * TOTAL_PARTICLES)
+            batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
+            batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
+
+            if batch_size > 0:
+                # Get red beetle colors from window
+                red_body = window.red_body_color
+                red_leg = window.red_leg_color
+                red_stripe = window.red_stripe_color
+                red_tip = window.red_leg_tip_color
+                spawn_death_explosion_batch(beetle_red.explosion_pos_x, beetle_red.explosion_pos_y,
+                                           beetle_red.explosion_pos_z,
+                                           red_body[0], red_body[1], red_body[2],
+                                           red_leg[0], red_leg[1], red_leg[2],
+                                           red_stripe[0], red_stripe[1], red_stripe[2],
+                                           red_tip[0], red_tip[1], red_tip[2],
+                                           batch_offset, batch_size, TOTAL_PARTICLES)
 
         # Stage 2: Full removal - deactivate completely
         if beetle_blue.active and beetle_blue.y < FALL_DEATH_Y:
@@ -5236,9 +5521,9 @@ while window.running:
     clear_dirty_voxels()  # Clear voxels from previous frame (only ~600 voxels)
     reset_dirty_voxels()  # Reset counter for this frame's tracking
 
-    # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion
-    blue_horn_type_id = 1 if blue_horn_type == "stag" else (2 if blue_horn_type == "hercules" else (3 if blue_horn_type == "scorpion" else 0))
-    red_horn_type_id = 1 if red_horn_type == "stag" else (2 if red_horn_type == "hercules" else (3 if red_horn_type == "scorpion" else 0))
+    # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas
+    blue_horn_type_id = 1 if blue_horn_type == "stag" else (2 if blue_horn_type == "hercules" else (3 if blue_horn_type == "scorpion" else (4 if blue_horn_type == "atlas" else 0)))
+    red_horn_type_id = 1 if red_horn_type == "stag" else (2 if red_horn_type == "hercules" else (3 if red_horn_type == "scorpion" else (4 if red_horn_type == "atlas" else 0)))
 
     # Get default horn pitch for blue beetle type
     if blue_horn_type == "scorpion":
@@ -5247,6 +5532,8 @@ while window.running:
         blue_default_horn_pitch = HORN_DEFAULT_PITCH_STAG
     elif blue_horn_type == "hercules":
         blue_default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+    elif blue_horn_type == "atlas":
+        blue_default_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
     else:
         blue_default_horn_pitch = HORN_DEFAULT_PITCH
 
@@ -5257,6 +5544,8 @@ while window.running:
         red_default_horn_pitch = HORN_DEFAULT_PITCH_STAG
     elif red_horn_type == "hercules":
         red_default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+    elif red_horn_type == "atlas":
+        red_default_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
     else:
         red_default_horn_pitch = HORN_DEFAULT_PITCH
 
@@ -5417,8 +5706,10 @@ while window.running:
         blue_button_text = "Blue: STAG (click for HERCULES)"
     elif blue_horn_type == "hercules":
         blue_button_text = "Blue: HERCULES (click for SCORPION)"
-    else:  # scorpion
-        blue_button_text = "Blue: SCORPION (click for RHINO)"
+    elif blue_horn_type == "scorpion":
+        blue_button_text = "Blue: SCORPION (click for ATLAS)"
+    else:  # atlas
+        blue_button_text = "Blue: ATLAS (click for RHINO)"
 
     if window.GUI.button(blue_button_text):
         # Cycle blue beetle horn type
@@ -5428,6 +5719,8 @@ while window.running:
             blue_horn_type = "hercules"
         elif blue_horn_type == "hercules":
             blue_horn_type = "scorpion"
+        elif blue_horn_type == "scorpion":
+            blue_horn_type = "atlas"
         else:
             blue_horn_type = "rhino"
 
@@ -5443,6 +5736,9 @@ while window.running:
         elif blue_horn_type == "hercules":
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+        elif blue_horn_type == "atlas":
+            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
         else:  # rhino
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH
@@ -5540,8 +5836,10 @@ while window.running:
         red_button_text = "Red: STAG (click for HERCULES)"
     elif red_horn_type == "hercules":
         red_button_text = "Red: HERCULES (click for SCORPION)"
-    else:  # scorpion
-        red_button_text = "Red: SCORPION (click for RHINO)"
+    elif red_horn_type == "scorpion":
+        red_button_text = "Red: SCORPION (click for ATLAS)"
+    else:  # atlas
+        red_button_text = "Red: ATLAS (click for RHINO)"
 
     if window.GUI.button(red_button_text):
         # Cycle red beetle horn type
@@ -5551,6 +5849,8 @@ while window.running:
             red_horn_type = "hercules"
         elif red_horn_type == "hercules":
             red_horn_type = "scorpion"
+        elif red_horn_type == "scorpion":
+            red_horn_type = "atlas"
         else:
             red_horn_type = "rhino"
 
@@ -5566,6 +5866,9 @@ while window.running:
         elif red_horn_type == "hercules":
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+        elif red_horn_type == "atlas":
+            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
         else:  # rhino
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH

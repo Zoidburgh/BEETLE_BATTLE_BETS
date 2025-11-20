@@ -13,10 +13,6 @@ DEBRIS = 4
 num_voxels = ti.field(dtype=ti.i32, shape=())
 voxel_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
-# Separate fields for debris (so we can render at different size)
-num_debris = ti.field(dtype=ti.i32, shape=())
-debris_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
-debris_colors = ti.Vector.field(4, dtype=ti.f32, shape=MAX_VOXELS)  # RGBA for alpha transparency
 
 # Projectile rendering (cannonballs)
 num_projectiles_render = ti.field(dtype=ti.i32, shape=())
@@ -113,7 +109,6 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
 def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
     """Extract non-empty voxels into render buffers (runs on GPU) - optimized with static bounding box"""
     count = 0
-    debris_count = 0
 
     # Static bounding box optimization: only scan active arena region
     # X/Z: 2-126 covers arena radius (30) + beetle reach + fully extended horns (32) = ±62 from center
@@ -121,7 +116,8 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
     # Reduction: 2.1M voxels → 1.23M voxels (still ~40% fewer checks)
     for i, j, k in ti.ndrange((2, 126), (1, 100), (2, 126)):
         vtype = voxel_field[i, j, k]
-        if vtype != 0:
+        # Skip empty voxels and debris (debris handled by physics system)
+        if vtype != 0 and vtype != 4:  # Skip DEBRIS type
             # Calculate world position
             world_pos = ti.math.vec3(
                 float(i) - n_grid / 2.0,
@@ -131,51 +127,52 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
             # Get color with metallic sheen
             color = get_voxel_color(vtype, world_pos.x, world_pos.z)
 
-            # Separate debris from normal voxels
-            if vtype == 4:  # DEBRIS
-                idx = ti.atomic_add(debris_count, 1)
-                if idx < MAX_VOXELS:
-                    debris_positions[idx] = world_pos
-                    debris_colors[idx] = ti.Vector([color.x, color.y, color.z, 1.0])  # Add alpha=1.0
-            else:  # Normal voxels (STEEL, CONCRETE, MOLTEN)
-                idx = ti.atomic_add(count, 1)
-                if idx < MAX_VOXELS:
-                    voxel_positions[idx] = world_pos
-                    voxel_colors[idx] = color
+            # Add to voxel buffer
+            idx = ti.atomic_add(count, 1)
+            if idx < MAX_VOXELS:
+                voxel_positions[idx] = world_pos
+                voxel_colors[idx] = color
 
     num_voxels[None] = min(count, MAX_VOXELS)
-    num_debris[None] = min(debris_count, MAX_VOXELS)
 
 @ti.kernel
 def extract_debris_particles():
-    """Extract debris particles from physics simulation (runs on GPU)"""
+    """Extract debris particles from physics simulation and add to voxel buffer (runs on GPU)"""
     # Get number of active debris particles from simulation
-    count = simulation.num_debris[None]
+    debris_count = simulation.num_debris[None]
 
-    # Copy debris particles to render buffers (count is already bounded by MAX_DEBRIS)
-    for idx in range(count):
-        # Get position from physics system
-        debris_pos = simulation.debris_pos[idx]
-        debris_positions[idx] = debris_pos
+    # Get current voxel count to append debris after regular voxels
+    voxel_count = num_voxels[None]
 
-        # Get color based on material type with metallic sheen
-        material_type = simulation.debris_material[idx]
-        base_color = get_voxel_color(material_type, debris_pos.x, debris_pos.z)
+    # Copy debris particles to voxel render buffer (merged rendering for efficiency)
+    for idx in range(debris_count):
+        write_idx = voxel_count + idx
+        if write_idx < MAX_VOXELS:  # Bounds check
+            # Get position from physics system
+            debris_pos = simulation.debris_pos[idx]
+            voxel_positions[write_idx] = debris_pos
 
-        # Calculate alpha transparency fade based on remaining lifetime
-        # Fade to transparent instead of darker for smooth disappearance
-        lifetime = simulation.debris_lifetime[idx]
-        fade_start = 0.25  # Start fading when 0.25 seconds left (optimized for 0.4-0.7s lifetime)
+            # Get color directly from debris (RGB stored per particle for adaptive beetle colors)
+            base_color = simulation.debris_material[idx]
 
-        # Calculate alpha (1.0 = opaque, 0.0 = transparent) and set RGBA
-        if lifetime < fade_start:
-            alpha_value = lifetime / fade_start  # Linear fade from 1.0 to 0.0
-            debris_colors[idx] = ti.Vector([base_color.x, base_color.y, base_color.z, alpha_value])
-        else:
-            debris_colors[idx] = ti.Vector([base_color.x, base_color.y, base_color.z, 1.0])
+            # Calculate alpha fade based on remaining lifetime
+            # Exponential fade - smooth at start, rapid at end for natural disappearance
+            lifetime = simulation.debris_lifetime[idx]
+            fade_start = 0.4  # Start fading when 0.4 seconds left
 
-    # Set debris count for rendering
-    num_debris[None] = count
+            # Exponential fade for smoother visual effect (lerp to background for transparency effect)
+            if lifetime < fade_start:
+                linear_fade = lifetime / fade_start  # 1.0 to 0.0
+                # Square the fade factor for exponential curve (stays visible longer, then fades quickly)
+                alpha = linear_fade * linear_fade
+                # Lerp towards sky/background color (light blue-gray) to simulate transparency
+                bg_color = ti.math.vec3(0.4, 0.5, 0.55)  # Sky color from gradient background
+                voxel_colors[write_idx] = base_color * alpha + bg_color * (1.0 - alpha)
+            else:
+                voxel_colors[write_idx] = base_color
+
+    # Update total voxel count to include debris
+    num_voxels[None] = min(voxel_count + debris_count, MAX_VOXELS)
 
 @ti.kernel
 def extract_projectiles():
@@ -314,7 +311,6 @@ def render(camera, canvas, scene, voxel_field, n_grid):
 
     # Extract voxels from grid (GPU operation)
     num_voxels[None] = 0  # Reset counters
-    num_debris[None] = 0
     num_projectiles_render[None] = 0
     extract_voxels(voxel_field, n_grid)
 
@@ -337,7 +333,8 @@ def render(camera, canvas, scene, voxel_field, n_grid):
     # Lower ambient light for dramatic depth
     scene.ambient_light((0.15, 0.18, 0.16))
 
-    # Render normal voxels (STEEL, CONCRETE, MOLTEN) - balanced radius for smooth yet defined look
+    # Render all voxels (STEEL, CONCRETE, MOLTEN, DEBRIS) in single batched call
+    # Debris particles merged into voxel buffer for better performance
     count = num_voxels[None]
     if count > 0:
         scene.particles(
@@ -345,16 +342,6 @@ def render(camera, canvas, scene, voxel_field, n_grid):
             radius=0.37,
             per_vertex_color=voxel_colors,
             index_count=count
-        )
-
-    # Render debris voxels - visible size for explosions (with smooth color fade)
-    debris_count = num_debris[None]
-    if debris_count > 0:
-        scene.particles(
-            debris_positions,
-            radius=0.35,  # Fixed radius, fade via color intensity
-            per_vertex_color=debris_colors,
-            index_count=debris_count
         )
 
     # Render projectiles (cannonballs) - larger, sphere-like

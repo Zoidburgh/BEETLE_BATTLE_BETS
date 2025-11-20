@@ -12,7 +12,7 @@ MAX_DEBRIS = 20000  # Pre-allocated pool for performance
 num_debris = ti.field(dtype=ti.i32, shape=())  # Active particle count
 debris_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
-debris_material = ti.field(dtype=ti.i32, shape=MAX_DEBRIS)  # Original voxel type
+debris_material = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)  # RGB color (0.0-1.0)
 debris_lifetime = ti.field(dtype=ti.f32, shape=MAX_DEBRIS)  # Time alive (seconds)
 
 # Projectile system (cannonballs)
