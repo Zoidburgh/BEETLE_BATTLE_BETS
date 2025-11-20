@@ -406,17 +406,21 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
 
-                    # Check for hook interior voxels
-                    if voxel == simulation.STAG_HOOK_INTERIOR_BLUE or voxel == simulation.STAG_HOOK_INTERIOR_RED:
+                    # Check for hook interior voxels (stag, rhino, hercules)
+                    if (voxel == simulation.STAG_HOOK_INTERIOR_BLUE or voxel == simulation.STAG_HOOK_INTERIOR_RED or
+                        voxel == simulation.RHINO_PRONG_INTERIOR_BLUE or voxel == simulation.RHINO_PRONG_INTERIOR_RED or
+                        voxel == simulation.HERCULES_HORN_INTERIOR_BLUE or voxel == simulation.HERCULES_HORN_INTERIOR_RED):
                         has_hook_interior = 1
 
                     # Check if voxel belongs to entity 1 (based on color1)
                     belongs_to_1 = 0
-                    if color1 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
-                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
+                    if color1 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18, 20, 22)
+                        if (voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or
+                            voxel == 18 or voxel == 20 or voxel == 22):
                             belongs_to_1 = 1
-                    elif color1 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
-                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
+                    elif color1 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19, 21, 23)
+                        if (voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or
+                            voxel == 19 or voxel == 21 or voxel == 23):
                             belongs_to_1 = 1
                     elif color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
@@ -424,11 +428,13 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
 
                     # Check if voxel belongs to entity 2 (based on color2)
                     belongs_to_2 = 0
-                    if color2 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
-                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
+                    if color2 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18, 20, 22)
+                        if (voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or
+                            voxel == 18 or voxel == 20 or voxel == 22):
                             belongs_to_2 = 1
-                    elif color2 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
-                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
+                    elif color2 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19, 21, 23)
+                        if (voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or
+                            voxel == 19 or voxel == 21 or voxel == 23):
                             belongs_to_2 = 1
                     elif color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
@@ -978,7 +984,15 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
     elif horn_type == "hercules":
         # HERCULES BEETLE HORNS - Vertical dual-jaw pincer system
         hercules_voxels = generate_hercules_horns(horn_shaft_len, horn_prong_len, front_body_height, back_body_height)
-        body_voxels.extend(hercules_voxels)
+        # Extract voxels and hook interior flags (4-tuples: x, y, z, is_hook)
+        for voxel_data in hercules_voxels:
+            if len(voxel_data) == 4:  # New format with hook interior flag
+                x, y, z, is_hook = voxel_data
+                body_voxels.append((x, y, z))
+                hook_interior_flags.append(is_hook)
+            else:  # Old format (backward compatibility)
+                body_voxels.append(voxel_data)
+                hook_interior_flags.append(0)
     else:
         # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
         # Main shaft with overlapping layers
@@ -991,9 +1005,11 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
             for dz in range(-thickness, thickness + 1):
                 # Add voxel at current height
                 body_voxels.append((dx, dy, dz))
+                hook_interior_flags.append(0)  # Shaft is not hook interior
                 # Add overlapping voxel below (unless at bottom)
                 if dy > 1:
                     body_voxels.append((dx, dy - 1, dz))
+                    hook_interior_flags.append(0)
 
         # Y-fork - Left prong with overlapping layers
         prong_segments = round(horn_prong_len)
@@ -1007,10 +1023,15 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
             # Use range(-1, 1) to create 2-voxel width prong on left side
             for dz_offset in range(-1, 1):
                 dz = center_dz + dz_offset
+                # PRONG INTERIOR: inner face (dz_offset closer to 0) of prong tip (skip first 2 voxels)
+                is_prong_interior = (i >= 2) and (dz_offset == 0)  # Inner face facing right prong
+                flag = 1 if is_prong_interior else 0
                 # Add voxel at current height
                 body_voxels.append((dx, dy, dz))
+                hook_interior_flags.append(flag)
                 # Add overlapping voxel below
                 body_voxels.append((dx, dy - 1, dz))
+                hook_interior_flags.append(flag)
 
         # Right prong with overlapping layers
         for i in range(prong_segments):
@@ -1020,10 +1041,15 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
             # Use range(0, 2) to create 2-voxel width prong on right side
             for dz_offset in range(0, 2):
                 dz = center_dz + dz_offset
+                # PRONG INTERIOR: inner face (dz_offset closer to 0) of prong tip (skip first 2 voxels)
+                is_prong_interior = (i >= 2) and (dz_offset == 0)  # Inner face facing left prong
+                flag = 1 if is_prong_interior else 0
                 # Add voxel at current height
                 body_voxels.append((dx, dy, dz))
+                hook_interior_flags.append(flag)
                 # Add overlapping voxel below
                 body_voxels.append((dx, dy - 1, dz))
+                hook_interior_flags.append(flag)
 
     # IMPROVED LEGS (6 for beetles, 8 for scorpion) - Separated for animation
     # Leg order: [front_left, front_right, middle_left, middle_right, rear_left, rear_right, rear2_left*, rear2_right*]
@@ -1678,7 +1704,7 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
         front_body_height: Height of thorax (needed for horn attachment positioning)
         back_body_height: Height of abdomen (needed for proper scaling)
 
-    Returns list of (x, y, z) voxel coordinates for both horns.
+    Returns list of (x, y, z, is_hook_interior) voxel coordinates for both horns.
     Pivot point: (x=3, y=1, z=0) same as other horn types
     """
     horn_voxels = []
@@ -1742,7 +1768,10 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
         for dx_off in [0, 1]:
             for dy_off in [0, 1]:
                 for dz in [-1, 0]:
-                    horn_voxels.append((base_x + dx_off, base_y + dy_off, dz))
+                    # HOOK INTERIOR: bottom face (dy_off == 0) of downward hook section (progress > 0.7)
+                    is_hook_interior = (progress > 0.7) and (dy_off == 0)  # Bottom surface facing bottom horn
+                    flag = 1 if is_hook_interior else 0
+                    horn_voxels.append((base_x + dx_off, base_y + dy_off, dz, flag))
 
     # Fill gap at top horn attachment point (where horn meets body)
     # Minimal attachment - just bridge from thorax to rotated horn base
@@ -1756,7 +1785,7 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
         for attach_y in range(attach_y_start, attach_y_end):
             for attach_x in range(3, 5):  # Just X=3,4 near horn pivot
                 for dz in [-1, 0]:
-                    horn_voxels.append((attach_x, attach_y, dz))
+                    horn_voxels.append((attach_x, attach_y, dz, 0))  # Not hook interior
 
     # BOTTOM HORN (Cephalic - lower jaw from head)
     # Clean, smooth upward curve from below head to meet top horn
@@ -1775,6 +1804,8 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
     pivot_y = 1.0
 
     for i in range(actual_bottom_len):
+        progress = i / float(actual_bottom_len) if actual_bottom_len > 0 else 0.0
+
         # Generate initial position
         dx = 3 + i  # Extends forward from pivot
 
@@ -1803,7 +1834,10 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
         for dx_off in [0, 1]:
             for dy_off in [0, 1]:
                 for dz in [-1, 0]:
-                    horn_voxels.append((base_x + dx_off, base_y + dy_off, dz))
+                    # HOOK INTERIOR: top face (dy_off == 1) of tip section (last 40% of horn)
+                    is_hook_interior = (progress > 0.6) and (dy_off == 1)  # Top surface facing top horn
+                    flag = 1 if is_hook_interior else 0
+                    horn_voxels.append((base_x + dx_off, base_y + dy_off, dz, flag))
 
     return horn_voxels
 
@@ -2433,14 +2467,19 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                 # Use appropriate color: hook interior > horn tip > stripe > body color
                 voxel_color = body_color
 
-                # Check if this is a hook interior voxel (only for stag beetles)
+                # Check if this is a hook interior voxel (for stag, rhino, or hercules beetles)
                 is_hook_interior = 0
-                if horn_type_id == 1 and i < blue_body_cache_size[None]:
+                if i < blue_body_cache_size[None]:
                     is_hook_interior = blue_body_hook_flags[i]
 
                 if is_hook_interior == 1:
-                    # Hook interior voxels use special type
-                    voxel_color = simulation.STAG_HOOK_INTERIOR_BLUE
+                    # Hook interior voxels use special type based on horn type
+                    if horn_type_id == 1:  # Stag
+                        voxel_color = simulation.STAG_HOOK_INTERIOR_BLUE
+                    elif horn_type_id == 0:  # Rhino
+                        voxel_color = simulation.RHINO_PRONG_INTERIOR_BLUE
+                    elif horn_type_id == 2:  # Hercules
+                        voxel_color = simulation.HERCULES_HORN_INTERIOR_BLUE
                 elif is_horn_tip == 1:
                     # For scorpion, check if this is the VERY tip (dark) or regular tip (bright)
                     is_very_tip = 0
@@ -2871,14 +2910,19 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 # Use appropriate color: hook interior > horn tip > stripe > body color
                 voxel_color = body_color
 
-                # Check if this is a hook interior voxel (only for stag beetles)
+                # Check if this is a hook interior voxel (for stag, rhino, or hercules beetles)
                 is_hook_interior = 0
-                if horn_type_id == 1 and i < red_body_cache_size[None]:
+                if i < red_body_cache_size[None]:
                     is_hook_interior = red_body_hook_flags[i]
 
                 if is_hook_interior == 1:
-                    # Hook interior voxels use special type
-                    voxel_color = simulation.STAG_HOOK_INTERIOR_RED
+                    # Hook interior voxels use special type based on horn type
+                    if horn_type_id == 1:  # Stag
+                        voxel_color = simulation.STAG_HOOK_INTERIOR_RED
+                    elif horn_type_id == 0:  # Rhino
+                        voxel_color = simulation.RHINO_PRONG_INTERIOR_RED
+                    elif horn_type_id == 2:  # Hercules
+                        voxel_color = simulation.HERCULES_HORN_INTERIOR_RED
                 elif is_horn_tip == 1:
                     # For scorpion, check if this is the VERY tip (dark) or regular tip (bright)
                     is_very_tip = 0
@@ -3092,7 +3136,9 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                    vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
                    vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
                    vtype == simulation.STINGER_TIP_BLACK or \
-                   vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                   vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
+                   vtype == simulation.RHINO_PRONG_INTERIOR_BLUE or vtype == simulation.RHINO_PRONG_INTERIOR_RED or \
+                   vtype == simulation.HERCULES_HORN_INTERIOR_BLUE or vtype == simulation.HERCULES_HORN_INTERIOR_RED:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
     # === BEETLE 2 BOUNDING BOX ===
@@ -3118,7 +3164,9 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                    vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
                    vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
                    vtype == simulation.STINGER_TIP_BLACK or \
-                   vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                   vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
+                   vtype == simulation.RHINO_PRONG_INTERIOR_BLUE or vtype == simulation.RHINO_PRONG_INTERIOR_RED or \
+                   vtype == simulation.HERCULES_HORN_INTERIOR_BLUE or vtype == simulation.HERCULES_HORN_INTERIOR_RED:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 @ti.kernel
@@ -3200,8 +3248,10 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                            vtype == simulation.STINGER_TIP_BLACK:
                             collision_has_horn_tips[None] = 1
 
-                        # Check if this is a hook interior voxel
-                        if vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                        # Check if this is a hook interior voxel (stag, rhino, hercules)
+                        if (vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED or
+                            vtype == simulation.RHINO_PRONG_INTERIOR_BLUE or vtype == simulation.RHINO_PRONG_INTERIOR_RED or
+                            vtype == simulation.HERCULES_HORN_INTERIOR_BLUE or vtype == simulation.HERCULES_HORN_INTERIOR_RED):
                             collision_has_hook_interiors[None] = 1
 
                         # Accumulate collision position

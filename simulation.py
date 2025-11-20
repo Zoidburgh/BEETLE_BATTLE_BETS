@@ -47,6 +47,10 @@ BALL = 16  # Soccer ball (bright orange/yellow)
 BALL_STRIPE = 17  # Soccer ball stripe pattern (darker for contrast)
 STAG_HOOK_INTERIOR_BLUE = 18  # Blue beetle stag hook interior (curved inward section)
 STAG_HOOK_INTERIOR_RED = 19  # Red beetle stag hook interior (curved inward section)
+RHINO_PRONG_INTERIOR_BLUE = 20  # Blue beetle rhino prong interior (Y-fork inner faces)
+RHINO_PRONG_INTERIOR_RED = 21  # Red beetle rhino prong interior (Y-fork inner faces)
+HERCULES_HORN_INTERIOR_BLUE = 22  # Blue beetle hercules horn interior (pincer inner faces)
+HERCULES_HORN_INTERIOR_RED = 23  # Red beetle hercules horn interior (pincer inner faces)
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors
