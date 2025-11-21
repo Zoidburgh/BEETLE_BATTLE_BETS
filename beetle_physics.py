@@ -8,6 +8,7 @@ import simulation
 import renderer
 import time
 import math
+import random
 
 # Physics constants
 BEETLE_RADIUS = 16.0  # Back to original scale - lean and mean
@@ -35,7 +36,7 @@ HORN_DEFAULT_PITCH_HERCULES = math.radians(15)  # Start at +15 degrees (jaws sli
 HORN_DEFAULT_PITCH_SCORPION = math.radians(20)  # Start at +20 degrees (raised) - for scorpion claws
 HORN_DEFAULT_PITCH_ATLAS = math.radians(-33)  # Start at -33 degrees (angled down toward ground) - for atlas beetle
 HORN_MAX_PITCH = math.radians(40)  # +40 degrees vertical (up) - increased by 10° for stag pincers
-HORN_MIN_PITCH = math.radians(-5)  # -5 degrees vertical (down) - reduced downward by 5° for stag pincers
+HORN_MIN_PITCH = math.radians(5)  # +5 degrees vertical (down) - reduced downward by 15° total for stag pincers
 # Rhino-specific limits (shifted 5° higher to keep horn from going too low)
 HORN_MAX_PITCH_RHINO = math.radians(35)  # +35 degrees vertical (up) - 5° more than default 30°
 HORN_MIN_PITCH_RHINO = math.radians(-5)  # -5 degrees vertical (down) - 5° less downward than default -10°
@@ -1643,17 +1644,17 @@ def generate_stag_pincers(shaft_length, curve_length):
 
     Args:
         shaft_length: Length of straight horizontal segment close to body
-        curve_length: Additional length extending straight outward (no curve)
+        curve_length: Additional length extending straight outward with upward curve
 
     Returns list of (x, y, z) voxel coordinates for both pincers.
     Pivot point: (x=3, y=1, z=0) same as rhinoceros horn
-    Straight horizontal prongs angled 20° inward
+    Straight prongs angled 20° inward with upward curve similar to Hercules horn
     """
     pincer_voxels = []
 
     # Convert to int for voxel generation
     shaft_length = round(shaft_length)
-    prong_length = round(curve_length)  # Now just extends straight
+    prong_length = round(curve_length)
 
     total_length = shaft_length + prong_length
 
@@ -1661,10 +1662,18 @@ def generate_stag_pincers(shaft_length, curve_length):
     # Each voxel forward adds 0.36 voxels sideways instead of 1.0
     inward_factor = 0.36
 
-    # LEFT PINCER (angled 20° inward from pure -Z direction)
+    # LEFT PINCER (angled 20° inward from pure -Z direction with upward curve)
     for i in range(total_length):
+        # Calculate progress along pincer for upward curve
+        progress = i / float(total_length) if total_length > 0 else 0.0
+
         dx = 3 + i  # Extends forward
-        dy = 1  # Horizontal
+
+        # Upward curve: simple rising arc using quadratic progression
+        base_height = 1
+        upward_curve = int(progress * progress * total_length * 0.3)  # Gentle quadratic upward curve
+        dy = base_height + upward_curve
+
         dz = -int(i * inward_factor) - 1  # Extends left at 20° angle instead of 90°
 
         # Make it 2-3 voxels thick for solidity
@@ -1672,10 +1681,18 @@ def generate_stag_pincers(shaft_length, curve_length):
             for dz_offset in range(-1, 1):  # Add some width
                 pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular)
 
-    # RIGHT PINCER (angled 20° inward from pure +Z direction)
+    # RIGHT PINCER (angled 20° inward from pure +Z direction with upward curve)
     for i in range(total_length):
+        # Calculate progress along pincer for upward curve
+        progress = i / float(total_length) if total_length > 0 else 0.0
+
         dx = 3 + i  # Extends forward
-        dy = 1  # Horizontal
+
+        # Upward curve: simple rising arc using quadratic progression
+        base_height = 1
+        upward_curve = int(progress * progress * total_length * 0.3)  # Gentle quadratic upward curve
+        dy = base_height + upward_curve
+
         dz = int(i * inward_factor) + 1  # Extends right at 20° angle instead of 90°
 
         # Make it 2-3 voxels thick for solidity
@@ -5778,6 +5795,16 @@ while window.running:
     new_blue_body_width = window.GUI.slider_int("Blue Body Width", window.blue_body_width_value, 5, 9)
     new_blue_leg_length = window.GUI.slider_int("Blue Leg Length", window.blue_leg_length_value, 6, 10)
 
+    # Random blue beetle button
+    if window.GUI.button("Randomize Blue Beetle"):
+        new_blue_shaft = random.randint(5, 12)
+        new_blue_prong = random.randint(3, 6)
+        new_blue_back_body = random.randint(4, 8)
+        new_blue_body_length = random.randint(9, 14)
+        new_blue_body_width = random.randint(5, 9)
+        new_blue_leg_length = random.randint(6, 10)
+        print(f"Randomized blue beetle: shaft={new_blue_shaft}, prong={new_blue_prong}, back={new_blue_back_body}, length={new_blue_body_length}, width={new_blue_body_width}, legs={new_blue_leg_length}")
+
     # Rebuild blue beetle geometry if sliders changed OR if scorpion tail curvature changed
     if (new_blue_shaft != window.blue_horn_shaft_value or new_blue_prong != window.blue_horn_prong_value or
         new_blue_back_body != window.blue_back_body_height_value or new_blue_body_length != window.blue_body_length_value or
@@ -5907,6 +5934,16 @@ while window.running:
     new_red_body_length = window.GUI.slider_int("Red Body Length", window.red_body_length_value, 9, 14)
     new_red_body_width = window.GUI.slider_int("Red Body Width", window.red_body_width_value, 5, 9)
     new_red_leg_length = window.GUI.slider_int("Red Leg Length", window.red_leg_length_value, 6, 10)
+
+    # Random red beetle button
+    if window.GUI.button("Randomize Red Beetle"):
+        new_red_shaft = random.randint(5, 12)
+        new_red_prong = random.randint(3, 6)
+        new_red_back_body = random.randint(4, 8)
+        new_red_body_length = random.randint(9, 14)
+        new_red_body_width = random.randint(5, 9)
+        new_red_leg_length = random.randint(6, 10)
+        print(f"Randomized red beetle: shaft={new_red_shaft}, prong={new_red_prong}, back={new_red_back_body}, length={new_red_body_length}, width={new_red_body_width}, legs={new_red_leg_length}")
 
     # Rebuild red beetle geometry if sliders changed OR if scorpion tail curvature changed
     if (new_red_shaft != window.red_horn_shaft_value or new_red_prong != window.red_horn_prong_value or
