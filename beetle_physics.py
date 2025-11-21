@@ -906,10 +906,17 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
             dy_base = 2 + (i // 2)  # Rises from 2 to 4
             dz_base = -(i + 2)  # Extends leftward
 
-            # 2x2 cross-section for thick arms (less bulky than 3x3)
-            for dy_off in range(0, 2):
-                for dz_off in range(0, 2):
-                    body_voxels.append((dx, dy_base + dy_off, dz_base - dz_off))
+            # Thicker 3x3 cross-section near body (first 3 segments), then taper to 2x2
+            if i < 3:
+                # 3x3 cross-section for thick base segments attached to body
+                for dy_off in range(-1, 2):
+                    for dz_off in range(-1, 2):
+                        body_voxels.append((dx, dy_base + dy_off + 1, dz_base - dz_off))
+            else:
+                # 2x2 cross-section for remaining arm segments
+                for dy_off in range(0, 2):
+                    for dz_off in range(0, 2):
+                        body_voxels.append((dx, dy_base + dy_off, dz_base - dz_off))
 
         # Left claw - dense curved pincers at end of arm
         claw_base_x = 2 + arm_length
@@ -956,10 +963,17 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
             dy_base = 2 + (i // 2)
             dz_base = (i + 2)  # Extends rightward
 
-            # 2x2 cross-section for thick arms (less bulky than 3x3)
-            for dy_off in range(0, 2):
-                for dz_off in range(0, 2):
-                    body_voxels.append((dx, dy_base + dy_off, dz_base + dz_off))
+            # Thicker 3x3 cross-section near body (first 3 segments), then taper to 2x2
+            if i < 3:
+                # 3x3 cross-section for thick base segments attached to body
+                for dy_off in range(-1, 2):
+                    for dz_off in range(-1, 2):
+                        body_voxels.append((dx, dy_base + dy_off + 1, dz_base + dz_off))
+            else:
+                # 2x2 cross-section for remaining arm segments
+                for dy_off in range(0, 2):
+                    for dz_off in range(0, 2):
+                        body_voxels.append((dx, dy_base + dy_off, dz_base + dz_off))
 
         # Right claw - mirror the left claw
         claw_base_z_right = (arm_length + 2)
