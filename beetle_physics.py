@@ -132,6 +132,9 @@ class Beetle:
         self.is_moving = False  # Whether beetle is actively walking
         self.is_rotating_only = False  # True when rotating without forward movement
         self.rotation_direction = 0  # -1 = left, 0 = none, 1 = right
+        self.is_completing_animation = False  # True when finishing walk cycle after input stops
+        self.target_walk_phase = 0.0  # Target neutral phase (0 or π) for animation completion
+        self.completion_speed = 5.0  # Speed multiplier for completing animation (rad/s)
 
         # Smoothed collision normal for stable contact resolution
         self.contact_normal_x = 0.0  # Filtered collision normal X component
@@ -5581,6 +5584,8 @@ while window.running:
     # Check if rotating without moving forward/backward
     if blue_rotating and not blue_moving:
         # Rotation-only animation (use constant rotation speed)
+        # Cancel animation completion if player resumes input
+        beetle_blue.is_completing_animation = False
         # When in air: 30% faster than ground, on ground: normal turning speed
         if beetle_blue.is_lifted_high:
             rotation_animation_speed = 13.5 * 1.3  # 30% faster than ground turning speed
@@ -5596,12 +5601,47 @@ while window.running:
         else:
             beetle_blue.rotation_direction = 1   # Turning right
     elif blue_speed > 0.5:  # Normal forward/backward movement
+        # Cancel animation completion if player resumes input
+        beetle_blue.is_completing_animation = False
         beetle_blue.walk_phase += blue_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
         beetle_blue.is_moving = True
         beetle_blue.is_rotating_only = False
         beetle_blue.rotation_direction = 0
     else:
+        # No input - check if we need to complete the animation cycle
+        current_phase_normalized = beetle_blue.walk_phase % (2 * math.pi)
+
+        # Find nearest neutral position (0 or π)
+        if current_phase_normalized < math.pi * 0.5:
+            beetle_blue.target_walk_phase = 0.0
+        elif current_phase_normalized < math.pi * 1.5:
+            beetle_blue.target_walk_phase = math.pi
+        else:
+            beetle_blue.target_walk_phase = 2 * math.pi
+
+        # Calculate distance to target
+        phase_diff = abs(current_phase_normalized - (beetle_blue.target_walk_phase % (2 * math.pi)))
+
+        # If very close to neutral, snap immediately
+        if phase_diff < 0.3:  # Within ~17 degrees, just snap
+            beetle_blue.walk_phase = beetle_blue.target_walk_phase
+            beetle_blue.is_completing_animation = False
+        elif phase_diff > 0.1:  # Far enough that we need to animate
+            # Advance toward target neutral position
+            advance_amount = beetle_blue.completion_speed * WALK_CYCLE_SPEED * frame_dt
+            # Don't overshoot - clamp to remaining distance
+            if advance_amount > phase_diff:
+                beetle_blue.walk_phase = beetle_blue.target_walk_phase
+                beetle_blue.is_completing_animation = False
+            else:
+                beetle_blue.walk_phase += advance_amount
+                beetle_blue.is_completing_animation = True
+        else:
+            # Already at neutral
+            beetle_blue.is_completing_animation = False
+
+        beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
         beetle_blue.is_moving = False
         beetle_blue.is_rotating_only = False
         beetle_blue.rotation_direction = 0
@@ -5614,6 +5654,8 @@ while window.running:
     # Check if rotating without moving forward/backward
     if red_rotating and not red_moving:
         # Rotation-only animation (use constant rotation speed)
+        # Cancel animation completion if player resumes input
+        beetle_red.is_completing_animation = False
         # When in air: 30% faster than ground, on ground: normal turning speed
         if beetle_red.is_lifted_high:
             rotation_animation_speed = 13.5 * 1.3  # 30% faster than ground turning speed
@@ -5629,12 +5671,47 @@ while window.running:
         else:
             beetle_red.rotation_direction = 1   # Turning right
     elif red_speed > 0.5:  # Normal forward/backward movement
+        # Cancel animation completion if player resumes input
+        beetle_red.is_completing_animation = False
         beetle_red.walk_phase += red_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
         beetle_red.is_moving = True
         beetle_red.is_rotating_only = False
         beetle_red.rotation_direction = 0
     else:
+        # No input - check if we need to complete the animation cycle
+        current_phase_normalized = beetle_red.walk_phase % (2 * math.pi)
+
+        # Find nearest neutral position (0 or π)
+        if current_phase_normalized < math.pi * 0.5:
+            beetle_red.target_walk_phase = 0.0
+        elif current_phase_normalized < math.pi * 1.5:
+            beetle_red.target_walk_phase = math.pi
+        else:
+            beetle_red.target_walk_phase = 2 * math.pi
+
+        # Calculate distance to target
+        phase_diff = abs(current_phase_normalized - (beetle_red.target_walk_phase % (2 * math.pi)))
+
+        # If very close to neutral, snap immediately
+        if phase_diff < 0.3:  # Within ~17 degrees, just snap
+            beetle_red.walk_phase = beetle_red.target_walk_phase
+            beetle_red.is_completing_animation = False
+        elif phase_diff > 0.1:  # Far enough that we need to animate
+            # Advance toward target neutral position
+            advance_amount = beetle_red.completion_speed * WALK_CYCLE_SPEED * frame_dt
+            # Don't overshoot - clamp to remaining distance
+            if advance_amount > phase_diff:
+                beetle_red.walk_phase = beetle_red.target_walk_phase
+                beetle_red.is_completing_animation = False
+            else:
+                beetle_red.walk_phase += advance_amount
+                beetle_red.is_completing_animation = True
+        else:
+            # Already at neutral
+            beetle_red.is_completing_animation = False
+
+        beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
         beetle_red.is_moving = False
         beetle_red.is_rotating_only = False
         beetle_red.rotation_direction = 0
