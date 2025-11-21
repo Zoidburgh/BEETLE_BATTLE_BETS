@@ -1643,75 +1643,45 @@ def generate_stag_pincers(shaft_length, curve_length):
 
     Args:
         shaft_length: Length of straight horizontal segment close to body
-        curve_length: Length of curved inward segment at tips
+        curve_length: Additional length extending straight outward (no curve)
 
     Returns list of (x, y, z) voxel coordinates for both pincers.
     Pivot point: (x=3, y=1, z=0) same as rhinoceros horn
-    Angled 10° upward from horizontal
+    Straight horizontal prongs angled 20° inward
     """
     pincer_voxels = []
 
     # Convert to int for voxel generation
     shaft_length = round(shaft_length)
-    curve_length = round(curve_length)
+    prong_length = round(curve_length)  # Now just extends straight
 
-    # LEFT PINCER (extends in -Z direction, curves inward toward +Z)
-    # Straight shaft section extending left, angled 10° upward
-    for i in range(shaft_length):
+    total_length = shaft_length + prong_length
+
+    # 20 degrees inward = reduce lateral spread by ~36% (tan(20°) ≈ 0.36)
+    # Each voxel forward adds 0.36 voxels sideways instead of 1.0
+    inward_factor = 0.36
+
+    # LEFT PINCER (angled 20° inward from pure -Z direction)
+    for i in range(total_length):
         dx = 3 + i  # Extends forward
-        dy = 1  # Horizontal (0° angle, no upward tilt)
-        dz = -i - 1 # Extends left (-Z direction), offset by -1 to avoid center overlap
+        dy = 1  # Horizontal
+        dz = -int(i * inward_factor) - 1  # Extends left at 20° angle instead of 90°
 
         # Make it 2-3 voxels thick for solidity
         for dy_offset in range(2):  # Add vertical thickness
             for dz_offset in range(-1, 1):  # Add some width
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular shaft)
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular)
 
-    # Curved tip section (curves inward)
-    curve_start_x = 3 + shaft_length
-    curve_start_z = -shaft_length - 1  # Match the offset
-    base_height = 1  # Horizontal (0° angle, no upward tilt)
-    for i in range(curve_length):
-        dx = curve_start_x + i
-        dy = base_height  # Horizontal (no upward tilt)
-        dz = curve_start_z + int(i * 0.36)  # Curves back toward center at 110° angle (+Z direction)
-
-        # Maintain thickness
-        for dy_offset in range(2):
-            for dz_offset in range(-1, 1):
-                # HOOK INTERIOR: inner face (dz_offset >= 0) of curved section (skip first 2 voxels)
-                is_hook_interior = (i >= 2) and (dz_offset >= 0)
-                flag = 1 if is_hook_interior else 0
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, flag))
-
-    # RIGHT PINCER (extends in +Z direction, curves inward toward -Z)
-    # Straight shaft section extending right, angled 10° upward
-    for i in range(shaft_length):
+    # RIGHT PINCER (angled 20° inward from pure +Z direction)
+    for i in range(total_length):
         dx = 3 + i  # Extends forward
-        dy = 1  # Horizontal (0° angle, no upward tilt)
-        dz = i + 1  # Extends right (+Z direction), offset by +1 to avoid center overlap
+        dy = 1  # Horizontal
+        dz = int(i * inward_factor) + 1  # Extends right at 20° angle instead of 90°
 
         # Make it 2-3 voxels thick for solidity
         for dy_offset in range(2):
             for dz_offset in range(-1, 1):
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular shaft)
-
-    # Curved tip section (curves inward)
-    curve_start_x = 3 + shaft_length
-    curve_start_z = shaft_length + 1  # Match the offset
-    base_height = 1  # Horizontal (0° angle, no upward tilt)
-    for i in range(curve_length):
-        dx = curve_start_x + i
-        dy = base_height  # Horizontal (no upward tilt)
-        dz = curve_start_z - int(i * 0.36)  # Curves back toward center at 110° angle (-Z direction)
-
-        # Maintain thickness
-        for dy_offset in range(2):
-            for dz_offset in range(-1, 1):
-                # HOOK INTERIOR: inner face (dz_offset <= 0) of curved section (skip first 2 voxels)
-                is_hook_interior = (i >= 2) and (dz_offset <= 0)
-                flag = 1 if is_hook_interior else 0
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, flag))
+                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular)
 
     return pincer_voxels
 
@@ -2727,7 +2697,8 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
         if is_lifted_high == 1:
             # High-frequency wiggle with per-leg variation for chaos
-            wiggle_freq = 5.0  # Slowed down 3x (was 15.0)
+            # Slower wiggle when rotating only (to prevent excessive speed appearance)
+            wiggle_freq = 1.5 if is_rotating_only == 1 else 5.0
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
             # Add erratic movement to lift and sweep
@@ -3204,7 +3175,8 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
         if is_lifted_high == 1:
             # High-frequency wiggle with per-leg variation for chaos
-            wiggle_freq = 5.0  # Slowed down 3x (was 15.0)
+            # Slower wiggle when rotating only (to prevent excessive speed appearance)
+            wiggle_freq = 1.5 if is_rotating_only == 1 else 5.0
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
             # Add erratic movement to lift and sweep
@@ -5592,8 +5564,11 @@ while window.running:
     # Check if rotating without moving forward/backward
     if blue_rotating and not blue_moving:
         # Rotation-only animation (use constant rotation speed)
-        # Use ROTATION_SPEED constant for animation phase
-        rotation_animation_speed = 13.5  # 2x faster than 6.75
+        # When in air: 30% faster than ground, on ground: normal turning speed
+        if beetle_blue.is_lifted_high:
+            rotation_animation_speed = 13.5 * 1.3  # 30% faster than ground turning speed
+        else:
+            rotation_animation_speed = 13.5  # Normal ground turning speed
         beetle_blue.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
         beetle_blue.is_moving = True
@@ -5622,7 +5597,11 @@ while window.running:
     # Check if rotating without moving forward/backward
     if red_rotating and not red_moving:
         # Rotation-only animation (use constant rotation speed)
-        rotation_animation_speed = 13.5  # 2x faster than 6.75
+        # When in air: 30% faster than ground, on ground: normal turning speed
+        if beetle_red.is_lifted_high:
+            rotation_animation_speed = 13.5 * 1.3  # 30% faster than ground turning speed
+        else:
+            rotation_animation_speed = 13.5  # Normal ground turning speed
         beetle_red.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
         beetle_red.is_moving = True
