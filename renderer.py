@@ -114,10 +114,14 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
     # X/Z: 2-126 covers arena radius (30) + beetle reach + fully extended horns (32) = ±62 from center
     # Y: 1-100 covers falling (-32) to max velocity throws (+20) + scorpion tail reach (+23) with Y_OFFSET=33
     # Reduction: 2.1M voxels → 1.23M voxels (still ~40% fewer checks)
+    # Use ti.static for compile-time constants (small performance boost)
+    EMPTY = ti.static(0)
+    DEBRIS = ti.static(4)
+
     for i, j, k in ti.ndrange((2, 126), (1, 100), (2, 126)):
         vtype = voxel_field[i, j, k]
         # Skip empty voxels and debris (debris handled by physics system)
-        if vtype != 0 and vtype != 4:  # Skip DEBRIS type
+        if vtype != EMPTY and vtype != DEBRIS:
             # Calculate world position
             world_pos = ti.math.vec3(
                 float(i) - n_grid / 2.0,

@@ -72,6 +72,9 @@ HORN_DAMPING_DECAY_RATE = 5.0 # Damping decay rate when no contact (per second)
 HORN_ENGAGEMENT_CONTACT_THRESHOLD = 20.0  # Voxel count for full engagement
 HORN_ENGAGEMENT_HEIGHT_WEIGHT = 0.4  # Weight of height vs contact count (0-1)
 
+# Collision normal smoothing (reduces jitter during sustained collisions)
+COLLISION_NORMAL_SMOOTHING = 0.3  # 30% blend per frame (0-1, higher = faster response, lower = smoother)
+
 # Body rotation damping constants (Phase 3: Directional Rotation Prevention)
 BODY_ROTATION_DAMPING_STRENGTH = 0.95  # 95% damping (5% speed) when rotating into spin direction
 BODY_ROTATION_DAMPING_DECAY = 2.0      # Decay rate per second (~0.5s duration at full strength)
@@ -128,6 +131,10 @@ class Beetle:
         self.is_moving = False  # Whether beetle is actively walking
         self.is_rotating_only = False  # True when rotating without forward movement
         self.rotation_direction = 0  # -1 = left, 0 = none, 1 = right
+
+        # Smoothed collision normal for stable contact resolution
+        self.contact_normal_x = 0.0  # Filtered collision normal X component
+        self.contact_normal_z = 0.0  # Filtered collision normal Z component
 
         # Horn control state
         self.horn_pitch = HORN_DEFAULT_PITCH  # Vertical angle in radians - starts at +10°
@@ -4569,14 +4576,26 @@ def beetle_collision(b1, b2, params):
             dist_3d = math.sqrt(dx**2 + dy**2 + dz**2)
 
             if dist_3d > 0.001:
-                normal_x = dx / dist_3d
-                normal_y = dy / dist_3d
-                normal_z = dz / dist_3d
+                instant_normal_x = dx / dist_3d
+                instant_normal_y = dy / dist_3d
+                instant_normal_z = dz / dist_3d
             else:
                 # Fallback to horizontal normal
-                normal_x = dx / dist
-                normal_y = 0.0
-                normal_z = dz / dist
+                instant_normal_x = dx / dist
+                instant_normal_y = 0.0
+                instant_normal_z = dz / dist
+
+            # Apply exponential moving average to smooth collision normal (reduces jitter)
+            # This prevents rapid oscillation when beetles are locked horn-to-horn
+            b1.contact_normal_x += (instant_normal_x - b1.contact_normal_x) * COLLISION_NORMAL_SMOOTHING
+            b1.contact_normal_z += (instant_normal_z - b1.contact_normal_z) * COLLISION_NORMAL_SMOOTHING
+            b2.contact_normal_x += (-instant_normal_x - b2.contact_normal_x) * COLLISION_NORMAL_SMOOTHING
+            b2.contact_normal_z += (-instant_normal_z - b2.contact_normal_z) * COLLISION_NORMAL_SMOOTHING
+
+            # Use smoothed horizontal normal for separation forces (keeps vertical instant for horn leverage)
+            normal_x = b1.contact_normal_x
+            normal_y = instant_normal_y  # Keep instant vertical for responsive horn lift
+            normal_z = b1.contact_normal_z
 
             # HORN LEVERAGE: Strong vertical lift when contact is high (horn collision)
             # SKIP HORN PHYSICS FOR BALL COLLISIONS - ball needs gentle rolling, not combat lifts
@@ -4887,6 +4906,12 @@ def beetle_collision(b1, b2, params):
                 b2.collision_spin_direction = 1 if b2.angular_velocity > 0 else -1
                 # Apply full damping strength on any significant collision
                 b2.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
+    else:
+        # No collision - reset smoothed collision normals
+        b1.contact_normal_x = 0.0
+        b1.contact_normal_z = 0.0
+        b2.contact_normal_x = 0.0
+        b2.contact_normal_z = 0.0
 
 def normalize_angle(angle):
     """Normalize angle to [0, 2π)"""
@@ -4908,7 +4933,7 @@ def shortest_rotation(current, target):
     return diff
 
 # Window
-window = ti.ui.Window("Beetle Physics", (1920, 1080), vsync=False)
+window = ti.ui.Window("Beetle Physics", (1920, 1080), vsync=True)
 canvas = window.get_canvas()
 scene = window.get_scene()
 
@@ -4950,7 +4975,7 @@ physics_params = {
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
     "GRAVITY": 26.0,  # Adjustable gravity (30% stronger: 20.0 * 1.3 = 26.0)
-    "SEPARATION_FORCE": 0.7,  # Gradual position separation on collision (increased for slightly faster separation)
+    "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
 
     # Ball physics parameters (tunable via sliders for smooth rolling/bouncing)
     "BALL_SEPARATION_FORCE": BALL_SEPARATION_FORCE,  # How hard ball pushes away from beetles
@@ -5027,11 +5052,16 @@ while window.running:
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
         if beetle_blue.active and not beetle_blue.is_falling:
             # Rotation controls (F/H) - BLOCKED during horn collision
+            # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_blue.in_horn_collision:
+                # Check if rotating without moving (skill-based faster turning)
+                is_moving = window.is_pressed('t') or window.is_pressed('g')
+                rotation_multiplier = 1.0 if is_moving else 1.3  # 30% faster when stationary
+
                 if window.is_pressed('f'):
-                    beetle_blue.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_blue.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
                 if window.is_pressed('h'):
-                    beetle_blue.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_blue.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
 
             # Movement controls (T/G) - move in facing direction
             if window.is_pressed('t'):
@@ -5149,11 +5179,16 @@ while window.running:
         # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
         if beetle_red.active and not beetle_red.is_falling:
             # Rotation controls (J/L) - BLOCKED during horn collision
+            # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_red.in_horn_collision:
+                # Check if rotating without moving (skill-based faster turning)
+                is_moving = window.is_pressed('i') or window.is_pressed('k')
+                rotation_multiplier = 1.0 if is_moving else 1.3  # 30% faster when stationary
+
                 if window.is_pressed('j'):
-                    beetle_red.rotation -= ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_red.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
                 if window.is_pressed('l'):
-                    beetle_red.rotation += ROTATION_SPEED * PHYSICS_TIMESTEP
+                    beetle_red.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
 
             # Movement controls (I/K) - move in facing direction
             if window.is_pressed('i'):
@@ -6092,19 +6127,19 @@ while window.running:
 
     # Physics parameter sliders (commented out - can re-enable later if needed)
     # window.GUI.text("")
-    # window.GUI.text("=== PHYSICS TUNING ===")
-    # physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 40.0)
-    # physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 1.5)
-    # physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
-    # physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 5.0)
-    # physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
-    # new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.5, 5.0)
+    window.GUI.text("=== PHYSICS TUNING ===")
+    physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 40.0)
+    physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 4.0)
+    physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
+    physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
+    physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
+    new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.5, 5.0)
 
-    # # Update beetle inertia if factor changed
-    # if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
-    #     physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
-    #     beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
-    #     beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+    # Update beetle inertia if factor changed
+    if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
+        physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
+        beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+        beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
 
     window.GUI.end()
 
