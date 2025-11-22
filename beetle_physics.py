@@ -5454,7 +5454,7 @@ while window.running:
                 )
 
                 # Check if beetle penetrates floor (lowest point goes into or below floor)
-                floor_surface = floor_y_blue + 1.0  # Top of floor is at floor_y + 1
+                floor_surface = floor_y_blue + 0.5  # Top of floor voxel surface
                 if lowest_point_blue < floor_surface:
                     # Penetration detected! Push beetle upward
                     penetration_depth = floor_surface - lowest_point_blue
@@ -5476,7 +5476,7 @@ while window.running:
                     beetle_red.roll, beetle_red.horn_pitch
                 )
 
-                floor_surface = floor_y_red + 1.0
+                floor_surface = floor_y_red + 0.5  # Top of floor voxel surface
                 if lowest_point_red < floor_surface:
                     penetration_depth = floor_surface - lowest_point_red
                     beetle_red.y += penetration_depth
