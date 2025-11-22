@@ -2261,9 +2261,9 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
         local_z = float(body_cache_z[i])
 
         # Apply horn pitch rotation if this is a horn voxel
-        # Only rotate centered cephalic horn voxels (|dz| <= 1.5 and Y <= 2)
-        # Excludes: pronotum horns (|dz| > 1.5), head piece (Y >= 3)
-        if body_cache_x[i] >= 3 and abs(local_z) <= 1.5 and local_y <= 2:
+        # Only rotate centered cephalic horn voxels: X>=3, |Z|<=1.5, X>Y (horn extends forward/up)
+        # Excludes: pronotum horns (|dz| > 1.5), head piece (X<=Y, close to body)
+        if body_cache_x[i] >= 3 and abs(local_z) <= 1.5 and body_cache_x[i] > local_y:
             rel_x = local_x - horn_pivot_x
             rel_y = float(local_y - horn_pivot_y)
             pitched_x = rel_x * cos_pitch - rel_y * sin_pitch
@@ -4773,18 +4773,46 @@ def beetle_collision(b1, b2, params):
                     pass  # print(f"  -> COOLDOWN ACTIVE (Blue: {b1.lift_cooldown:.3f}s, Red: {b2.lift_cooldown:.3f}s)")
 
                 # Add horizontal spin based on where horn hit BOTH beetles
-                # Beetle being lifted spins
+                # Calculate lever arms from beetle centers to collision point
                 dx_to_b1 = collision_x - b1.x
                 dz_to_b1 = collision_z - b1.z
-                torque_b1 = dx_to_b1 * normal_z - dz_to_b1 * normal_x
-                angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 2.0
-                b1.angular_velocity += angular_impulse_b1
-
                 dx_to_b2 = collision_x - b2.x
                 dz_to_b2 = collision_z - b2.z
-                torque_b2 = dx_to_b2 * normal_z - dz_to_b2 * normal_x
+
+                # Calculate tangential velocity at collision point (perpendicular to normal)
+                # This captures rotation effects even when linear velocity is small
+                v1_at_collision_x = b1.vx + dz_to_b1 * b1.angular_velocity
+                v1_at_collision_z = b1.vz - dx_to_b1 * b1.angular_velocity
+                v2_at_collision_x = b2.vx + dz_to_b2 * b2.angular_velocity
+                v2_at_collision_z = b2.vz - dx_to_b2 * b2.angular_velocity
+
+                # Relative velocity at collision point
+                rel_vx = v1_at_collision_x - v2_at_collision_x
+                rel_vz = v1_at_collision_z - v2_at_collision_z
+
+                # Calculate tangential component (perpendicular to normal) for spin torque
+                # Project onto tangent direction (perpendicular to normal)
+                tangent_x = -normal_z
+                tangent_z = normal_x
+                rel_vel_tangent = rel_vx * tangent_x + rel_vz * tangent_z
+
+                # Hybrid approach: base torque from geometry + velocity modulation
+                # This ensures torque always exists but scales with collision dynamics
+                base_torque_b1 = dx_to_b1 * normal_z - dz_to_b1 * normal_x
+                base_torque_b2 = dx_to_b2 * normal_z - dz_to_b2 * normal_x
+
+                # Modulate by tangential velocity (captures rotation into each other)
+                # Add baseline factor to ensure minimum torque even when stationary
+                velocity_factor = 1.0 + abs(rel_vel_tangent) * 0.5
+
+                torque_b1 = base_torque_b1 * velocity_factor
+                torque_b2 = base_torque_b2 * velocity_factor
+
+                # Apply angular impulses with horn leverage
+                angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 2.0
                 angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 2.0
-                b2.angular_velocity -= angular_impulse_b2  # Opposite direction
+                b1.angular_velocity += angular_impulse_b1
+                b2.angular_velocity -= angular_impulse_b2
 
             # STRONG separation to prevent stuck collisions (now 3D!)
             # Read hook interior collision status
@@ -5004,8 +5032,8 @@ physics_params = {
 
     # Airborne tumbling physics parameters
     "AIRBORNE_DAMPING": 0.98,  # Angular damping when airborne (0.98 = 2% loss per frame)
-    "AIRBORNE_TILT_SPEED": 40.0,  # Max pitch/roll speed when airborne
-    "GROUND_TILT_ANGLE": 85.0,  # Max tilt angle in degrees when on ground
+    "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
+    "GROUND_TILT_ANGLE": 250.0,  # Max tilt angle in degrees when on ground
 
     # Ball physics parameters (tunable via sliders for smooth rolling/bouncing)
     "BALL_SEPARATION_FORCE": BALL_SEPARATION_FORCE,  # How hard ball pushes away from beetles
@@ -6268,8 +6296,8 @@ while window.running:
 
     window.GUI.text("--- Airborne Tumbling ---")
     physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.5, 0.99)
-    physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 200.0)
-    physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 200.0)
+    physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
+    physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
 
     # Update beetle inertia if factor changed
     if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
