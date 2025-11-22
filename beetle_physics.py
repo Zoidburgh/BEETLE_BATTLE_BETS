@@ -259,14 +259,21 @@ class Beetle:
         # Apply angular friction (yaw)
         self.angular_velocity *= ANGULAR_FRICTION
 
-        # Apply angular friction (pitch/roll) - stronger damping for stability
-        self.pitch_velocity *= ANGULAR_FRICTION * 0.9  # Extra damping
-        self.roll_velocity *= ANGULAR_FRICTION * 0.9
+        # Apply angular friction (pitch/roll) - different damping based on ground contact
+        if self.on_ground:
+            # Heavy damping when on ground for stability
+            self.pitch_velocity *= ANGULAR_FRICTION * 0.9  # Extra damping
+            self.roll_velocity *= ANGULAR_FRICTION * 0.9
+        else:
+            # Light damping when airborne to allow dramatic tumbling (tunable via slider)
+            airborne_damping = physics_params.get("AIRBORNE_DAMPING", 0.98)
+            self.pitch_velocity *= airborne_damping
+            self.roll_velocity *= airborne_damping
 
         # Ground restoring torque - automatically level out when on ground
         if self.on_ground:
             # Apply torque to bring pitch/roll back to zero (level)
-            RESTORING_STRENGTH = 15.0  # How quickly beetle levels out
+            RESTORING_STRENGTH = 20.0  # How quickly beetle levels out
             self.pitch_velocity -= self.pitch * RESTORING_STRENGTH * dt
             self.roll_velocity -= self.roll * RESTORING_STRENGTH * dt
 
@@ -292,7 +299,13 @@ class Beetle:
         if abs(self.angular_velocity) > MAX_ANGULAR_SPEED:
             self.angular_velocity = MAX_ANGULAR_SPEED if self.angular_velocity > 0 else -MAX_ANGULAR_SPEED
 
-        MAX_TILT_SPEED = 8.0  # Slower than yaw to prevent violent flipping
+        # Different tilt speed caps based on ground contact
+        if self.on_ground:
+            MAX_TILT_SPEED = 8.0  # Conservative limit when on ground
+        else:
+            # Allow dramatic tumbling when airborne (tunable via slider)
+            MAX_TILT_SPEED = physics_params.get("AIRBORNE_TILT_SPEED", 20.0)
+
         if abs(self.pitch_velocity) > MAX_TILT_SPEED:
             self.pitch_velocity = MAX_TILT_SPEED if self.pitch_velocity > 0 else -MAX_TILT_SPEED
         if abs(self.roll_velocity) > MAX_TILT_SPEED:
@@ -306,10 +319,14 @@ class Beetle:
         self.pitch += self.pitch_velocity * dt
         self.roll += self.roll_velocity * dt
 
-        # Clamp pitch/roll to prevent full flips (±45 degrees)
-        MAX_TILT_ANGLE = math.radians(45)
-        self.pitch = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.pitch))
-        self.roll = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.roll))
+        # Clamp pitch/roll only when on ground - allow full rotations when airborne
+        if self.on_ground:
+            # Tunable max tilt angle when grounded (slider controls in degrees, converted to radians)
+            ground_tilt_degrees = physics_params.get("GROUND_TILT_ANGLE", 60.0)
+            MAX_TILT_ANGLE = math.radians(ground_tilt_degrees)
+            self.pitch = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.pitch))
+            self.roll = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.roll))
+        # When airborne, allow full 360° tumbling (no clamping)
 
     def arena_collision(self):
         """Bounce off arena walls"""
@@ -367,16 +384,7 @@ def clear_beetles():
 
 @ti.kernel
 def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: ti.f32, y2: ti.f32, color1: ti.i32, color2: ti.i32) -> ti.i32:
-    """OPTIMIZED: Fast GPU-based collision check using occupied voxel lists instead of grid scanning
-    Returns 1 if collision detected, 0 otherwise
-
-    Optimization: Instead of scanning up to 201,920 voxels (76×76×35), we:
-    1. Early reject if beetles too far apart (distance check)
-    2. Build occupied voxel lists (~40-100 voxels per beetle)
-    3. Check for XZ overlaps in lists (O(n*m) instead of O(grid³))
-
-    Performance: 5-10x faster than original grid scanning approach
-    """
+    """Fast GPU-based collision check - returns 1 if collision, 0 otherwise"""
     collision = 0
 
     # Convert to grid coordinates
@@ -385,156 +393,109 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
     center2_x = int(x2 + simulation.n_grid / 2.0)
     center2_z = int(z2 + simulation.n_grid / 2.0)
 
-    # Early rejection: If beetles too far apart, skip voxel checks entirely
-    # Beetle max radius ~18 voxels (body + horn), so 2x radius + margin = 38
+    # Early rejection: If beetles too far apart, skip voxel scanning
+    # Optimized: Beetle max radius ~18 voxels (body + horn), so 2x radius + margin = 38
     dx = center1_x - center2_x
     dz = center1_z - center2_z
     dist_sq = dx * dx + dz * dz
     too_far = 0
-    if dist_sq > 5776:  # (76 voxels)^2 = 2 * 38 voxel max reach
-        too_far = 1  # Too far apart, no collision possible
+    if dist_sq > 5776:  # (76 voxels)^2 = 2 * 38 voxel max reach for collision detection
+        too_far = 1
 
-    # Build occupied voxel lists for both entities (only if not too far)
-    # Reset counts
-    beetle1_occupied_count[None] = 0
-    beetle2_occupied_count[None] = 0
+    # Tighter collision bounds - only check where beetles can actually overlap
+    # Beetles are max 38 voxels from center (max body back: 16 + max horn forward: 21 = 37 + 1 safety margin)
+    x_min = ti.max(ti.max(0, center1_x - 38), ti.max(0, center2_x - 38))
+    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 38),
+                   ti.min(simulation.n_grid, center2_x + 38))
+    z_min = ti.max(ti.max(0, center1_z - 38), ti.max(0, center2_z - 38))
+    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 38),
+                   ti.min(simulation.n_grid, center2_z + 38))
 
-    # Scan area for beetle 1's voxels
-    y_base = int(RENDER_Y_OFFSET)
-    x1_min = ti.max(0, center1_x - 20)
-    x1_max = ti.min(simulation.n_grid, center1_x + 20)
-    z1_min = ti.max(0, center1_z - 20)
-    z1_max = ti.min(simulation.n_grid, center1_z + 20)
-    y_min = ti.max(0, y_base - 5)
-    y_max = ti.min(simulation.n_grid, y_base + 30)
+    # Scan for colliding voxels - TRUE 3D collision detection (only if not too far)
+    # Track Y-ranges for each beetle in each XZ column
+    for gx in range(x_min, x_max):
+        for gz in range(z_min, z_max):
+            # Skip remaining checks if collision already found OR beetles too far apart
+            if collision == 0 and too_far == 0:
+                # Track Y ranges for both beetles in this XZ column
+                beetle1_y_min = 999
+                beetle1_y_max = -1
+                beetle2_y_min = 999
+                beetle2_y_max = -1
 
-    # Only scan for voxels if beetles are close enough
-    if too_far == 0:
-        # Build beetle 1 occupied list
-        for i in range(x1_min, x1_max):
-            for k in range(z1_min, z1_max):
-                found_in_column = 0
-                for j in range(y_min, y_max):
-                    vtype = simulation.voxel_type[i, j, k]
-                    # Check if voxel belongs to entity 1
-                    if color1 == simulation.BEETLE_BLUE:
-                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
-                            found_in_column = 1
-                    elif color1 == simulation.BEETLE_RED:
-                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
-                            found_in_column = 1
-                    elif color1 == simulation.BALL:
-                        if vtype == simulation.BALL:
-                            found_in_column = 1
+                # Find Y-ranges for both beetles/ball in this column (includes legs and tips!)
+                # OPTIMIZED: Adaptive Y-range based on beetle height (grounded vs airborne)
+                # Find grid Y for each beetle
+                beetle1_grid_y = int(RENDER_Y_OFFSET + y1)
+                beetle2_grid_y = int(RENDER_Y_OFFSET + y2)
 
-                if found_in_column == 1:
-                    idx = ti.atomic_add(beetle1_occupied_count[None], 1)
-                    if idx < MAX_OCCUPIED_VOXELS:
-                        beetle1_occupied_x[idx] = i
-                        beetle1_occupied_z[idx] = k
+                # Adaptive reach: grounded beetles need less vertical scan upward
+                beetle1_max_up = 22 if y1 < 2.0 else 28  # Grounded: reduced scan, Airborne: full scan
+                beetle1_max_down = 12 if y1 >= 2.0 else 10  # Airborne: increase down, Grounded: reduce
+                beetle2_max_up = 22 if y2 < 2.0 else 28
+                beetle2_max_down = 12 if y2 >= 2.0 else 10
 
-        # Build beetle 2 occupied list
-        x2_min = ti.max(0, center2_x - 20)
-        x2_max = ti.min(simulation.n_grid, center2_x + 20)
-        z2_min = ti.max(0, center2_z - 20)
-        z2_max = ti.min(simulation.n_grid, center2_z + 20)
+                # Take union of both beetles' adaptive ranges
+                y_start = ti.max(0, ti.min(beetle1_grid_y - beetle1_max_down,
+                                            beetle2_grid_y - beetle2_max_down))
+                y_end = ti.min(simulation.n_grid, ti.max(beetle1_grid_y + beetle1_max_up,
+                                                          beetle2_grid_y + beetle2_max_up))
 
-        for i in range(x2_min, x2_max):
-            for k in range(z2_min, z2_max):
-                found_in_column = 0
-                for j in range(y_min, y_max):
-                    vtype = simulation.voxel_type[i, j, k]
-                    # Check if voxel belongs to entity 2
-                    if color2 == simulation.BEETLE_BLUE:
-                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
-                            found_in_column = 1
-                    elif color2 == simulation.BEETLE_RED:
-                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
-                            found_in_column = 1
-                    elif color2 == simulation.BALL:
-                        if vtype == simulation.BALL:
-                            found_in_column = 1
+                # Track if hook interior voxels are present in this column
+                has_hook_interior = 0
 
-                if found_in_column == 1:
-                    idx = ti.atomic_add(beetle2_occupied_count[None], 1)
-                    if idx < MAX_OCCUPIED_VOXELS:
-                        beetle2_occupied_x[idx] = i
-                        beetle2_occupied_z[idx] = k
+                for gy in range(y_start, y_end):
+                    voxel = simulation.voxel_type[gx, gy, gz]
 
-        # Check for XZ overlaps between occupied voxel lists
-        # This is O(n*m) where n,m are typically 40-100, much faster than O(76²*35) grid scan
-        for i in range(beetle1_occupied_count[None]):
-            if collision == 1:
-                break  # Early exit if collision found
-            vx1 = beetle1_occupied_x[i]
-            vz1 = beetle1_occupied_z[i]
+                    # Check for hook interior voxels
+                    if voxel == simulation.STAG_HOOK_INTERIOR_BLUE or voxel == simulation.STAG_HOOK_INTERIOR_RED:
+                        has_hook_interior = 1
 
-            for j in range(beetle2_occupied_count[None]):
-                vx2 = beetle2_occupied_x[j]
-                vz2 = beetle2_occupied_z[j]
+                    # Check if voxel belongs to entity 1 (based on color1)
+                    belongs_to_1 = 0
+                    if color1 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
+                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
+                            belongs_to_1 = 1
+                    elif color1 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
+                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
+                            belongs_to_1 = 1
+                    elif color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
+                        if voxel == 16 or voxel == 17:
+                            belongs_to_1 = 1
 
-                # If same (x, z) position, check Y overlap
-                if vx1 == vx2 and vz1 == vz2:
-                    # Find Y ranges for both entities in this column
-                    beetle1_y_min = 999
-                    beetle1_y_max = -1
-                    beetle2_y_min = 999
-                    beetle2_y_max = -1
-                    has_hook_interior = 0
+                    # Check if voxel belongs to entity 2 (based on color2)
+                    belongs_to_2 = 0
+                    if color2 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
+                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
+                            belongs_to_2 = 1
+                    elif color2 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
+                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
+                            belongs_to_2 = 1
+                    elif color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
+                        if voxel == 16 or voxel == 17:
+                            belongs_to_2 = 1
 
-                    for gy in range(y_min, y_max):
-                        voxel = simulation.voxel_type[vx1, gy, vz1]
+                    # Update Y-ranges based on ownership
+                    if belongs_to_1 == 1:
+                        if gy < beetle1_y_min:
+                            beetle1_y_min = gy
+                        if gy > beetle1_y_max:
+                            beetle1_y_max = gy
 
-                        # Check for hook interior voxels
-                        if voxel == simulation.STAG_HOOK_INTERIOR_BLUE or voxel == simulation.STAG_HOOK_INTERIOR_RED:
-                            has_hook_interior = 1
+                    if belongs_to_2 == 1:
+                        if gy < beetle2_y_min:
+                            beetle2_y_min = gy
+                        if gy > beetle2_y_max:
+                            beetle2_y_max = gy
 
-                        # Check ownership for beetle 1
-                        if color1 == simulation.BEETLE_BLUE:
-                            if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
-                                if gy < beetle1_y_min:
-                                    beetle1_y_min = gy
-                                if gy > beetle1_y_max:
-                                    beetle1_y_max = gy
-                        elif color1 == simulation.BEETLE_RED:
-                            if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
-                                if gy < beetle1_y_min:
-                                    beetle1_y_min = gy
-                                if gy > beetle1_y_max:
-                                    beetle1_y_max = gy
-                        elif color1 == simulation.BALL:
-                            if voxel == 16 or voxel == 17:
-                                if gy < beetle1_y_min:
-                                    beetle1_y_min = gy
-                                if gy > beetle1_y_max:
-                                    beetle1_y_max = gy
+                # Check if Y-ranges overlap or are adjacent (variable tolerance based on voxel types)
+                if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
+                    # Use stricter tolerance (±5 voxels) for hook interior collisions to catch them earlier
+                    # Use normal tolerance (±2 voxels) for regular collisions
+                    tolerance = 5 if has_hook_interior == 1 else 2
 
-                        # Check ownership for beetle 2
-                        if color2 == simulation.BEETLE_BLUE:
-                            if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
-                                if gy < beetle2_y_min:
-                                    beetle2_y_min = gy
-                                if gy > beetle2_y_max:
-                                    beetle2_y_max = gy
-                        elif color2 == simulation.BEETLE_RED:
-                            if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
-                                if gy < beetle2_y_min:
-                                    beetle2_y_min = gy
-                                if gy > beetle2_y_max:
-                                    beetle2_y_max = gy
-                        elif color2 == simulation.BALL:
-                            if voxel == 16 or voxel == 17:
-                                if gy < beetle2_y_min:
-                                    beetle2_y_min = gy
-                                if gy > beetle2_y_max:
-                                    beetle2_y_max = gy
-
-                    # Check Y overlap with tolerance
-                    if beetle1_y_max >= 0 and beetle2_y_max >= 0:
-                        tolerance = 5 if has_hook_interior == 1 else 2
-                        if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
-                            collision = 1
-                            break  # Exit inner loop
+                    if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
+                        collision = 1
 
     return collision
 
@@ -2300,7 +2261,9 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
         local_z = float(body_cache_z[i])
 
         # Apply horn pitch rotation if this is a horn voxel
-        if body_cache_x[i] >= 3:
+        # Only rotate centered cephalic horn voxels (|dz| <= 1.5 and Y <= 2)
+        # Excludes: pronotum horns (|dz| > 1.5), head piece (Y >= 3)
+        if body_cache_x[i] >= 3 and abs(local_z) <= 1.5 and local_y <= 2:
             rel_x = local_x - horn_pivot_x
             rel_y = float(local_y - horn_pivot_y)
             pitched_x = rel_x * cos_pitch - rel_y * sin_pitch
@@ -4596,13 +4559,15 @@ def beetle_collision(b1, b2, params):
     # Detect if this is a ball collision (ball uses different, gentler physics)
     is_ball_collision = (b1.horn_type == "ball" or b2.horn_type == "ball")
 
-    # OPTIMIZED: check_collision_kernel now builds occupied voxel lists internally
-    # This saves us from building them twice (once for check, once for collision point)
+    # Fast GPU-based collision check
     has_collision = check_collision_kernel(b1.x, b1.z, b1.y, b2.x, b2.z, b2.y, b1.color, b2.color)
 
     if has_collision:
-        # Occupied voxel lists already built by check_collision_kernel - no need to rebuild!
-        # Just calculate collision point from the existing lists
+        # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
+        calculate_occupied_voxels_kernel(b1.x, b1.z, b1.color,
+                                        beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
+        calculate_occupied_voxels_kernel(b2.x, b2.z, b2.color,
+                                        beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
 
         # GPU-ACCELERATED: Calculate collision point on GPU (no CPU transfer!)
         calculate_collision_point_kernel(0)  # overlap_count not used in kernel
@@ -4748,7 +4713,7 @@ def beetle_collision(b1, b2, params):
                         lever_z = collision_z - b2.z  # Z offset (causes pitch)
 
                         # Pitch torque: force in +Y at position +Z causes nose-up pitch
-                        pitch_torque = -lever_z * lift_force  # Negative Z = positive pitch
+                        pitch_torque = lever_z * lift_force  # Positive Z (front contact) = positive pitch (nose up)
                         b2.pitch_velocity += pitch_torque / b2.pitch_inertia
 
                         # Roll torque: force in +Y at position +X causes right-side-up roll
@@ -4770,8 +4735,8 @@ def beetle_collision(b1, b2, params):
                         lever_x = collision_x - b1.x  # X offset (causes roll)
                         lever_z = collision_z - b1.z  # Z offset (causes pitch)
 
-                        # Pitch torque
-                        pitch_torque = -lever_z * lift_force
+                        # Pitch torque: force in +Y at position +Z causes nose-up pitch
+                        pitch_torque = lever_z * lift_force  # Positive Z (front contact) = positive pitch (nose up)
                         b1.pitch_velocity += pitch_torque / b1.pitch_inertia
 
                         # Roll torque
@@ -5034,8 +4999,13 @@ physics_params = {
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
-    "GRAVITY": 26.0,  # Adjustable gravity (30% stronger: 20.0 * 1.3 = 26.0)
+    "GRAVITY": 31.0,  # Adjustable gravity
     "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
+
+    # Airborne tumbling physics parameters
+    "AIRBORNE_DAMPING": 0.98,  # Angular damping when airborne (0.98 = 2% loss per frame)
+    "AIRBORNE_TILT_SPEED": 40.0,  # Max pitch/roll speed when airborne
+    "GROUND_TILT_ANGLE": 85.0,  # Max tilt angle in degrees when on ground
 
     # Ball physics parameters (tunable via sliders for smooth rolling/bouncing)
     "BALL_SEPARATION_FORCE": BALL_SEPARATION_FORCE,  # How hard ball pushes away from beetles
@@ -6294,7 +6264,12 @@ while window.running:
     physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
     physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
     physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
-    new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.5, 5.0)
+    new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
+
+    window.GUI.text("--- Airborne Tumbling ---")
+    physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.5, 0.99)
+    physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 200.0)
+    physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 200.0)
 
     # Update beetle inertia if factor changed
     if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
