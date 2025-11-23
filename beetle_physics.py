@@ -49,8 +49,8 @@ HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward gro
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
 HORN_YAW_SPEED = 2.0  # Radians per second
-HORN_MAX_YAW = math.radians(15)  # +15 degrees horizontal
-HORN_MIN_YAW = math.radians(-15)  # -15 degrees horizontal
+HORN_MAX_YAW = math.radians(30)  # +30 degrees horizontal (stag pincers can open wide)
+HORN_MIN_YAW = math.radians(0)  # 0 degrees horizontal (stag pincers stay separated, can't fully close)
 HORN_YAW_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow yaw rotation
 HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
@@ -2256,7 +2256,7 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     cos_pitch = ti.cos(horn_pitch)
     sin_pitch = ti.sin(horn_pitch)
     horn_pivot_x = 3.0
-    horn_pivot_y = 1
+    horn_pivot_y = 2
 
     lowest_y = 9999.0  # Start with very high value
 
@@ -2390,7 +2390,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
     # Horn/claw pivot point in local coordinates (where horn/claw attaches to head)
     # Scorpion claws pivot at X=2, beetle horns pivot at X=3
     horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
-    horn_pivot_y = 1
+    horn_pivot_y = 2
 
     # 1. Place body with horn pitch applied
     for i in range(body_cache_size[None]):
@@ -2868,7 +2868,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
     # Horn/claw pivot point in local coordinates (where horn/claw attaches to head)
     # Scorpion claws pivot at X=2, beetle horns pivot at X=3
     horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
-    horn_pivot_y = 1
+    horn_pivot_y = 2
 
     # 1. Place body with horn pitch applied
     for i in range(red_body_cache_size[None]):
@@ -5005,6 +5005,9 @@ camera.pos_z = 0.0
 camera.pitch = -70.0
 camera.yaw = 0.0
 
+# Auto-follow camera toggle
+auto_follow_enabled = False  # Start with manual camera (press C to toggle)
+
 # Initialize gradient background for forest atmosphere
 renderer.init_gradient_background()
 
@@ -5058,7 +5061,12 @@ physics_params = {
     "BALL_LIFT_STRENGTH": BALL_LIFT_STRENGTH,  # How much ball lifts when hit from below
     "BALL_TIP_STRENGTH": BALL_TIP_STRENGTH,  # How much ball tips down when hit from above
     "BALL_TORQUE_STRENGTH": BALL_TORQUE_STRENGTH,  # How much ball spins from side hits
-    "BALL_GRAVITY_MULTIPLIER": BALL_GRAVITY_MULTIPLIER  # Extra gravity for ball (1.0-5.0)
+    "BALL_GRAVITY_MULTIPLIER": BALL_GRAVITY_MULTIPLIER,  # Extra gravity for ball (1.0-5.0)
+
+    # Camera parameters (for auto-follow mode)
+    "CAMERA_PITCH": -35.0,  # Camera pitch angle (-90=top-down, -45=side view, -35=default)
+    "CAMERA_BASE_HEIGHT": 50.0,  # Base camera height in voxels (before dynamic adjustment)
+    "CAMERA_DISTANCE": 57.0  # Camera horizontal distance from midpoint
 }
 
 last_time = time.time()
@@ -5106,8 +5114,101 @@ while window.running:
     accumulator = min(accumulator, MAX_ACCUMULATOR)
 
     # Camera (runs every frame at frame rate)
-    renderer.handle_camera_controls(camera, window, frame_dt)
-    renderer.handle_mouse_look(camera, window)
+    # Toggle auto-follow camera with C key
+    if window.is_pressed('c'):
+        if not hasattr(window, 'c_key_was_pressed') or not window.c_key_was_pressed:
+            auto_follow_enabled = not auto_follow_enabled
+            print(f"Auto-follow camera: {'ENABLED' if auto_follow_enabled else 'DISABLED'}")
+        window.c_key_was_pressed = True
+    else:
+        window.c_key_was_pressed = False
+
+    if auto_follow_enabled:
+        # Edge-aware auto-follow camera: track beetles AND nearest arena edge
+        # Calculate midpoint between beetles
+        mid_x = (beetle_blue.x + beetle_red.x) / 2.0
+        mid_z = (beetle_blue.z + beetle_red.z) / 2.0
+
+        # Calculate separation distance for dynamic height
+        dx = beetle_red.x - beetle_blue.x
+        dz = beetle_red.z - beetle_blue.z
+        separation = math.sqrt(dx*dx + dz*dz)
+
+        # Find nearest point on circular arena edge (ARENA_RADIUS = 32.0)
+        # Calculate distance and angle from origin to midpoint
+        dist_from_origin = math.sqrt(mid_x*mid_x + mid_z*mid_z)
+
+        # Handle center case (beetles at origin)
+        if dist_from_origin < 0.1:
+            # Default to north edge when at center
+            angle_to_midpoint = math.pi / 2.0  # 90 degrees = north
+        else:
+            angle_to_midpoint = math.atan2(mid_z, mid_x)
+
+        # Nearest edge point is along same angle at ARENA_RADIUS
+        nearest_edge_x = math.cos(angle_to_midpoint) * ARENA_RADIUS
+        nearest_edge_z = math.sin(angle_to_midpoint) * ARENA_RADIUS
+
+        # Calculate direction vector FROM midpoint TO edge
+        edge_dx = nearest_edge_x - mid_x
+        edge_dz = nearest_edge_z - mid_z
+        edge_dist = math.sqrt(edge_dx*edge_dx + edge_dz*edge_dz)
+
+        # Normalize edge direction
+        if edge_dist > 0.1:
+            edge_dx_norm = edge_dx / edge_dist
+            edge_dz_norm = edge_dz / edge_dist
+        else:
+            # Beetles very close to edge, use angle to origin
+            edge_dx_norm = math.cos(angle_to_midpoint)
+            edge_dz_norm = math.sin(angle_to_midpoint)
+
+        # Calculate edge proximity (0.0 = center, 1.0 = at edge)
+        edge_proximity = dist_from_origin / ARENA_RADIUS
+
+        # Camera distance: reduce when beetles near edge (so edge is visible)
+        base_camera_distance = physics_params["CAMERA_DISTANCE"]
+        edge_factor = 1.0 - (edge_proximity * 0.4)  # Reduce by up to 40% at edge
+        adjusted_camera_distance = base_camera_distance * edge_factor
+
+        # Position camera OPPOSITE the edge (between center and beetles)
+        # This makes beetles foreground, edge background
+        target_x = mid_x - edge_dx_norm * adjusted_camera_distance
+        target_z = mid_z - edge_dz_norm * adjusted_camera_distance
+
+        # Dynamic camera height based on beetle separation
+        base_height = physics_params["CAMERA_BASE_HEIGHT"]
+        height_multiplier = 0.8
+        target_y = base_height + (separation * height_multiplier)
+        target_y = max(20.0, min(150.0, target_y))  # Clamp height
+
+        # Smooth interpolation (lerp) to avoid jarring camera movement
+        lerp_factor = 0.1 * frame_dt * 60.0  # Scale by frame time
+        lerp_factor = min(1.0, lerp_factor)  # Clamp to 1.0 max
+
+        camera.pos_x += (target_x - camera.pos_x) * lerp_factor
+        camera.pos_y += (target_y - camera.pos_y) * lerp_factor
+        camera.pos_z += (target_z - camera.pos_z) * lerp_factor
+
+        # Maintain appropriate pitch angle (from slider)
+        target_pitch = physics_params["CAMERA_PITCH"]
+        camera.pitch += (target_pitch - camera.pitch) * lerp_factor
+
+        # Rotate camera to face TOWARD the edge (so edge is in background)
+        target_yaw = math.degrees(math.atan2(edge_dx_norm, edge_dz_norm))
+
+        # Smooth yaw transition (handle angle wrapping)
+        yaw_diff = target_yaw - camera.yaw
+        if yaw_diff > 180.0:
+            yaw_diff -= 360.0
+        elif yaw_diff < -180.0:
+            yaw_diff += 360.0
+        camera.yaw += yaw_diff * lerp_factor
+        camera.yaw = camera.yaw % 360.0  # Normalize to 0-360
+    else:
+        # Use manual camera controls
+        renderer.handle_camera_controls(camera, window, frame_dt)
+        renderer.handle_mouse_look(camera, window)
 
     # ===== FIXED TIMESTEP PHYSICS LOOP =====
     # Run physics in fixed increments (may run 0+ times per frame)
@@ -5649,11 +5750,11 @@ while window.running:
         # Rotation-only animation (use constant rotation speed)
         # Cancel animation completion if player resumes input
         beetle_blue.is_completing_animation = False
-        # When in air: 30% faster than ground, on ground: normal turning speed
+        # When in air: 30% faster than ground, on ground: normal turning speed (25% speed increase overall)
         if beetle_blue.is_lifted_high:
-            rotation_animation_speed = 13.5 * 1.3  # 30% faster than ground turning speed
+            rotation_animation_speed = 16.875 * 1.3  # 30% faster than ground turning speed
         else:
-            rotation_animation_speed = 13.5  # Normal ground turning speed
+            rotation_animation_speed = 16.875  # Normal ground turning speed
         beetle_blue.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
         beetle_blue.is_moving = True
@@ -5719,11 +5820,11 @@ while window.running:
         # Rotation-only animation (use constant rotation speed)
         # Cancel animation completion if player resumes input
         beetle_red.is_completing_animation = False
-        # When in air: 30% faster than ground, on ground: normal turning speed
+        # When in air: 30% faster than ground, on ground: normal turning speed (25% speed increase overall)
         if beetle_red.is_lifted_high:
-            rotation_animation_speed = 13.5 * 1.3  # 30% faster than ground turning speed
+            rotation_animation_speed = 16.875 * 1.3  # 30% faster than ground turning speed
         else:
-            rotation_animation_speed = 13.5  # Normal ground turning speed
+            rotation_animation_speed = 16.875  # Normal ground turning speed
         beetle_red.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
         beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
         beetle_red.is_moving = True
@@ -6312,6 +6413,11 @@ while window.running:
     physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 5.0)
     physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
     physics_params["WEAK_RESTORING"] = window.GUI.slider_float("Restoring (Bouncing)", physics_params["WEAK_RESTORING"], 5.0, 50.0)
+
+    window.GUI.text("--- Auto-Follow Camera ---")
+    physics_params["CAMERA_PITCH"] = window.GUI.slider_float("Camera Angle", physics_params["CAMERA_PITCH"], -90.0, -30.0)
+    physics_params["CAMERA_BASE_HEIGHT"] = window.GUI.slider_float("Camera Height", physics_params["CAMERA_BASE_HEIGHT"], 20.0, 120.0)
+    physics_params["CAMERA_DISTANCE"] = window.GUI.slider_float("Camera Distance", physics_params["CAMERA_DISTANCE"], 10.0, 80.0)
 
     # Update beetle inertia if factor changed
     if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
