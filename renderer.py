@@ -301,7 +301,7 @@ def setup_camera(camera, scene):
     cam.up(*up)
     scene.set_camera(cam)
 
-def render(camera, canvas, scene, voxel_field, n_grid):
+def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, spotlight_pos=None, spotlight_strength=0.55, base_light_brightness=1.0):
     """
     Render voxels using Taichi GPU renderer
 
@@ -310,7 +310,12 @@ def render(camera, canvas, scene, voxel_field, n_grid):
         scene: Taichi 3D scene
         voxel_field: Voxel data field
         n_grid: Grid size
+        dynamic_lighting: If True, key light follows camera angle for cinematic effect
+        spotlight_pos: (x, y, z) tuple for spotlight position above beetles (optional)
+        spotlight_strength: Intensity of spotlight (default 0.55)
+        base_light_brightness: Brightness multiplier for all non-spotlight lights (default 1.0)
     """
+    import math
     # Draw gradient background before 3D scene (forest atmosphere)
     canvas.triangles(gradient_positions, per_vertex_color=gradient_colors)
 
@@ -328,15 +333,53 @@ def render(camera, canvas, scene, voxel_field, n_grid):
     # Set up camera
     setup_camera(camera, scene)
 
-    # Forest-themed lighting setup with rim light for depth
-    # Overhead light - cooler overhead (moonlight feel)
-    scene.point_light(pos=(0, 100, 0), color=(0.9, 0.95, 1.0))
-    # Key light - brighter warm sunbeam for contrast
-    scene.point_light(pos=(80, 70, -60), color=(1.4, 1.1, 0.7))
-    # Rim light - cool backlight for depth separation
-    scene.point_light(pos=(-60, 50, 70), color=(0.3, 0.4, 0.6))
-    # Lower ambient light for dramatic depth
-    scene.ambient_light((0.15, 0.18, 0.16))
+    # Enhanced multi-point lighting setup with 360° coverage
+    # Apply brightness multiplier to all non-spotlight lights
+    b = base_light_brightness
+
+    # Overhead light - main ambient coverage from above
+    scene.point_light(pos=(0, 100, 0), color=(0.5 * b, 0.52 * b, 0.55 * b))
+
+    # Key light - warm directional light from northeast
+    if dynamic_lighting:
+        # Camera-relative key light: orbits with camera angle for consistent dramatic lighting
+        key_angle = math.radians(camera.yaw) + math.radians(45)
+        key_distance = 100
+        key_height = 70
+        key_x = math.cos(key_angle) * key_distance
+        key_z = math.sin(key_angle) * key_distance
+        scene.point_light(pos=(key_x, key_height, key_z), color=(0.7 * b, 0.65 * b, 0.5 * b))
+    else:
+        scene.point_light(pos=(80, 70, -60), color=(0.7 * b, 0.65 * b, 0.5 * b))
+
+    # Fill light - southwest, opposite of key light
+    if dynamic_lighting:
+        fill_angle = math.radians(camera.yaw) + math.radians(-135)
+        fill_x = math.cos(fill_angle) * 90
+        fill_z = math.sin(fill_angle) * 90
+        scene.point_light(pos=(fill_x, 60, fill_z), color=(0.35 * b, 0.38 * b, 0.4 * b))
+    else:
+        scene.point_light(pos=(-60, 60, 70), color=(0.35 * b, 0.38 * b, 0.4 * b))
+
+    # NEW: Northwest fill light - covers dead zone, cool tint
+    scene.point_light(pos=(-70, 55, -70), color=(0.3 * b, 0.32 * b, 0.35 * b))
+
+    # NEW: Southeast fill light - covers opposite dead zone, cool tint
+    scene.point_light(pos=(70, 55, 70), color=(0.3 * b, 0.32 * b, 0.35 * b))
+
+    # NEW: North rim light - edge definition from back, cool highlight
+    scene.point_light(pos=(0, 40, -90), color=(0.4 * b, 0.45 * b, 0.55 * b))
+
+    # NEW: South rim light - opposite edge definition, cool highlight
+    scene.point_light(pos=(0, 40, 90), color=(0.4 * b, 0.45 * b, 0.55 * b))
+
+    # Spotlight above beetles - follows the action (NOT affected by brightness multiplier)
+    if spotlight_pos is not None:
+        spot_x, spot_y, spot_z = spotlight_pos
+        scene.point_light(pos=(spot_x, spot_y, spot_z), color=(spotlight_strength, spotlight_strength * 1.1, spotlight_strength * 1.2))
+
+    # Enhanced ambient light for better overall visibility
+    scene.ambient_light((0.2 * b, 0.21 * b, 0.22 * b))
 
     # Render all voxels (STEEL, CONCRETE, MOLTEN, DEBRIS) in single batched call
     # Debris particles merged into voxel buffer for better performance

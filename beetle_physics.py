@@ -49,10 +49,10 @@ HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward gro
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
 HORN_YAW_SPEED = 2.0  # Radians per second
-# Default yaw limits (for rhino and other beetles with symmetric horn movement)
-HORN_MAX_YAW = math.radians(30)  # +30 degrees horizontal
-HORN_MIN_YAW = math.radians(-30)  # -30 degrees horizontal
-# Stag-specific yaw limits (pincers stay separated, can't fully close)
+# Default yaw limits (for beetles with symmetric horn movement)
+HORN_MAX_YAW = math.radians(20)  # +20 degrees horizontal
+HORN_MIN_YAW = math.radians(-20)  # -20 degrees horizontal
+# Stag-specific yaw limits (same as default for now)
 HORN_MAX_YAW_STAG = math.radians(20)  # +20 degrees horizontal (stag pincers can open)
 HORN_MIN_YAW_STAG = math.radians(-20)  # -20 degrees horizontal (stag pincers can close)
 HORN_YAW_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow yaw rotation
@@ -359,7 +359,7 @@ match_winner = None  # "BLUE" or "RED" when a beetle dies
 
 def reset_match():
     """Reset beetles to starting positions for new match"""
-    global beetle_blue, beetle_red, match_winner, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
+    global beetle_blue, beetle_red, match_winner, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type, camera_flip_view
     beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
     beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
     match_winner = None
@@ -371,6 +371,9 @@ def reset_match():
     # Preserve each beetle's horn_type on reset so control mapping stays correct
     beetle_blue.horn_type = blue_horn_type
     beetle_red.horn_type = red_horn_type
+
+    # Reset camera to default flipped view
+    camera_flip_view = True
 
     print("\n" + "="*50)
     print("NEW MATCH STARTED!")
@@ -5010,8 +5013,15 @@ camera.pitch = -70.0
 camera.yaw = 0.0
 
 # Auto-follow camera toggle
-auto_follow_enabled = False  # Start with manual camera (press C to toggle)
+auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to toggle)
 camera_flip_view = True  # Start with flipped view (track opposite edge, beetles in foreground)
+camera_edge_angle = 0.0  # Previous edge angle for smooth transitions (prevents flipping)
+spotlight_strength = 0.515  # Spotlight intensity (adjustable via GUI slider)
+spotlight_height = 36.0  # Spotlight height above beetles (lower = smaller/focused, higher = bigger/softer)
+base_light_brightness = 0.91  # Brightness multiplier for all non-spotlight lights (adjustable via GUI slider)
+
+# Dynamic lighting system
+dynamic_lighting_enabled = False  # Camera-relative lighting for cinematic effect (press L to toggle)
 
 # Initialize gradient background for forest atmosphere
 renderer.init_gradient_background()
@@ -5069,9 +5079,9 @@ physics_params = {
     "BALL_GRAVITY_MULTIPLIER": BALL_GRAVITY_MULTIPLIER,  # Extra gravity for ball (1.0-5.0)
 
     # Camera parameters (for auto-follow mode)
-    "CAMERA_PITCH": -35.0,  # Camera pitch angle (-90=top-down, -45=side view, -35=default)
-    "CAMERA_BASE_HEIGHT": 50.0,  # Base camera height in voxels (before dynamic adjustment)
-    "CAMERA_DISTANCE": 57.0  # Camera horizontal distance from midpoint
+    "CAMERA_PITCH": -30.85,  # Camera pitch angle (-90=top-down, -45=side view, -30.85=default)
+    "CAMERA_BASE_HEIGHT": 59.1,  # Base camera height in voxels (before dynamic adjustment)
+    "CAMERA_DISTANCE": 76.35  # Camera horizontal distance from midpoint
 }
 
 last_time = time.time()
@@ -5130,9 +5140,35 @@ while window.running:
 
     if auto_follow_enabled:
         # Edge-aware auto-follow camera: track beetles AND nearest arena edge
-        # Calculate midpoint between beetles
-        mid_x = (beetle_blue.x + beetle_red.x) / 2.0
-        mid_z = (beetle_blue.z + beetle_red.z) / 2.0
+        # Detect if beetles have fallen off the platform
+        FALL_HEIGHT_THRESHOLD = -10.0  # Y position below which beetle is considered fallen
+
+        # Check both vertical fall AND horizontal arena boundary (prevents camera spazzing at edges)
+        blue_dist_from_center = math.sqrt(beetle_blue.x**2 + beetle_blue.z**2)
+        red_dist_from_center = math.sqrt(beetle_red.x**2 + beetle_red.z**2)
+
+        blue_on_platform = (beetle_blue.y > FALL_HEIGHT_THRESHOLD and
+                            blue_dist_from_center < ARENA_RADIUS)
+        red_on_platform = (beetle_red.y > FALL_HEIGHT_THRESHOLD and
+                           red_dist_from_center < ARENA_RADIUS)
+
+        # Calculate midpoint - only include beetles still on platform
+        if blue_on_platform and red_on_platform:
+            # Both beetles on platform: normal midpoint
+            mid_x = (beetle_blue.x + beetle_red.x) / 2.0
+            mid_z = (beetle_blue.z + beetle_red.z) / 2.0
+        elif blue_on_platform:
+            # Only blue on platform: focus on blue
+            mid_x = beetle_blue.x
+            mid_z = beetle_blue.z
+        elif red_on_platform:
+            # Only red on platform: focus on red
+            mid_x = beetle_red.x
+            mid_z = beetle_red.z
+        else:
+            # Both fallen: maintain last valid midpoint (use 0,0 as safe fallback)
+            mid_x = 0.0
+            mid_z = 0.0
 
         # Calculate separation distance for dynamic height
         dx = beetle_red.x - beetle_blue.x
@@ -5150,9 +5186,30 @@ while window.running:
         else:
             angle_to_midpoint = math.atan2(mid_z, mid_x)
 
-        # Nearest edge point is along same angle at ARENA_RADIUS
-        nearest_edge_x = math.cos(angle_to_midpoint) * ARENA_RADIUS
-        nearest_edge_z = math.sin(angle_to_midpoint) * ARENA_RADIUS
+        # Smooth angle transitions to prevent flipping when beetle falls off edge
+        # Only update edge angle if change is gradual (prevents 180-degree flips)
+        if camera_edge_angle == 0.0:
+            # First frame: initialize with current angle
+            camera_edge_angle = angle_to_midpoint
+        else:
+            # Calculate angle difference (handle wrapping)
+            angle_diff = angle_to_midpoint - camera_edge_angle
+            # Normalize to -pi to +pi range
+            while angle_diff > math.pi:
+                angle_diff -= 2.0 * math.pi
+            while angle_diff < -math.pi:
+                angle_diff += 2.0 * math.pi
+
+            # If change is too large (> 90 degrees), likely due to beetle falling off
+            # Keep the previous angle to maintain perspective
+            if abs(angle_diff) < math.pi / 2.0:  # Less than 90 degrees
+                # Gradual change: smooth transition
+                camera_edge_angle += angle_diff * 0.3  # 30% blend factor
+            # else: keep previous angle (ignore sudden large changes)
+
+        # Nearest edge point is along smoothed angle at ARENA_RADIUS
+        nearest_edge_x = math.cos(camera_edge_angle) * ARENA_RADIUS
+        nearest_edge_z = math.sin(camera_edge_angle) * ARENA_RADIUS
 
         # Calculate direction vector FROM midpoint TO edge
         edge_dx = nearest_edge_x - mid_x
@@ -6002,8 +6059,17 @@ while window.running:
         clear_ball()
         render_ball(ball_render_x, ball_render_y, ball_render_z, beetle_ball.radius, ball_render_rotation)
 
+    # Calculate spotlight position above beetles midpoint
+    spotlight_mid_x = (blue_render_x + red_render_x) / 2.0
+    spotlight_mid_y = max(blue_render_y, red_render_y) + spotlight_height  # Height above highest beetle (higher = bigger/softer, lower = smaller/focused)
+    spotlight_mid_z = (blue_render_z + red_render_z) / 2.0
+
     canvas.set_background_color((0.18, 0.40, 0.22))  # Lighter forest green
-    renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
+    renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid,
+                    dynamic_lighting=dynamic_lighting_enabled,
+                    spotlight_pos=(spotlight_mid_x, spotlight_mid_y, spotlight_mid_z),
+                    spotlight_strength=spotlight_strength,
+                    base_light_brightness=base_light_brightness)
     canvas.scene(scene)
 
     # HUD
@@ -6443,8 +6509,16 @@ while window.running:
     physics_params["CAMERA_PITCH"] = window.GUI.slider_float("Camera Angle", physics_params["CAMERA_PITCH"], -90.0, -30.0)
     physics_params["CAMERA_BASE_HEIGHT"] = window.GUI.slider_float("Camera Height", physics_params["CAMERA_BASE_HEIGHT"], 20.0, 120.0)
     physics_params["CAMERA_DISTANCE"] = window.GUI.slider_float("Camera Distance", physics_params["CAMERA_DISTANCE"], 10.0, 80.0)
+    spotlight_strength = window.GUI.slider_float("Spotlight Strength", spotlight_strength, 0.0, 1.5)
+    spotlight_height = window.GUI.slider_float("Spotlight Size", spotlight_height, 10.0, 100.0)
+    base_light_brightness = window.GUI.slider_float("Base Light Brightness", base_light_brightness, 0.0, 2.0)
     if window.GUI.button("Flip Camera View"):
         camera_flip_view = not camera_flip_view
+
+    # Dynamic lighting toggle
+    lighting_button_text = "Dynamic Lighting: ON" if dynamic_lighting_enabled else "Dynamic Lighting: OFF"
+    if window.GUI.button(lighting_button_text):
+        dynamic_lighting_enabled = not dynamic_lighting_enabled
 
     # Update beetle inertia if factor changed
     if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
