@@ -49,8 +49,12 @@ HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward gro
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
 HORN_YAW_SPEED = 2.0  # Radians per second
-HORN_MAX_YAW = math.radians(30)  # +30 degrees horizontal (stag pincers can open wide)
-HORN_MIN_YAW = math.radians(0)  # 0 degrees horizontal (stag pincers stay separated, can't fully close)
+# Default yaw limits (for rhino and other beetles with symmetric horn movement)
+HORN_MAX_YAW = math.radians(30)  # +30 degrees horizontal
+HORN_MIN_YAW = math.radians(-30)  # -30 degrees horizontal
+# Stag-specific yaw limits (pincers stay separated, can't fully close)
+HORN_MAX_YAW_STAG = math.radians(20)  # +20 degrees horizontal (stag pincers can open)
+HORN_MIN_YAW_STAG = math.radians(-20)  # -20 degrees horizontal (stag pincers can close)
 HORN_YAW_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow yaw rotation
 HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
@@ -5007,6 +5011,7 @@ camera.yaw = 0.0
 
 # Auto-follow camera toggle
 auto_follow_enabled = False  # Start with manual camera (press C to toggle)
+camera_flip_view = True  # Start with flipped view (track opposite edge, beetles in foreground)
 
 # Initialize gradient background for forest atmosphere
 renderer.init_gradient_background()
@@ -5173,8 +5178,10 @@ while window.running:
 
         # Position camera OPPOSITE the edge (between center and beetles)
         # This makes beetles foreground, edge background
-        target_x = mid_x - edge_dx_norm * adjusted_camera_distance
-        target_z = mid_z - edge_dz_norm * adjusted_camera_distance
+        # If flip view enabled, position camera on the SAME SIDE as edge (opposite side)
+        flip_multiplier = 1.0 if camera_flip_view else -1.0
+        target_x = mid_x + (edge_dx_norm * adjusted_camera_distance * flip_multiplier)
+        target_z = mid_z + (edge_dz_norm * adjusted_camera_distance * flip_multiplier)
 
         # Dynamic camera height based on beetle separation
         base_height = physics_params["CAMERA_BASE_HEIGHT"]
@@ -5195,7 +5202,9 @@ while window.running:
         camera.pitch += (target_pitch - camera.pitch) * lerp_factor
 
         # Rotate camera to face TOWARD the edge (so edge is in background)
-        target_yaw = math.degrees(math.atan2(edge_dx_norm, edge_dz_norm))
+        # If flip view enabled, rotate 180 degrees to face opposite direction
+        base_yaw = math.degrees(math.atan2(edge_dx_norm, edge_dz_norm))
+        target_yaw = (base_yaw + 180.0) % 360.0 if camera_flip_view else base_yaw
 
         # Smooth yaw transition (handle angle wrapping)
         yaw_diff = target_yaw - camera.yaw
@@ -5298,15 +5307,23 @@ while window.running:
                 yaw_pressed = False
             else:
                 # OTHER TYPES: V/B control horn yaw (claws)
+                # Set beetle-specific yaw limits
+                if beetle_blue.horn_type == "stag":
+                    max_yaw_limit = HORN_MAX_YAW_STAG
+                    min_yaw_limit = HORN_MIN_YAW_STAG
+                else:
+                    max_yaw_limit = HORN_MAX_YAW
+                    min_yaw_limit = HORN_MIN_YAW
+
                 if window.is_pressed('v'):
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
                     new_yaw = beetle_blue.horn_yaw - effective_speed * PHYSICS_TIMESTEP
-                    new_yaw = max(HORN_MIN_YAW, new_yaw)
+                    new_yaw = max(min_yaw_limit, new_yaw)
                     yaw_speed = -effective_speed
                 elif window.is_pressed('b'):
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
                     new_yaw = beetle_blue.horn_yaw + effective_speed * PHYSICS_TIMESTEP
-                    new_yaw = min(HORN_MAX_YAW, new_yaw)
+                    new_yaw = min(max_yaw_limit, new_yaw)
                     yaw_speed = effective_speed
 
             # Predictive collision check (optimized for combined movements + dual-pincer tracking)
@@ -5425,15 +5442,23 @@ while window.running:
                 yaw_pressed = False
             else:
                 # OTHER TYPES: N/M control horn yaw (claws)
+                # Set beetle-specific yaw limits
+                if beetle_red.horn_type == "stag":
+                    max_yaw_limit = HORN_MAX_YAW_STAG
+                    min_yaw_limit = HORN_MIN_YAW_STAG
+                else:
+                    max_yaw_limit = HORN_MAX_YAW
+                    min_yaw_limit = HORN_MIN_YAW
+
                 if window.is_pressed('n'):
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
                     new_yaw = beetle_red.horn_yaw - effective_speed * PHYSICS_TIMESTEP
-                    new_yaw = max(HORN_MIN_YAW, new_yaw)
+                    new_yaw = max(min_yaw_limit, new_yaw)
                     yaw_speed = -effective_speed
                 elif window.is_pressed('m'):
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
                     new_yaw = beetle_red.horn_yaw + effective_speed * PHYSICS_TIMESTEP
-                    new_yaw = min(HORN_MAX_YAW, new_yaw)
+                    new_yaw = min(max_yaw_limit, new_yaw)
                     yaw_speed = effective_speed
 
             # Predictive collision check (optimized for combined movements + dual-pincer tracking)
@@ -6418,6 +6443,8 @@ while window.running:
     physics_params["CAMERA_PITCH"] = window.GUI.slider_float("Camera Angle", physics_params["CAMERA_PITCH"], -90.0, -30.0)
     physics_params["CAMERA_BASE_HEIGHT"] = window.GUI.slider_float("Camera Height", physics_params["CAMERA_BASE_HEIGHT"], 20.0, 120.0)
     physics_params["CAMERA_DISTANCE"] = window.GUI.slider_float("Camera Distance", physics_params["CAMERA_DISTANCE"], 10.0, 80.0)
+    if window.GUI.button("Flip Camera View"):
+        camera_flip_view = not camera_flip_view
 
     # Update beetle inertia if factor changed
     if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
