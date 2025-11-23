@@ -5041,8 +5041,8 @@ physics_params = {
     # Airborne tumbling physics parameters
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
-    "GROUND_TILT_ANGLE": 250.0,  # Max tilt angle in degrees when on ground
-    "TUMBLE_MULTIPLIER": 3.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
+    "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
+    "TUMBLE_MULTIPLIER": 5.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
