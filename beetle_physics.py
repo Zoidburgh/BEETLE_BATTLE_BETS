@@ -271,11 +271,17 @@ class Beetle:
             self.roll_velocity *= airborne_damping
 
         # Ground restoring torque - automatically level out when on ground
-        if self.on_ground:
+        # Only apply strong restoring when beetle is settled, not just bouncing
+        if self.on_ground and abs(self.vy) < 2.0:  # Must be on ground AND not bouncing up/down
             # Apply torque to bring pitch/roll back to zero (level)
-            RESTORING_STRENGTH = 20.0  # How quickly beetle levels out
+            RESTORING_STRENGTH = physics_params.get("RESTORING_STRENGTH", 35.0)
             self.pitch_velocity -= self.pitch * RESTORING_STRENGTH * dt
             self.roll_velocity -= self.roll * RESTORING_STRENGTH * dt
+        elif self.on_ground and abs(self.vy) >= 2.0:
+            # Bouncing/landing - apply moderate restoring to allow tumbling but still settle
+            WEAK_RESTORING = physics_params.get("WEAK_RESTORING", 25.0)
+            self.pitch_velocity -= self.pitch * WEAK_RESTORING * dt
+            self.roll_velocity -= self.roll * WEAK_RESTORING * dt
 
         # Clamp linear speed (different max for forward vs backward)
         speed = math.sqrt(self.vx**2 + self.vz**2)
@@ -4713,11 +4719,12 @@ def beetle_collision(b1, b2, params):
                         lever_z = collision_z - b2.z  # Z offset (causes pitch)
 
                         # Pitch torque: force in +Y at position +Z causes nose-up pitch
-                        pitch_torque = lever_z * lift_force  # Positive Z (front contact) = positive pitch (nose up)
+                        tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
+                        pitch_torque = lever_z * lift_force * tumble_mult
                         b2.pitch_velocity += pitch_torque / b2.pitch_inertia
 
                         # Roll torque: force in +Y at position +X causes right-side-up roll
-                        roll_torque = lever_x * lift_force
+                        roll_torque = lever_x * lift_force * tumble_mult
                         b2.roll_velocity += roll_torque / b2.roll_inertia
 
                         # Set cooldown for both beetles
@@ -4736,11 +4743,12 @@ def beetle_collision(b1, b2, params):
                         lever_z = collision_z - b1.z  # Z offset (causes pitch)
 
                         # Pitch torque: force in +Y at position +Z causes nose-up pitch
-                        pitch_torque = lever_z * lift_force  # Positive Z (front contact) = positive pitch (nose up)
+                        tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
+                        pitch_torque = lever_z * lift_force * tumble_mult
                         b1.pitch_velocity += pitch_torque / b1.pitch_inertia
 
                         # Roll torque
-                        roll_torque = lever_x * lift_force
+                        roll_torque = lever_x * lift_force * tumble_mult
                         b1.roll_velocity += roll_torque / b1.roll_inertia
 
                         # Set cooldown for both beetles
@@ -5031,9 +5039,12 @@ physics_params = {
     "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
 
     # Airborne tumbling physics parameters
-    "AIRBORNE_DAMPING": 0.98,  # Angular damping when airborne (0.98 = 2% loss per frame)
+    "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 250.0,  # Max tilt angle in degrees when on ground
+    "TUMBLE_MULTIPLIER": 3.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
+    "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
+    "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
     # Ball physics parameters (tunable via sliders for smooth rolling/bouncing)
     "BALL_SEPARATION_FORCE": BALL_SEPARATION_FORCE,  # How hard ball pushes away from beetles
@@ -6295,9 +6306,12 @@ while window.running:
     new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
 
     window.GUI.text("--- Airborne Tumbling ---")
-    physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.5, 0.99)
+    physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
     physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
     physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
+    physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 5.0)
+    physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
+    physics_params["WEAK_RESTORING"] = window.GUI.slider_float("Restoring (Bouncing)", physics_params["WEAK_RESTORING"], 5.0, 50.0)
 
     # Update beetle inertia if factor changed
     if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
