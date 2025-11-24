@@ -3716,7 +3716,11 @@ def calculate_horn_tip_position(beetle):
     # Horn tip in local coordinates (furthest voxel + safety margin)
     # For both rhino and stag: max_x = 3 + shaft_len + prong_len (approx)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0  # Actual furthest voxel + margin
-    tip_local_y = 1.0  # Base height at pivot
+    # Rhino Y-fork prongs extend upward, stag pincers pitch forward into Y - both need Y-buffer
+    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else
+                         beetle.horn_prong_len + 2.0 if beetle.horn_type == "stag" else
+                         3.0 if beetle.horn_type == "scorpion" else
+                         beetle.horn_prong_len * 2 if beetle.horn_type == "atlas" else 0.0)
     tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len  # Stag pincers extend sideways
 
     # Add safety buffer for tip width (2-3 voxels wide) + voxel edge + rotation margin
@@ -3759,7 +3763,7 @@ def calculate_horn_tip_position(beetle):
 
     # Step 4: Translate back from pivot
     local_x = yawed_x + 3.0
-    local_y = yawed_y + 1.0
+    local_y = float(int(ti.round(yawed_y + 1.0)))  # Round to match rendering
     local_z = yawed_z
 
     # Step 5: Apply beetle body yaw rotation (around Y-axis)
@@ -3780,7 +3784,8 @@ def calculate_horn_tip_position_with_yaw(beetle, yaw_angle):
     """Calculate horn tip position with a specific yaw angle (for predictive collision checking)"""
     # Horn tip in local coordinates (same as base function)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
-    tip_local_y = 1.0
+    # Rhino Y-fork prongs extend upward, need buffer for prong height + rotation safety
+    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else 0.0)
     tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
     # Add safety buffer for tip width + voxel edge + rotation margin
@@ -3823,7 +3828,7 @@ def calculate_horn_tip_position_with_yaw(beetle, yaw_angle):
 
     # Step 4: Translate back from pivot
     local_x = yawed_x + 3.0
-    local_y = yawed_y + 1.0
+    local_y = float(int(ti.round(yawed_y + 1.0)))  # Round to match rendering
     local_z = yawed_z
 
     # Step 5: Apply beetle body yaw rotation
@@ -3844,7 +3849,8 @@ def calculate_horn_tip_position_with_pitch(beetle, pitch_angle):
     """Calculate horn tip position with a specific pitch angle (for predictive collision checking)"""
     # Horn tip in local coordinates (same as base function)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
-    tip_local_y = 1.0
+    # Rhino Y-fork prongs extend upward, need buffer for prong height + rotation safety
+    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else 0.0)
     tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
     # Add safety buffer for tip width + voxel edge + rotation margin
@@ -3887,7 +3893,7 @@ def calculate_horn_tip_position_with_pitch(beetle, pitch_angle):
 
     # Step 4: Translate back from pivot
     local_x = yawed_x + 3.0
-    local_y = yawed_y + 1.0
+    local_y = float(int(ti.round(yawed_y + 1.0)))  # Round to match rendering
     local_z = yawed_z
 
     # Step 5: Apply beetle body yaw rotation
@@ -3908,7 +3914,8 @@ def calculate_horn_tip_position_with_both(beetle, pitch_angle, yaw_angle):
     """Calculate horn tip position with both pitch and yaw (optimized for combined movements)"""
     # Horn tip in local coordinates (same as base function)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
-    tip_local_y = 1.0
+    # Rhino Y-fork prongs extend upward, need buffer for prong height + rotation safety
+    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else 0.0)
     tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
     # Add safety buffer for tip width + voxel edge + rotation margin
@@ -3951,7 +3958,7 @@ def calculate_horn_tip_position_with_both(beetle, pitch_angle, yaw_angle):
 
     # Step 4: Translate back from pivot
     local_x = yawed_x + 3.0
-    local_y = yawed_y + 1.0
+    local_y = float(int(ti.round(yawed_y + 1.0)))  # Round to match rendering
     local_z = yawed_z
 
     # Step 5: Apply beetle body yaw rotation
@@ -4091,9 +4098,9 @@ def calculate_hercules_jaw_tips(beetle, pitch_angle, yaw_angle):
 
     # Account for 2x2x2 block placement (dx_off: [0,1], dy_off: [0,1], dz: [-1,0])
     # The furthest voxel is at int(center_x) + 1 in X, int(center_y) + 1 in Y
-    # Z voxels at -1 and 0 can rotate to extend Y when roll applied
+    # Z voxels at -1 and 0 can rotate to extend Y when roll applied (up to ±0.5 voxels at ±20° twist)
     top_tip_local_x = float(int(center_x) + 1) + 1.5  # +1 for block, +1.5 for width
-    top_tip_local_y = float(int(center_y) + 1) + 1.5  # +1 for block, +1.5 for width + rotation
+    top_tip_local_y = float(int(center_y) + 1) + 2.0  # +1 for block, +2.0 for width + rotation safety
     top_tip_local_z = 0.0
 
     # Recalculate rotation from the buffered tip position
@@ -4114,7 +4121,7 @@ def calculate_hercules_jaw_tips(beetle, pitch_angle, yaw_angle):
 
     # Step 4: Translate back from top pivot (add 7 to Y, 3 to X)
     top_local_x = top_yawed_x + 3.0
-    top_local_y = top_yawed_y + 7.0
+    top_local_y = float(int(ti.round(top_yawed_y + 7.0)))  # Round to match rendering
     top_local_z = top_yawed_z
 
     # Step 5: Apply beetle body rotation
@@ -4158,9 +4165,9 @@ def calculate_hercules_jaw_tips(beetle, pitch_angle, yaw_angle):
     center_y_bottom = bottom_pre_rotated_y + bottom_pivot_y
 
     # Account for 2x2x2 block placement - furthest voxel is at int(center_x) + 1, int(center_y) + 1
-    # Z voxels at -1 and 0 can rotate to extend Y when roll applied
+    # Z voxels at -1 and 0 can rotate to extend Y when roll applied (up to ±0.5 voxels at ±20° twist)
     bottom_tip_local_x = float(int(center_x_bottom) + 1) + 1.5  # +1 for block, +1.5 for width
-    bottom_tip_local_y = float(int(center_y_bottom) + 1) + 1.5  # +1 for block, +1.5 for width + rotation
+    bottom_tip_local_y = float(int(center_y_bottom) + 1) + 2.0  # +1 for block, +2.0 for width + rotation safety
     bottom_tip_local_z = 0.0
 
     # Recalculate from buffered tip position for pitch/yaw application
@@ -4187,7 +4194,7 @@ def calculate_hercules_jaw_tips(beetle, pitch_angle, yaw_angle):
 
     # Step 5: Translate back from bottom pivot (add 1 to Y, 3 to X)
     bottom_local_x = bottom_yawed_x + 3.0
-    bottom_local_y = bottom_yawed_y + 1.0
+    bottom_local_y = float(int(ti.round(bottom_yawed_y + 1.0)))  # Round to match rendering
     bottom_local_z = bottom_yawed_z
 
     # Step 6: Apply beetle body rotation
@@ -5080,7 +5087,7 @@ physics_params = {
 
     # Camera parameters (for auto-follow mode)
     "CAMERA_PITCH": -30.85,  # Camera pitch angle (-90=top-down, -45=side view, -30.85=default)
-    "CAMERA_BASE_HEIGHT": 59.1,  # Base camera height in voxels (before dynamic adjustment)
+    "CAMERA_BASE_HEIGHT": 74.7,  # Base camera height in voxels (before dynamic adjustment)
     "CAMERA_DISTANCE": 76.35  # Camera horizontal distance from midpoint
 }
 
@@ -5240,10 +5247,9 @@ while window.running:
         target_x = mid_x + (edge_dx_norm * adjusted_camera_distance * flip_multiplier)
         target_z = mid_z + (edge_dz_norm * adjusted_camera_distance * flip_multiplier)
 
-        # Dynamic camera height based on beetle separation
+        # Fixed camera height (dynamic scaling disabled)
         base_height = physics_params["CAMERA_BASE_HEIGHT"]
-        height_multiplier = 0.8
-        target_y = base_height + (separation * height_multiplier)
+        target_y = base_height
         target_y = max(20.0, min(150.0, target_y))  # Clamp height
 
         # Smooth interpolation (lerp) to avoid jarring camera movement
