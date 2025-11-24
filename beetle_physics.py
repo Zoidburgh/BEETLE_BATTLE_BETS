@@ -415,14 +415,44 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
     if dist_sq > 5776:  # (76 voxels)^2 = 2 * 38 voxel max reach for collision detection
         too_far = 1
 
-    # Tighter collision bounds - only check where beetles can actually overlap
-    # Beetles are max 38 voxels from center (max body back: 16 + max horn forward: 21 = 37 + 1 safety margin)
-    x_min = ti.max(ti.max(0, center1_x - 38), ti.max(0, center2_x - 38))
-    x_max = ti.min(ti.min(simulation.n_grid, center1_x + 38),
-                   ti.min(simulation.n_grid, center2_x + 38))
-    z_min = ti.max(ti.max(0, center1_z - 38), ti.max(0, center2_z - 38))
-    z_max = ti.min(ti.min(simulation.n_grid, center1_z + 38),
-                   ti.min(simulation.n_grid, center2_z + 38))
+    # OPTIMIZATION: Tighter collision bounds based on actual separation distance
+    # Instead of scanning full 38-voxel radius around each beetle, only scan the overlap region
+    dist_between = int(ti.sqrt(float(dist_sq)))
+
+    # Calculate overlap region center (midpoint between beetles)
+    overlap_center_x = (center1_x + center2_x) // 2
+    overlap_center_z = (center1_z + center2_z) // 2
+
+    # Overlap radius calculation:
+    # - When beetles far apart: small overlap region (dist/2 + body_radius)
+    # - When beetles close/touching: larger overlap region to catch all contact
+    # - Max body radius (without horn): ~15 voxels
+    # - With horns: need to add horn reach when close
+    BODY_RADIUS = 15
+    HORN_REACH = 21
+
+    # Initialize overlap_radius (required by Taichi before conditional)
+    overlap_radius = 0
+
+    # Dynamic radius: when far apart use body radius, when close include horn reach
+    # Transition smoothly: if dist > 30, use body only; if dist < 30, add partial horn reach
+    if dist_between > 30:
+        overlap_radius = (dist_between // 2) + BODY_RADIUS
+    else:
+        # When close, need to account for horns extending into overlap region
+        # Linear interpolation: at dist=0, full horn reach; at dist=30, no horn reach
+        horn_factor = (30 - dist_between) / 30.0
+        extra_horn = int(HORN_REACH * horn_factor)
+        overlap_radius = (dist_between // 2) + BODY_RADIUS + extra_horn
+
+    # Ensure minimum scan radius (never smaller than 12 voxels to catch edge cases)
+    overlap_radius = ti.max(12, overlap_radius)
+
+    # Calculate bounds around overlap center (much tighter than 38-voxel radius per beetle)
+    x_min = ti.max(0, overlap_center_x - overlap_radius)
+    x_max = ti.min(simulation.n_grid, overlap_center_x + overlap_radius)
+    z_min = ti.max(0, overlap_center_z - overlap_radius)
+    z_max = ti.min(simulation.n_grid, overlap_center_z + overlap_radius)
 
     # Scan for colliding voxels - TRUE 3D collision detection (only if not too far)
     # Track Y-ranges for each beetle in each XZ column
@@ -4296,6 +4326,18 @@ def calculate_hercules_jaw_tips(beetle, pitch_angle, yaw_angle):
 
 def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
     """Calculate minimum distance between horn tips (handles stag, rhino, and hercules)"""
+
+    # OPTIMIZATION: Early distance rejection before expensive calculations
+    # Fast 2D planar distance check (cheaper than 3D calculations with sqrt)
+    dx_2d = beetle1.x - beetle2.x
+    dz_2d = beetle1.z - beetle2.z
+    planar_dist_sq = dx_2d * dx_2d + dz_2d * dz_2d
+
+    # Early rejection: if beetles more than combined horn reach apart, skip calculations
+    # Max horn reach per beetle ≈ 17 voxels, so 2× + safety margin = 40 voxels
+    MAX_HORN_REACH_SQ = 1600.0  # 40^2
+    if planar_dist_sq > MAX_HORN_REACH_SQ:
+        return 999.0  # Definitely safe, no collision possible
 
     # CASE 1: Both rhino - check all 4 Y-fork prong tip combinations
     if beetle1.horn_type == "rhino" and beetle2.horn_type == "rhino":
