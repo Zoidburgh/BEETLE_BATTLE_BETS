@@ -1432,6 +1432,10 @@ collision_contact_count = ti.field(ti.i32, shape=())
 collision_has_horn_tips = ti.field(ti.i32, shape=())  # 1 if horn tip voxels involved, 0 otherwise
 collision_has_hook_interiors = ti.field(ti.i32, shape=())  # 1 if stag hook interior voxels involved, 0 otherwise
 
+# OPTIMIZATION: Spatial hash for O(N+M) collision point calculation instead of O(N×M)
+# Hash grid covers the arena (128x128 should be sufficient for 256-grid world)
+collision_spatial_hash = ti.field(dtype=ti.i32, shape=(128, 128))
+
 # Edge tipping calculation fields
 edge_tipping_vy = ti.field(ti.f32, shape=())  # Downward velocity to apply
 edge_tipping_pitch_vel = ti.field(ti.f32, shape=())  # Pitch angular velocity
@@ -2429,6 +2433,20 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
     horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
     horn_pivot_y = 2
 
+    # OPTIMIZATION: Pre-calculate all trigonometry values ONCE before voxel loop
+    # These are constant for all voxels in this beetle, no need to recalculate 600+ times
+    cos_horn_pitch = ti.cos(horn_pitch)
+    sin_horn_pitch = ti.sin(horn_pitch)
+    cos_horn_yaw = ti.cos(horn_yaw)
+    sin_horn_yaw = ti.sin(horn_yaw)
+
+    # Scorpion-specific trig (only calculated if needed, but outside loop)
+    pitch_deviation = horn_pitch - default_horn_pitch
+    cos_default = ti.cos(default_horn_pitch)
+    sin_default = ti.sin(default_horn_pitch)
+    cos_deviation = ti.cos(pitch_deviation)
+    sin_deviation = ti.sin(pitch_deviation)
+
     # 1. Place body with horn pitch applied
     for i in range(body_cache_size[None]):
         local_x = float(body_cache_x[i])
@@ -2457,8 +2475,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             # STEP 1: Pitch rotation (around Z-axis in beetle local space)
             # Positive pitch = horn rotates up
             # For Hercules: ONLY bottom horn (y < 3) rotates, top horn (y >= 3) stays fixed
-            cos_horn_pitch = ti.cos(horn_pitch)
-            sin_horn_pitch = ti.sin(horn_pitch)
+            # NOTE: cos_horn_pitch and sin_horn_pitch already calculated outside loop
 
             # Initialize pitched results
             pitched_x = rel_x
@@ -2468,19 +2485,15 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             # Apply pitch rotation based on beetle type and horn position
             if horn_type_id == 3:
                 # SCORPION: Both claws start at default angle, then alternate when R/Y pressed
-                # Calculate deviation from default (neutral) position
-                pitch_deviation = horn_pitch - default_horn_pitch
+                # NOTE: pitch_deviation, cos_default, sin_default, cos_deviation, sin_deviation
+                # already calculated outside loop for performance
 
                 # First apply default pitch to both claws equally
-                cos_default = ti.cos(default_horn_pitch)
-                sin_default = ti.sin(default_horn_pitch)
                 temp_x = rel_x * cos_default - rel_y * sin_default
                 temp_y = rel_x * sin_default + rel_y * cos_default
 
                 # Then apply alternating deviation
                 if pitch_deviation != 0.0:
-                    cos_deviation = ti.cos(pitch_deviation)
-                    sin_deviation = ti.sin(pitch_deviation)
 
                     if rel_z < -1.0:  # Left claw - invert deviation
                         pitched_x = temp_x * cos_deviation + temp_y * sin_deviation
@@ -2525,8 +2538,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
 
             # STEP 2: Yaw rotation (around Y-axis in beetle local space)
             # Behavior differs based on beetle type
-            cos_horn_yaw = ti.cos(horn_yaw)
-            sin_horn_yaw = ti.sin(horn_yaw)
+            # NOTE: cos_horn_yaw and sin_horn_yaw already calculated outside loop
 
             # Initialize yaw results (required for Taichi)
             yawed_x = pitched_x
@@ -2907,6 +2919,20 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
     horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
     horn_pivot_y = 2
 
+    # OPTIMIZATION: Pre-calculate all trigonometry values ONCE before voxel loop
+    # These are constant for all voxels in this beetle, no need to recalculate 600+ times
+    cos_horn_pitch = ti.cos(horn_pitch)
+    sin_horn_pitch = ti.sin(horn_pitch)
+    cos_horn_yaw = ti.cos(horn_yaw)
+    sin_horn_yaw = ti.sin(horn_yaw)
+
+    # Scorpion-specific trig (only calculated if needed, but outside loop)
+    pitch_deviation = horn_pitch - default_horn_pitch
+    cos_default = ti.cos(default_horn_pitch)
+    sin_default = ti.sin(default_horn_pitch)
+    cos_deviation = ti.cos(pitch_deviation)
+    sin_deviation = ti.sin(pitch_deviation)
+
     # 1. Place body with horn pitch applied
     for i in range(red_body_cache_size[None]):
         local_x = float(red_body_cache_x[i])
@@ -2935,8 +2961,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             # STEP 1: Pitch rotation (around Z-axis in beetle local space)
             # Positive pitch = horn rotates up
             # For Hercules: ONLY bottom horn (y < 3) rotates, top horn (y >= 3) stays fixed
-            cos_horn_pitch = ti.cos(horn_pitch)
-            sin_horn_pitch = ti.sin(horn_pitch)
+            # NOTE: cos_horn_pitch and sin_horn_pitch already calculated outside loop
 
             # Initialize pitched results
             pitched_x = rel_x
@@ -2946,19 +2971,15 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             # Apply pitch rotation based on beetle type and horn position
             if horn_type_id == 3:
                 # SCORPION: Both claws start at default angle, then alternate when R/Y pressed
-                # Calculate deviation from default (neutral) position
-                pitch_deviation = horn_pitch - default_horn_pitch
+                # NOTE: pitch_deviation, cos_default, sin_default, cos_deviation, sin_deviation
+                # already calculated outside loop for performance
 
                 # First apply default pitch to both claws equally
-                cos_default = ti.cos(default_horn_pitch)
-                sin_default = ti.sin(default_horn_pitch)
                 temp_x = rel_x * cos_default - rel_y * sin_default
                 temp_y = rel_x * sin_default + rel_y * cos_default
 
                 # Then apply alternating deviation
                 if pitch_deviation != 0.0:
-                    cos_deviation = ti.cos(pitch_deviation)
-                    sin_deviation = ti.sin(pitch_deviation)
 
                     if rel_z < -1.0:  # Left claw - invert deviation
                         pitched_x = temp_x * cos_deviation + temp_y * sin_deviation
@@ -3003,8 +3024,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
 
             # STEP 2: Yaw rotation (around Y-axis in beetle local space)
             # Behavior differs based on beetle type
-            cos_horn_yaw = ti.cos(horn_yaw)
-            sin_horn_yaw = ti.sin(horn_yaw)
+            # NOTE: cos_horn_yaw and sin_horn_yaw already calculated outside loop
 
             # Initialize yaw results (required for Taichi)
             yawed_x = pitched_x
@@ -3472,7 +3492,7 @@ def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_co
 
 @ti.kernel
 def calculate_collision_point_kernel(overlap_count: ti.i32):
-    """GPU-accelerated calculation of 3D collision point from overlapping voxels"""
+    """OPTIMIZED: GPU-accelerated O(N+M) collision point calculation using spatial hash"""
     # Reset collision data
     collision_point_x[None] = 0.0
     collision_point_y[None] = 0.0
@@ -3485,20 +3505,37 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
     y_scan_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
     y_scan_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 35)
 
-    # Check overlap between beetles using stored occupied voxels
+    # PHASE 1: Mark beetle1 occupied XZ positions in spatial hash (O(N) operation)
     for i in range(beetle1_occupied_count[None]):
         vx1 = beetle1_occupied_x[i]
         vz1 = beetle1_occupied_z[i]
+        # Hash to smaller grid (map 256-grid world to 128x128 hash)
+        hash_x = vx1 % 128
+        hash_z = vz1 % 128
+        collision_spatial_hash[hash_x, hash_z] = 1  # Mark as occupied
 
-        for j in range(beetle2_occupied_count[None]):
-            vx2 = beetle2_occupied_x[j]
-            vz2 = beetle2_occupied_z[j]
+    # PHASE 2: Check beetle2 positions against hash (O(M) operation)
+    for j in range(beetle2_occupied_count[None]):
+        vx2 = beetle2_occupied_x[j]
+        vz2 = beetle2_occupied_z[j]
+        # Hash to smaller grid
+        hash_x = vx2 % 128
+        hash_z = vz2 % 128
 
-            # If same (x, z) position, we have overlap
-            if vx1 == vx2 and vz1 == vz2:
-                # Scan vertically to find all contact heights
+        # Check if this XZ position overlaps with beetle1
+        if collision_spatial_hash[hash_x, hash_z] == 1:
+            # Potential overlap found - verify actual coordinates and scan vertical column
+            # (Need to verify since hash might have collisions)
+            found_match = 0
+            for i in range(beetle1_occupied_count[None]):
+                if beetle1_occupied_x[i] == vx2 and beetle1_occupied_z[i] == vz2:
+                    found_match = 1
+                    break
+
+            if found_match == 1:
+                # Confirmed overlap - scan vertically to find all contact heights
                 for vy_grid in range(y_scan_start, y_scan_end):
-                    vtype = simulation.voxel_type[vx1, vy_grid, vz1]
+                    vtype = simulation.voxel_type[vx2, vy_grid, vz2]
                     if vtype != 0:  # Non-empty voxel
                         # Check if this is a horn tip voxel
                         if vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
@@ -3510,10 +3547,18 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                             collision_has_hook_interiors[None] = 1
 
                         # Accumulate collision position
-                        ti.atomic_add(collision_point_x[None], float(vx1) - simulation.n_grid / 2.0)
-                        ti.atomic_add(collision_point_z[None], float(vz1) - simulation.n_grid / 2.0)
+                        ti.atomic_add(collision_point_x[None], float(vx2) - simulation.n_grid / 2.0)
+                        ti.atomic_add(collision_point_z[None], float(vz2) - simulation.n_grid / 2.0)
                         ti.atomic_add(collision_point_y[None], float(vy_grid) - RENDER_Y_OFFSET)
                         ti.atomic_add(collision_contact_count[None], 1)
+
+    # PHASE 3: Clear spatial hash for next frame (O(N) operation)
+    for i in range(beetle1_occupied_count[None]):
+        vx1 = beetle1_occupied_x[i]
+        vz1 = beetle1_occupied_z[i]
+        hash_x = vx1 % 128
+        hash_z = vz1 % 128
+        collision_spatial_hash[hash_x, hash_z] = 0  # Reset
 
 
 def calculate_horn_length(shaft_len, prong_len, horn_type):
