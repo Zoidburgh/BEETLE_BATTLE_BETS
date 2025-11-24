@@ -1327,11 +1327,62 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
     while len(hook_interior_flags) < len(body_voxels):
         hook_interior_flags.append(0)
 
-    return body_voxels, leg_voxels, leg_tips, hook_interior_flags
+    # OPTIMIZATION: Pre-compute voxel metadata flags to eliminate per-frame conditional logic
+    # Compute stripe, horn_tip, and very_tip flags for each voxel based on horn type
+    stripe_flags = []
+    horn_tip_flags = []
+    very_tip_flags = []
+
+    # Map horn_type string to horn_type_id for consistency with placement logic
+    horn_type_id_map = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4}
+    horn_type_id = horn_type_id_map.get(horn_type, 0)
+
+    for i, (dx, dy, dz) in enumerate(body_voxels):
+        # Stripe detection: top centerline of body (not horn, not scorpion)
+        is_stripe = 0
+        if horn_type_id != 3 and dx < 3 and dy >= 3 and abs(dz) <= 1.0:
+            is_stripe = 1
+        stripe_flags.append(is_stripe)
+
+        # Horn tip detection: varies by beetle type
+        is_horn_tip = 0
+        if horn_type_id == 1:  # Stag
+            if dx >= 9:
+                is_horn_tip = 1
+        elif horn_type_id == 2:  # Hercules
+            if dx >= 10:
+                is_horn_tip = 1
+        elif horn_type_id == 3:  # Scorpion
+            if abs(dz) > 2:  # Claws
+                if dx >= 1:
+                    is_horn_tip = 1
+            else:  # Tail/stinger
+                if dx >= 1:
+                    is_horn_tip = 1
+        elif horn_type_id == 4:  # Atlas
+            if dx >= 11:
+                is_horn_tip = 1
+        else:  # Rhino (horn_type_id == 0)
+            if dx >= 13:
+                is_horn_tip = 1
+        horn_tip_flags.append(is_horn_tip)
+
+        # Very tip detection: only for scorpion dual-layer tip coloring
+        is_very_tip = 0
+        if horn_type_id == 3:  # Scorpion only
+            if abs(dz) > 2:  # Claws
+                if dx >= 12:
+                    is_very_tip = 1
+            else:  # Stinger
+                if dx >= 3:
+                    is_very_tip = 1
+        very_tip_flags.append(is_very_tip)
+
+    return body_voxels, leg_voxels, leg_tips, hook_interior_flags, stripe_flags, horn_tip_flags, very_tip_flags
 
 # Generate separate geometry for blue and red beetles (start with same default params)
-BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS = generate_beetle_geometry()
-RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS = generate_beetle_geometry()
+BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS = generate_beetle_geometry()
+RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS = generate_beetle_geometry()
 print(f"Blue beetle geometry cached: {len(BLUE_BODY)} body voxels + {sum(len(leg) for leg in BLUE_LEGS)} leg voxels + {sum(len(tips) for tips in BLUE_LEG_TIPS)} tip voxels")
 print(f"Red beetle geometry cached: {len(RED_BODY)} body voxels + {sum(len(leg) for leg in RED_LEGS)} leg voxels + {sum(len(tips) for tips in RED_LEG_TIPS)} tip voxels")
 
@@ -1347,6 +1398,10 @@ blue_body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 blue_body_cache_y = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 blue_body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 blue_body_hook_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # Hook interior flags for stag beetles
+# OPTIMIZATION: Pre-computed voxel metadata to eliminate per-frame conditional logic
+blue_body_stripe_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is racing stripe
+blue_body_horn_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is horn tip
+blue_body_very_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is very tip (scorpion)
 
 # Separate body cache fields for red beetle
 red_body_cache_size = ti.field(ti.i32, shape=())
@@ -1355,6 +1410,10 @@ red_body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 red_body_cache_y = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 red_body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
 red_body_hook_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # Hook interior flags for stag beetles
+# OPTIMIZATION: Pre-computed voxel metadata to eliminate per-frame conditional logic
+red_body_stripe_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is racing stripe
+red_body_horn_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is horn tip
+red_body_very_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is very tip (scorpion)
 
 # Create OVERSIZED Taichi fields for leg geometry cache (6 legs)
 # Store all leg voxels flattened with offsets to know where each leg starts
@@ -1464,6 +1523,15 @@ for i, (dx, dy, dz) in enumerate(BLUE_BODY):
         blue_body_hook_flags[i] = BLUE_HOOK_FLAGS[i]
     else:
         blue_body_hook_flags[i] = 0
+    # Copy pre-computed metadata flags
+    if i < len(BLUE_STRIPE_FLAGS):
+        blue_body_stripe_flags[i] = BLUE_STRIPE_FLAGS[i]
+        blue_body_horn_tip_flags[i] = BLUE_HORN_TIP_FLAGS[i]
+        blue_body_very_tip_flags[i] = BLUE_VERY_TIP_FLAGS[i]
+    else:
+        blue_body_stripe_flags[i] = 0
+        blue_body_horn_tip_flags[i] = 0
+        blue_body_very_tip_flags[i] = 0
 
 # Copy blue beetle leg geometry to GPU
 offset = 0
@@ -1497,6 +1565,15 @@ for i, (dx, dy, dz) in enumerate(RED_BODY):
         red_body_hook_flags[i] = RED_HOOK_FLAGS[i]
     else:
         red_body_hook_flags[i] = 0
+    # Copy pre-computed metadata flags
+    if i < len(RED_STRIPE_FLAGS):
+        red_body_stripe_flags[i] = RED_STRIPE_FLAGS[i]
+        red_body_horn_tip_flags[i] = RED_HORN_TIP_FLAGS[i]
+        red_body_very_tip_flags[i] = RED_VERY_TIP_FLAGS[i]
+    else:
+        red_body_stripe_flags[i] = 0
+        red_body_horn_tip_flags[i] = 0
+        red_body_very_tip_flags[i] = 0
 
 # Copy red beetle leg geometry to GPU
 offset = 0
@@ -1523,10 +1600,10 @@ for leg_id, leg_tip_voxels in enumerate(RED_LEG_TIPS):
 # Function to rebuild blue beetle geometry with new parameters
 def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild blue beetle geometry cache with new horn, body, and leg parameters"""
-    global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS
+    global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS
 
     # Generate new geometry
-    BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+    BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
 
     # Update beetle's hook interior flags
     beetle_blue.body_hook_interior_flags = list(BLUE_HOOK_FLAGS)
@@ -1545,12 +1622,27 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
         blue_body_cache_x[i] = dx
         blue_body_cache_y[i] = dy
         blue_body_cache_z[i] = dz
+        # Copy pre-computed metadata flags
+        if i < len(BLUE_STRIPE_FLAGS):
+            blue_body_stripe_flags[i] = BLUE_STRIPE_FLAGS[i]
+            blue_body_horn_tip_flags[i] = BLUE_HORN_TIP_FLAGS[i]
+            blue_body_very_tip_flags[i] = BLUE_VERY_TIP_FLAGS[i]
+            blue_body_hook_flags[i] = BLUE_HOOK_FLAGS[i]
+        else:
+            blue_body_stripe_flags[i] = 0
+            blue_body_horn_tip_flags[i] = 0
+            blue_body_very_tip_flags[i] = 0
+            blue_body_hook_flags[i] = 0
 
     # Zero out any leftover voxels from previous geometry
     for i in range(new_size, old_size):
         blue_body_cache_x[i] = 0
         blue_body_cache_y[i] = 0
         blue_body_cache_z[i] = 0
+        blue_body_stripe_flags[i] = 0
+        blue_body_horn_tip_flags[i] = 0
+        blue_body_very_tip_flags[i] = 0
+        blue_body_hook_flags[i] = 0
 
     # Update size LAST to prevent race conditions
     blue_body_cache_size[None] = new_size
@@ -1616,10 +1708,10 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
 # Function to rebuild red beetle geometry with new parameters
 def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild red beetle geometry cache with new horn, body, and leg parameters"""
-    global RED_BODY, RED_LEGS, RED_LEG_TIPS
+    global RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS
 
     # Generate new geometry
-    RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+    RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
 
     # Update beetle's hook interior flags
     beetle_red.body_hook_interior_flags = list(RED_HOOK_FLAGS)
@@ -1638,12 +1730,27 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
         red_body_cache_x[i] = dx
         red_body_cache_y[i] = dy
         red_body_cache_z[i] = dz
+        # Copy pre-computed metadata flags
+        if i < len(RED_STRIPE_FLAGS):
+            red_body_stripe_flags[i] = RED_STRIPE_FLAGS[i]
+            red_body_horn_tip_flags[i] = RED_HORN_TIP_FLAGS[i]
+            red_body_very_tip_flags[i] = RED_VERY_TIP_FLAGS[i]
+            red_body_hook_flags[i] = RED_HOOK_FLAGS[i]
+        else:
+            red_body_stripe_flags[i] = 0
+            red_body_horn_tip_flags[i] = 0
+            red_body_very_tip_flags[i] = 0
+            red_body_hook_flags[i] = 0
 
     # Zero out any leftover voxels from previous geometry
     for i in range(new_size, old_size):
         red_body_cache_x[i] = 0
         red_body_cache_y[i] = 0
         red_body_cache_z[i] = 0
+        red_body_stripe_flags[i] = 0
+        red_body_horn_tip_flags[i] = 0
+        red_body_very_tip_flags[i] = 0
+        red_body_hook_flags[i] = 0
 
     # Update size LAST to prevent race conditions
     red_body_cache_size[None] = new_size
@@ -2639,78 +2746,20 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
             # Don't overwrite floor (CONCRETE) voxels
             if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
-                # Determine if this voxel should be a racing stripe (top centerline of body)
-                # Scorpions don't have racing stripes (neither on body, claws, nor tail)
-                is_stripe = 0
-                if horn_type_id != 3 and body_cache_x[i] < 3 and local_y >= 3 and ti.abs(local_z) <= 1.0:
-                    # Top layer centerline of body (not horn, not scorpion)
-                    is_stripe = 1
-
-                # Determine if this voxel is a horn prong tip (far end of horn)
-                # For stag: color the curved prong section
-                # For rhino: color the Y-fork prongs
-                # For hercules: color the tips of both jaws
-                # For scorpion: NO tip coloring (all same body color)
-                is_horn_tip = 0
-                if horn_type_id == 1:
-                    # Stag pincers: horns start at x=3, curved section is further out
-                    # Color tips for x >= 9 (covers curved sections even at minimum size)
-                    if body_cache_x[i] >= 9:
-                        is_horn_tip = 1
-                elif horn_type_id == 2:
-                    # Hercules horns: color the far tips of both top and bottom jaws
-                    # Top horn (y > 3) and bottom horn (y < 3) tips start at x >= 10
-                    if body_cache_x[i] >= 10:
-                        is_horn_tip = 1
-                elif horn_type_id == 3:
-                    # Scorpion: color claw tips AND stinger tips
-                    if abs(body_cache_z[i]) > 2:
-                        # Claws: color tips at x >= 1 (works for all sizes)
-                        if body_cache_x[i] >= 1:
-                            is_horn_tip = 1
-                        else:
-                            is_horn_tip = 0
-                    else:
-                        # Tail/stinger: color stinger tip at forward X (x >= 1 for all tail lengths)
-                        if body_cache_x[i] >= 1:
-                            is_horn_tip = 1
-                        else:
-                            is_horn_tip = 0
-                elif horn_type_id == 4:
-                    # Atlas: color tips of both pronotum horns (forward curved sections)
-                    # Horns extend forward, tips are at x >= 11 (last ~3 voxels of each horn)
-                    if body_cache_x[i] >= 11:
-                        is_horn_tip = 1
-                else:
-                    # Rhino horn: prongs start around x=8+ (shaft + prongs)
-                    # Color tips for x >= 13 (covers just the outer prong sections)
-                    if body_cache_x[i] >= 13:
-                        is_horn_tip = 1
+                # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
+                # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
+                is_hook_interior = blue_body_hook_flags[i]
+                is_stripe = blue_body_stripe_flags[i]
+                is_horn_tip = blue_body_horn_tip_flags[i]
+                is_very_tip = blue_body_very_tip_flags[i]
 
                 # Use appropriate color: hook interior > horn tip > stripe > body color
                 voxel_color = body_color
-
-                # Check if this is a hook interior voxel (only for stag beetles)
-                is_hook_interior = 0
-                if horn_type_id == 1 and i < blue_body_cache_size[None]:
-                    is_hook_interior = blue_body_hook_flags[i]
 
                 if is_hook_interior == 1:
                     # Hook interior voxels use special type
                     voxel_color = simulation.STAG_HOOK_INTERIOR_BLUE
                 elif is_horn_tip == 1:
-                    # For scorpion, check if this is the VERY tip (dark) or regular tip (bright)
-                    is_very_tip = 0
-                    if horn_type_id == 3:  # Scorpion - dual-layer tip coloring
-                        if abs(body_cache_z[i]) > 2:
-                            # Claw very tips: x >= 12 (furthest forward voxels)
-                            if body_cache_x[i] >= 12:
-                                is_very_tip = 1
-                        else:
-                            # Stinger very tip: x >= 3 (furthest forward voxels)
-                            if body_cache_x[i] >= 3:
-                                is_very_tip = 1
-
                     # Apply color based on tip type
                     if is_very_tip == 1:  # VERY tips: dark leg tip color
                         if body_color == simulation.BEETLE_BLUE:
@@ -3125,78 +3174,20 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
             # Don't overwrite floor (CONCRETE) voxels
             if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
-                # Determine if this voxel should be a racing stripe (top centerline of body)
-                # Scorpions don't have racing stripes (neither on body, claws, nor tail)
-                is_stripe = 0
-                if horn_type_id != 3 and red_body_cache_x[i] < 3 and local_y >= 3 and ti.abs(local_z) <= 1.0:
-                    # Top layer centerline of body (not horn, not scorpion)
-                    is_stripe = 1
-
-                # Determine if this voxel is a horn prong tip (far end of horn)
-                # For stag: color the curved prong section
-                # For rhino: color the Y-fork prongs
-                # For hercules: color the tips of both jaws
-                # For scorpion: NO tip coloring (all same body color)
-                is_horn_tip = 0
-                if horn_type_id == 1:
-                    # Stag pincers: horns start at x=3, curved section is further out
-                    # Color tips for x >= 9 (covers curved sections even at minimum size)
-                    if red_body_cache_x[i] >= 9:
-                        is_horn_tip = 1
-                elif horn_type_id == 2:
-                    # Hercules horns: color the far tips of both top and bottom jaws
-                    # Top horn (y > 3) and bottom horn (y < 3) tips start at x >= 10
-                    if red_body_cache_x[i] >= 10:
-                        is_horn_tip = 1
-                elif horn_type_id == 3:
-                    # Scorpion: color claw tips AND stinger tips
-                    if abs(red_body_cache_z[i]) > 2:
-                        # Claws: color tips at x >= 1 (works for all sizes)
-                        if red_body_cache_x[i] >= 1:
-                            is_horn_tip = 1
-                        else:
-                            is_horn_tip = 0
-                    else:
-                        # Tail/stinger: color stinger tip at forward X (x >= 1 for all tail lengths)
-                        if red_body_cache_x[i] >= 1:
-                            is_horn_tip = 1
-                        else:
-                            is_horn_tip = 0
-                elif horn_type_id == 4:
-                    # Atlas: color tips of both pronotum horns (forward curved sections)
-                    # Horns extend forward, tips are at x >= 11 (last ~3 voxels of each horn)
-                    if red_body_cache_x[i] >= 11:
-                        is_horn_tip = 1
-                else:
-                    # Rhino horn: prongs start around x=8+ (shaft + prongs)
-                    # Color tips for x >= 13 (covers just the outer prong sections)
-                    if red_body_cache_x[i] >= 13:
-                        is_horn_tip = 1
+                # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
+                # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
+                is_hook_interior = red_body_hook_flags[i]
+                is_stripe = red_body_stripe_flags[i]
+                is_horn_tip = red_body_horn_tip_flags[i]
+                is_very_tip = red_body_very_tip_flags[i]
 
                 # Use appropriate color: hook interior > horn tip > stripe > body color
                 voxel_color = body_color
-
-                # Check if this is a hook interior voxel (only for stag beetles)
-                is_hook_interior = 0
-                if horn_type_id == 1 and i < red_body_cache_size[None]:
-                    is_hook_interior = red_body_hook_flags[i]
 
                 if is_hook_interior == 1:
                     # Hook interior voxels use special type
                     voxel_color = simulation.STAG_HOOK_INTERIOR_RED
                 elif is_horn_tip == 1:
-                    # For scorpion, check if this is the VERY tip (dark) or regular tip (bright)
-                    is_very_tip = 0
-                    if horn_type_id == 3:  # Scorpion - dual-layer tip coloring
-                        if abs(body_cache_z[i]) > 2:
-                            # Claw very tips: x >= 12 (furthest forward voxels)
-                            if body_cache_x[i] >= 12:
-                                is_very_tip = 1
-                        else:
-                            # Stinger very tip: x >= 3 (furthest forward voxels)
-                            if body_cache_x[i] >= 3:
-                                is_very_tip = 1
-
                     # Apply color based on tip type
                     if is_very_tip == 1:  # VERY tips: dark leg tip color
                         if body_color == simulation.BEETLE_BLUE:

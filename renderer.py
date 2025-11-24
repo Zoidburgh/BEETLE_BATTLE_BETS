@@ -133,14 +133,13 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
 
     # Static bounding box optimization: only scan active arena region
     # X/Z: 2-126 covers arena radius (30) + beetle reach + fully extended horns (32) = ±62 from center
-    # Y: 1-60 covers falling (-32) to max velocity throws (+20) + scorpion tail reach (+23) + safety margin
-    #    With Y_OFFSET=33: Y=1 is -32 world units, Y=60 is +27 world units (sufficient for gameplay)
-    # Reduction: 2.1M voxels → 906K voxels (~57% reduction from original, 40% from previous optimization)
+    # Y: 1-100 covers falling (-32) to max velocity throws (+20) + scorpion tail reach (+23) with Y_OFFSET=33
+    # Reduction: 2.1M voxels → 1.23M voxels (still ~40% fewer checks)
     # Use ti.static for compile-time constants (small performance boost)
     EMPTY = ti.static(0)
     DEBRIS = ti.static(4)
 
-    for i, j, k in ti.ndrange((2, 126), (1, 60), (2, 126)):
+    for i, j, k in ti.ndrange((2, 126), (1, 100), (2, 126)):
         vtype = voxel_field[i, j, k]
         # Skip empty voxels and debris (debris handled by physics system)
         if vtype != EMPTY and vtype != DEBRIS:
