@@ -5422,7 +5422,7 @@ camera.yaw = 180.0  # Start facing correct direction for CAMERA_FLIP_VIEW = True
 # Auto-follow camera toggle
 auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to toggle)
 # Camera always uses opposite side view (beetles in foreground, edge in background)
-camera_edge_angle = 0.0  # Previous edge angle for smooth transitions (prevents flipping)
+camera_edge_angle = None  # Previous edge angle for smooth transitions (None = not yet initialized)
 spotlight_strength = 0.633  # Spotlight intensity (adjustable via GUI slider)
 spotlight_height = 36.0  # Spotlight height above beetles (lower = smaller/focused, higher = bigger/softer)
 base_light_brightness = 1.313  # Brightness multiplier for all non-spotlight lights (adjustable via GUI slider)
@@ -5599,7 +5599,7 @@ while window.running:
 
         # Smooth angle transitions to prevent flipping when beetle falls off edge
         # Only update edge angle if change is gradual (prevents 180-degree flips)
-        if camera_edge_angle == 0.0:
+        if camera_edge_angle is None:
             # First frame: initialize with current angle
             camera_edge_angle = angle_to_midpoint
         else:
@@ -6364,6 +6364,12 @@ while window.running:
     DUST_SPEED_WALK = 5.2  # Speed for walking dust (+30%)
     DUST_SPEED_SPIN = 4.0  # Speed for spinning dust (outward from beetle center)
 
+    # OPTIMIZATION: Pre-calculate sin values for walk phases (avoid repeated math.sin calls)
+    blue_walk_sin = math.sin(beetle_blue.walk_phase)
+    blue_prev_walk_sin = math.sin(beetle_blue.prev_walk_phase)
+    blue_walk_sin_offset = math.sin(beetle_blue.walk_phase + math.pi)  # For Group B legs
+    blue_prev_walk_sin_offset = math.sin(beetle_blue.prev_walk_phase + math.pi)
+
     # Blue beetle leg dust
     blue_leg_len = getattr(window, 'blue_leg_length_value', 8)  # Default 8 if not set yet
     blue_stagger_scale = blue_leg_len / 6.0  # Scale stagger based on leg length (6 is min)
@@ -6378,12 +6384,16 @@ while window.running:
                 dust_legs = [4, 5]  # Back legs
                 kick_dir = -1.0  # Kick backward
             for leg_id in dust_legs:
-                phase_offset = 0.0 if leg_id in [0, 4] else math.pi  # Group A vs B
-                leg_phase = beetle_blue.walk_phase + phase_offset
-                prev_leg_phase = beetle_blue.prev_walk_phase + phase_offset
+                # Use pre-calculated sin values based on leg group
+                if leg_id in [0, 4]:  # Group A (no offset)
+                    sin_leg = blue_walk_sin
+                    sin_prev_leg = blue_prev_walk_sin
+                else:  # Group B (pi offset)
+                    sin_leg = blue_walk_sin_offset
+                    sin_prev_leg = blue_prev_walk_sin_offset
                 # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
                 # Triggers slightly later in cycle for better sync with animation
-                touchdown = math.sin(prev_leg_phase) > -0.2 and math.sin(leg_phase) <= -0.2
+                touchdown = sin_prev_leg > -0.2 and sin_leg <= -0.2
                 if touchdown:
                     tip_x, tip_z = get_leg_tip_world_position(beetle_blue, leg_id, blue_leg_len)
                     # Only spawn dust if leg tip is on arena
@@ -6441,7 +6451,12 @@ while window.running:
         else:
             beetle_blue.spin_dust_timer = 0.0  # Reset timer when not spinning
 
-    # Red beetle leg dust
+    # Red beetle leg dust - pre-calculate sin values
+    red_walk_sin = math.sin(beetle_red.walk_phase)
+    red_prev_walk_sin = math.sin(beetle_red.prev_walk_phase)
+    red_walk_sin_offset = math.sin(beetle_red.walk_phase + math.pi)  # For Group B legs
+    red_prev_walk_sin_offset = math.sin(beetle_red.prev_walk_phase + math.pi)
+
     red_leg_len = getattr(window, 'red_leg_length_value', 8)  # Default 8 if not set yet
     red_stagger_scale = red_leg_len / 6.0  # Scale stagger based on leg length (6 is min)
     if beetle_red.active and beetle_red.y < 3.0:  # Only when on/near ground (within 3 voxels)
@@ -6455,12 +6470,16 @@ while window.running:
                 dust_legs = [4, 5]  # Back legs
                 kick_dir = -1.0  # Kick backward
             for leg_id in dust_legs:
-                phase_offset = 0.0 if leg_id in [0, 4] else math.pi  # Group A vs B
-                leg_phase = beetle_red.walk_phase + phase_offset
-                prev_leg_phase = beetle_red.prev_walk_phase + phase_offset
+                # Use pre-calculated sin values based on leg group
+                if leg_id in [0, 4]:  # Group A (no offset)
+                    sin_leg = red_walk_sin
+                    sin_prev_leg = red_prev_walk_sin
+                else:  # Group B (pi offset)
+                    sin_leg = red_walk_sin_offset
+                    sin_prev_leg = red_prev_walk_sin_offset
                 # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
                 # Triggers slightly later in cycle for better sync with animation
-                touchdown = math.sin(prev_leg_phase) > -0.2 and math.sin(leg_phase) <= -0.2
+                touchdown = sin_prev_leg > -0.2 and sin_leg <= -0.2
                 if touchdown:
                     tip_x, tip_z = get_leg_tip_world_position(beetle_red, leg_id, red_leg_len)
                     # Only spawn dust if leg tip is on arena
@@ -6589,23 +6608,28 @@ while window.running:
     clear_dirty_voxels()  # Clear voxels from previous frame (only ~600 voxels)
     reset_dirty_voxels()  # Reset counter for this frame's tracking
 
-    # Place shadows for airborne beetles (using Taichi kernel for performance)
-    floor_y = int(RENDER_Y_OFFSET)  # Shadow replaces floor voxels (flush with surface)
-    clear_shadow_layer(floor_y)  # Restore previous frame's shadows back to concrete
-    if beetle_blue.active and blue_render_y > SHADOW_HEIGHT_THRESHOLD:
-        height_factor = min((blue_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
-        radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
-        # Offset shadow 2 voxels toward the butt (opposite of facing direction)
-        shadow_x = blue_render_x - 2 * math.cos(blue_render_rotation)
-        shadow_z = blue_render_z - 2 * math.sin(blue_render_rotation)
-        place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
-    if beetle_red.active and red_render_y > SHADOW_HEIGHT_THRESHOLD:
-        height_factor = min((red_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
-        radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
-        # Offset shadow 2 voxels toward the butt (opposite of facing direction)
-        shadow_x = red_render_x - 2 * math.cos(red_render_rotation)
-        shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
-        place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
+    # Place shadows for airborne beetles (only when at least one beetle is airborne)
+    blue_needs_shadow = beetle_blue.active and blue_render_y > SHADOW_HEIGHT_THRESHOLD
+    red_needs_shadow = beetle_red.active and red_render_y > SHADOW_HEIGHT_THRESHOLD
+
+    if blue_needs_shadow or red_needs_shadow:
+        floor_y = int(RENDER_Y_OFFSET)  # Shadow replaces floor voxels (flush with surface)
+        clear_shadow_layer(floor_y)  # Restore previous frame's shadows back to concrete
+
+        if blue_needs_shadow:
+            height_factor = min((blue_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
+            radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+            # Offset shadow 2 voxels toward the butt (opposite of facing direction)
+            shadow_x = blue_render_x - 2 * math.cos(blue_render_rotation)
+            shadow_z = blue_render_z - 2 * math.sin(blue_render_rotation)
+            place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
+        if red_needs_shadow:
+            height_factor = min((red_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
+            radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+            # Offset shadow 2 voxels toward the butt (opposite of facing direction)
+            shadow_x = red_render_x - 2 * math.cos(red_render_rotation)
+            shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
+            place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
 
     # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas
     blue_horn_type_id = 1 if blue_horn_type == "stag" else (2 if blue_horn_type == "hercules" else (3 if blue_horn_type == "scorpion" else (4 if blue_horn_type == "atlas" else 0)))
