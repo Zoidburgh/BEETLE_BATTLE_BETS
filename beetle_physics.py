@@ -1884,17 +1884,17 @@ def generate_stag_pincers(shaft_length, curve_length):
     # Each voxel forward adds 0.36 voxels sideways instead of 1.0
     inward_factor = 0.36
 
-    # LEFT PINCER (angled 20° inward from pure -Z direction with downward curve)
+    # LEFT PINCER (angled 20° inward from pure -Z direction with upward curve)
     for i in range(total_length):
-        # Calculate progress along pincer for downward curve
+        # Calculate progress along pincer for upward curve
         progress = i / float(total_length) if total_length > 0 else 0.0
 
         dx = 3 + i  # Extends forward
 
-        # Downward curve: simple descending arc using quadratic progression
+        # Upward curve: simple ascending arc using quadratic progression
         base_height = 1
-        downward_curve = int(progress * progress * total_length * 0.3)  # Gentle quadratic downward curve
-        dy = base_height - downward_curve
+        upward_curve = int(progress * progress * total_length * 0.3)  # Gentle quadratic upward curve
+        dy = base_height + upward_curve
 
         dz = -int(i * inward_factor) - 1  # Extends left at 20° angle instead of 90°
 
@@ -1903,17 +1903,17 @@ def generate_stag_pincers(shaft_length, curve_length):
             for dz_offset in range(-1, 1):  # Add some width
                 pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular)
 
-    # RIGHT PINCER (angled 20° inward from pure +Z direction with downward curve)
+    # RIGHT PINCER (angled 20° inward from pure +Z direction with upward curve)
     for i in range(total_length):
-        # Calculate progress along pincer for downward curve
+        # Calculate progress along pincer for upward curve
         progress = i / float(total_length) if total_length > 0 else 0.0
 
         dx = 3 + i  # Extends forward
 
-        # Downward curve: simple descending arc using quadratic progression
+        # Upward curve: simple ascending arc using quadratic progression
         base_height = 1
-        downward_curve = int(progress * progress * total_length * 0.3)  # Gentle quadratic downward curve
-        dy = base_height - downward_curve
+        upward_curve = int(progress * progress * total_length * 0.3)  # Gentle quadratic upward curve
+        dy = base_height + upward_curve
 
         dz = int(i * inward_factor) + 1  # Extends right at 20° angle instead of 90°
 
@@ -6853,6 +6853,9 @@ while window.running:
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH
             beetle_blue.horn_yaw = 0.0
 
+        # Sync GPU before rebuild to prevent Vulkan device loss during geometry changes
+        ti.sync()
+
         # Rebuild blue beetle with new horn type
         rebuild_blue_beetle(
             window.blue_horn_shaft_value,
@@ -6997,6 +7000,9 @@ while window.running:
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
             beetle_red.horn_yaw = 0.0
+
+        # Sync GPU before rebuild to prevent Vulkan device loss during geometry changes
+        ti.sync()
 
         # Rebuild red beetle with new horn type
         rebuild_red_beetle(
