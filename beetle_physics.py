@@ -3432,8 +3432,8 @@ def clear_dirty_voxels():
     """Clear only the voxels we tracked during placement (400x faster than scanning 250K voxels) - Parallel GPU execution"""
     for i in ti.ndrange(dirty_voxel_count[None]):  # Parallel iteration on GPU
         vtype = simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]]
-        # Only clear beetle voxels (not floor/concrete) - shadows cleared separately
-        if vtype >= simulation.BEETLE_BLUE:
+        # Only clear beetle voxels (not floor/concrete/shadow) - shadows cleared separately
+        if vtype >= simulation.BEETLE_BLUE and vtype != simulation.SHADOW:
             simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]] = simulation.EMPTY
 
 @ti.kernel
