@@ -17,6 +17,11 @@ scene = window.get_scene()
 # Create camera
 camera = renderer.Camera()
 
+# OPTIMIZATION: Pre-allocate rendering fields once instead of every frame
+# This avoids GPU memory allocation overhead in the render loop
+beetle_render_positions = ti.Vector.field(3, ti.f32, shape=beetle.MAX_BEETLES)
+beetle_render_colors = ti.Vector.field(3, ti.f32, shape=beetle.MAX_BEETLES)
+
 # Position camera for top-down arena view
 camera.pos_x = 0.0
 camera.pos_y = 50.0  # High up for top-down view
@@ -116,11 +121,15 @@ while window.running:
     # Render arena floor
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid)
 
-    # Render beetles as simple spheres (for now - will be voxel models later)
+    # OPTIMIZATION: Render beetles using pre-allocated fields (no per-frame allocation)
+    # Batch all active beetles into a single draw call
+    active_beetle_count = 0
+    beetle_radius = 1.0  # Default radius, will use first active beetle's radius
+
     for idx in range(beetle.MAX_BEETLES):
         if beetle.beetle_active[idx] == 1:
             pos = beetle.beetle_pos[idx]
-            radius = beetle.beetle_radius[idx]
+            beetle_radius = beetle.beetle_radius[idx]
 
             # Color code beetles
             if idx == beetle1_idx:
@@ -130,20 +139,19 @@ while window.running:
             else:
                 color = (0.5, 0.5, 0.5)  # Gray
 
-            # Draw beetle as sphere
-            scene.particles(
-                centers=ti.Vector.field(3, ti.f32, shape=1),
-                radius=radius,
-                per_vertex_color=ti.Vector.field(3, ti.f32, shape=1)
-            )
+            # Store in pre-allocated fields (no GPU allocation!)
+            beetle_render_positions[active_beetle_count] = pos
+            beetle_render_colors[active_beetle_count] = ti.math.vec3(color[0], color[1], color[2])
+            active_beetle_count += 1
 
-            # HACK: Create temporary fields for rendering (inefficient but works)
-            temp_pos = ti.Vector.field(3, ti.f32, shape=1)
-            temp_color = ti.Vector.field(3, ti.f32, shape=1)
-            temp_pos[0] = pos
-            temp_color[0] = ti.math.vec3(color[0], color[1], color[2])
-
-            scene.particles(temp_pos, radius=radius, per_vertex_color=temp_color)
+    # Single batched draw call for all beetles
+    if active_beetle_count > 0:
+        scene.particles(
+            beetle_render_positions,
+            radius=beetle_radius,
+            per_vertex_color=beetle_render_colors,
+            index_count=active_beetle_count
+        )
 
     # Render scene
     canvas.scene(scene)

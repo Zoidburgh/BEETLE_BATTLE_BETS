@@ -58,6 +58,26 @@ HORN_MIN_YAW_STAG = math.radians(-20)  # -20 degrees horizontal (stag pincers ca
 HORN_YAW_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow yaw rotation
 HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
+# OPTIMIZATION: Horn type ID mapping and pitch/yaw limit lookup tables
+# Eliminates string comparisons in the physics loop (120 checks/sec -> integer lookup)
+HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4}
+# Pitch limits: (max_pitch, min_pitch) indexed by horn_type_id
+HORN_PITCH_LIMITS = [
+    (HORN_MAX_PITCH_RHINO, HORN_MIN_PITCH_RHINO),       # 0: rhino
+    (HORN_MAX_PITCH, HORN_MIN_PITCH),                   # 1: stag
+    (HORN_MAX_PITCH_HERCULES, HORN_MIN_PITCH_HERCULES), # 2: hercules
+    (HORN_MAX_PITCH, HORN_MIN_PITCH),                   # 3: scorpion (uses default)
+    (HORN_MAX_PITCH_ATLAS, HORN_MIN_PITCH_ATLAS),       # 4: atlas
+]
+# Yaw limits: (max_yaw, min_yaw) indexed by horn_type_id
+HORN_YAW_LIMITS = [
+    (HORN_MAX_YAW, HORN_MIN_YAW),           # 0: rhino
+    (HORN_MAX_YAW_STAG, HORN_MIN_YAW_STAG), # 1: stag
+    (HORN_MAX_YAW, HORN_MIN_YAW),           # 2: hercules
+    (HORN_MAX_YAW, HORN_MIN_YAW),           # 3: scorpion
+    (HORN_MAX_YAW, HORN_MIN_YAW),           # 4: atlas
+]
+
 # Edge tipping constants
 EDGE_TIPPING_STRENGTH = 0.45  # Force multiplier per over-edge voxel
 ARENA_CENTER_X = 64.0  # Arena center X coordinate
@@ -151,11 +171,17 @@ class Beetle:
         self.horn_yaw_velocity = 0.0  # Rate of change of horn yaw (radians/sec)
         self.horn_rotation_damping = 0.0  # Horn rotation resistance during collision (0.0-1.0)
 
+        # OPTIMIZATION: Cached horn tip positions to avoid recalculating every frame
+        self.cached_horn_pitch = HORN_DEFAULT_PITCH  # Last pitch used for calculation
+        self.cached_horn_yaw = 0.0  # Last yaw used for calculation
+        self.cached_min_distance = 999.0  # Cached minimum distance result
+
         # Horn geometry (set during geometry generation)
         self.horn_shaft_len = 12  # Default horn shaft length in voxels
         self.horn_prong_len = 5   # Default horn prong length in voxels
         self.horn_length = 17.0   # Cached total horn reach (updated when geometry changes)
         self.horn_type = "rhino"  # Horn type: "rhino" (single horn), "stag" (dual pincers), "hercules" (dual jaws), or "scorpion"
+        self.horn_type_id = HORN_TYPE_IDS["rhino"]  # OPTIMIZATION: Integer ID for fast lookup (avoids string comparisons)
         self.body_pitch_offset = 0.0  # Static body tilt angle (radians) - calculated from leg geometry for scorpion
 
         # Scorpion stinger control (VB/NM keys)
@@ -370,7 +396,9 @@ def reset_match():
 
     # Preserve each beetle's horn_type on reset so control mapping stays correct
     beetle_blue.horn_type = blue_horn_type
+    beetle_blue.horn_type_id = HORN_TYPE_IDS.get(blue_horn_type, 0)
     beetle_red.horn_type = red_horn_type
+    beetle_red.horn_type_id = HORN_TYPE_IDS.get(red_horn_type, 0)
 
     # Reset camera to default flipped view
     camera_flip_view = True
@@ -1699,6 +1727,7 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
     beetle_blue.horn_prong_len = prong_len
     beetle_blue.horn_length = horn_length
     beetle_blue.horn_type = horn_type
+    beetle_blue.horn_type_id = HORN_TYPE_IDS.get(horn_type, 0)
 
     # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
     beetle_blue.body_pitch_offset = 0.0
@@ -1807,6 +1836,7 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
     beetle_red.horn_prong_len = prong_len
     beetle_red.horn_length = horn_length
     beetle_red.horn_type = horn_type
+    beetle_red.horn_type_id = HORN_TYPE_IDS.get(horn_type, 0)
 
     # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
     beetle_red.body_pitch_offset = 0.0
@@ -3513,59 +3543,46 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
     y_scan_end = ti.min(simulation.n_grid, int(RENDER_Y_OFFSET) + 35)
 
     # PHASE 1: Mark beetle1 occupied XZ positions in spatial hash (O(N) operation)
+    # OPTIMIZATION: Direct indexing since n_grid=128 matches hash size exactly
     for i in range(beetle1_occupied_count[None]):
         vx1 = beetle1_occupied_x[i]
         vz1 = beetle1_occupied_z[i]
-        # Hash to smaller grid (map 256-grid world to 128x128 hash)
-        hash_x = vx1 % 128
-        hash_z = vz1 % 128
-        collision_spatial_hash[hash_x, hash_z] = 1  # Mark as occupied
+        collision_spatial_hash[vx1, vz1] = 1  # Mark as occupied
 
     # PHASE 2: Check beetle2 positions against hash (O(M) operation)
+    # OPTIMIZATION: Since n_grid=128 and hash is 128x128, vx % 128 == vx (no hash collisions)
+    # This eliminates the O(N) verification loop, making this truly O(M)
     for j in range(beetle2_occupied_count[None]):
         vx2 = beetle2_occupied_x[j]
         vz2 = beetle2_occupied_z[j]
-        # Hash to smaller grid
-        hash_x = vx2 % 128
-        hash_z = vz2 % 128
-
+        # Direct lookup (no modulo needed since grid is exactly 128x128)
         # Check if this XZ position overlaps with beetle1
-        if collision_spatial_hash[hash_x, hash_z] == 1:
-            # Potential overlap found - verify actual coordinates and scan vertical column
-            # (Need to verify since hash might have collisions)
-            found_match = 0
-            for i in range(beetle1_occupied_count[None]):
-                if beetle1_occupied_x[i] == vx2 and beetle1_occupied_z[i] == vz2:
-                    found_match = 1
-                    break
+        if collision_spatial_hash[vx2, vz2] == 1:
+            # Confirmed overlap - scan vertically to find all contact heights
+            for vy_grid in range(y_scan_start, y_scan_end):
+                vtype = simulation.voxel_type[vx2, vy_grid, vz2]
+                if vtype != 0:  # Non-empty voxel
+                    # Check if this is a horn tip voxel
+                    if vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
+                       vtype == simulation.STINGER_TIP_BLACK:
+                        collision_has_horn_tips[None] = 1
 
-            if found_match == 1:
-                # Confirmed overlap - scan vertically to find all contact heights
-                for vy_grid in range(y_scan_start, y_scan_end):
-                    vtype = simulation.voxel_type[vx2, vy_grid, vz2]
-                    if vtype != 0:  # Non-empty voxel
-                        # Check if this is a horn tip voxel
-                        if vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
-                           vtype == simulation.STINGER_TIP_BLACK:
-                            collision_has_horn_tips[None] = 1
+                    # Check if this is a hook interior voxel
+                    if vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                        collision_has_hook_interiors[None] = 1
 
-                        # Check if this is a hook interior voxel
-                        if vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
-                            collision_has_hook_interiors[None] = 1
-
-                        # Accumulate collision position
-                        ti.atomic_add(collision_point_x[None], float(vx2) - simulation.n_grid / 2.0)
-                        ti.atomic_add(collision_point_z[None], float(vz2) - simulation.n_grid / 2.0)
-                        ti.atomic_add(collision_point_y[None], float(vy_grid) - RENDER_Y_OFFSET)
-                        ti.atomic_add(collision_contact_count[None], 1)
+                    # Accumulate collision position
+                    ti.atomic_add(collision_point_x[None], float(vx2) - simulation.n_grid / 2.0)
+                    ti.atomic_add(collision_point_z[None], float(vz2) - simulation.n_grid / 2.0)
+                    ti.atomic_add(collision_point_y[None], float(vy_grid) - RENDER_Y_OFFSET)
+                    ti.atomic_add(collision_contact_count[None], 1)
 
     # PHASE 3: Clear spatial hash for next frame (O(N) operation)
+    # OPTIMIZATION: Direct indexing since n_grid=128 matches hash size exactly
     for i in range(beetle1_occupied_count[None]):
         vx1 = beetle1_occupied_x[i]
         vz1 = beetle1_occupied_z[i]
-        hash_x = vx1 % 128
-        hash_z = vz1 % 128
-        collision_spatial_hash[hash_x, hash_z] = 0  # Reset
+        collision_spatial_hash[vx1, vz1] = 0  # Reset
 
 
 def calculate_horn_length(shaft_len, prong_len, horn_type):
@@ -4391,6 +4408,18 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
     if planar_dist_sq > MAX_HORN_REACH_SQ:
         return 999.0  # Definitely safe, no collision possible
 
+    # OPTIMIZATION: Cache check - if horn angles haven't changed, return cached distance
+    # Use small tolerance (0.01 radians ≈ 0.6 degrees) to catch tiny floating point differences
+    ANGLE_TOLERANCE = 0.01
+    pitch1_unchanged = abs(pitch1 - beetle1.cached_horn_pitch) < ANGLE_TOLERANCE
+    yaw1_unchanged = abs(yaw1 - beetle1.cached_horn_yaw) < ANGLE_TOLERANCE
+    pitch2_unchanged = abs(pitch2 - beetle2.cached_horn_pitch) < ANGLE_TOLERANCE
+    yaw2_unchanged = abs(yaw2 - beetle2.cached_horn_yaw) < ANGLE_TOLERANCE
+
+    if pitch1_unchanged and yaw1_unchanged and pitch2_unchanged and yaw2_unchanged:
+        # All angles unchanged - return cached result
+        return beetle1.cached_min_distance
+
     # CASE 1: Both rhino - check all 4 Y-fork prong tip combinations
     if beetle1.horn_type == "rhino" and beetle2.horn_type == "rhino":
         (b1_left_x, b1_left_y, b1_left_z), (b1_right_x, b1_right_y, b1_right_z) = calculate_rhino_prong_tips(beetle1, pitch1, yaw1)
@@ -4417,7 +4446,14 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
         dz = b1_right_z - b2_right_z
         dist_rr = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-        return min(dist_ll, dist_lr, dist_rl, dist_rr)
+        result = min(dist_ll, dist_lr, dist_rl, dist_rr)
+        # Update cache
+        beetle1.cached_horn_pitch = pitch1
+        beetle1.cached_horn_yaw = yaw1
+        beetle2.cached_horn_pitch = pitch2
+        beetle2.cached_horn_yaw = yaw2
+        beetle1.cached_min_distance = result
+        return result
 
     # CASE 2: Both stag - check all 4 pincer tip combinations
     if beetle1.horn_type == "stag" and beetle2.horn_type == "stag":
@@ -4445,7 +4481,14 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
         dz = b1_right_z - b2_right_z
         dist_rr = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-        return min(dist_ll, dist_lr, dist_rl, dist_rr)
+        result = min(dist_ll, dist_lr, dist_rl, dist_rr)
+        # Update cache
+        beetle1.cached_horn_pitch = pitch1
+        beetle1.cached_horn_yaw = yaw1
+        beetle2.cached_horn_pitch = pitch2
+        beetle2.cached_horn_yaw = yaw2
+        beetle1.cached_min_distance = result
+        return result
 
     # CASE 3: Both hercules - check all 4 jaw tip combinations
     if beetle1.horn_type == "hercules" and beetle2.horn_type == "hercules":
@@ -4473,7 +4516,14 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
         dz = b1_bot_z - b2_bot_z
         dist_bb = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-        return min(dist_tt, dist_tb, dist_bt, dist_bb)
+        result = min(dist_tt, dist_tb, dist_bt, dist_bb)
+        # Update cache
+        beetle1.cached_horn_pitch = pitch1
+        beetle1.cached_horn_yaw = yaw1
+        beetle2.cached_horn_pitch = pitch2
+        beetle2.cached_horn_yaw = yaw2
+        beetle1.cached_min_distance = result
+        return result
 
     # CASE 4: Mixed types - check dual-tip beetle against single or other dual-tip
     # Handle: stag vs rhino, hercules vs rhino, stag vs hercules
@@ -4517,7 +4567,14 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
     dz = b1_tip2_z - b2_tip2_z
     dist_22 = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-    return min(dist_11, dist_12, dist_21, dist_22)
+    result = min(dist_11, dist_12, dist_21, dist_22)
+    # Update cache
+    beetle1.cached_horn_pitch = pitch1
+    beetle1.cached_horn_yaw = yaw1
+    beetle2.cached_horn_pitch = pitch2
+    beetle2.cached_horn_yaw = yaw2
+    beetle1.cached_min_distance = result
+    return result
 
 @ti.kernel
 def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32, dt: ti.f32, pitch_inertia: ti.f32, roll_inertia: ti.f32):
@@ -5221,9 +5278,10 @@ camera.yaw = 0.0
 auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to toggle)
 camera_flip_view = True  # Start with flipped view (track opposite edge, beetles in foreground)
 camera_edge_angle = 0.0  # Previous edge angle for smooth transitions (prevents flipping)
-spotlight_strength = 0.6  # Spotlight intensity (adjustable via GUI slider)
+spotlight_strength = 0.633  # Spotlight intensity (adjustable via GUI slider)
 spotlight_height = 36.0  # Spotlight height above beetles (lower = smaller/focused, higher = bigger/softer)
-base_light_brightness = 1.0  # Brightness multiplier for all non-spotlight lights (adjustable via GUI slider)
+base_light_brightness = 1.313  # Brightness multiplier for all non-spotlight lights (adjustable via GUI slider)
+front_light_strength = 0.35  # Front camera light intensity (adjustable via GUI slider)
 
 # Dynamic lighting system
 dynamic_lighting_enabled = False  # Camera-relative lighting for cinematic effect (press L to toggle)
@@ -5529,19 +5587,8 @@ while window.running:
             yaw_speed = 0.0
 
             # Calculate new pitch if pitch keys pressed
-            # Use type-specific limits for each beetle type
-            if beetle_blue.horn_type == "hercules":
-                max_pitch_limit = HORN_MAX_PITCH_HERCULES
-                min_pitch_limit = HORN_MIN_PITCH_HERCULES
-            elif beetle_blue.horn_type == "rhino":
-                max_pitch_limit = HORN_MAX_PITCH_RHINO
-                min_pitch_limit = HORN_MIN_PITCH_RHINO
-            elif beetle_blue.horn_type == "atlas":
-                max_pitch_limit = HORN_MAX_PITCH_ATLAS
-                min_pitch_limit = HORN_MIN_PITCH_ATLAS
-            else:
-                max_pitch_limit = HORN_MAX_PITCH
-                min_pitch_limit = HORN_MIN_PITCH
+            # OPTIMIZATION: Use lookup table instead of string comparisons
+            max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
 
             if window.is_pressed('r'):
                 effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
@@ -5556,7 +5603,8 @@ while window.running:
 
             # Calculate new yaw if yaw keys pressed
             # For scorpion type, V/B control tail rotation angle instead of horn yaw
-            if beetle_blue.horn_type == "scorpion":
+            # OPTIMIZATION: Use horn_type_id == 3 instead of string comparison
+            if beetle_blue.horn_type_id == 3:  # scorpion
                 # SCORPION: V/B control blue beetle's tail rotation
                 TAIL_ROTATION_SPEED = 30.0  # Degrees per second
                 if window.is_pressed('v'):
@@ -5571,13 +5619,8 @@ while window.running:
                 yaw_pressed = False
             else:
                 # OTHER TYPES: V/B control horn yaw (claws)
-                # Set beetle-specific yaw limits
-                if beetle_blue.horn_type == "stag":
-                    max_yaw_limit = HORN_MAX_YAW_STAG
-                    min_yaw_limit = HORN_MIN_YAW_STAG
-                else:
-                    max_yaw_limit = HORN_MAX_YAW
-                    min_yaw_limit = HORN_MIN_YAW
+                # OPTIMIZATION: Use lookup table instead of string comparisons
+                max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_blue.horn_type_id]
 
                 if window.is_pressed('v'):
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
@@ -5664,19 +5707,8 @@ while window.running:
             yaw_speed = 0.0
 
             # Calculate new pitch if pitch keys pressed
-            # Use type-specific limits for each beetle type
-            if beetle_red.horn_type == "hercules":
-                max_pitch_limit = HORN_MAX_PITCH_HERCULES
-                min_pitch_limit = HORN_MIN_PITCH_HERCULES
-            elif beetle_red.horn_type == "rhino":
-                max_pitch_limit = HORN_MAX_PITCH_RHINO
-                min_pitch_limit = HORN_MIN_PITCH_RHINO
-            elif beetle_red.horn_type == "atlas":
-                max_pitch_limit = HORN_MAX_PITCH_ATLAS
-                min_pitch_limit = HORN_MIN_PITCH_ATLAS
-            else:
-                max_pitch_limit = HORN_MAX_PITCH
-                min_pitch_limit = HORN_MIN_PITCH
+            # OPTIMIZATION: Use lookup table instead of string comparisons
+            max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
 
             if window.is_pressed('u'):
                 effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_rotation_damping)
@@ -5691,7 +5723,8 @@ while window.running:
 
             # Calculate new yaw if yaw keys pressed
             # For scorpion type, N/M control tail rotation angle instead of horn yaw
-            if beetle_red.horn_type == "scorpion":
+            # OPTIMIZATION: Use horn_type_id == 3 instead of string comparison
+            if beetle_red.horn_type_id == 3:  # scorpion
                 # SCORPION: N/M control red beetle's tail rotation
                 TAIL_ROTATION_SPEED = 30.0  # Degrees per second
                 if window.is_pressed('n'):
@@ -5706,13 +5739,8 @@ while window.running:
                 yaw_pressed = False
             else:
                 # OTHER TYPES: N/M control horn yaw (claws)
-                # Set beetle-specific yaw limits
-                if beetle_red.horn_type == "stag":
-                    max_yaw_limit = HORN_MAX_YAW_STAG
-                    min_yaw_limit = HORN_MIN_YAW_STAG
-                else:
-                    max_yaw_limit = HORN_MAX_YAW
-                    min_yaw_limit = HORN_MIN_YAW
+                # OPTIMIZATION: Use lookup table instead of string comparisons
+                max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_red.horn_type_id]
 
                 if window.is_pressed('n'):
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
@@ -6276,7 +6304,8 @@ while window.running:
                     dynamic_lighting=dynamic_lighting_enabled,
                     spotlight_pos=(spotlight_mid_x, spotlight_mid_y, spotlight_mid_z),
                     spotlight_strength=spotlight_strength,
-                    base_light_brightness=base_light_brightness)
+                    base_light_brightness=base_light_brightness,
+                    front_light_strength=front_light_strength)
     canvas.scene(scene)
 
     # HUD
@@ -6719,6 +6748,7 @@ while window.running:
     spotlight_strength = window.GUI.slider_float("Spotlight Strength", spotlight_strength, 0.0, 1.5)
     spotlight_height = window.GUI.slider_float("Spotlight Size", spotlight_height, 10.0, 100.0)
     base_light_brightness = window.GUI.slider_float("Base Light Brightness", base_light_brightness, 0.0, 2.0)
+    front_light_strength = window.GUI.slider_float("Front Light Strength", front_light_strength, 0.0, 1.5)
     if window.GUI.button("Flip Camera View"):
         camera_flip_view = not camera_flip_view
 

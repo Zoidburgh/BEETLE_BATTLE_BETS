@@ -273,6 +273,7 @@ class Camera:
         self.cached_yaw = None
         self.cached_key_light_pos = None
         self.cached_fill_light_pos = None
+        self.cached_front_light_pos = (0, 40, 60)  # Default front light position
 
     def get_forward_vector(self):
         """Get forward direction based on yaw and pitch"""
@@ -327,7 +328,7 @@ def setup_camera(camera, scene):
     cam.up(*up)
     scene.set_camera(cam)
 
-def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, spotlight_pos=None, spotlight_strength=0.55, base_light_brightness=1.0):
+def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, spotlight_pos=None, spotlight_strength=0.55, base_light_brightness=1.0, front_light_strength=0.5):
     """
     Render voxels using Taichi GPU renderer
 
@@ -340,6 +341,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         spotlight_pos: (x, y, z) tuple for spotlight position above beetles (optional)
         spotlight_strength: Intensity of spotlight (default 0.55)
         base_light_brightness: Brightness multiplier for all non-spotlight lights (default 1.0)
+        front_light_strength: Intensity of front camera light (default 0.5)
     """
     import math
     # Draw gradient background before 3D scene (forest atmosphere)
@@ -384,6 +386,14 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
             fill_z = math.sin(fill_angle) * 90
             camera.cached_fill_light_pos = (fill_x, 60, fill_z)
 
+            # Also recalculate front light (in front of camera)
+            front_angle = math.radians(camera.yaw)
+            front_distance = 60
+            front_height = 40
+            front_x = math.cos(front_angle) * front_distance
+            front_z = math.sin(front_angle) * front_distance
+            camera.cached_front_light_pos = (front_x, front_height, front_z)
+
             camera.cached_yaw = camera.yaw
 
         scene.point_light(pos=camera.cached_key_light_pos, color=(0.7 * b, 0.65 * b, 0.5 * b))
@@ -396,17 +406,12 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     else:
         scene.point_light(pos=(-60, 60, 70), color=(0.35 * b, 0.38 * b, 0.4 * b))
 
-    # NEW: Northwest fill light - covers dead zone, cool tint
-    scene.point_light(pos=(-70, 55, -70), color=(0.3 * b, 0.32 * b, 0.35 * b))
-
-    # NEW: Southeast fill light - covers opposite dead zone, cool tint
-    scene.point_light(pos=(70, 55, 70), color=(0.3 * b, 0.32 * b, 0.35 * b))
-
-    # NEW: North rim light - edge definition from back, cool highlight
-    scene.point_light(pos=(0, 40, -90), color=(0.4 * b, 0.45 * b, 0.55 * b))
-
-    # NEW: South rim light - opposite edge definition, cool highlight
-    scene.point_light(pos=(0, 40, 90), color=(0.4 * b, 0.45 * b, 0.55 * b))
+    # Front camera light - illuminates what the camera is looking at
+    if dynamic_lighting and front_light_strength > 0:
+        scene.point_light(pos=camera.cached_front_light_pos, color=(front_light_strength, front_light_strength, front_light_strength * 1.1))
+    elif front_light_strength > 0:
+        # Static front light when dynamic lighting is off
+        scene.point_light(pos=(0, 40, 60), color=(front_light_strength, front_light_strength, front_light_strength * 1.1))
 
     # Spotlight above beetles - follows the action (NOT affected by brightness multiplier)
     if spotlight_pos is not None:
