@@ -15,6 +15,12 @@ TWO_PI = 2.0 * math.pi  # Avoids ~20 multiplications per frame
 PI_HALF = math.pi * 0.5
 PI_ONE_HALF = math.pi * 1.5
 
+# Shadow blob constants (for airborne beetles)
+SHADOW_HEIGHT_THRESHOLD = 2.0  # Only show shadow when Y > 2
+SHADOW_MAX_HEIGHT = 25.0  # Shadow max size at this height
+SHADOW_BASE_RADIUS = 1  # Base radius in voxels (close to ground)
+SHADOW_MAX_RADIUS = 8  # Max radius at max height
+
 # Physics constants
 BEETLE_RADIUS = 16.0  # Back to original scale - lean and mean
 MOVE_FORCE = 120.0  # Forward movement force
@@ -3426,9 +3432,33 @@ def clear_dirty_voxels():
     """Clear only the voxels we tracked during placement (400x faster than scanning 250K voxels) - Parallel GPU execution"""
     for i in ti.ndrange(dirty_voxel_count[None]):  # Parallel iteration on GPU
         vtype = simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]]
-        # Only clear beetle voxels (not floor/concrete)
-        if vtype >= simulation.BEETLE_BLUE:  # All beetle colors are >= BEETLE_BLUE
+        # Only clear beetle voxels (not floor/concrete) - shadows cleared separately
+        if vtype >= simulation.BEETLE_BLUE:
             simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]] = simulation.EMPTY
+
+@ti.kernel
+def clear_shadow_layer(floor_y: ti.i32):
+    """Restore shadow voxels back to concrete floor"""
+    for i, k in ti.ndrange(128, 128):
+        if simulation.voxel_type[i, floor_y, k] == simulation.SHADOW:
+            simulation.voxel_type[i, floor_y, k] = simulation.CONCRETE
+
+@ti.kernel
+def place_shadow_kernel(x: ti.f32, z: ti.f32, radius: ti.f32, floor_y: ti.i32):
+    """Place shadow blob on floor by changing floor voxels to shadow type"""
+    grid_x = ti.cast(x + 64, ti.i32)
+    grid_z = ti.cast(z + 64, ti.i32)
+    radius_int = ti.cast(radius + 1, ti.i32)
+    radius_sq = radius * radius
+    for dx, dz in ti.ndrange((-radius_int, radius_int + 1), (-radius_int, radius_int + 1)):
+        dist_sq = ti.cast(dx * dx + dz * dz, ti.f32)
+        if dist_sq <= radius_sq:
+            gx = grid_x + dx
+            gz = grid_z + dz
+            if 0 <= gx < 128 and 0 <= gz < 128:
+                # Only replace concrete floor voxels (don't overwrite beetles/other stuff)
+                if simulation.voxel_type[gx, floor_y, gz] == simulation.CONCRETE:
+                    simulation.voxel_type[gx, floor_y, gz] = simulation.SHADOW
 
 @ti.kernel
 def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti.f32, z2: ti.f32):
@@ -6266,6 +6296,24 @@ while window.running:
     # OPTIMIZATION: Use dirty voxel tracking instead of scanning 250K voxels
     clear_dirty_voxels()  # Clear voxels from previous frame (only ~600 voxels)
     reset_dirty_voxels()  # Reset counter for this frame's tracking
+
+    # Place shadows for airborne beetles (using Taichi kernel for performance)
+    floor_y = int(RENDER_Y_OFFSET)  # Shadow replaces floor voxels (flush with surface)
+    clear_shadow_layer(floor_y)  # Restore previous frame's shadows back to concrete
+    if beetle_blue.active and blue_render_y > SHADOW_HEIGHT_THRESHOLD:
+        height_factor = min((blue_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
+        radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+        # Offset shadow 2 voxels toward the butt (opposite of facing direction)
+        shadow_x = blue_render_x - 2 * math.cos(blue_render_rotation)
+        shadow_z = blue_render_z - 2 * math.sin(blue_render_rotation)
+        place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
+    if beetle_red.active and red_render_y > SHADOW_HEIGHT_THRESHOLD:
+        height_factor = min((red_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
+        radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+        # Offset shadow 2 voxels toward the butt (opposite of facing direction)
+        shadow_x = red_render_x - 2 * math.cos(red_render_rotation)
+        shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
+        place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
 
     # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas
     blue_horn_type_id = 1 if blue_horn_type == "stag" else (2 if blue_horn_type == "hercules" else (3 if blue_horn_type == "scorpion" else (4 if blue_horn_type == "atlas" else 0)))

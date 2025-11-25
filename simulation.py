@@ -47,6 +47,7 @@ BALL = 16  # Soccer ball (bright orange/yellow)
 BALL_STRIPE = 17  # Soccer ball stripe pattern (darker for contrast)
 STAG_HOOK_INTERIOR_BLUE = 18  # Blue beetle stag hook interior (curved inward section)
 STAG_HOOK_INTERIOR_RED = 19  # Red beetle stag hook interior (curved inward section)
+SHADOW = 20  # Shadow blob beneath airborne beetles
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors

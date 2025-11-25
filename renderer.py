@@ -119,6 +119,10 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 17:  # BALL_STRIPE
         color = ti.math.vec3(0.2, 0.1, 0.0)  # Dark brown/black
 
+    # Shadow blob beneath airborne beetles (slightly darker than arena floor)
+    elif voxel_type == 20:  # SHADOW
+        color = ti.math.vec3(0.35, 0.33, 0.31)  # ~85% of arena floor color
+
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
     if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts
         shimmer = get_shimmer_from_lut(world_x, world_z)
