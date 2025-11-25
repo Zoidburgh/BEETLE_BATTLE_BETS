@@ -63,10 +63,10 @@ HORN_YAW_SPEED = 2.0  # Radians per second
 # Default yaw limits (for beetles with symmetric horn movement)
 HORN_MAX_YAW = math.radians(20)  # +20 degrees horizontal
 HORN_MIN_YAW = math.radians(-20)  # -20 degrees horizontal
-# Stag-specific yaw limits (shifted so pincers can't fully close)
+# Stag-specific yaw limits (shifted +15° so pincers start more open)
 HORN_DEFAULT_YAW_STAG = math.radians(15)  # Stag pincers start 15° open on each side (30° total spread)
-HORN_MAX_YAW_STAG = math.radians(45)  # +45 degrees horizontal (stag pincers can open wide)
-HORN_MIN_YAW_STAG = math.radians(5)   # +5 degrees horizontal (stag pincers can't fully close)
+HORN_MAX_YAW_STAG = math.radians(35)  # +35 degrees horizontal (stag pincers can open more)
+HORN_MIN_YAW_STAG = math.radians(-5)  # -5 degrees horizontal (stag pincers can close less)
 HORN_YAW_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow yaw rotation
 HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
@@ -186,7 +186,6 @@ class Beetle:
         self.horn_pitch_velocity = 0.0  # Rate of change of horn pitch (radians/sec)
         self.horn_yaw_velocity = 0.0  # Rate of change of horn yaw (radians/sec)
         self.horn_rotation_damping = 0.0  # Horn rotation resistance during collision (0.0-1.0)
-        self.horn_yaw_damping = 0.0  # Separate yaw damping for stag pincer closing (0.0-1.0)
 
         # OPTIMIZATION: Cached horn tip positions to avoid recalculating every frame
         self.cached_horn_pitch = HORN_DEFAULT_PITCH  # Last pitch used for calculation
@@ -267,8 +266,6 @@ class Beetle:
         # Decay horn rotation damping when not in contact (Phase 2: Horn Clipping Prevention)
         if self.horn_rotation_damping > 0.0:
             self.horn_rotation_damping = max(0.0, self.horn_rotation_damping - HORN_DAMPING_DECAY_RATE * dt)
-        if self.horn_yaw_damping > 0.0:
-            self.horn_yaw_damping = max(0.0, self.horn_yaw_damping - HORN_DAMPING_DECAY_RATE * dt)
 
         # Clear horn collision flag (will be reset each frame if still colliding)
         self.in_horn_collision = False
@@ -4119,177 +4116,78 @@ def calculate_horn_tip_position_with_both(beetle, pitch_angle, yaw_angle):
 
     return world_x, world_y, world_z
 
-
-def calculate_rhino_horn_point(beetle, pitch_angle, yaw_angle, length_fraction):
-    """Calculate a point along the rhino horn shaft at given fraction of length.
-
-    Args:
-        beetle: The beetle object
-        pitch_angle: Horn pitch in radians
-        yaw_angle: Horn yaw in radians
-        length_fraction: 0.0 = pivot, 1.0 = tip
-
-    Returns:
-        (world_x, world_y, world_z) tuple
-    """
-    shaft_len = beetle.horn_shaft_len
-    prong_len = beetle.horn_prong_len
-
-    # Calculate local position at given fraction along horn
-    # The horn rises as it extends forward (height_curve = i * 0.3)
-    total_len = shaft_len + prong_len
-    local_x = 3.0 + total_len * length_fraction
-    # Height rises along shaft, then prongs rise diagonally
-    height_at_fraction = length_fraction * (shaft_len * 0.3 + prong_len)
-    local_y = 1.0 + height_at_fraction
-    local_z = 0.0  # Centered on midline
-
-    # Translate to horn pivot
-    rel_x = local_x - 3.0
-    rel_y = local_y - 1.0
-    rel_z = local_z
-
-    # Apply horn pitch rotation
-    cos_horn_pitch = math.cos(pitch_angle)
-    sin_horn_pitch = math.sin(pitch_angle)
-    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-    pitched_z = rel_z
-
-    # Apply horn yaw rotation (Y-axis horizontal sweep)
-    cos_horn_yaw = math.cos(yaw_angle)
-    sin_horn_yaw = math.sin(yaw_angle)
-    yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-    yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-    yawed_y = pitched_y
-
-    # Translate back from pivot
-    local_x = yawed_x + 3.0
-    local_y = yawed_y + 1.0
-    local_z = yawed_z
-
-    # Apply beetle body rotation
-    cos_rotation = math.cos(beetle.rotation)
-    sin_rotation = math.sin(beetle.rotation)
-    rotated_x = local_x * cos_rotation - local_z * sin_rotation
-    rotated_z = local_x * sin_rotation + local_z * cos_rotation
-    rotated_y = local_y
-
-    # Translate to world position
-    world_x = beetle.x + rotated_x
-    world_y = beetle.y + rotated_y
-    world_z = beetle.z + rotated_z
-
-    return (world_x, world_y, world_z)
-
-
-def calculate_rhino_horn_points(beetle, pitch_angle, yaw_angle):
-    """Calculate base, mid, and tip points along rhino horn shaft (3 points).
-
-    Used for improved collision detection that catches shaft collisions.
-
-    Returns:
-        (tip, mid, base) - each is (x, y, z) tuple
-    """
-    tip = calculate_rhino_horn_point(beetle, pitch_angle, yaw_angle, 1.0)
-    mid = calculate_rhino_horn_point(beetle, pitch_angle, yaw_angle, 0.5)
-    base = calculate_rhino_horn_point(beetle, pitch_angle, yaw_angle, 0.2)
-    return tip, mid, base
-
-
-def calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, length_fraction, is_left):
-    """Calculate a single point along a stag pincer at given fraction of length.
-
-    Args:
-        beetle: The beetle object
-        pitch_angle: Horn pitch in radians
-        yaw_angle: Horn yaw in radians
-        length_fraction: 0.0 = pivot, 1.0 = tip
-        is_left: True for left pincer (-Z), False for right pincer (+Z)
-
-    Returns:
-        (world_x, world_y, world_z) tuple
-    """
-    # Calculate local position at given fraction along pincer
-    total_length = beetle.horn_shaft_len + beetle.horn_prong_len
-    local_x = 3.0 + total_length * length_fraction
-    local_y = 1.0
-    local_z = (beetle.horn_prong_len + 3.0) * length_fraction  # Z spread increases along length
-
-    if is_left:
-        local_z = -local_z  # Negative Z for left pincer
-
-    # Translate to horn pivot
-    rel_x = local_x - 3.0
-    rel_y = local_y - 1.0
-    rel_z = local_z
-
-    # Apply horn pitch rotation
-    cos_horn_pitch = math.cos(pitch_angle)
-    sin_horn_pitch = math.sin(pitch_angle)
-    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-    pitched_z = rel_z
-
-    # Apply horn yaw rotation
-    cos_horn_yaw = math.cos(yaw_angle)
-    sin_horn_yaw = math.sin(yaw_angle)
-    if is_left:
-        # Left pincer: positive yaw opens outward
-        yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-        yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-    else:
-        # Right pincer: inverse yaw rotation
-        yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
-        yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-    yawed_y = pitched_y
-
-    # Translate back from pivot
-    local_x = yawed_x + 3.0
-    local_y = yawed_y + 1.0
-    local_z = yawed_z
-
-    # Apply beetle body rotation
-    cos_rotation = math.cos(beetle.rotation)
-    sin_rotation = math.sin(beetle.rotation)
-    rotated_x = local_x * cos_rotation - local_z * sin_rotation
-    rotated_z = local_x * sin_rotation + local_z * cos_rotation
-    rotated_y = local_y
-
-    # Translate to world position
-    world_x = beetle.x + rotated_x
-    world_y = beetle.y + rotated_y
-    world_z = beetle.z + rotated_z
-
-    return (world_x, world_y, world_z)
-
-
 def calculate_stag_pincer_tips(beetle, pitch_angle, yaw_angle):
-    """Calculate both left and right pincer tip positions for stag beetles.
+    """Calculate both left and right pincer tip positions for stag beetles"""
+    # Stag pincer tips in local coordinates
+    tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
+    tip_local_y = 1.0
+    tip_local_z = beetle.horn_prong_len + 3.0  # Pincers extend sideways + safety buffer (was 1.5)
 
-    Returns:
-        ((left_tip_x, left_tip_y, left_tip_z), (right_tip_x, right_tip_y, right_tip_z))
-    """
-    left_tip = calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, 1.0, is_left=True)
-    right_tip = calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, 1.0, is_left=False)
-    return left_tip, right_tip
+    # === LEFT PINCER (extends in -Z direction) ===
+    # Step 1: Translate to horn pivot
+    rel_x = tip_local_x - 3.0
+    rel_y = tip_local_y - 1.0
+    rel_z = -tip_local_z  # Negative Z for left pincer
 
+    # Step 2: Apply horn pitch rotation
+    cos_horn_pitch = math.cos(pitch_angle)
+    sin_horn_pitch = math.sin(pitch_angle)
+    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+    pitched_z = rel_z
 
-def calculate_stag_pincer_points(beetle, pitch_angle, yaw_angle):
-    """Calculate base, mid, and tip points for both pincers (6 points total).
+    # Step 3: Apply horn yaw rotation (positive yaw opens left pincer outward)
+    cos_horn_yaw = math.cos(yaw_angle)
+    sin_horn_yaw = math.sin(yaw_angle)
+    yawed_x_left = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+    yawed_z_left = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    yawed_y_left = pitched_y
 
-    Used for improved collision detection that catches inner surface clipping.
+    # Step 4: Translate back from pivot
+    local_x_left = yawed_x_left + 3.0
+    local_y_left = yawed_y_left + 1.0
+    local_z_left = yawed_z_left
 
-    Returns:
-        (left_tip, left_mid, left_base, right_tip, right_mid, right_base) - each is (x, y, z) tuple
-    """
-    left_tip = calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, 1.0, is_left=True)
-    left_mid = calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, 0.5, is_left=True)
-    left_base = calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, 0.2, is_left=True)
-    right_tip = calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, 1.0, is_left=False)
-    right_mid = calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, 0.5, is_left=False)
-    right_base = calculate_stag_pincer_point(beetle, pitch_angle, yaw_angle, 0.2, is_left=False)
-    return left_tip, left_mid, left_base, right_tip, right_mid, right_base
+    # Step 5: Apply beetle body yaw rotation
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    rotated_x_left = local_x_left * cos_rotation - local_z_left * sin_rotation
+    rotated_z_left = local_x_left * sin_rotation + local_z_left * cos_rotation
+    rotated_y_left = local_y_left
+
+    # Step 6: Translate to world position
+    left_tip_x = beetle.x + rotated_x_left
+    left_tip_y = beetle.y + rotated_y_left
+    left_tip_z = beetle.z + rotated_z_left
+
+    # === RIGHT PINCER (extends in +Z direction) ===
+    # Step 1: Translate to horn pivot
+    rel_z = tip_local_z  # Positive Z for right pincer
+
+    # Step 2: Pitch rotation (same as left)
+    pitched_z = rel_z
+
+    # Step 3: Apply horn yaw rotation (inverse rotation for right pincer)
+    yawed_x_right = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+    yawed_z_right = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+    yawed_y_right = pitched_y
+
+    # Step 4: Translate back from pivot
+    local_x_right = yawed_x_right + 3.0
+    local_y_right = yawed_y_right + 1.0
+    local_z_right = yawed_z_right
+
+    # Step 5: Apply beetle body yaw rotation
+    rotated_x_right = local_x_right * cos_rotation - local_z_right * sin_rotation
+    rotated_z_right = local_x_right * sin_rotation + local_z_right * cos_rotation
+    rotated_y_right = local_y_right
+
+    # Step 6: Translate to world position
+    right_tip_x = beetle.x + rotated_x_right
+    right_tip_y = beetle.y + rotated_y_right
+    right_tip_z = beetle.z + rotated_z_right
+
+    return (left_tip_x, left_tip_y, left_tip_z), (right_tip_x, right_tip_y, right_tip_z)
 
 def calculate_rhino_prong_tips(beetle, pitch_angle, yaw_angle):
     """Calculate both left and right Y-fork prong tip positions for rhino beetles"""
@@ -4564,26 +4462,33 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
         # All angles unchanged - return cached result
         return beetle1.cached_min_distance
 
-    # CASE 1: Both rhino - check shaft points (tip, mid, base) = 9 combinations
+    # CASE 1: Both rhino - check all 4 Y-fork prong tip combinations
     if beetle1.horn_type == "rhino" and beetle2.horn_type == "rhino":
-        b1_tip, b1_mid, b1_base = calculate_rhino_horn_points(beetle1, pitch1, yaw1)
-        b2_tip, b2_mid, b2_base = calculate_rhino_horn_points(beetle2, pitch2, yaw2)
+        (b1_left_x, b1_left_y, b1_left_z), (b1_right_x, b1_right_y, b1_right_z) = calculate_rhino_prong_tips(beetle1, pitch1, yaw1)
+        (b2_left_x, b2_left_y, b2_left_z), (b2_right_x, b2_right_y, b2_right_z) = calculate_rhino_prong_tips(beetle2, pitch2, yaw2)
 
-        b1_points = [b1_tip, b1_mid, b1_base]
-        b2_points = [b2_tip, b2_mid, b2_base]
+        # Calculate all 4 distances: left-left, left-right, right-left, right-right
+        dx = b1_left_x - b2_left_x
+        dy = b1_left_y - b2_left_y
+        dz = b1_left_z - b2_left_z
+        dist_ll = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-        # Find minimum distance across all 9 point pairs
-        min_dist = float('inf')
-        for p1 in b1_points:
-            for p2 in b2_points:
-                dx = p1[0] - p2[0]
-                dy = p1[1] - p2[1]
-                dz = p1[2] - p2[2]
-                dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                if dist < min_dist:
-                    min_dist = dist
+        dx = b1_left_x - b2_right_x
+        dy = b1_left_y - b2_right_y
+        dz = b1_left_z - b2_right_z
+        dist_lr = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-        result = min_dist
+        dx = b1_right_x - b2_left_x
+        dy = b1_right_y - b2_left_y
+        dz = b1_right_z - b2_left_z
+        dist_rl = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        dx = b1_right_x - b2_right_x
+        dy = b1_right_y - b2_right_y
+        dz = b1_right_z - b2_right_z
+        dist_rr = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        result = min(dist_ll, dist_lr, dist_rl, dist_rr)
         # Update cache
         beetle1.cached_horn_pitch = pitch1
         beetle1.cached_horn_yaw = yaw1
@@ -4592,28 +4497,33 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
         beetle1.cached_min_distance = result
         return result
 
-    # CASE 2: Both stag - check all 36 point combinations (6 points per beetle: tip + mid + base for each pincer)
+    # CASE 2: Both stag - check all 4 pincer tip combinations
     if beetle1.horn_type == "stag" and beetle2.horn_type == "stag":
-        b1_lt, b1_lm, b1_lb, b1_rt, b1_rm, b1_rb = calculate_stag_pincer_points(beetle1, pitch1, yaw1)
-        b2_lt, b2_lm, b2_lb, b2_rt, b2_rm, b2_rb = calculate_stag_pincer_points(beetle2, pitch2, yaw2)
+        (b1_left_x, b1_left_y, b1_left_z), (b1_right_x, b1_right_y, b1_right_z) = calculate_stag_pincer_tips(beetle1, pitch1, yaw1)
+        (b2_left_x, b2_left_y, b2_left_z), (b2_right_x, b2_right_y, b2_right_z) = calculate_stag_pincer_tips(beetle2, pitch2, yaw2)
 
-        # All 6 points from beetle1
-        b1_points = [b1_lt, b1_lm, b1_lb, b1_rt, b1_rm, b1_rb]
-        # All 6 points from beetle2
-        b2_points = [b2_lt, b2_lm, b2_lb, b2_rt, b2_rm, b2_rb]
+        # Calculate all 4 distances inline
+        dx = b1_left_x - b2_left_x
+        dy = b1_left_y - b2_left_y
+        dz = b1_left_z - b2_left_z
+        dist_ll = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-        # Find minimum distance across all 36 point pairs
-        min_dist = float('inf')
-        for p1 in b1_points:
-            for p2 in b2_points:
-                dx = p1[0] - p2[0]
-                dy = p1[1] - p2[1]
-                dz = p1[2] - p2[2]
-                dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-                if dist < min_dist:
-                    min_dist = dist
+        dx = b1_left_x - b2_right_x
+        dy = b1_left_y - b2_right_y
+        dz = b1_left_z - b2_right_z
+        dist_lr = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-        result = min_dist
+        dx = b1_right_x - b2_left_x
+        dy = b1_right_y - b2_left_y
+        dz = b1_right_z - b2_left_z
+        dist_rl = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        dx = b1_right_x - b2_right_x
+        dy = b1_right_y - b2_right_y
+        dz = b1_right_z - b2_right_z
+        dist_rr = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        result = min(dist_ll, dist_lr, dist_rl, dist_rr)
         # Update cache
         beetle1.cached_horn_pitch = pitch1
         beetle1.cached_horn_yaw = yaw1
@@ -4659,48 +4569,47 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
 
     # CASE 4: Mixed types - check dual-tip beetle against single or other dual-tip
     # Handle: stag vs rhino, hercules vs rhino, stag vs hercules
-    # Stag uses 6 points (tip + mid + base per pincer), others use 2 points
 
-    # Get points for beetle1
+    # Get tips for beetle1
     if beetle1.horn_type == "stag":
-        b1_lt, b1_lm, b1_lb, b1_rt, b1_rm, b1_rb = calculate_stag_pincer_points(beetle1, pitch1, yaw1)
-        b1_points = [b1_lt, b1_lm, b1_lb, b1_rt, b1_rm, b1_rb]
+        (b1_tip1_x, b1_tip1_y, b1_tip1_z), (b1_tip2_x, b1_tip2_y, b1_tip2_z) = calculate_stag_pincer_tips(beetle1, pitch1, yaw1)
     elif beetle1.horn_type == "hercules":
-        tip1, tip2 = calculate_hercules_jaw_tips(beetle1, pitch1, yaw1)
-        b1_points = [tip1, tip2]
-    elif beetle1.horn_type == "rhino":
-        tip, mid, base = calculate_rhino_horn_points(beetle1, pitch1, yaw1)
-        b1_points = [tip, mid, base]
-    else:  # scorpion, atlas, etc - use single tip
-        tip = calculate_horn_tip_position_with_both(beetle1, pitch1, yaw1)
-        b1_points = [(tip[0], tip[1], tip[2])]
+        (b1_tip1_x, b1_tip1_y, b1_tip1_z), (b1_tip2_x, b1_tip2_y, b1_tip2_z) = calculate_hercules_jaw_tips(beetle1, pitch1, yaw1)
+    else:  # rhino
+        b1_tip1_x, b1_tip1_y, b1_tip1_z = calculate_horn_tip_position_with_both(beetle1, pitch1, yaw1)
+        b1_tip2_x, b1_tip2_y, b1_tip2_z = b1_tip1_x, b1_tip1_y, b1_tip1_z  # Same tip twice for rhino
 
-    # Get points for beetle2
+    # Get tips for beetle2
     if beetle2.horn_type == "stag":
-        b2_lt, b2_lm, b2_lb, b2_rt, b2_rm, b2_rb = calculate_stag_pincer_points(beetle2, pitch2, yaw2)
-        b2_points = [b2_lt, b2_lm, b2_lb, b2_rt, b2_rm, b2_rb]
+        (b2_tip1_x, b2_tip1_y, b2_tip1_z), (b2_tip2_x, b2_tip2_y, b2_tip2_z) = calculate_stag_pincer_tips(beetle2, pitch2, yaw2)
     elif beetle2.horn_type == "hercules":
-        tip1, tip2 = calculate_hercules_jaw_tips(beetle2, pitch2, yaw2)
-        b2_points = [tip1, tip2]
-    elif beetle2.horn_type == "rhino":
-        tip, mid, base = calculate_rhino_horn_points(beetle2, pitch2, yaw2)
-        b2_points = [tip, mid, base]
-    else:  # scorpion, atlas, etc - use single tip
-        tip = calculate_horn_tip_position_with_both(beetle2, pitch2, yaw2)
-        b2_points = [(tip[0], tip[1], tip[2])]
+        (b2_tip1_x, b2_tip1_y, b2_tip1_z), (b2_tip2_x, b2_tip2_y, b2_tip2_z) = calculate_hercules_jaw_tips(beetle2, pitch2, yaw2)
+    else:  # rhino
+        b2_tip1_x, b2_tip1_y, b2_tip1_z = calculate_horn_tip_position_with_both(beetle2, pitch2, yaw2)
+        b2_tip2_x, b2_tip2_y, b2_tip2_z = b2_tip1_x, b2_tip1_y, b2_tip1_z  # Same tip twice for rhino
 
-    # Find minimum distance across all point pairs
-    min_dist = float('inf')
-    for p1 in b1_points:
-        for p2 in b2_points:
-            dx = p1[0] - p2[0]
-            dy = p1[1] - p2[1]
-            dz = p1[2] - p2[2]
-            dist = math.sqrt(dx*dx + dy*dy + dz*dz)
-            if dist < min_dist:
-                min_dist = dist
+    # Calculate all 4 distances (even if some are duplicates for rhino)
+    dx = b1_tip1_x - b2_tip1_x
+    dy = b1_tip1_y - b2_tip1_y
+    dz = b1_tip1_z - b2_tip1_z
+    dist_11 = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-    result = min_dist
+    dx = b1_tip1_x - b2_tip2_x
+    dy = b1_tip1_y - b2_tip2_y
+    dz = b1_tip1_z - b2_tip2_z
+    dist_12 = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    dx = b1_tip2_x - b2_tip1_x
+    dy = b1_tip2_y - b2_tip1_y
+    dz = b1_tip2_z - b2_tip1_z
+    dist_21 = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    dx = b1_tip2_x - b2_tip2_x
+    dy = b1_tip2_y - b2_tip2_y
+    dz = b1_tip2_z - b2_tip2_z
+    dist_22 = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    result = min(dist_11, dist_12, dist_21, dist_22)
     # Update cache
     beetle1.cached_horn_pitch = pitch1
     beetle1.cached_horn_yaw = yaw1
@@ -5065,52 +4974,6 @@ def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_
     return new_damping
 
 
-def calculate_stag_pincer_push(beetle, collision_x, collision_y, collision_z, engagement_factor):
-    """Calculate push force for stag beetles when collision is between pincers.
-
-    Returns (push_x, push_z, damping) - the push direction in world space and damping amount.
-    Push is applied in the beetle's forward direction to push opponent out of pincers.
-    """
-    if beetle.horn_type != "stag":
-        return 0.0, 0.0, 0.0
-
-    # Transform collision point to beetle's local space
-    dx = collision_x - beetle.x
-    dz = collision_z - beetle.z
-    cos_r = math.cos(-beetle.rotation)
-    sin_r = math.sin(-beetle.rotation)
-    local_x = dx * cos_r - dz * sin_r  # Forward direction
-    local_z = dx * sin_r + dz * cos_r  # Side direction
-
-    # Check if collision is in front of beetle (where horns are)
-    if local_x < 2.0:  # Must be in front of beetle body
-        return 0.0, 0.0, 0.0
-
-    # Check if collision is between the pincers
-    # Use a generous detection zone - horn length plus some margin
-    pincer_width = beetle.horn_prong_len + 3.0  # Full pincer spread width
-
-    if abs(local_z) < pincer_width:
-        # Collision is in pincer zone
-        # Center factor: stronger push when more centered
-        center_factor = 1.0 - (abs(local_z) / pincer_width)
-        center_factor = center_factor ** 0.5  # Square root for more gradual falloff
-
-        # Calculate push direction: beetle's forward direction (world space)
-        cos_fwd = math.cos(beetle.rotation)
-        sin_fwd = math.sin(beetle.rotation)
-
-        # Push strength based on engagement and center position
-        push_magnitude = 50.0 * engagement_factor * center_factor
-
-        # Damping for closing motion
-        damping = HORN_DAMPING_INTO * engagement_factor * center_factor
-
-        return cos_fwd * push_magnitude, sin_fwd * push_magnitude, damping
-
-    return 0.0, 0.0, 0.0
-
-
 def beetle_collision(b1, b2, params):
     """Handle collision with voxel-perfect detection, pushing, and horn leverage"""
     # Detect if this is a ball collision (ball uses different, gentler physics)
@@ -5207,27 +5070,6 @@ def beetle_collision(b1, b2, params):
                     b1, collision_x, collision_y, collision_z, engagement_factor)
                 b2.horn_rotation_damping = calculate_horn_rotation_damping(
                     b2, collision_x, collision_y, collision_z, engagement_factor)
-
-                # === STAG PINCER PUSH ===
-                # When collision is between a stag beetle's pincers, push opponent forward
-                # This prevents horn clipping when pincers close on opponent
-                b1_push_x, b1_push_z, b1_yaw_damp = calculate_stag_pincer_push(
-                    b1, collision_x, collision_y, collision_z, engagement_factor)
-                b2_push_x, b2_push_z, b2_yaw_damp = calculate_stag_pincer_push(
-                    b2, collision_x, collision_y, collision_z, engagement_factor)
-
-                # Apply push from b1's pincers to b2
-                if abs(b1_push_x) > 0.01 or abs(b1_push_z) > 0.01:
-                    b2.vx += b1_push_x
-                    b2.vz += b1_push_z
-                    b1.horn_yaw_damping = max(b1.horn_yaw_damping, b1_yaw_damp)
-
-                # Apply push from b2's pincers to b1
-                if abs(b2_push_x) > 0.01 or abs(b2_push_z) > 0.01:
-                    b1.vx += b2_push_x
-                    b1.vz += b2_push_z
-                    b2.horn_yaw_damping = max(b2.horn_yaw_damping, b2_yaw_damp)
-
                 # Scale up vertical component based on height - logarithmic scaling for diminishing returns
                 raw_leverage = contact_height_above_center / 3.0
                 horn_leverage = min(math.log(raw_leverage + 1.0) * 2.0, 2.5)
@@ -5922,14 +5764,11 @@ while window.running:
                 max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_blue.horn_type_id]
 
                 if window.is_pressed('v'):
-                    # For stag closing (v key = negative yaw), also apply stag-specific yaw damping
-                    yaw_damp = max(beetle_blue.horn_rotation_damping, beetle_blue.horn_yaw_damping)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - yaw_damp)
+                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
                     new_yaw = beetle_blue.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
                     yaw_speed = -effective_speed
                 elif window.is_pressed('b'):
-                    # For opening (b key = positive yaw), only use general rotation damping
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
                     new_yaw = beetle_blue.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
@@ -6045,14 +5884,11 @@ while window.running:
                 max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_red.horn_type_id]
 
                 if window.is_pressed('n'):
-                    # For stag closing (n key = negative yaw), also apply stag-specific yaw damping
-                    yaw_damp = max(beetle_red.horn_rotation_damping, beetle_red.horn_yaw_damping)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - yaw_damp)
+                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
                     new_yaw = beetle_red.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
                     yaw_speed = -effective_speed
                 elif window.is_pressed('m'):
-                    # For opening (m key = positive yaw), only use general rotation damping
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
                     new_yaw = beetle_red.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
