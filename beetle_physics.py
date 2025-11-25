@@ -164,7 +164,11 @@ class Beetle:
 
         # Animation state for procedural leg movement
         self.walk_phase = 0.0  # Current walk cycle phase (0 to 2π)
+        self.prev_walk_phase = 0.0  # Previous frame walk phase (for leg dust touchdown detection)
+        self.spin_dust_timer = 0.0  # Timer for spinning dust spawn interval
+        self.spin_dust_leg_index = 0  # Current leg index for spinning dust pattern (0-5)
         self.is_moving = False  # Whether beetle is actively walking
+        self.is_moving_backward = False  # True when moving backward (for dust/animation)
         self.is_rotating_only = False  # True when rotating without forward movement
         self.rotation_direction = 0  # -1 = left, 0 = none, 1 = right
         self.is_completing_animation = False  # True when finishing walk cycle after input stops
@@ -4750,8 +4754,8 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
 @ti.kernel
 def update_debris_particles(dt: ti.f32):
     """Update debris particle physics - position, velocity, lifetime (GPU parallel)"""
-    gravity = 20.0  # Gravity acceleration
-    air_drag = 0.96  # Air resistance per frame (0.96 = 4% drag per frame)
+    gravity = 10.0  # Gravity acceleration (lighter for floaty dust arc)
+    air_drag = 0.99  # Air resistance per frame (very gentle for smooth motion)
 
     # Update all active particles in parallel
     for idx in range(simulation.num_debris[None]):
@@ -4775,6 +4779,7 @@ def cleanup_dead_debris():
     """Remove dead particles by compacting array (serial due to compaction)"""
     write_idx = 0
 
+    ti.loop_config(serialize=True)
     for read_idx in range(simulation.num_debris[None]):
         if simulation.debris_lifetime[read_idx] > 0.0:
             # Particle still alive, keep it
@@ -4833,6 +4838,108 @@ def spawn_death_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                 simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
                 simulation.debris_material[idx] = particle_color
                 simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.5  # 0.5-1.0 sec - varied lifetime for more random fade timing
+
+@ti.kernel
+def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
+                              dir_x: ti.f32, dir_z: ti.f32, speed: ti.f32,
+                              color_r: ti.f32, color_g: ti.f32, color_b: ti.f32,
+                              rand_offset_x: ti.f32, rand_offset_z: ti.f32,
+                              stagger_scale: ti.f32, num_particles: ti.i32):
+    """Spawn staggered dust particles kicked up from leg tip at ~25° angle"""
+    # 25° angle: tan(25°) ≈ 0.466, so vertical = horizontal * 0.466
+    upward_ratio = 0.466
+
+    for i in range(num_particles):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            # Stagger particles along kick direction, scaled by leg length
+            stagger = ti.cast(i, ti.f32) * 1.2 * stagger_scale
+            # Add per-leg randomization (also scaled) + per-particle lateral spread
+            lateral_spread = (ti.random() - 0.5) * 2.0 * stagger_scale  # Side-to-side variance
+            spawn_x = pos_x + dir_x * stagger + rand_offset_x * stagger_scale + (ti.random() - 0.5) * 0.8 * stagger_scale - dir_z * lateral_spread
+            spawn_z = pos_z + dir_z * stagger + rand_offset_z * stagger_scale + (ti.random() - 0.5) * 0.8 * stagger_scale + dir_x * lateral_spread
+
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, pos_y, spawn_z)
+
+            # Kick outward at 45° angle - consistent speed for smooth motion
+            particle_speed = speed * (1.1 - ti.cast(i, ti.f32) * 0.04)  # Slight falloff, more uniform
+            rand_speed = particle_speed * (0.9 + ti.random() * 0.2)  # Less speed variance for smoother look
+            rand_angle = (ti.random() - 0.5) * 0.5  # ±15° horizontal spread (tighter fan)
+            vx = dir_x * rand_speed + rand_angle * dir_z * rand_speed
+            vz = dir_z * rand_speed - rand_angle * dir_x * rand_speed
+            vy = rand_speed * upward_ratio * (0.9 + ti.random() * 0.2)  # Less vertical variance
+
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Dust color with slight variation
+            color_var = 0.95 + ti.random() * 0.1
+            simulation.debris_material[idx] = ti.math.vec3(color_r * color_var, color_g * color_var, color_b * color_var)
+            simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.2  # 0.5-0.7s to complete full arc back to ground
+
+@ti.kernel
+def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
+                          dir_x: ti.f32, dir_z: ti.f32,
+                          color_r: ti.f32, color_g: ti.f32, color_b: ti.f32,
+                          scale: ti.f32, num_particles: ti.i32):
+    """Spawn 2 dust particles in narrow cone spread - for spinning"""
+    for i in range(2):  # Always spawn 2 particles per call
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            # Cluster spawn around leg tip with random spread
+            spread = 1.5 * scale
+            spawn_x = pos_x + (ti.random() - 0.5) * spread
+            spawn_z = pos_z + (ti.random() - 0.5) * spread
+
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, pos_y, spawn_z)
+
+            # Outward kick - very slow so they fall very close
+            outward_speed = 1.5 + ti.random() * 0.8  # Very slow, fall in very soon
+            upward_speed = outward_speed * 0.466  # ~25° angle like walking dust
+            # Narrow cone spread: particle 0 goes slightly left, particle 1 slightly right
+            cone_angle = 0.15  # ~8.5° half-angle cone
+            side = ti.cast(i, ti.f32) * 2.0 - 1.0  # -1 for i=0, +1 for i=1
+            drift_angle = side * cone_angle + (ti.random() - 0.5) * 0.1  # Narrow cone with tiny random
+            vx = dir_x * outward_speed + drift_angle * dir_z * outward_speed
+            vz = dir_z * outward_speed - drift_angle * dir_x * outward_speed
+            vy = upward_speed
+
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Dust color - blend toward white/light for less visual noise against arena
+            blend_to_light = 0.5  # 50% blend toward light
+            color_var = 0.95 + ti.random() * 0.1
+            # Blend color toward lighter value (0.7) instead of darker
+            blended_r = color_r * color_var * (1.0 - blend_to_light) + 0.7 * blend_to_light
+            blended_g = color_g * color_var * (1.0 - blend_to_light) + 0.68 * blend_to_light
+            blended_b = color_b * color_var * (1.0 - blend_to_light) + 0.65 * blend_to_light
+            simulation.debris_material[idx] = ti.math.vec3(blended_r, blended_g, blended_b)
+            simulation.debris_lifetime[idx] = 1.0 + ti.random() * 0.1  # 1.0-1.1s consistent trail
+
+# Base leg tip offsets from beetle center (unrotated, in voxel units) for leg_length=6
+# Beetle coordinate system: +X = forward (head), -X = backward (rear)
+# +Z = left side, -Z = right side
+# These get scaled by leg_length / 6.0
+LEG_TIP_OFFSETS_BASE = [
+    (4, 8),   # 0: front_left (forward, left)
+    (4, -8),  # 1: front_right (forward, right)
+    (-3, 11),  # 2: middle_left (center, far left)
+    (-3, -11), # 3: middle_right (center, far right)
+    (-12, 8),  # 4: rear_left (backward, left)
+    (-12, -8), # 5: rear_right (backward, right)
+]
+
+def get_leg_tip_world_position(beetle, leg_id, leg_length=8):
+    """Calculate world position of leg tip based on beetle position, rotation, and leg length"""
+    base_x, base_z = LEG_TIP_OFFSETS_BASE[leg_id]
+    # Softer scaling - sqrt curve so longer legs don't push dust too far
+    # At leg_length=6: scale=1.0, at leg_length=10: scale=1.29 (instead of 1.67)
+    scale = math.sqrt(leg_length / 6.0)
+    local_x = base_x * scale
+    local_z = base_z * scale
+    # Rotate by beetle facing
+    cos_r = math.cos(beetle.rotation)
+    sin_r = math.sin(beetle.rotation)
+    world_x = beetle.x + local_x * cos_r - local_z * sin_r
+    world_z = beetle.z + local_x * sin_r + local_z * cos_r
+    return world_x, world_z
 
 def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_z, engagement_factor):
     """Calculate damping factor based on horn rotation direction (Phase 2: Horn Clipping Prevention)"""
@@ -6117,7 +6224,16 @@ while window.running:
     elif blue_speed > 0.5:  # Normal forward/backward movement
         # Cancel animation completion if player resumes input
         beetle_blue.is_completing_animation = False
-        beetle_blue.walk_phase += blue_speed * WALK_CYCLE_SPEED * frame_dt
+        # Check if moving forward or backward using dot product with facing direction
+        facing_x = math.cos(beetle_blue.rotation)
+        facing_z = math.sin(beetle_blue.rotation)
+        move_dot = beetle_blue.vx * facing_x + beetle_blue.vz * facing_z
+        if move_dot >= 0:  # Moving forward
+            beetle_blue.walk_phase += blue_speed * WALK_CYCLE_SPEED * frame_dt
+            beetle_blue.is_moving_backward = False
+        else:  # Moving backward - reverse animation
+            beetle_blue.walk_phase -= blue_speed * WALK_CYCLE_SPEED * frame_dt
+            beetle_blue.is_moving_backward = True
         beetle_blue.walk_phase = beetle_blue.walk_phase % TWO_PI
         beetle_blue.is_moving = True
         beetle_blue.is_rotating_only = False
@@ -6187,7 +6303,16 @@ while window.running:
     elif red_speed > 0.5:  # Normal forward/backward movement
         # Cancel animation completion if player resumes input
         beetle_red.is_completing_animation = False
-        beetle_red.walk_phase += red_speed * WALK_CYCLE_SPEED * frame_dt
+        # Check if moving forward or backward using dot product with facing direction
+        facing_x = math.cos(beetle_red.rotation)
+        facing_z = math.sin(beetle_red.rotation)
+        move_dot = beetle_red.vx * facing_x + beetle_red.vz * facing_z
+        if move_dot >= 0:  # Moving forward
+            beetle_red.walk_phase += red_speed * WALK_CYCLE_SPEED * frame_dt
+            beetle_red.is_moving_backward = False
+        else:  # Moving backward - reverse animation
+            beetle_red.walk_phase -= red_speed * WALK_CYCLE_SPEED * frame_dt
+            beetle_red.is_moving_backward = True
         beetle_red.walk_phase = beetle_red.walk_phase % TWO_PI
         beetle_red.is_moving = True
         beetle_red.is_rotating_only = False
@@ -6229,6 +6354,171 @@ while window.running:
         beetle_red.is_moving = False
         beetle_red.is_rotating_only = False
         beetle_red.rotation_direction = 0
+
+    # === LEG DUST KICK-UP EFFECT ===
+    # Spawn dust particles when legs touch down during walking/turning
+    # Particles kick up at ~30° angle from ground, fast fade
+    DUST_COLOR = (0.45, 0.40, 0.35)  # Brownish gray arena dust
+    DUST_SPEED_WALK = 5.2  # Speed for walking dust (+30%)
+    DUST_SPEED_SPIN = 4.0  # Speed for spinning dust (outward from beetle center)
+
+    # Blue beetle leg dust
+    blue_leg_len = getattr(window, 'blue_leg_length_value', 8)  # Default 8 if not set yet
+    blue_stagger_scale = blue_leg_len / 6.0  # Scale stagger based on leg length (6 is min)
+    if beetle_blue.active and beetle_blue.y < 3.0:  # Only when on/near ground (within 3 voxels)
+        # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
+        if beetle_blue.is_moving and not beetle_blue.is_rotating_only:
+            # Use front legs (0,1) when backward, back legs (4,5) when forward
+            if beetle_blue.is_moving_backward:
+                dust_legs = [0, 1]  # Front legs
+                kick_dir = 1.0  # Kick forward
+            else:
+                dust_legs = [4, 5]  # Back legs
+                kick_dir = -1.0  # Kick backward
+            for leg_id in dust_legs:
+                phase_offset = 0.0 if leg_id in [0, 4] else math.pi  # Group A vs B
+                leg_phase = beetle_blue.walk_phase + phase_offset
+                prev_leg_phase = beetle_blue.prev_walk_phase + phase_offset
+                # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
+                # Triggers slightly later in cycle for better sync with animation
+                touchdown = math.sin(prev_leg_phase) > -0.2 and math.sin(leg_phase) <= -0.2
+                if touchdown:
+                    tip_x, tip_z = get_leg_tip_world_position(beetle_blue, leg_id, blue_leg_len)
+                    # Only spawn dust if leg tip is on arena
+                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
+                    if tip_dist < ARENA_RADIUS:
+                        # Kick direction: backward when forward, forward when backward
+                        dir_x = kick_dir * math.cos(beetle_blue.rotation)
+                        dir_z = kick_dir * math.sin(beetle_blue.rotation)
+                        # Per-leg random offset for variety
+                        rand_x = (random.random() - 0.5) * 1.5
+                        rand_z = (random.random() - 0.5) * 1.5
+                        spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, 5)
+
+        # Spinning: spawn dust from back leg on opposite side
+        # Left turn (side=-1): back RIGHT leg (leg 5)
+        # Right turn (side=1): back LEFT leg (leg 4)
+        elif beetle_blue.is_rotating_only:
+            beetle_blue.spin_dust_timer += frame_dt
+            if beetle_blue.spin_dust_timer >= 0.04:  # Every 0.04 seconds
+                beetle_blue.spin_dust_timer = 0.0
+                side = beetle_blue.rotation_direction  # -1 = left turn, 1 = right turn
+                if side != 0:
+                    # BACK leg on OPPOSITE side of turn
+                    # Left turn -> leg 5 (rear_right)
+                    # Right turn -> leg 4 (rear_left)
+                    back_leg_id = 5 if side == 1 else 4
+                    tip_x, tip_z = get_leg_tip_world_position(beetle_blue, back_leg_id, blue_leg_len)
+                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
+                    if tip_dist < ARENA_RADIUS:
+                        dir_x = tip_x - beetle_blue.x
+                        dir_z = tip_z - beetle_blue.z
+                        dir_len = math.sqrt(dir_x**2 + dir_z**2)
+                        if dir_len > 0:
+                            dir_x /= dir_len
+                            dir_z /= dir_len
+                        spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
+                                            DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], blue_stagger_scale, 1)
+
+                    # FRONT leg on SAME side of turn
+                    # Left turn -> leg 0 (front_left)
+                    # Right turn -> leg 1 (front_right)
+                    front_leg_id = 0 if side == 1 else 1
+                    tip_x, tip_z = get_leg_tip_world_position(beetle_blue, front_leg_id, blue_leg_len)
+                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
+                    if tip_dist < ARENA_RADIUS:
+                        dir_x = tip_x - beetle_blue.x
+                        dir_z = tip_z - beetle_blue.z
+                        dir_len = math.sqrt(dir_x**2 + dir_z**2)
+                        if dir_len > 0:
+                            dir_x /= dir_len
+                            dir_z /= dir_len
+                        spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
+                                            DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], blue_stagger_scale, 1)
+        else:
+            beetle_blue.spin_dust_timer = 0.0  # Reset timer when not spinning
+
+    # Red beetle leg dust
+    red_leg_len = getattr(window, 'red_leg_length_value', 8)  # Default 8 if not set yet
+    red_stagger_scale = red_leg_len / 6.0  # Scale stagger based on leg length (6 is min)
+    if beetle_red.active and beetle_red.y < 3.0:  # Only when on/near ground (within 3 voxels)
+        # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
+        if beetle_red.is_moving and not beetle_red.is_rotating_only:
+            # Use front legs (0,1) when backward, back legs (4,5) when forward
+            if beetle_red.is_moving_backward:
+                dust_legs = [0, 1]  # Front legs
+                kick_dir = 1.0  # Kick forward
+            else:
+                dust_legs = [4, 5]  # Back legs
+                kick_dir = -1.0  # Kick backward
+            for leg_id in dust_legs:
+                phase_offset = 0.0 if leg_id in [0, 4] else math.pi  # Group A vs B
+                leg_phase = beetle_red.walk_phase + phase_offset
+                prev_leg_phase = beetle_red.prev_walk_phase + phase_offset
+                # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
+                # Triggers slightly later in cycle for better sync with animation
+                touchdown = math.sin(prev_leg_phase) > -0.2 and math.sin(leg_phase) <= -0.2
+                if touchdown:
+                    tip_x, tip_z = get_leg_tip_world_position(beetle_red, leg_id, red_leg_len)
+                    # Only spawn dust if leg tip is on arena
+                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
+                    if tip_dist < ARENA_RADIUS:
+                        # Kick direction: backward when forward, forward when backward
+                        dir_x = kick_dir * math.cos(beetle_red.rotation)
+                        dir_z = kick_dir * math.sin(beetle_red.rotation)
+                        # Per-leg random offset for variety
+                        rand_x = (random.random() - 0.5) * 1.5
+                        rand_z = (random.random() - 0.5) * 1.5
+                        spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, 5)
+
+        # Spinning: spawn dust from back leg on opposite side
+        # Left turn (side=-1): back RIGHT leg (leg 5)
+        # Right turn (side=1): back LEFT leg (leg 4)
+        elif beetle_red.is_rotating_only:
+            beetle_red.spin_dust_timer += frame_dt
+            if beetle_red.spin_dust_timer >= 0.04:  # Every 0.04 seconds
+                beetle_red.spin_dust_timer = 0.0
+                side = beetle_red.rotation_direction  # -1 = left turn, 1 = right turn
+                if side != 0:
+                    # BACK leg on OPPOSITE side of turn
+                    # Left turn -> leg 5 (rear_right)
+                    # Right turn -> leg 4 (rear_left)
+                    back_leg_id = 5 if side == 1 else 4
+                    tip_x, tip_z = get_leg_tip_world_position(beetle_red, back_leg_id, red_leg_len)
+                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
+                    if tip_dist < ARENA_RADIUS:
+                        dir_x = tip_x - beetle_red.x
+                        dir_z = tip_z - beetle_red.z
+                        dir_len = math.sqrt(dir_x**2 + dir_z**2)
+                        if dir_len > 0:
+                            dir_x /= dir_len
+                            dir_z /= dir_len
+                        spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
+                                            DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], red_stagger_scale, 1)
+
+                    # FRONT leg on SAME side of turn
+                    # Left turn -> leg 0 (front_left)
+                    # Right turn -> leg 1 (front_right)
+                    front_leg_id = 0 if side == 1 else 1
+                    tip_x, tip_z = get_leg_tip_world_position(beetle_red, front_leg_id, red_leg_len)
+                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
+                    if tip_dist < ARENA_RADIUS:
+                        dir_x = tip_x - beetle_red.x
+                        dir_z = tip_z - beetle_red.z
+                        dir_len = math.sqrt(dir_x**2 + dir_z**2)
+                        if dir_len > 0:
+                            dir_x /= dir_len
+                            dir_z /= dir_len
+                        spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
+                                            DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], red_stagger_scale, 1)
+        else:
+            beetle_red.spin_dust_timer = 0.0  # Reset timer when not spinning
+
+    # Update previous walk phase for next frame's touchdown detection
+    beetle_blue.prev_walk_phase = beetle_blue.walk_phase
+    beetle_red.prev_walk_phase = beetle_red.walk_phase
 
     # Detect if beetles are lifted high (for leg spaz animation)
     LIFT_THRESHOLD = 5.0  # 4 voxels above normal ground
