@@ -63,9 +63,10 @@ HORN_YAW_SPEED = 2.0  # Radians per second
 # Default yaw limits (for beetles with symmetric horn movement)
 HORN_MAX_YAW = math.radians(20)  # +20 degrees horizontal
 HORN_MIN_YAW = math.radians(-20)  # -20 degrees horizontal
-# Stag-specific yaw limits (same as default for now)
-HORN_MAX_YAW_STAG = math.radians(20)  # +20 degrees horizontal (stag pincers can open)
-HORN_MIN_YAW_STAG = math.radians(-20)  # -20 degrees horizontal (stag pincers can close)
+# Stag-specific yaw limits (shifted +15° so pincers start more open)
+HORN_DEFAULT_YAW_STAG = math.radians(15)  # Stag pincers start 15° open on each side (30° total spread)
+HORN_MAX_YAW_STAG = math.radians(35)  # +35 degrees horizontal (stag pincers can open more)
+HORN_MIN_YAW_STAG = math.radians(-5)  # -5 degrees horizontal (stag pincers can close less)
 HORN_YAW_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow yaw rotation
 HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to allow pitch rotation
 
@@ -4918,12 +4919,12 @@ def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
 # +Z = left side, -Z = right side
 # These get scaled by leg_length / 6.0
 LEG_TIP_OFFSETS_BASE = [
-    (4, 8),   # 0: front_left (forward, left)
-    (4, -8),  # 1: front_right (forward, right)
+    (2, 8),   # 0: front_left (forward, left)
+    (2, -8),  # 1: front_right (forward, right)
     (-3, 11),  # 2: middle_left (center, far left)
     (-3, -11), # 3: middle_right (center, far right)
-    (-12, 8),  # 4: rear_left (backward, left)
-    (-12, -8), # 5: rear_right (backward, right)
+    (-10, 8),  # 4: rear_left (backward, left)
+    (-10, -8), # 5: rear_right (backward, right)
 ]
 
 def get_leg_tip_world_position(beetle, leg_id, leg_length=8):
@@ -6830,22 +6831,27 @@ while window.running:
 
         print(f"Blue beetle switching to {blue_horn_type.upper()}...")
 
-        # Update blue beetle horn pitch
+        # Update blue beetle horn pitch and yaw defaults
         if blue_horn_type == "scorpion":
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+            beetle_blue.horn_yaw = 0.0
         elif blue_horn_type == "stag":
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_STAG
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
+            beetle_blue.horn_yaw = HORN_DEFAULT_YAW_STAG  # Stag pincers start more open
         elif blue_horn_type == "hercules":
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+            beetle_blue.horn_yaw = 0.0
         elif blue_horn_type == "atlas":
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+            beetle_blue.horn_yaw = 0.0
         else:  # rhino
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH
+            beetle_blue.horn_yaw = 0.0
 
         # Rebuild blue beetle with new horn type
         rebuild_blue_beetle(
@@ -6970,22 +6976,27 @@ while window.running:
 
         print(f"Red beetle switching to {red_horn_type.upper()}...")
 
-        # Update red beetle horn pitch
+        # Update red beetle horn pitch and yaw defaults
         if red_horn_type == "scorpion":
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+            beetle_red.horn_yaw = 0.0
         elif red_horn_type == "stag":
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH_STAG
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
+            beetle_red.horn_yaw = HORN_DEFAULT_YAW_STAG  # Stag pincers start more open
         elif red_horn_type == "hercules":
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+            beetle_red.horn_yaw = 0.0
         elif red_horn_type == "atlas":
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+            beetle_red.horn_yaw = 0.0
         else:  # rhino
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
+            beetle_red.horn_yaw = 0.0
 
         # Rebuild red beetle with new horn type
         rebuild_red_beetle(
