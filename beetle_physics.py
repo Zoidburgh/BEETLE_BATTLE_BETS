@@ -5955,12 +5955,13 @@ while window.running:
             beetle_collision(beetle_blue, beetle_ball, physics_params)
             beetle_collision(beetle_red, beetle_ball, physics_params)
 
-        # Update debris particles (physics, aging)
-        update_debris_particles(PHYSICS_TIMESTEP)
+        # Update debris particles (physics, aging) - skip if no debris
+        if simulation.num_debris[None] > 0:
+            update_debris_particles(PHYSICS_TIMESTEP)
 
-        # Cleanup dead debris every 2 frames (aggressive cleanup for better performance)
-        if physics_frame % 2 == 0:
-            cleanup_dead_debris()
+            # Cleanup dead debris every 2 frames
+            if physics_frame % 2 == 0:
+                cleanup_dead_debris()
 
         # Fall death detection - two-stage system
         POINT_OF_NO_RETURN = -5.0  # Once below this, can't recover (5 voxels below floor)
