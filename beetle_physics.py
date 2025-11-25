@@ -2834,8 +2834,12 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             base_lift *= 0.6
             base_sweep *= 0.6
 
-        lift = ti.max(0.0, ti.sin(leg_phase)) * base_lift  # Lift (reduced during rotation)
-        sweep = -ti.cos(leg_phase) * base_sweep  # Sweep (reduced during rotation)
+        # OPTIMIZATION: Calculate trig once per leg and cache
+        leg_sin = ti.sin(leg_phase)
+        leg_cos = ti.cos(leg_phase)
+
+        lift = ti.max(0.0, leg_sin) * base_lift  # Lift (reduced during rotation)
+        sweep = -leg_cos * base_sweep  # Sweep (reduced during rotation)
 
         # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
         if is_lifted_high == 1:
@@ -2844,9 +2848,13 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             wiggle_freq = 1.5 if is_rotating_only == 1 else 5.0
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
+            # OPTIMIZATION: Pre-calculate wiggle trig
+            wiggle_sin = ti.sin(wiggle_phase)
+            wiggle_cos = ti.cos(wiggle_phase * 1.3)
+
             # Add erratic movement to lift and sweep
-            wiggle_lift = ti.sin(wiggle_phase) * 2.0  # ±2 voxels extra lift
-            wiggle_sweep = ti.cos(wiggle_phase * 1.3) * 0.8  # ±0.8 voxels extra sweep
+            wiggle_lift = wiggle_sin * 2.0  # ±2 voxels extra lift
+            wiggle_sweep = wiggle_cos * 0.8  # ±0.8 voxels extra sweep
 
             lift += wiggle_lift
             sweep += wiggle_sweep
@@ -3262,8 +3270,12 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             base_lift *= 0.6
             base_sweep *= 0.6
 
-        lift = ti.max(0.0, ti.sin(leg_phase)) * base_lift  # Lift (reduced during rotation)
-        sweep = -ti.cos(leg_phase) * base_sweep  # Sweep (reduced during rotation)
+        # OPTIMIZATION: Calculate trig once per leg and cache
+        leg_sin = ti.sin(leg_phase)
+        leg_cos = ti.cos(leg_phase)
+
+        lift = ti.max(0.0, leg_sin) * base_lift  # Lift (reduced during rotation)
+        sweep = -leg_cos * base_sweep  # Sweep (reduced during rotation)
 
         # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
         if is_lifted_high == 1:
@@ -3272,9 +3284,13 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             wiggle_freq = 1.5 if is_rotating_only == 1 else 5.0
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
+            # OPTIMIZATION: Pre-calculate wiggle trig
+            wiggle_sin = ti.sin(wiggle_phase)
+            wiggle_cos = ti.cos(wiggle_phase * 1.3)
+
             # Add erratic movement to lift and sweep
-            wiggle_lift = ti.sin(wiggle_phase) * 2.0  # ±2 voxels extra lift
-            wiggle_sweep = ti.cos(wiggle_phase * 1.3) * 0.8  # ±0.8 voxels extra sweep
+            wiggle_lift = wiggle_sin * 2.0  # ±2 voxels extra lift
+            wiggle_sweep = wiggle_cos * 0.8  # ±0.8 voxels extra sweep
 
             lift += wiggle_lift
             sweep += wiggle_sweep
