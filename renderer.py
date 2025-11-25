@@ -220,11 +220,11 @@ def extract_projectiles():
 
 @ti.kernel
 def init_gradient_background():
-    """Initialize gradient background (forest canopy at top, forest floor at bottom)"""
-    # Top color - deeper forest green (canopy)
-    top_color = ti.math.vec3(0.25, 0.45, 0.35)
-    # Bottom color - much darker forest green (floor)
-    bottom_color = ti.math.vec3(0.12, 0.25, 0.16)
+    """Initialize gradient background (forest pit atmosphere)"""
+    # Top color - forest canopy
+    top_color = ti.math.vec3(0.22, 0.42, 0.32)
+    # Bottom color - darker forest floor (creates depth)
+    bottom_color = ti.math.vec3(0.10, 0.22, 0.14)
 
     # First triangle: bottom-left, bottom-right, top-left
     gradient_positions[0] = ti.math.vec2(0.0, 0.0)
@@ -416,7 +416,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # Spotlight above beetles - follows the action (NOT affected by brightness multiplier)
     if spotlight_pos is not None:
         spot_x, spot_y, spot_z = spotlight_pos
-        scene.point_light(pos=(spot_x, spot_y, spot_z), color=(spotlight_strength, spotlight_strength * 1.1, spotlight_strength * 1.2))
+        scene.point_light(pos=(spot_x, spot_y, spot_z), color=(spotlight_strength * 1.15, spotlight_strength, spotlight_strength * 0.85))
 
     # Enhanced ambient light for better overall visibility
     scene.ambient_light((0.2 * b, 0.21 * b, 0.22 * b))

@@ -10,6 +10,11 @@ import time
 import math
 import random
 
+# OPTIMIZATION: Pre-computed constants to avoid repeated calculations
+TWO_PI = 2.0 * math.pi  # Avoids ~20 multiplications per frame
+PI_HALF = math.pi * 0.5
+PI_ONE_HALF = math.pi * 1.5
+
 # Physics constants
 BEETLE_RADIUS = 16.0  # Back to original scale - lean and mean
 MOVE_FORCE = 120.0  # Forward movement force
@@ -382,13 +387,16 @@ class Beetle:
 
 # Game state
 match_winner = None  # "BLUE" or "RED" when a beetle dies
+victory_pulse_timer = 0.0  # Timer for winner glow effect
+VICTORY_PULSE_DURATION = 3.0  # Pulse for 3 seconds after victory
 
 def reset_match():
     """Reset beetles to starting positions for new match"""
-    global beetle_blue, beetle_red, match_winner, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type, camera_flip_view
+    global beetle_blue, beetle_red, match_winner, victory_pulse_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
     beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
     beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
     match_winner = None
+    victory_pulse_timer = 0.0
 
     # Reset scorpion tracking variables to prevent geometry cache desync
     previous_stinger_curvature = 0.0
@@ -400,8 +408,7 @@ def reset_match():
     beetle_red.horn_type = red_horn_type
     beetle_red.horn_type_id = HORN_TYPE_IDS.get(red_horn_type, 0)
 
-    # Reset camera to default flipped view
-    camera_flip_view = True
+    # Camera always tracks from edge side (beetles in foreground)
 
     print("\n" + "="*50)
     print("NEW MATCH STARTED!")
@@ -5246,9 +5253,9 @@ def beetle_collision(b1, b2, params):
 def normalize_angle(angle):
     """Normalize angle to [0, 2π)"""
     while angle < 0:
-        angle += 2 * math.pi
-    while angle >= 2 * math.pi:
-        angle -= 2 * math.pi
+        angle += TWO_PI
+    while angle >= TWO_PI:
+        angle -= TWO_PI
     return angle
 
 def shortest_rotation(current, target):
@@ -5257,9 +5264,9 @@ def shortest_rotation(current, target):
     target = normalize_angle(target)
     diff = target - current
     if diff > math.pi:
-        diff -= 2 * math.pi
+        diff -= TWO_PI
     elif diff < -math.pi:
-        diff += 2 * math.pi
+        diff += TWO_PI
     return diff
 
 # Window
@@ -5272,11 +5279,11 @@ camera.pos_x = 0.0
 camera.pos_y = 60.0
 camera.pos_z = 0.0
 camera.pitch = -70.0
-camera.yaw = 0.0
+camera.yaw = 180.0  # Start facing correct direction for CAMERA_FLIP_VIEW = True
 
 # Auto-follow camera toggle
 auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to toggle)
-camera_flip_view = True  # Start with flipped view (track opposite edge, beetles in foreground)
+# Camera always uses opposite side view (beetles in foreground, edge in background)
 camera_edge_angle = 0.0  # Previous edge angle for smooth transitions (prevents flipping)
 spotlight_strength = 0.633  # Spotlight intensity (adjustable via GUI slider)
 spotlight_height = 36.0  # Spotlight height above beetles (lower = smaller/focused, higher = bigger/softer)
@@ -5499,12 +5506,9 @@ while window.running:
         edge_factor = 1.0 - (edge_proximity * 0.4)  # Reduce by up to 40% at edge
         adjusted_camera_distance = base_camera_distance * edge_factor
 
-        # Position camera OPPOSITE the edge (between center and beetles)
-        # This makes beetles foreground, edge background
-        # If flip view enabled, position camera on the SAME SIDE as edge (opposite side)
-        flip_multiplier = 1.0 if camera_flip_view else -1.0
-        target_x = mid_x + (edge_dx_norm * adjusted_camera_distance * flip_multiplier)
-        target_z = mid_z + (edge_dz_norm * adjusted_camera_distance * flip_multiplier)
+        # Position camera on SAME SIDE as edge (beetles in foreground, edge in background)
+        target_x = mid_x + (edge_dx_norm * adjusted_camera_distance)
+        target_z = mid_z + (edge_dz_norm * adjusted_camera_distance)
 
         # Fixed camera height (dynamic scaling disabled)
         base_height = physics_params["CAMERA_BASE_HEIGHT"]
@@ -5523,10 +5527,9 @@ while window.running:
         target_pitch = physics_params["CAMERA_PITCH"]
         camera.pitch += (target_pitch - camera.pitch) * lerp_factor
 
-        # Rotate camera to face TOWARD the edge (so edge is in background)
-        # If flip view enabled, rotate 180 degrees to face opposite direction
+        # Rotate camera to face TOWARD beetles (edge in background)
         base_yaw = math.degrees(math.atan2(edge_dx_norm, edge_dz_norm))
-        target_yaw = (base_yaw + 180.0) % 360.0 if camera_flip_view else base_yaw
+        target_yaw = (base_yaw + 180.0) % 360.0
 
         # Smooth yaw transition (handle angle wrapping)
         yaw_diff = target_yaw - camera.yaw
@@ -6029,9 +6032,9 @@ while window.running:
     # Helper function for angle interpolation (shortest path)
     def lerp_angle(a, b, t):
         """Interpolate between angles using shortest path (radians)"""
-        diff = (b - a) % (2 * math.pi)
+        diff = (b - a) % TWO_PI
         if diff > math.pi:
-            diff -= 2 * math.pi
+            diff -= TWO_PI
         return a + diff * t
 
     # Interpolate blue beetle state for rendering
@@ -6073,7 +6076,7 @@ while window.running:
         else:
             rotation_animation_speed = 16.875  # Normal ground turning speed
         beetle_blue.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
-        beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
+        beetle_blue.walk_phase = beetle_blue.walk_phase % TWO_PI
         beetle_blue.is_moving = True
         beetle_blue.is_rotating_only = True
         # Detect rotation direction
@@ -6085,24 +6088,24 @@ while window.running:
         # Cancel animation completion if player resumes input
         beetle_blue.is_completing_animation = False
         beetle_blue.walk_phase += blue_speed * WALK_CYCLE_SPEED * frame_dt
-        beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
+        beetle_blue.walk_phase = beetle_blue.walk_phase % TWO_PI
         beetle_blue.is_moving = True
         beetle_blue.is_rotating_only = False
         beetle_blue.rotation_direction = 0
     else:
         # No input - check if we need to complete the animation cycle
-        current_phase_normalized = beetle_blue.walk_phase % (2 * math.pi)
+        current_phase_normalized = beetle_blue.walk_phase % TWO_PI
 
         # Find nearest neutral position (0 or π)
-        if current_phase_normalized < math.pi * 0.5:
+        if current_phase_normalized < PI_HALF:
             beetle_blue.target_walk_phase = 0.0
-        elif current_phase_normalized < math.pi * 1.5:
+        elif current_phase_normalized < PI_ONE_HALF:
             beetle_blue.target_walk_phase = math.pi
         else:
-            beetle_blue.target_walk_phase = 2 * math.pi
+            beetle_blue.target_walk_phase = TWO_PI
 
         # Calculate distance to target
-        phase_diff = abs(current_phase_normalized - (beetle_blue.target_walk_phase % (2 * math.pi)))
+        phase_diff = abs(current_phase_normalized - (beetle_blue.target_walk_phase % TWO_PI))
 
         # If very close to neutral, snap immediately
         if phase_diff < 0.3:  # Within ~17 degrees, just snap
@@ -6122,7 +6125,7 @@ while window.running:
             # Already at neutral
             beetle_blue.is_completing_animation = False
 
-        beetle_blue.walk_phase = beetle_blue.walk_phase % (2 * math.pi)
+        beetle_blue.walk_phase = beetle_blue.walk_phase % TWO_PI
         beetle_blue.is_moving = False
         beetle_blue.is_rotating_only = False
         beetle_blue.rotation_direction = 0
@@ -6143,7 +6146,7 @@ while window.running:
         else:
             rotation_animation_speed = 16.875  # Normal ground turning speed
         beetle_red.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
-        beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
+        beetle_red.walk_phase = beetle_red.walk_phase % TWO_PI
         beetle_red.is_moving = True
         beetle_red.is_rotating_only = True
         # Detect rotation direction
@@ -6155,24 +6158,24 @@ while window.running:
         # Cancel animation completion if player resumes input
         beetle_red.is_completing_animation = False
         beetle_red.walk_phase += red_speed * WALK_CYCLE_SPEED * frame_dt
-        beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
+        beetle_red.walk_phase = beetle_red.walk_phase % TWO_PI
         beetle_red.is_moving = True
         beetle_red.is_rotating_only = False
         beetle_red.rotation_direction = 0
     else:
         # No input - check if we need to complete the animation cycle
-        current_phase_normalized = beetle_red.walk_phase % (2 * math.pi)
+        current_phase_normalized = beetle_red.walk_phase % TWO_PI
 
         # Find nearest neutral position (0 or π)
-        if current_phase_normalized < math.pi * 0.5:
+        if current_phase_normalized < PI_HALF:
             beetle_red.target_walk_phase = 0.0
-        elif current_phase_normalized < math.pi * 1.5:
+        elif current_phase_normalized < PI_ONE_HALF:
             beetle_red.target_walk_phase = math.pi
         else:
-            beetle_red.target_walk_phase = 2 * math.pi
+            beetle_red.target_walk_phase = TWO_PI
 
         # Calculate distance to target
-        phase_diff = abs(current_phase_normalized - (beetle_red.target_walk_phase % (2 * math.pi)))
+        phase_diff = abs(current_phase_normalized - (beetle_red.target_walk_phase % TWO_PI))
 
         # If very close to neutral, snap immediately
         if phase_diff < 0.3:  # Within ~17 degrees, just snap
@@ -6192,7 +6195,7 @@ while window.running:
             # Already at neutral
             beetle_red.is_completing_animation = False
 
-        beetle_red.walk_phase = beetle_red.walk_phase % (2 * math.pi)
+        beetle_red.walk_phase = beetle_red.walk_phase % TWO_PI
         beetle_red.is_moving = False
         beetle_red.is_rotating_only = False
         beetle_red.rotation_direction = 0
@@ -6201,6 +6204,63 @@ while window.running:
     LIFT_THRESHOLD = 5.0  # 4 voxels above normal ground
     beetle_blue.is_lifted_high = (beetle_blue.y > LIFT_THRESHOLD)
     beetle_red.is_lifted_high = (beetle_red.y > LIFT_THRESHOLD)
+
+    # Victory pulse effect - winner beetle glows after a KO
+    if match_winner is not None and victory_pulse_timer < VICTORY_PULSE_DURATION:
+        victory_pulse_timer += frame_dt
+        # Fade out intensity over duration (1.0 at start, 0.0 at end)
+        fade = 1.0 - (victory_pulse_timer / VICTORY_PULSE_DURATION)
+        # Pulsing brightness: oscillates between 1.0 and 1.6, fading to 1.0 over time
+        pulse = 1.0 + 0.6 * fade * math.sin(victory_pulse_timer * 10.0)  # Fast pulse that fades
+
+        if match_winner == "BLUE":
+            # Pulse all blue beetle colors
+            b = window.blue_body_color
+            simulation.blue_body_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
+            b = window.blue_leg_color
+            simulation.blue_leg_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
+            b = window.blue_leg_tip_color
+            simulation.blue_leg_tip_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
+            b = window.blue_stripe_color
+            simulation.blue_stripe_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
+            b = window.blue_horn_tip_color
+            simulation.blue_horn_tip_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
+        else:  # RED winner
+            # Pulse all red beetle colors
+            r = window.red_body_color
+            simulation.red_body_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
+            r = window.red_leg_color
+            simulation.red_leg_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
+            r = window.red_leg_tip_color
+            simulation.red_leg_tip_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
+            r = window.red_stripe_color
+            simulation.red_stripe_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
+            r = window.red_horn_tip_color
+            simulation.red_horn_tip_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
+    elif match_winner is not None and victory_pulse_timer >= VICTORY_PULSE_DURATION:
+        # Reset to normal colors after pulse ends
+        if match_winner == "BLUE":
+            b = window.blue_body_color
+            simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+            b = window.blue_leg_color
+            simulation.blue_leg_color[None] = ti.Vector([b[0], b[1], b[2]])
+            b = window.blue_leg_tip_color
+            simulation.blue_leg_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
+            b = window.blue_stripe_color
+            simulation.blue_stripe_color[None] = ti.Vector([b[0], b[1], b[2]])
+            b = window.blue_horn_tip_color
+            simulation.blue_horn_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
+        else:
+            r = window.red_body_color
+            simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+            r = window.red_leg_color
+            simulation.red_leg_color[None] = ti.Vector([r[0], r[1], r[2]])
+            r = window.red_leg_tip_color
+            simulation.red_leg_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
+            r = window.red_stripe_color
+            simulation.red_stripe_color[None] = ti.Vector([r[0], r[1], r[2]])
+            r = window.red_horn_tip_color
+            simulation.red_horn_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
 
     # Render - ANIMATED with leg walking cycles and interpolated smooth positions!
     # OPTIMIZATION: Use dirty voxel tracking instead of scanning 250K voxels
@@ -6749,8 +6809,7 @@ while window.running:
     spotlight_height = window.GUI.slider_float("Spotlight Size", spotlight_height, 10.0, 100.0)
     base_light_brightness = window.GUI.slider_float("Base Light Brightness", base_light_brightness, 0.0, 2.0)
     front_light_strength = window.GUI.slider_float("Front Light Strength", front_light_strength, 0.0, 1.5)
-    if window.GUI.button("Flip Camera View"):
-        camera_flip_view = not camera_flip_view
+    # Camera always positions on edge side (beetles in foreground, edge in background)
 
     # Dynamic lighting toggle
     lighting_button_text = "Dynamic Lighting: ON" if dynamic_lighting_enabled else "Dynamic Lighting: OFF"
