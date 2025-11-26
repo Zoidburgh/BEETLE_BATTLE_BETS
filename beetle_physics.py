@@ -1262,6 +1262,21 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
         # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
         # Main shaft with overlapping layers
         shaft_segments = round(horn_shaft_len)
+
+        # Add extra meaty base layer at attachment point (x=2 and x=3)
+        # Makes the neck thicker where it connects to body, tapers toward shaft
+        for dx_base in range(2, 4):  # x=2 and x=3 (two layers deep)
+            # Front layer (x=3) starts at y=1, back layer (x=2) starts at y=0
+            y_start = 0 if dx_base == 2 else 1
+            for dy_base in range(y_start, 3):  # 3 voxels tall at base
+                # Taper: wider at bottom (y=0,1), narrower at top (y=2)
+                if dy_base < 2:
+                    z_range = range(-2, 3)  # 5 voxels wide at bottom
+                else:
+                    z_range = range(-1, 2)  # 3 voxels wide at top (tapered)
+                for dz_base in z_range:
+                    body_voxels.append((dx_base, dy_base, dz_base))
+
         for i in range(shaft_segments):
             dx = 3 + i
             height_curve = int(i * 0.3)
@@ -1985,65 +2000,111 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
     print(f"Rebuilt red beetle: {len(RED_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
 def generate_stag_pincers(shaft_length, curve_length):
-    """Generate stag beetle pincers with dynamic sizing (horizontal mandibles)
+    """Generate stag beetle pincers as L-shaped clubs (horizontal then 90° up)
 
     Args:
-        shaft_length: Length of straight horizontal segment close to body
-        curve_length: Additional length extending straight outward with upward curve
+        shaft_length: Length of horizontal segment before the 90° turn
+        curve_length: Length of vertical segment going upward after the turn
 
     Returns list of (x, y, z) voxel coordinates for both pincers.
     Pivot point: (x=3, y=1, z=0) same as rhinoceros horn
-    Straight prongs angled 20° inward with upward curve similar to Hercules horn
+    Club-shaped: thick at base (3x3), tapers to thin at tip (1x2)
+    L-shape: horizontal for first half, then 90° turn upward
     """
     pincer_voxels = []
 
     # Convert to int for voxel generation
-    shaft_length = round(shaft_length)
-    prong_length = round(curve_length)
-
-    total_length = shaft_length + prong_length
+    horizontal_length = round(shaft_length)
+    vertical_length = round(curve_length)
 
     # 20 degrees inward = reduce lateral spread by ~36% (tan(20°) ≈ 0.36)
-    # Each voxel forward adds 0.36 voxels sideways instead of 1.0
     inward_factor = 0.36
 
-    # LEFT PINCER (angled 20° inward from pure -Z direction with upward curve)
-    for i in range(total_length):
-        # Calculate progress along pincer for upward curve
-        progress = i / float(total_length) if total_length > 0 else 0.0
+    # LEFT PINCER
+    # Part 1: Horizontal section (thick at base, medium at elbow)
+    for i in range(horizontal_length):
+        progress = i / float(horizontal_length) if horizontal_length > 0 else 0.0
 
         dx = 3 + i  # Extends forward
+        dy = 1  # Flat horizontal
+        dz = -int(i * inward_factor) - 1  # Extends left at 20° angle
 
-        # Upward curve: simple ascending arc using quadratic progression
-        base_height = 1
-        upward_curve = int(progress * progress * total_length * 0.3)  # Gentle quadratic upward curve
-        dy = base_height + upward_curve
+        # Taper from thick (3x3) to medium (2x2) along horizontal section
+        if progress < 0.5:
+            # Thick base section (3x3 voxels)
+            for dy_offset in range(-1, 2):
+                for dz_offset in range(-1, 2):
+                    pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))
+        else:
+            # Medium section approaching elbow (2x2 voxels)
+            for dy_offset in range(0, 2):
+                for dz_offset in range(-1, 1):
+                    pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))
 
-        dz = -int(i * inward_factor) - 1  # Extends left at 20° angle instead of 90°
+    # Part 2: Vertical section (90° turn upward, tapers to thin tip)
+    elbow_x = 3 + horizontal_length - 1  # X position at elbow
+    elbow_z = -int((horizontal_length - 1) * inward_factor) - 1  # Z position at elbow
 
-        # Make it 2-3 voxels thick for solidity
-        for dy_offset in range(2):  # Add vertical thickness
-            for dz_offset in range(-1, 1):  # Add some width
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular)
+    for j in range(vertical_length):
+        progress = j / float(vertical_length) if vertical_length > 0 else 0.0
 
-    # RIGHT PINCER (angled 20° inward from pure +Z direction with upward curve)
-    for i in range(total_length):
-        # Calculate progress along pincer for upward curve
-        progress = i / float(total_length) if total_length > 0 else 0.0
+        dx = elbow_x  # Stay at elbow X position
+        dy = 1 + j + 1  # Go upward from elbow (start above horizontal section)
+        dz = elbow_z  # Stay at elbow Z position
+
+        # Taper from medium (2x2) to thin (1x2) along vertical section
+        if progress < 0.5:
+            # Medium section (2x2 voxels)
+            for dx_offset in range(-1, 1):
+                for dz_offset in range(-1, 1):
+                    pincer_voxels.append((dx + dx_offset, dy, dz + dz_offset, 0))
+        else:
+            # Thin tip section (1x2 voxels)
+            for dx_offset in range(-1, 1):
+                pincer_voxels.append((dx + dx_offset, dy, dz, 0))
+
+    # RIGHT PINCER
+    # Part 1: Horizontal section (thick at base, medium at elbow)
+    for i in range(horizontal_length):
+        progress = i / float(horizontal_length) if horizontal_length > 0 else 0.0
 
         dx = 3 + i  # Extends forward
+        dy = 1  # Flat horizontal
+        dz = int(i * inward_factor) + 1  # Extends right at 20° angle
 
-        # Upward curve: simple ascending arc using quadratic progression
-        base_height = 1
-        upward_curve = int(progress * progress * total_length * 0.3)  # Gentle quadratic upward curve
-        dy = base_height + upward_curve
+        # Taper from thick (3x3) to medium (2x2) along horizontal section
+        if progress < 0.5:
+            # Thick base section (3x3 voxels)
+            for dy_offset in range(-1, 2):
+                for dz_offset in range(-1, 2):
+                    pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))
+        else:
+            # Medium section approaching elbow (2x2 voxels)
+            for dy_offset in range(0, 2):
+                for dz_offset in range(0, 2):
+                    pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))
 
-        dz = int(i * inward_factor) + 1  # Extends right at 20° angle instead of 90°
+    # Part 2: Vertical section (90° turn upward, tapers to thin tip)
+    elbow_x = 3 + horizontal_length - 1  # X position at elbow
+    elbow_z = int((horizontal_length - 1) * inward_factor) + 1  # Z position at elbow
 
-        # Make it 2-3 voxels thick for solidity
-        for dy_offset in range(2):
-            for dz_offset in range(-1, 1):
-                pincer_voxels.append((dx, dy + dy_offset, dz + dz_offset, 0))  # Flag=0 (regular)
+    for j in range(vertical_length):
+        progress = j / float(vertical_length) if vertical_length > 0 else 0.0
+
+        dx = elbow_x  # Stay at elbow X position
+        dy = 1 + j + 1  # Go upward from elbow
+        dz = elbow_z  # Stay at elbow Z position
+
+        # Taper from medium (2x2) to thin (1x2) along vertical section
+        if progress < 0.5:
+            # Medium section (2x2 voxels)
+            for dx_offset in range(-1, 1):
+                for dz_offset in range(0, 2):
+                    pincer_voxels.append((dx + dx_offset, dy, dz + dz_offset, 0))
+        else:
+            # Thin tip section (1x2 voxels)
+            for dx_offset in range(-1, 1):
+                pincer_voxels.append((dx + dx_offset, dy, dz, 0))
 
     return pincer_voxels
 
@@ -2123,17 +2184,19 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
                     horn_voxels.append((base_x + dx_off, base_y + dy_off, dz))
 
     # Fill gap at top horn attachment point (where horn meets body)
-    # Minimal attachment - just bridge from thorax to rotated horn base
-    # Thorax top is at Y=(front_body_height-1), horn base (after rotation) starts around X=3, Y=7+
-    # Only fill if there's an actual gap (when body is short)
-    if front_body_height < 7:
-        # Body is shorter than horn base - need a bridge
-        # Bridge from top of thorax to horn base
+    # Create solid neck/bridge from thorax to horn base
+    # Thorax top is at Y=(front_body_height-1), horn base starts around Y=7
+    if front_body_height < 8:
+        # Body is shorter than horn base - need a substantial bridge
         attach_y_start = front_body_height  # Start at top of thorax
-        attach_y_end = 7  # End just below horn base at Y=7
+        attach_y_end = 8  # End at horn base
         for attach_y in range(attach_y_start, attach_y_end):
-            for attach_x in range(3, 5):  # Just X=3,4 near horn pivot
-                for dz in [-1, 0]:
+            # Taper the neck: wider at base, narrower at top
+            progress = (attach_y - attach_y_start) / float(attach_y_end - attach_y_start) if attach_y_end > attach_y_start else 0
+            x_range = 3 if progress > 0.7 else 4 if progress > 0.3 else 5  # Taper width
+            z_width = 1 if progress > 0.5 else 1  # 3 voxels wide (-1, 0, 1)
+            for attach_x in range(1, x_range):
+                for dz in range(-z_width, z_width + 1):
                     horn_voxels.append((attach_x, attach_y, dz))
 
     # BOTTOM HORN (Cephalic - lower jaw from head)
@@ -2213,24 +2276,28 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
     start_y = back_body_height
     start_z = 0
 
-    # SHAFT LENGTH - Directly controlled by shaft_len slider
+    # SHAFT LENGTH - Scale slider value to reasonable tail size
+    # Slider range 8-15 maps to effective length 8-12 (slower scaling)
+    # Each tick of slider adds 0.57 effective length
+    effective_len = 8 + (shaft_len - 8) * 0.57
+
     # More samples = smoother curve
-    num_samples = int(shaft_len * 8)  # 8 samples per voxel length = smooth curve
+    num_samples = int(effective_len * 8)  # 8 samples per voxel length = smooth curve
 
     # CURVE SHAPE - Simple 4-point smooth arc (fewer points = smoother curve)
-    # Scale EVERYTHING proportionally with shaft_len for smooth curves at all sizes
-    height = int(shaft_len * 1.0)  # How high the tail arcs
-    forward = int(shaft_len * 2.0)  # How far forward it reaches (LONGER, not taller)
+    # Scale EVERYTHING proportionally with effective_len for smooth curves at all sizes
+    height = int(effective_len * 0.8)  # How high the tail arcs (reduced from 1.0)
+    forward = int(effective_len * 1.5)  # How far forward it reaches (reduced from 2.0)
 
     # Curvature adjustment (VB/NM keys)
-    curl = int(stinger_curvature * shaft_len * 0.4)
+    curl = int(stinger_curvature * effective_len * 0.4)
 
     # Simple 4-point arc - NO SHARP CORNERS, gentle curve
     control_points = [
         (start_x, start_y),  # Base attachment
-        (start_x + int(shaft_len * 0.4) - curl, start_y + int(shaft_len * 0.95)),  # Rising (angled up ~10deg more)
-        (start_x + int(shaft_len * 1.2) - curl, start_y + height),  # Peak
-        (start_x + forward - curl, start_y + height - int(shaft_len * 0.2)),  # End slightly lower
+        (start_x + int(effective_len * 0.4) - curl, start_y + int(effective_len * 0.8)),  # Rising
+        (start_x + int(effective_len * 1.0) - curl, start_y + height),  # Peak
+        (start_x + forward - curl, start_y + height - int(effective_len * 0.15)),  # End slightly lower
     ]
 
     num_control = len(control_points)
@@ -2295,6 +2362,11 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
                 for dz in range(-1, 2):  # -1, 0, 1 = 3 layers in Z
                     for dy_overlap in range(-1, 2):  # -1, 0, 1 = 3 layers in Y for overlap
                         stinger_voxels.append((inter_x, inter_y + dy_overlap, z + dz))
+        else:
+            # First iteration - place starting voxels
+            for dz in range(-1, 2):
+                for dy_overlap in range(-1, 2):
+                    stinger_voxels.append((x, y + dy_overlap, z + dz))
 
         prev_x, prev_y = x, y
 
@@ -2302,7 +2374,7 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
     # Pointy tip that curves down and forward like real scorpion stingers
     # prong_len slider controls length (2-10)
 
-    if prong_len > 0:
+    if prong_len > 0 and prev_x is not None:
         # Tip starts from the end of the shaft (prev_x, prev_y)
         tip_start_x = prev_x
         tip_start_y = prev_y
@@ -2915,8 +2987,9 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         grid_z = center_z + int(ti.round(final_z))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-            # Don't overwrite floor (CONCRETE) voxels
-            if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+            # Don't overwrite floor (CONCRETE) or shadow voxels
+            existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
+            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW:
                 # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
                 # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
                 is_hook_interior = blue_body_hook_flags[i]
@@ -3062,8 +3135,9 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             grid_z = center_z + int(ti.round(final_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE) voxels
-                if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+                # Don't overwrite floor (CONCRETE) or shadow voxels
+                existing_leg = simulation.voxel_type[grid_x, grid_y, grid_z]
+                if existing_leg != simulation.CONCRETE and existing_leg != simulation.SHADOW:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3104,8 +3178,9 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             grid_z = center_z + int(ti.round(final_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE) voxels
-                if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+                # Don't overwrite floor (CONCRETE) or shadow voxels
+                existing_tip = simulation.voxel_type[grid_x, grid_y, grid_z]
+                if existing_tip != simulation.CONCRETE and existing_tip != simulation.SHADOW:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3351,8 +3426,9 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         grid_z = center_z + int(ti.round(final_z))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-            # Don't overwrite floor (CONCRETE) voxels
-            if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+            # Don't overwrite floor (CONCRETE) or shadow voxels
+            existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
+            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW:
                 # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
                 # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
                 is_hook_interior = red_body_hook_flags[i]
@@ -3498,8 +3574,9 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             grid_z = center_z + int(ti.round(final_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE) voxels
-                if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+                # Don't overwrite floor (CONCRETE) or shadow voxels
+                existing_leg_r = simulation.voxel_type[grid_x, grid_y, grid_z]
+                if existing_leg_r != simulation.CONCRETE and existing_leg_r != simulation.SHADOW:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3540,8 +3617,9 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             grid_z = center_z + int(ti.round(final_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE) voxels
-                if simulation.voxel_type[grid_x, grid_y, grid_z] != simulation.CONCRETE:
+                # Don't overwrite floor (CONCRETE) or shadow voxels
+                existing_tip_r = simulation.voxel_type[grid_x, grid_y, grid_z]
+                if existing_tip_r != simulation.CONCRETE and existing_tip_r != simulation.SHADOW:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -4312,6 +4390,106 @@ def calculate_stag_pincer_tips(beetle, pitch_angle, yaw_angle):
 
     return (left_tip_x, left_tip_y, left_tip_z), (right_tip_x, right_tip_y, right_tip_z)
 
+def get_stag_pincer_inner_points(beetle, pitch_angle, yaw_angle):
+    """Get sample points along the inner edges of stag pincers for collision detection.
+
+    The inner edge is the side facing the gap between pincers - where objects get trapped.
+    For L-shaped pincers: samples along horizontal inner face + vertical inner face.
+
+    Returns list of world-space (x, y, z) points for both pincers' inner edges.
+    """
+    inner_points = []
+
+    horizontal_length = beetle.horn_shaft_len
+    vertical_length = beetle.horn_prong_len
+    inward_factor = 0.36  # 20 degrees inward angle
+
+    # Precompute rotations
+    cos_horn_pitch = math.cos(pitch_angle)
+    sin_horn_pitch = math.sin(pitch_angle)
+    cos_horn_yaw = math.cos(yaw_angle)
+    sin_horn_yaw = math.sin(yaw_angle)
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+
+    def transform_point(local_x, local_y, local_z, is_left_pincer):
+        """Transform a local pincer point to world coordinates"""
+        # Step 1: Translate to horn pivot
+        rel_x = local_x - 3.0
+        rel_y = local_y - 1.0
+        rel_z = local_z
+
+        # Step 2: Apply horn pitch rotation
+        pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+        pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+        pitched_z = rel_z
+
+        # Step 3: Apply horn yaw rotation (opposite for left vs right)
+        if is_left_pincer:
+            yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+            yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        else:
+            yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+            yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        yawed_y = pitched_y
+
+        # Step 4: Translate back from pivot
+        local_x_out = yawed_x + 3.0
+        local_y_out = yawed_y + 1.0
+        local_z_out = yawed_z
+
+        # Step 5: Apply beetle body yaw rotation
+        rotated_x = local_x_out * cos_rotation - local_z_out * sin_rotation
+        rotated_z = local_x_out * sin_rotation + local_z_out * cos_rotation
+        rotated_y = local_y_out
+
+        # Step 6: Translate to world position
+        world_x = beetle.x + rotated_x
+        world_y = beetle.y + rotated_y
+        world_z = beetle.z + rotated_z
+
+        return (world_x, world_y, world_z)
+
+    # === LEFT PINCER INNER EDGE (facing +Z direction, toward the gap) ===
+    # Sample points along horizontal section inner edge
+    for i in range(0, int(horizontal_length), 2):  # Sample every 2 voxels
+        progress = i / float(horizontal_length) if horizontal_length > 0 else 0.0
+        local_x = 3.0 + i
+        local_y = 1.0
+        # Inner edge is at +Z side (toward center gap)
+        local_z = -int(i * inward_factor) - 1 + 1  # +1 to get inner edge
+        inner_points.append(transform_point(local_x, local_y, local_z, True))
+
+    # Sample points along vertical section inner edge (at elbow and up)
+    elbow_x = 3.0 + horizontal_length - 1
+    elbow_z_base = -int((horizontal_length - 1) * inward_factor) - 1
+    for j in range(0, int(vertical_length), 2):  # Sample every 2 voxels
+        local_x = elbow_x
+        local_y = 1.0 + j + 1  # Vertical section
+        local_z = elbow_z_base + 1  # Inner edge (+Z side)
+        inner_points.append(transform_point(local_x, local_y, local_z, True))
+
+    # === RIGHT PINCER INNER EDGE (facing -Z direction, toward the gap) ===
+    # Sample points along horizontal section inner edge
+    for i in range(0, int(horizontal_length), 2):
+        progress = i / float(horizontal_length) if horizontal_length > 0 else 0.0
+        local_x = 3.0 + i
+        local_y = 1.0
+        # Inner edge is at -Z side (toward center gap)
+        local_z = int(i * inward_factor) + 1 - 1  # -1 to get inner edge
+        inner_points.append(transform_point(local_x, local_y, local_z, False))
+
+    # Sample points along vertical section inner edge
+    elbow_x = 3.0 + horizontal_length - 1
+    elbow_z_base = int((horizontal_length - 1) * inward_factor) + 1
+    for j in range(0, int(vertical_length), 2):
+        local_x = elbow_x
+        local_y = 1.0 + j + 1
+        local_z = elbow_z_base - 1  # Inner edge (-Z side)
+        inner_points.append(transform_point(local_x, local_y, local_z, False))
+
+    return inner_points
+
 def calculate_rhino_prong_tips(beetle, pitch_angle, yaw_angle):
     """Calculate both left and right Y-fork prong tip positions for rhino beetles"""
     import math
@@ -4741,6 +4919,126 @@ def calculate_min_horn_distance(beetle1, beetle2, pitch1, yaw1, pitch2, yaw2):
     beetle1.cached_min_distance = result
     return result
 
+def check_stag_inner_edge_collision(stag_beetle, target_beetle, pitch, yaw):
+    """Check if opponent or their horn is pressing against pincer inner edges.
+
+    Checks:
+    1. Opponent body near either pincer inner edge
+    2. Opponent horn tips near pincer bases (critical for preventing clip-through)
+    Returns (is_collision, min_distance, push_direction_x, push_direction_z)
+    """
+    # Calculate stag beetle's forward and right directions
+    forward_x = math.cos(stag_beetle.rotation)
+    forward_z = math.sin(stag_beetle.rotation)
+    right_x = -forward_z
+    right_z = forward_x
+
+    collision_detected = False
+    min_dist = 999.0
+
+    # === CHECK 1: Opponent body position ===
+    dx = target_beetle.x - stag_beetle.x
+    dz = target_beetle.z - stag_beetle.z
+    dist_to_target = math.sqrt(dx*dx + dz*dz)
+
+    if dist_to_target < 22.0:
+        dot_forward = dx * forward_x + dz * forward_z
+        dot_right = dx * right_x + dz * right_z
+
+        horn_reach = stag_beetle.horn_shaft_len + stag_beetle.horn_prong_len + 5.0
+
+        if dot_forward > 1.0 and dot_forward < horn_reach:
+            # Calculate pincer inner edge positions based on yaw
+            pincer_offset = 2.0 + max(0.0, yaw) * 15.0
+
+            dist_to_left_inner = abs(dot_right - (-pincer_offset))
+            dist_to_right_inner = abs(dot_right - pincer_offset)
+
+            inner_edge_threshold = 5.0
+            near_left_inner = dist_to_left_inner < inner_edge_threshold and dot_right < 0
+            near_right_inner = dist_to_right_inner < inner_edge_threshold and dot_right > 0
+            in_center_gap = abs(dot_right) < pincer_offset
+
+            if near_left_inner or near_right_inner or in_center_gap:
+                collision_detected = True
+                min_dist = min(dist_to_left_inner, dist_to_right_inner)
+
+    # === CHECK 2: Opponent horn tips near pincer BASES ===
+    # This catches horns rotating through the inner base attachment point
+    # Get opponent horn tip positions
+    if target_beetle.horn_type == "stag":
+        (tip1_x, tip1_y, tip1_z), (tip2_x, tip2_y, tip2_z) = calculate_stag_pincer_tips(
+            target_beetle, target_beetle.horn_pitch, target_beetle.horn_yaw)
+    elif target_beetle.horn_type == "hercules":
+        (tip1_x, tip1_y, tip1_z), (tip2_x, tip2_y, tip2_z) = calculate_hercules_jaw_tips(
+            target_beetle, target_beetle.horn_pitch, target_beetle.horn_yaw)
+    elif target_beetle.horn_type == "rhino":
+        (tip1_x, tip1_y, tip1_z), (tip2_x, tip2_y, tip2_z) = calculate_rhino_prong_tips(
+            target_beetle, target_beetle.horn_pitch, target_beetle.horn_yaw)
+    else:
+        # Single-tip horn types
+        tip1_x, tip1_y, tip1_z = calculate_horn_tip_position(
+            target_beetle, target_beetle.horn_pitch, target_beetle.horn_yaw)
+        tip2_x, tip2_y, tip2_z = tip1_x, tip1_y, tip1_z
+
+    # Check multiple points along the inner edge of each pincer shaft
+    # Sample from base (x=3) to halfway down the horizontal section
+    cos_yaw = math.cos(yaw)
+    sin_yaw = math.sin(yaw)
+
+    # 20 degrees inward factor (matches geometry generation)
+    inward_factor = 0.36
+
+    # Sample points along the inner shaft (base to mid-shaft)
+    horizontal_length = stag_beetle.horn_shaft_len - 2  # Matches generate_stag_pincers
+    sample_points = 4  # Check 4 points along the shaft
+
+    base_threshold = 5.0  # Detection radius around each sample point
+
+    for tip_x, tip_z in [(tip1_x, tip1_z), (tip2_x, tip2_z)]:
+        for sample in range(sample_points):
+            # Progress along shaft (0 = base, 1 = mid-shaft)
+            progress = sample / float(sample_points - 1) if sample_points > 1 else 0.0
+            shaft_dist = progress * (horizontal_length * 0.6)  # Check first 60% of shaft
+
+            # Local position along left pincer inner edge
+            local_x = 3.0 + shaft_dist
+            local_z_left = -int(shaft_dist * inward_factor) - 1 + 1  # Inner edge (+1 toward center)
+            local_z_right = int(shaft_dist * inward_factor) + 1 - 1  # Inner edge (-1 toward center)
+
+            # Apply yaw rotation
+            left_x = local_x * cos_yaw - local_z_left * sin_yaw
+            left_z = local_x * sin_yaw + local_z_left * cos_yaw
+            right_x = local_x * cos_yaw - local_z_right * sin_yaw
+            right_z = local_x * sin_yaw + local_z_right * cos_yaw
+
+            # Transform to world space
+            left_world_x = stag_beetle.x + left_x * forward_x - left_z * right_x
+            left_world_z = stag_beetle.z + left_x * forward_z - left_z * right_z
+            right_world_x = stag_beetle.x + right_x * forward_x - right_z * right_x
+            right_world_z = stag_beetle.z + right_x * forward_z - right_z * right_z
+
+            # Check distance to left inner edge point
+            d_left = math.sqrt((tip_x - left_world_x)**2 + (tip_z - left_world_z)**2)
+            if d_left < base_threshold:
+                collision_detected = True
+                min_dist = min(min_dist, d_left)
+
+            # Check distance to right inner edge point
+            d_right = math.sqrt((tip_x - right_world_x)**2 + (tip_z - right_world_z)**2)
+            if d_right < base_threshold:
+                collision_detected = True
+                min_dist = min(min_dist, d_right)
+
+    # Push direction: push target away from stag beetle
+    push_dir_x = forward_x if collision_detected else 0.0
+    push_dir_z = forward_z if collision_detected else 0.0
+
+    return (collision_detected, min_dist, push_dir_x, push_dir_z)
+
+# Stag squeeze damping constant (70% reduction when squeezing - closes at 30% speed)
+STAG_SQUEEZE_DAMPING = 0.70
+
 @ti.kernel
 def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32, dt: ti.f32, pitch_inertia: ti.f32, roll_inertia: ti.f32):
     """GPU-accelerated edge tipping calculation"""
@@ -5048,6 +5346,8 @@ LEG_TIP_OFFSETS_BASE = [
     (-3, -11), # 3: middle_right (center, far right)
     (-10, 8),  # 4: rear_left (backward, left)
     (-10, -8), # 5: rear_right (backward, right)
+    (-14, 8),  # 6: rear2_left (scorpion extra back left)
+    (-14, -8), # 7: rear2_right (scorpion extra back right)
 ]
 
 def get_leg_tip_world_position(beetle, leg_id, leg_length=8):
@@ -5909,11 +6209,29 @@ while window.running:
                 max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_blue.horn_type_id]
 
                 if window.is_pressed('v'):
+                    # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+
+                    # STAG SQUEEZE CHECK: When closing stag pincers, check for inner edge collision
+                    if beetle_blue.horn_type == "stag" and beetle_red.active:
+                        collision, dist, push_x, push_z = check_stag_inner_edge_collision(
+                            beetle_blue, beetle_red, beetle_blue.horn_pitch, beetle_blue.horn_yaw
+                        )
+                        if collision:
+                            # Squeeze with resistance: apply heavy damping
+                            effective_speed *= (1.0 - STAG_SQUEEZE_DAMPING)
+                            # Apply push force to trapped beetle (forward + pitch up front + lift)
+                            push_force = 40.0 * PHYSICS_TIMESTEP
+                            beetle_red.vx += push_x * push_force
+                            beetle_red.vz += push_z * push_force
+                            beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                            beetle_red.pitch -= 0.02  # Direct pitch tilt (front up)
+
                     new_yaw = beetle_blue.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
                     yaw_speed = -effective_speed
                 elif window.is_pressed('b'):
+                    # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
                     new_yaw = beetle_blue.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
@@ -6029,11 +6347,29 @@ while window.running:
                 max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_red.horn_type_id]
 
                 if window.is_pressed('n'):
+                    # N key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+
+                    # STAG SQUEEZE CHECK: When closing stag pincers, check for inner edge collision
+                    if beetle_red.horn_type == "stag" and beetle_blue.active:
+                        collision, dist, push_x, push_z = check_stag_inner_edge_collision(
+                            beetle_red, beetle_blue, beetle_red.horn_pitch, beetle_red.horn_yaw
+                        )
+                        if collision:
+                            # Squeeze with resistance: apply heavy damping
+                            effective_speed *= (1.0 - STAG_SQUEEZE_DAMPING)
+                            # Apply push force to trapped beetle (forward + pitch up front + lift)
+                            push_force = 40.0 * PHYSICS_TIMESTEP
+                            beetle_blue.vx += push_x * push_force
+                            beetle_blue.vz += push_z * push_force
+                            beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                            beetle_blue.pitch -= 0.02  # Direct pitch tilt (front up)
+
                     new_yaw = beetle_red.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
                     yaw_speed = -effective_speed
                 elif window.is_pressed('m'):
+                    # M key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
                     new_yaw = beetle_red.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
@@ -6526,19 +6862,22 @@ while window.running:
     if beetle_blue.active and beetle_blue.y < 3.0:  # Only when on/near ground (within 3 voxels)
         # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
         if beetle_blue.is_moving and not beetle_blue.is_rotating_only:
-            # Use front legs (0,1) when backward, back legs (4,5) when forward
+            # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
             if beetle_blue.is_moving_backward:
                 dust_legs = [0, 1]  # Front legs
                 kick_dir = 1.0  # Kick forward
             else:
                 dust_legs = [4, 5]  # Back legs
+                if beetle_blue.horn_type == "scorpion":
+                    dust_legs = [4, 5, 6, 7]  # Include extra back legs for scorpion
                 kick_dir = -1.0  # Kick backward
             for leg_id in dust_legs:
                 # Use pre-calculated sin values based on leg group
-                if leg_id in [0, 4]:  # Group A (no offset)
+                # Scorpion quadrupod: Group A (0, 3, 4, 7), Group B (1, 2, 5, 6)
+                if leg_id in [0, 3, 4, 7]:  # Group A (no offset)
                     sin_leg = blue_walk_sin
                     sin_prev_leg = blue_prev_walk_sin
-                else:  # Group B (pi offset)
+                else:  # Group B (pi offset) - legs 1, 2, 5, 6
                     sin_leg = blue_walk_sin_offset
                     sin_prev_leg = blue_prev_walk_sin_offset
                 # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
@@ -6559,29 +6898,32 @@ while window.running:
                                                 DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, 5)
 
         # Spinning: spawn dust from back leg on opposite side
-        # Left turn (side=-1): back RIGHT leg (leg 5)
-        # Right turn (side=1): back LEFT leg (leg 4)
+        # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
+        # Right turn (side=1): back LEFT leg (leg 4, and 6 for scorpion)
         elif beetle_blue.is_rotating_only:
             beetle_blue.spin_dust_timer += frame_dt
             if beetle_blue.spin_dust_timer >= 0.04:  # Every 0.04 seconds
                 beetle_blue.spin_dust_timer = 0.0
                 side = beetle_blue.rotation_direction  # -1 = left turn, 1 = right turn
                 if side != 0:
-                    # BACK leg on OPPOSITE side of turn
-                    # Left turn -> leg 5 (rear_right)
-                    # Right turn -> leg 4 (rear_left)
-                    back_leg_id = 5 if side == 1 else 4
-                    tip_x, tip_z = get_leg_tip_world_position(beetle_blue, back_leg_id, blue_leg_len)
-                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
-                    if tip_dist < ARENA_RADIUS:
-                        dir_x = tip_x - beetle_blue.x
-                        dir_z = tip_z - beetle_blue.z
-                        dir_len = math.sqrt(dir_x**2 + dir_z**2)
-                        if dir_len > 0:
-                            dir_x /= dir_len
-                            dir_z /= dir_len
-                        spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
-                                            DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], blue_stagger_scale, 1)
+                    # BACK legs on OPPOSITE side of turn
+                    # Left turn -> leg 5 (rear_right), and 7 for scorpion
+                    # Right turn -> leg 4 (rear_left), and 6 for scorpion
+                    back_legs = [5, 7] if side == 1 else [4, 6]
+                    if beetle_blue.horn_type != "scorpion":
+                        back_legs = back_legs[:1]  # Only first leg for non-scorpion
+                    for back_leg_id in back_legs:
+                        tip_x, tip_z = get_leg_tip_world_position(beetle_blue, back_leg_id, blue_leg_len)
+                        tip_dist = math.sqrt(tip_x**2 + tip_z**2)
+                        if tip_dist < ARENA_RADIUS:
+                            dir_x = tip_x - beetle_blue.x
+                            dir_z = tip_z - beetle_blue.z
+                            dir_len = math.sqrt(dir_x**2 + dir_z**2)
+                            if dir_len > 0:
+                                dir_x /= dir_len
+                                dir_z /= dir_len
+                            spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], blue_stagger_scale, 1)
 
                     # FRONT leg on SAME side of turn
                     # Left turn -> leg 0 (front_left)
@@ -6612,19 +6954,22 @@ while window.running:
     if beetle_red.active and beetle_red.y < 3.0:  # Only when on/near ground (within 3 voxels)
         # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
         if beetle_red.is_moving and not beetle_red.is_rotating_only:
-            # Use front legs (0,1) when backward, back legs (4,5) when forward
+            # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
             if beetle_red.is_moving_backward:
                 dust_legs = [0, 1]  # Front legs
                 kick_dir = 1.0  # Kick forward
             else:
                 dust_legs = [4, 5]  # Back legs
+                if beetle_red.horn_type == "scorpion":
+                    dust_legs = [4, 5, 6, 7]  # Include extra back legs for scorpion
                 kick_dir = -1.0  # Kick backward
             for leg_id in dust_legs:
                 # Use pre-calculated sin values based on leg group
-                if leg_id in [0, 4]:  # Group A (no offset)
+                # Scorpion quadrupod: Group A (0, 3, 4, 7), Group B (1, 2, 5, 6)
+                if leg_id in [0, 3, 4, 7]:  # Group A (no offset)
                     sin_leg = red_walk_sin
                     sin_prev_leg = red_prev_walk_sin
-                else:  # Group B (pi offset)
+                else:  # Group B (pi offset) - legs 1, 2, 5, 6
                     sin_leg = red_walk_sin_offset
                     sin_prev_leg = red_prev_walk_sin_offset
                 # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
@@ -6645,29 +6990,32 @@ while window.running:
                                                 DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, 5)
 
         # Spinning: spawn dust from back leg on opposite side
-        # Left turn (side=-1): back RIGHT leg (leg 5)
-        # Right turn (side=1): back LEFT leg (leg 4)
+        # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
+        # Right turn (side=1): back LEFT leg (leg 4, and 6 for scorpion)
         elif beetle_red.is_rotating_only:
             beetle_red.spin_dust_timer += frame_dt
             if beetle_red.spin_dust_timer >= 0.04:  # Every 0.04 seconds
                 beetle_red.spin_dust_timer = 0.0
                 side = beetle_red.rotation_direction  # -1 = left turn, 1 = right turn
                 if side != 0:
-                    # BACK leg on OPPOSITE side of turn
-                    # Left turn -> leg 5 (rear_right)
-                    # Right turn -> leg 4 (rear_left)
-                    back_leg_id = 5 if side == 1 else 4
-                    tip_x, tip_z = get_leg_tip_world_position(beetle_red, back_leg_id, red_leg_len)
-                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
-                    if tip_dist < ARENA_RADIUS:
-                        dir_x = tip_x - beetle_red.x
-                        dir_z = tip_z - beetle_red.z
-                        dir_len = math.sqrt(dir_x**2 + dir_z**2)
-                        if dir_len > 0:
-                            dir_x /= dir_len
-                            dir_z /= dir_len
-                        spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
-                                            DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], red_stagger_scale, 1)
+                    # BACK legs on OPPOSITE side of turn
+                    # Left turn -> leg 5 (rear_right), and 7 for scorpion
+                    # Right turn -> leg 4 (rear_left), and 6 for scorpion
+                    back_legs = [5, 7] if side == 1 else [4, 6]
+                    if beetle_red.horn_type != "scorpion":
+                        back_legs = back_legs[:1]  # Only first leg for non-scorpion
+                    for back_leg_id in back_legs:
+                        tip_x, tip_z = get_leg_tip_world_position(beetle_red, back_leg_id, red_leg_len)
+                        tip_dist = math.sqrt(tip_x**2 + tip_z**2)
+                        if tip_dist < ARENA_RADIUS:
+                            dir_x = tip_x - beetle_red.x
+                            dir_z = tip_z - beetle_red.z
+                            dir_len = math.sqrt(dir_x**2 + dir_z**2)
+                            if dir_len > 0:
+                                dir_x /= dir_len
+                                dir_z /= dir_len
+                            spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], red_stagger_scale, 1)
 
                     # FRONT leg on SAME side of turn
                     # Left turn -> leg 0 (front_left)
@@ -7000,7 +7348,7 @@ while window.running:
     front_body_height = 4
 
     # Blue beetle sliders
-    new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 5, 12)
+    new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 8, 15)
     new_blue_prong = window.GUI.slider_int("Blue Horn Prong", window.blue_horn_prong_value, 3, 6)
     new_blue_back_body = window.GUI.slider_int("Blue Back Body", window.blue_back_body_height_value, 4, 8)
     new_blue_body_length = window.GUI.slider_int("Blue Body Length", window.blue_body_length_value, 9, 14)
@@ -7009,7 +7357,7 @@ while window.running:
 
     # Random blue beetle button
     if window.GUI.button("Randomize Blue Beetle"):
-        new_blue_shaft = random.randint(5, 12)
+        new_blue_shaft = random.randint(8, 15)
         new_blue_prong = random.randint(3, 6)
         new_blue_back_body = random.randint(4, 8)
         new_blue_body_length = random.randint(9, 14)
@@ -7148,7 +7496,7 @@ while window.running:
     window.GUI.text("=== RED BEETLE GENETICS ===")
 
     # Red beetle sliders
-    new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 5, 12)
+    new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 8, 15)
     new_red_prong = window.GUI.slider_int("Red Horn Prong", window.red_horn_prong_value, 3, 6)
     new_red_back_body = window.GUI.slider_int("Red Back Body", window.red_back_body_height_value, 4, 8)
     new_red_body_length = window.GUI.slider_int("Red Body Length", window.red_body_length_value, 9, 14)
@@ -7157,7 +7505,7 @@ while window.running:
 
     # Random red beetle button
     if window.GUI.button("Randomize Red Beetle"):
-        new_red_shaft = random.randint(5, 12)
+        new_red_shaft = random.randint(8, 15)
         new_red_prong = random.randint(3, 6)
         new_red_back_body = random.randint(4, 8)
         new_red_body_length = random.randint(9, 14)
