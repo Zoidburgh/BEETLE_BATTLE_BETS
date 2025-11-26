@@ -9,6 +9,129 @@ import renderer
 import time
 import math
 import random
+from collections import deque
+
+# ============================================================================
+# PERFORMANCE MONITORING SYSTEM
+# ============================================================================
+class PerformanceMonitor:
+    """
+    Real-time performance monitoring for frame time breakdown.
+    Tracks timing for each phase of the game loop to identify bottlenecks.
+    """
+    def __init__(self, history_size=120):
+        """Initialize with rolling history (default 120 frames = 2 seconds at 60fps)"""
+        self.history_size = history_size
+
+        # Timing categories
+        self.categories = [
+            'frame_total',      # Total frame time
+            'camera',           # Camera updates
+            'physics',          # Physics loop (all iterations)
+            'animation',        # Walk animation updates
+            'voxel_clear',      # Clearing dirty voxels
+            'beetle_render',    # Placing beetle voxels
+            'ball_render',      # Ball rendering
+            'scene_render',     # renderer.render() call
+            'gui',              # GUI overlay
+        ]
+
+        # Rolling history for each category (in milliseconds)
+        self.history = {cat: deque(maxlen=history_size) for cat in self.categories}
+
+        # Current frame timing (accumulator for multi-call sections)
+        self.current = {cat: 0.0 for cat in self.categories}
+
+        # Start times for active timers
+        self._start_times = {}
+
+        # Stats
+        self.frame_count = 0
+        self.physics_iterations_per_frame = deque(maxlen=history_size)
+
+        # Enable/disable display
+        self.show_stats = True
+        self.show_detailed = False  # Show per-category breakdown
+
+    def start(self, category):
+        """Start timing a category"""
+        self._start_times[category] = time.perf_counter()
+
+    def stop(self, category):
+        """Stop timing and accumulate to current frame"""
+        if category in self._start_times:
+            elapsed = (time.perf_counter() - self._start_times[category]) * 1000  # Convert to ms
+            self.current[category] += elapsed
+            del self._start_times[category]
+
+    def end_frame(self, physics_iterations=0):
+        """End frame: store current timings to history and reset"""
+        for cat in self.categories:
+            self.history[cat].append(self.current[cat])
+            self.current[cat] = 0.0
+        self.physics_iterations_per_frame.append(physics_iterations)
+        self.frame_count += 1
+
+    def get_avg(self, category):
+        """Get average time for category (ms)"""
+        h = self.history[category]
+        return sum(h) / len(h) if h else 0.0
+
+    def get_max(self, category):
+        """Get max time for category (ms)"""
+        h = self.history[category]
+        return max(h) if h else 0.0
+
+    def get_min(self, category):
+        """Get min time for category (ms)"""
+        h = self.history[category]
+        return min(h) if h else 0.0
+
+    def get_last(self, category):
+        """Get last frame time for category (ms)"""
+        h = self.history[category]
+        return h[-1] if h else 0.0
+
+    def get_avg_physics_iterations(self):
+        """Get average physics iterations per frame"""
+        return sum(self.physics_iterations_per_frame) / len(self.physics_iterations_per_frame) if self.physics_iterations_per_frame else 0
+
+    def get_summary_string(self):
+        """Get a compact summary string for GUI display"""
+        total = self.get_avg('frame_total')
+        physics = self.get_avg('physics')
+        render = self.get_avg('beetle_render') + self.get_avg('ball_render') + self.get_avg('scene_render')
+        gui = self.get_avg('gui')
+        other = total - physics - render - gui
+
+        return (f"Frame: {total:.1f}ms | "
+                f"Physics: {physics:.1f}ms | "
+                f"Render: {render:.1f}ms | "
+                f"GUI: {gui:.1f}ms")
+
+    def get_detailed_breakdown(self):
+        """Get detailed breakdown as list of strings"""
+        lines = []
+        lines.append("--- Performance Breakdown (avg ms) ---")
+
+        # Sort by average time descending
+        sorted_cats = sorted(self.categories, key=lambda c: self.get_avg(c), reverse=True)
+
+        for cat in sorted_cats:
+            avg = self.get_avg(cat)
+            last = self.get_last(cat)
+            max_val = self.get_max(cat)
+            if avg > 0.01:  # Only show if measurable
+                lines.append(f"  {cat}: {avg:.2f}ms (last: {last:.2f}, max: {max_val:.2f})")
+
+        # Physics iterations
+        avg_iters = self.get_avg_physics_iterations()
+        lines.append(f"  physics_iters/frame: {avg_iters:.1f}")
+
+        return lines
+
+# Global performance monitor instance
+perf_monitor = PerformanceMonitor()
 
 # OPTIMIZATION: Pre-computed constants to avoid repeated calculations
 TWO_PI = 2.0 * math.pi  # Avoids ~20 multiplications per frame
@@ -5523,6 +5646,9 @@ spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
 print("Death explosion kernel warmed up (pre-compiled)")
 
 while window.running:
+    # === START FRAME TIMING ===
+    perf_monitor.start('frame_total')
+
     current_time = time.time()
     frame_dt = current_time - last_time
     last_time = current_time
@@ -5538,6 +5664,9 @@ while window.running:
     # Cap accumulator to prevent spiral during geometry rebuilds (max 3 physics steps per frame)
     MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 3  # ~50ms worth of simulation
     accumulator = min(accumulator, MAX_ACCUMULATOR)
+
+    # === CAMERA TIMING ===
+    perf_monitor.start('camera')
 
     # Camera (runs every frame at frame rate)
     # Toggle auto-follow camera with C key
@@ -5682,8 +5811,12 @@ while window.running:
         renderer.handle_camera_controls(camera, window, frame_dt)
         renderer.handle_mouse_look(camera, window)
 
+    perf_monitor.stop('camera')
+
     # ===== FIXED TIMESTEP PHYSICS LOOP =====
     # Run physics in fixed increments (may run 0+ times per frame)
+    perf_monitor.start('physics')
+    physics_iterations_this_frame = 0
     while accumulator >= PHYSICS_TIMESTEP:
         # Save previous state for interpolation
         beetle_blue.save_previous_state()
@@ -6162,8 +6295,10 @@ while window.running:
         # Subtract fixed timestep from accumulator
         accumulator -= PHYSICS_TIMESTEP
         physics_frame += 1  # Increment frame counter
+        physics_iterations_this_frame += 1
 
     # ===== END FIXED TIMESTEP PHYSICS LOOP =====
+    perf_monitor.stop('physics')
 
     # Calculate interpolation alpha for smooth rendering between physics states
     alpha = accumulator / PHYSICS_TIMESTEP
@@ -6197,6 +6332,9 @@ while window.running:
     red_render_tail_pitch = math.radians(15.0 + beetle_red.tail_rotation_angle)  # Convert degrees to radians (base 15 + dynamic)
     red_render_horn_pitch = lerp_angle(beetle_red.prev_horn_pitch, beetle_red.horn_pitch, alpha)
     red_render_horn_yaw = lerp_angle(beetle_red.prev_horn_yaw, beetle_red.horn_yaw, alpha)
+
+    # === ANIMATION TIMING ===
+    perf_monitor.start('animation')
 
     # Update walk animation based on velocity and rotation (uses real-time frame_dt)
     # Detect blue beetle rotation-only input
@@ -6603,10 +6741,15 @@ while window.running:
             r = window.red_horn_tip_color
             simulation.red_horn_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
 
+    perf_monitor.stop('animation')
+
     # Render - ANIMATED with leg walking cycles and interpolated smooth positions!
+    # === VOXEL CLEAR TIMING ===
+    perf_monitor.start('voxel_clear')
     # OPTIMIZATION: Use dirty voxel tracking instead of scanning 250K voxels
     clear_dirty_voxels()  # Clear voxels from previous frame (only ~600 voxels)
     reset_dirty_voxels()  # Reset counter for this frame's tracking
+    perf_monitor.stop('voxel_clear')
 
     # Place shadows for airborne beetles (only when at least one beetle is airborne)
     blue_needs_shadow = beetle_blue.active and blue_render_y > SHADOW_HEIGHT_THRESHOLD
@@ -6699,6 +6842,9 @@ while window.running:
         window.red_stripe_color = (0.85, 0.65, 0.2)
         window.red_horn_tip_color = (0.4, 0.1, 0.1)
 
+    # === BEETLE RENDER TIMING ===
+    perf_monitor.start('beetle_render')
+
     if beetle_blue.active:
         # Render blue beetle using its own cache
         place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction)
@@ -6706,6 +6852,11 @@ while window.running:
     if beetle_red.active:
         # Render red beetle using its own cache
         place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction)
+
+    perf_monitor.stop('beetle_render')
+
+    # === BALL RENDER TIMING ===
+    perf_monitor.start('ball_render')
 
     # Render ball (beetle soccer ball) - clear old voxels first to prevent trail
     if beetle_ball.active:
@@ -6717,6 +6868,11 @@ while window.running:
 
         clear_ball()
         render_ball(ball_render_x, ball_render_y, ball_render_z, beetle_ball.radius, ball_render_rotation)
+
+    perf_monitor.stop('ball_render')
+
+    # === SCENE RENDER TIMING ===
+    perf_monitor.start('scene_render')
 
     # Calculate spotlight position above beetles midpoint
     spotlight_mid_x = (blue_render_x + red_render_x) / 2.0
@@ -6732,9 +6888,61 @@ while window.running:
                     front_light_strength=front_light_strength)
     canvas.scene(scene)
 
+    perf_monitor.stop('scene_render')
+
+    # === GUI TIMING ===
+    perf_monitor.start('gui')
+
     # HUD
     window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.95)
     window.GUI.text(f"FPS: {actual_fps:.0f}")
+
+    # === PERFORMANCE MONITORING DISPLAY ===
+    if perf_monitor.show_stats:
+        # Compact summary line
+        total_ms = perf_monitor.get_avg('frame_total')
+        physics_ms = perf_monitor.get_avg('physics')
+        render_ms = perf_monitor.get_avg('beetle_render') + perf_monitor.get_avg('scene_render')
+        window.GUI.text(f"Frame: {total_ms:.1f}ms | Phys: {physics_ms:.1f}ms | Rend: {render_ms:.1f}ms")
+
+        # Detailed breakdown toggle
+        if perf_monitor.show_detailed:
+            for line in perf_monitor.get_detailed_breakdown():
+                window.GUI.text(line)
+
+            # Renderer sub-timing breakdown
+            rt = renderer.get_render_timing()
+            if rt:
+                window.GUI.text("--- Renderer Breakdown (last frame) ---")
+                window.GUI.text(f"  extract_voxels: {rt.get('extract_voxels', 0):.2f}ms")
+                window.GUI.text(f"  extract_debris: {rt.get('extract_debris', 0):.2f}ms")
+                window.GUI.text(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms")
+                window.GUI.text(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms")
+                window.GUI.text(f"  voxel_count: {rt.get('voxel_count', 0)}")
+
+    # Performance display toggle buttons
+    if window.GUI.button("Toggle Perf Stats"):
+        perf_monitor.show_stats = not perf_monitor.show_stats
+    if perf_monitor.show_stats:
+        if window.GUI.button("Toggle Detailed"):
+            perf_monitor.show_detailed = not perf_monitor.show_detailed
+        if window.GUI.button("Save Perf Log"):
+            with open("perf_log.txt", "w") as f:
+                f.write(f"FPS: {actual_fps:.0f}\n")
+                f.write(f"Frame count: {perf_monitor.frame_count}\n\n")
+                for line in perf_monitor.get_detailed_breakdown():
+                    f.write(line + "\n")
+                # Add renderer breakdown
+                rt = renderer.get_render_timing()
+                if rt:
+                    f.write("\n--- Renderer Breakdown (last frame) ---\n")
+                    f.write(f"  extract_voxels: {rt.get('extract_voxels', 0):.2f}ms\n")
+                    f.write(f"  extract_debris: {rt.get('extract_debris', 0):.2f}ms\n")
+                    f.write(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms\n")
+                    f.write(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms\n")
+                    f.write(f"  voxel_count: {rt.get('voxel_count', 0)}\n")
+            print("Performance log saved to perf_log.txt")
+
     window.GUI.text("")
 
     # Blue beetle status
@@ -7204,6 +7412,20 @@ while window.running:
 
     window.GUI.end()
 
+    perf_monitor.stop('gui')
+
+    # === END FRAME TIMING ===
+    perf_monitor.stop('frame_total')
+    perf_monitor.end_frame(physics_iterations=physics_iterations_this_frame)
+
     window.show()
+
+# Print final performance summary
+print("\n" + "="*60)
+print("PERFORMANCE SUMMARY (last 120 frames)")
+print("="*60)
+for line in perf_monitor.get_detailed_breakdown():
+    print(line)
+print("="*60)
 
 print("Done!")

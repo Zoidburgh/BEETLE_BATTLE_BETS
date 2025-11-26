@@ -348,19 +348,32 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         front_light_strength: Intensity of front camera light (default 0.5)
     """
     import math
+    import time
+
+    # === RENDER TIMING (for performance analysis) ===
+    _t0 = time.perf_counter()
+
     # Draw gradient background before 3D scene (forest atmosphere)
     canvas.triangles(gradient_positions, per_vertex_color=gradient_colors)
+
+    _t1 = time.perf_counter()
 
     # Extract voxels from grid (GPU operation)
     num_voxels[None] = 0  # Reset counters
     num_projectiles_render[None] = 0
     extract_voxels(voxel_field, n_grid)
 
+    _t2 = time.perf_counter()
+
     # Extract debris particles from physics simulation
     extract_debris_particles()
 
+    _t3 = time.perf_counter()
+
     # Extract projectiles from physics simulation
     extract_projectiles()
+
+    _t4 = time.perf_counter()
 
     # Set up camera
     setup_camera(camera, scene)
@@ -425,6 +438,8 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # Enhanced ambient light for better overall visibility
     scene.ambient_light((0.2 * b, 0.21 * b, 0.22 * b))
 
+    _t5 = time.perf_counter()
+
     # Render all voxels (STEEL, CONCRETE, MOLTEN, DEBRIS) in single batched call
     # Debris particles merged into voxel buffer for better performance
     count = num_voxels[None]
@@ -436,6 +451,8 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
             index_count=count
         )
 
+    _t6 = time.perf_counter()
+
     # Render projectiles (cannonballs) - larger, sphere-like
     projectile_count = num_projectiles_render[None]
     if projectile_count > 0:
@@ -446,7 +463,30 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
             index_count=projectile_count
         )
 
+    _t7 = time.perf_counter()
+
+    # === STORE RENDER TIMING FOR ANALYSIS ===
+    # Store timing breakdown in module-level dict for access from main loop
+    global _render_timing
+    _render_timing = {
+        'gradient': (_t1 - _t0) * 1000,
+        'extract_voxels': (_t2 - _t1) * 1000,
+        'extract_debris': (_t3 - _t2) * 1000,
+        'extract_projectiles': (_t4 - _t3) * 1000,
+        'lighting_setup': (_t5 - _t4) * 1000,
+        'scene_particles': (_t6 - _t5) * 1000,
+        'projectile_particles': (_t7 - _t6) * 1000,
+        'voxel_count': count,
+    }
+
     # NOTE: Don't render scene to canvas here - let caller add more elements first
+
+# Module-level timing storage
+_render_timing = {}
+
+def get_render_timing():
+    """Get the last frame's render timing breakdown"""
+    return _render_timing
 
 def handle_camera_controls(camera, window, dt):
     """Handle free-flying FPS camera controls"""

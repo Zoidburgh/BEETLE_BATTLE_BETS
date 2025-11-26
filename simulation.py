@@ -1,7 +1,14 @@
 import taichi as ti
 
-# Initialize Taichi with Vulkan (skip CUDA attempt for faster startup)
-ti.init(arch=ti.vulkan, debug=False)
+# Initialize Taichi - try CUDA first, then CPU (often faster than Vulkan on laptops)
+# Vulkan can be slow on integrated GPUs and laptops without dedicated graphics
+try:
+    ti.init(arch=ti.cuda, debug=False)
+    print("Using CUDA backend")
+except:
+    # CPU is often faster than Vulkan on systems without dedicated NVIDIA GPUs
+    ti.init(arch=ti.cpu, debug=False)
+    print("Using CPU backend")
 
 # 128x128x128 grid - optimal power-of-2 size for beetle battle (GPU cache friendly)
 n_grid = 128
