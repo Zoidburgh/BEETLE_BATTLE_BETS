@@ -5640,10 +5640,22 @@ previous_tail_rotation = blue_previous_tail_rotation
 
 # Ball state now handled by beetle_ball Beetle object (created at line ~318)
 
-# Warm up death explosion kernel to avoid first-time JIT compilation stutter
-# Call with dummy data during initialization to pre-compile GPU kernel
+# Warm up kernels to avoid first-time JIT compilation stutter
+# Call with dummy data during initialization to pre-compile GPU kernels
+print("Warming up kernels...")
+
+# Collision detection kernels (these cause the first-collision stutter)
+check_collision_kernel(0.0, 0.0, 0.0, 100.0, 100.0, 0.0, simulation.BEETLE_BLUE, simulation.BEETLE_RED)
+calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_BLUE,
+                                 beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
+calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_RED,
+                                 beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
+calculate_collision_point_kernel(0)
+
+# Death explosion kernel
 spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 1)
-print("Death explosion kernel warmed up (pre-compiled)")
+
+print("All kernels warmed up (pre-compiled)")
 
 while window.running:
     # === START FRAME TIMING ===
