@@ -2643,30 +2643,18 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     cos_roll = ti.cos(roll)
     sin_roll = ti.sin(roll)
 
-    # Horn pitch rotation
-    cos_pitch = ti.cos(horn_pitch)
-    sin_pitch = ti.sin(horn_pitch)
-    horn_pivot_x = 3.0
-    horn_pivot_y = 2
+    # NOTE: horn_pitch parameter kept for API compatibility but no longer used
+    # Ground collision is now based on body/legs only, not horn position
 
     lowest_y = 9999.0  # Start with very high value
 
     # Check all body voxels
+    # NOTE: Horn pitch rotation removed - ground collision should be based on body/legs only,
+    # not horn position. This fixes Atlas beetle floating when horn pitched down.
     for i in range(body_cache_size[None]):
         local_x = float(body_cache_x[i])
         local_y = body_cache_y[i]
         local_z = float(body_cache_z[i])
-
-        # Apply horn pitch rotation if this is a horn voxel
-        # Only rotate centered cephalic horn voxels: X>=3, |Z|<=1.5, X>Y (horn extends forward/up)
-        # Excludes: pronotum horns (|dz| > 1.5), head piece (X<=Y, close to body)
-        if body_cache_x[i] >= 3 and abs(local_z) <= 1.5 and body_cache_x[i] > local_y:
-            rel_x = local_x - horn_pivot_x
-            rel_y = float(local_y - horn_pivot_y)
-            pitched_x = rel_x * cos_pitch - rel_y * sin_pitch
-            pitched_y = rel_x * sin_pitch + rel_y * cos_pitch
-            local_x = pitched_x + horn_pivot_x
-            local_y = int(ti.round(pitched_y + float(horn_pivot_y)))
 
         # Apply 3D rotation (yaw -> pitch -> roll)
         ly = float(local_y)
@@ -5920,6 +5908,7 @@ physics_params = {
 
 last_time = time.time()
 accumulator = 0.0  # Time accumulator for fixed timestep physics
+shadows_were_placed = False  # Track if shadows existed last frame (for cleanup)
 
 # Per-beetle horn types (independent type selection for blue and red beetles)
 blue_horn_type = "rhino"  # Blue beetle horn type: "rhino", "stag", "hercules", or "scorpion"
@@ -6225,7 +6214,7 @@ while window.running:
                             beetle_red.vx += push_x * push_force
                             beetle_red.vz += push_z * push_force
                             beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                            beetle_red.pitch -= 0.02  # Direct pitch tilt (front up)
+                            beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
 
                     new_yaw = beetle_blue.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
@@ -6363,7 +6352,7 @@ while window.running:
                             beetle_blue.vx += push_x * push_force
                             beetle_blue.vz += push_z * push_force
                             beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                            beetle_blue.pitch -= 0.02  # Direct pitch tilt (front up)
+                            beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
 
                     new_yaw = beetle_red.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
@@ -7114,10 +7103,15 @@ while window.running:
     # Place shadows for airborne beetles (only when at least one beetle is airborne)
     blue_needs_shadow = beetle_blue.active and blue_render_y > SHADOW_HEIGHT_THRESHOLD
     red_needs_shadow = beetle_red.active and red_render_y > SHADOW_HEIGHT_THRESHOLD
+    floor_y = int(RENDER_Y_OFFSET)  # Shadow replaces floor voxels (flush with surface)
+
+    # Always clear shadows if they existed last frame (prevents artifacts when beetles land)
+    if shadows_were_placed:
+        clear_shadow_layer(floor_y)
+        shadows_were_placed = False
 
     if blue_needs_shadow or red_needs_shadow:
-        floor_y = int(RENDER_Y_OFFSET)  # Shadow replaces floor voxels (flush with surface)
-        clear_shadow_layer(floor_y)  # Restore previous frame's shadows back to concrete
+        shadows_were_placed = True  # Mark that we're placing shadows this frame
 
         if blue_needs_shadow:
             height_factor = min((blue_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
