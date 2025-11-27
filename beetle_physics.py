@@ -522,15 +522,24 @@ class Beetle:
 # Game state
 match_winner = None  # "BLUE" or "RED" when a beetle dies
 victory_pulse_timer = 0.0  # Timer for winner glow effect
-VICTORY_PULSE_DURATION = 3.0  # Pulse for 3 seconds after victory
+VICTORY_PULSE_DURATION = 4.0  # Pulse for 4 seconds after victory
+victory_confetti_timer = 0.0  # Timer for spawning confetti waves
+VICTORY_CONFETTI_DELAY = 0.6  # Wait 600ms before starting confetti
+VICTORY_CONFETTI_INTERVAL = 0.15  # Spawn confetti every 0.15 seconds during victory
+VICTORY_CONFETTI_PARTICLES = 23  # Particles per spawn wave (50% more than 15)
 
 def reset_match():
     """Reset beetles to starting positions for new match"""
-    global beetle_blue, beetle_red, match_winner, victory_pulse_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
+    global beetle_blue, beetle_red, match_winner, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
+
+    # Sync GPU to ensure any pending operations complete before reset
+    ti.sync()
+
     beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
     beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
     match_winner = None
     victory_pulse_timer = 0.0
+    victory_confetti_timer = 0.0
 
     # Reset scorpion tracking variables to prevent geometry cache desync
     previous_stinger_curvature = 0.0
@@ -5250,6 +5259,48 @@ def spawn_death_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                 simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.5  # 0.5-1.0 sec - varied lifetime for more random fade timing
 
 @ti.kernel
+def spawn_victory_confetti(center_x: ti.f32, center_z: ti.f32, spawn_height: ti.f32,
+                           body_r: ti.f32, body_g: ti.f32, body_b: ti.f32,
+                           leg_r: ti.f32, leg_g: ti.f32, leg_b: ti.f32,
+                           stripe_r: ti.f32, stripe_g: ti.f32, stripe_b: ti.f32,
+                           tip_r: ti.f32, tip_g: ti.f32, tip_b: ti.f32,
+                           num_particles: ti.i32):
+    """Spawn victory confetti particles that rain down around the arena perimeter"""
+    for i in range(num_particles):
+        # Random spawn position on perimeter ring OUTSIDE the arena
+        # Arena radius is 32, so spawn at 35-45 units out (just outside edge)
+        spawn_radius = 35.0 + ti.random() * 10.0  # 35-45 unit radius (outside arena)
+        angle = ti.random() * 6.28318  # Random angle around center
+
+        pos_x = center_x + ti.cos(angle) * spawn_radius
+        pos_z = center_z + ti.sin(angle) * spawn_radius
+        pos_y = spawn_height + ti.random() * 10.0  # Slight height variation
+
+        # Gentle downward velocity with some horizontal drift
+        vx = (ti.random() - 0.5) * 20.0  # -10 to +10 horizontal drift
+        vy = -30.0 - ti.random() * 20.0  # -30 to -50 downward (gentle rain)
+        vz = (ti.random() - 0.5) * 20.0  # -10 to +10 horizontal drift
+
+        # Sample color from winner's beetle colors (same distribution as explosion)
+        # 55% body, 20% leg, 15% stripe, 10% tip
+        rand = ti.random()
+        particle_color = ti.math.vec3(body_r, body_g, body_b)  # Default to body
+        if rand >= 0.55 and rand < 0.75:
+            particle_color = ti.math.vec3(leg_r, leg_g, leg_b)
+        elif rand >= 0.75 and rand < 0.90:
+            particle_color = ti.math.vec3(stripe_r, stripe_g, stripe_b)
+        elif rand >= 0.90:
+            particle_color = ti.math.vec3(tip_r, tip_g, tip_b)
+
+        # Add particle to debris system
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            simulation.debris_material[idx] = particle_color
+            simulation.debris_lifetime[idx] = 1.5 + ti.random() * 1.0  # 1.5-2.5 sec - longer lifetime for confetti
+
+@ti.kernel
 def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                               dir_x: ti.f32, dir_z: ti.f32, speed: ti.f32,
                               color_r: ti.f32, color_g: ti.f32, color_b: ti.f32,
@@ -5263,7 +5314,8 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             # Stagger particles along kick direction, scaled by leg length
-            stagger = ti.cast(i, ti.f32) * 1.2 * stagger_scale
+            # 0.7 multiplier keeps total range same as before (was 1.2 with 5 particles)
+            stagger = ti.cast(i, ti.f32) * 0.7 * stagger_scale
             # Add per-leg randomization (also scaled) + per-particle lateral spread
             lateral_spread = (ti.random() - 0.5) * 2.0 * stagger_scale  # Side-to-side variance
             spawn_x = pos_x + dir_x * stagger + rand_offset_x * stagger_scale + (ti.random() - 0.5) * 0.8 * stagger_scale - dir_z * lateral_spread
@@ -5943,6 +5995,28 @@ calculate_collision_point_kernel(0)
 
 # Death explosion kernel
 spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 1)
+
+# Debris/particle update kernel (triggered when particles exist)
+update_debris_particles(0.016)
+
+# Edge tipping kernel (triggered when beetles near arena edge)
+calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_BLUE, 0.016, 1.0, 1.0)
+calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_RED, 0.016, 1.0, 1.0)
+
+# Clear beetles kernels (used during reset and rendering)
+clear_beetles()
+clear_beetles_bounded(0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+
+# Shadow kernels (triggered when beetles are airborne)
+clear_shadow_layer(int(RENDER_Y_OFFSET))
+place_shadow_kernel(0.0, 0.0, 3.0, int(RENDER_Y_OFFSET))
+clear_shadow_layer(int(RENDER_Y_OFFSET))  # Clear the warm-up shadow so it doesn't show on load
+
+# Victory confetti kernel (triggered on match win)
+spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
+
+# Sync GPU to ensure all warm-up compilations complete
+ti.sync()
 
 print("All kernels warmed up (pre-compiled)")
 
@@ -6884,7 +6958,7 @@ while window.running:
                         rand_x = (random.random() - 0.5) * 1.5
                         rand_z = (random.random() - 0.5) * 1.5
                         spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, 5)
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, 8)
 
         # Spinning: spawn dust from back leg on opposite side
         # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
@@ -6976,7 +7050,7 @@ while window.running:
                         rand_x = (random.random() - 0.5) * 1.5
                         rand_z = (random.random() - 0.5) * 1.5
                         spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, 5)
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, 8)
 
         # Spinning: spawn dust from back leg on opposite side
         # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
@@ -7040,6 +7114,36 @@ while window.running:
         fade = 1.0 - (victory_pulse_timer / VICTORY_PULSE_DURATION)
         # Pulsing brightness: oscillates between 1.0 and 1.6, fading to 1.0 over time
         pulse = 1.0 + 0.6 * fade * math.sin(victory_pulse_timer * 10.0)  # Fast pulse that fades
+
+        # Victory confetti - rain down colored particles during victory (after initial delay)
+        if victory_pulse_timer >= VICTORY_CONFETTI_DELAY:
+            victory_confetti_timer += frame_dt
+            if victory_confetti_timer >= VICTORY_CONFETTI_INTERVAL:
+                victory_confetti_timer = 0.0
+                # Spawn confetti above the arena center at a high position
+                confetti_height = 50.0  # High above the arena
+                if match_winner == "BLUE":
+                    b_body = window.blue_body_color
+                    b_leg = window.blue_leg_color
+                    b_stripe = window.blue_stripe_color
+                    b_tip = window.blue_horn_tip_color
+                    spawn_victory_confetti(0.0, 0.0, confetti_height,
+                                           b_body[0], b_body[1], b_body[2],
+                                           b_leg[0], b_leg[1], b_leg[2],
+                                           b_stripe[0], b_stripe[1], b_stripe[2],
+                                           b_tip[0], b_tip[1], b_tip[2],
+                                           VICTORY_CONFETTI_PARTICLES)
+                else:  # RED winner
+                    r_body = window.red_body_color
+                    r_leg = window.red_leg_color
+                    r_stripe = window.red_stripe_color
+                    r_tip = window.red_horn_tip_color
+                    spawn_victory_confetti(0.0, 0.0, confetti_height,
+                                           r_body[0], r_body[1], r_body[2],
+                                           r_leg[0], r_leg[1], r_leg[2],
+                                           r_stripe[0], r_stripe[1], r_stripe[2],
+                                           r_tip[0], r_tip[1], r_tip[2],
+                                           VICTORY_CONFETTI_PARTICLES)
 
         if match_winner == "BLUE":
             # Pulse all blue beetle colors
