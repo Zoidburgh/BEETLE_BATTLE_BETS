@@ -522,11 +522,11 @@ class Beetle:
 # Game state
 match_winner = None  # "BLUE" or "RED" when a beetle dies
 victory_pulse_timer = 0.0  # Timer for winner glow effect
-VICTORY_PULSE_DURATION = 4.0  # Pulse for 4 seconds after victory
+VICTORY_PULSE_DURATION = 5.0  # Pulse for 5 seconds after victory
 victory_confetti_timer = 0.0  # Timer for spawning confetti waves
 VICTORY_CONFETTI_DELAY = 0.6  # Wait 600ms before starting confetti
 VICTORY_CONFETTI_INTERVAL = 0.15  # Spawn confetti every 0.15 seconds during victory
-VICTORY_CONFETTI_PARTICLES = 23  # Particles per spawn wave (50% more than 15)
+VICTORY_CONFETTI_PARTICLES = 30  # Particles per spawn wave
 
 def reset_match():
     """Reset beetles to starting positions for new match"""
