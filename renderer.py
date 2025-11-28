@@ -13,18 +13,18 @@ DEBRIS = 4
 num_voxels = ti.field(dtype=ti.i32, shape=())
 voxel_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
+voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for mixed voxel/debris sizes
+
+# Particle radius constants
+VOXEL_RADIUS = 0.37  # Standard voxel size
+DEBRIS_RADIUS = 0.25  # Smaller dust/debris particles
 
 # Projectile rendering (cannonballs)
 num_projectiles_render = ti.field(dtype=ti.i32, shape=())
 projectile_positions = ti.Vector.field(3, dtype=ti.f32, shape=10)  # Max 10 projectiles
 projectile_colors = ti.Vector.field(3, dtype=ti.f32, shape=10)
 
-# Debris/dust rendering (separate from voxels for smaller particle size)
-MAX_DEBRIS_RENDER = 2000
-num_debris_render = ti.field(dtype=ti.i32, shape=())
-debris_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS_RENDER)
-debris_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS_RENDER)
-DEBRIS_PARTICLE_RADIUS = 0.25  # Smaller than voxels (0.37)
+# Debris is now merged into main voxel buffer with per_vertex_radius for smaller size
 
 # Gradient background (2 triangles forming full-screen quad)
 gradient_positions = ti.Vector.field(2, dtype=ti.f32, shape=6)
@@ -126,9 +126,9 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 17:  # BALL_STRIPE
         color = ti.math.vec3(0.2, 0.1, 0.0)  # Dark brown/black
 
-    # Shadow blob beneath airborne beetles (slightly darker than arena floor)
+    # Shadow blob beneath airborne beetles (darker than arena floor)
     elif voxel_type == 20:  # SHADOW
-        color = ti.math.vec3(0.35, 0.33, 0.31)  # ~85% of arena floor color
+        color = ti.math.vec3(0.25, 0.23, 0.21)  # ~60% of arena floor color
 
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
     if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts
@@ -168,21 +168,26 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
             if idx < MAX_VOXELS:
                 voxel_positions[idx] = world_pos
                 voxel_colors[idx] = color
+                voxel_radii[idx] = VOXEL_RADIUS  # Standard voxel size
 
     num_voxels[None] = min(count, MAX_VOXELS)
 
 @ti.kernel
 def extract_debris_particles():
-    """Extract debris particles from physics simulation to separate debris buffer (runs on GPU)"""
+    """Extract debris particles and merge into main voxel buffer with smaller radius (runs on GPU)"""
     # Get number of active debris particles from simulation
     debris_count = simulation.num_debris[None]
 
-    # Copy debris particles to dedicated debris render buffer (separate from voxels for smaller size)
+    # Get current voxel count to append debris after regular voxels
+    voxel_count = num_voxels[None]
+
+    # Merge debris particles into main voxel buffer (with smaller radius via per_vertex_radius)
     for idx in range(debris_count):
-        if idx < MAX_DEBRIS_RENDER:  # Bounds check
+        write_idx = voxel_count + idx
+        if write_idx < MAX_VOXELS:  # Bounds check
             # Get position from physics system
             debris_pos = simulation.debris_pos[idx]
-            debris_positions[idx] = debris_pos
+            voxel_positions[write_idx] = debris_pos
 
             # Get color directly from debris (RGB stored per particle for adaptive beetle colors)
             base_color = simulation.debris_material[idx]
@@ -200,12 +205,15 @@ def extract_debris_particles():
                 alpha = ti.max(linear_fade, 0.0)
                 # Fade toward arena dust color (not dark)
                 fade_target = ti.math.vec3(0.5, 0.48, 0.45)  # Light dust color
-                debris_colors[idx] = base_color * alpha + fade_target * (1.0 - alpha)
+                voxel_colors[write_idx] = base_color * alpha + fade_target * (1.0 - alpha)
             else:
-                debris_colors[idx] = base_color
+                voxel_colors[write_idx] = base_color
 
-    # Update debris render count (separate from voxels now)
-    num_debris_render[None] = min(debris_count, MAX_DEBRIS_RENDER)
+            # Set smaller radius for debris particles
+            voxel_radii[write_idx] = DEBRIS_RADIUS
+
+    # Update total voxel count to include debris
+    num_voxels[None] = min(voxel_count + debris_count, MAX_VOXELS)
 
 @ti.kernel
 def extract_projectiles():
@@ -443,27 +451,19 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
 
     _t5 = time.perf_counter()
 
-    # Render all voxels (STEEL, CONCRETE, beetles) in single batched call
+    # Render all voxels + debris in single batched call with per-vertex radius
+    # (debris is appended to voxel buffer with smaller radius for efficiency)
     count = num_voxels[None]
     if count > 0:
         scene.particles(
             voxel_positions,
-            radius=0.37,
+            radius=VOXEL_RADIUS,  # Fallback radius (per_vertex_radius overrides this)
             per_vertex_color=voxel_colors,
+            per_vertex_radius=voxel_radii,  # Mixed sizes: 0.37 for voxels, 0.25 for debris
             index_count=count
         )
 
     _t6 = time.perf_counter()
-
-    # Render debris/dust particles - smaller than voxels for subtle effect
-    debris_count = num_debris_render[None]
-    if debris_count > 0:
-        scene.particles(
-            debris_positions,
-            radius=DEBRIS_PARTICLE_RADIUS,  # Smaller particles (0.25)
-            per_vertex_color=debris_colors,
-            index_count=debris_count
-        )
 
     # Render projectiles (cannonballs) - larger, sphere-like
     projectile_count = num_projectiles_render[None]
