@@ -57,6 +57,8 @@ STAG_HOOK_INTERIOR_RED = 19  # Red beetle stag hook interior (curved inward sect
 SHADOW = 20  # Shadow blob beneath airborne beetles
 SLIPPERY = 21  # Slippery bowl perimeter (ball mode only)
 GOAL = 22  # Goal doorway walls (ball mode only)
+SCORE_DIGIT_BLUE = 23  # Blue team floating score digit
+SCORE_DIGIT_RED = 24  # Red team floating score digit
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors

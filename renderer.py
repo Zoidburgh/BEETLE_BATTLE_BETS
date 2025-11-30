@@ -137,6 +137,11 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     # Goal doorway walls (sandy/tan stone)
     elif voxel_type == 22:  # GOAL
         color = ti.math.vec3(0.6, 0.5, 0.3)  # Sandy/tan stone color
+    # Floating score digits
+    elif voxel_type == 23:  # SCORE_DIGIT_BLUE
+        color = ti.math.vec3(0.3, 0.6, 1.0)  # Bright blue
+    elif voxel_type == 24:  # SCORE_DIGIT_RED
+        color = ti.math.vec3(1.0, 0.3, 0.2)  # Bright red
 
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
     if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts

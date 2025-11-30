@@ -619,6 +619,82 @@ ball_explosion_pos_z = 0.0
 goal_scored_by = None  # "BLUE" or "RED" - who scored
 goal_celebration_timer = 0.0  # Timer for celebration sequence
 
+# Score digit display state
+blue_score_bounce_timer = 0.0  # Timer for blue digit bounce animation
+red_score_bounce_timer = 0.0  # Timer for red digit bounce animation
+SCORE_BOUNCE_DURATION = 0.5  # Duration of bounce animation
+
+# Digit patterns for 0-9 (5 wide x 7 tall, stored as row bitmasks)
+# Each digit is 7 rows, each row is 5 bits (bit 0 = leftmost)
+# Pattern: .###. = 0b01110, .#.#. = 0b01010, etc.
+DIGIT_PATTERNS = [
+    # 0
+    [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+    # 1
+    [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+    # 2
+    [0b01110, 0b10001, 0b00001, 0b00110, 0b01000, 0b10000, 0b11111],
+    # 3
+    [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
+    # 4
+    [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+    # 5
+    [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+    # 6
+    [0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+    # 7
+    [0b11111, 0b00001, 0b00010, 0b00100, 0b00100, 0b00100, 0b00100],
+    # 8
+    [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+    # 9
+    [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
+]
+
+# Store digit patterns in Taichi field for kernel access (10 digits, 7 rows)
+digit_pattern_field = ti.field(dtype=ti.i32, shape=(10, 7))
+
+# Initialize digit patterns into Taichi field
+for d in range(10):
+    for r in range(7):
+        digit_pattern_field[d, r] = DIGIT_PATTERNS[d][r]
+
+@ti.kernel
+def render_score_digit(digit: ti.i32, base_x: ti.i32, base_y: ti.i32, base_z: ti.i32,
+                       voxel_type: ti.i32, scale: ti.f32):
+    """Render a single digit (0-9) as voxels with optional scale for bounce effect
+    base_x, base_y, base_z: center of digit in grid coords
+    voxel_type: SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
+    scale: 1.0 = normal, >1.0 = enlarged for bounce effect
+    """
+    # Digit is 5 wide x 7 tall, center it on base position
+    half_width = 2.5 * scale
+    half_height = 3.5 * scale
+
+    for row in range(7):
+        row_pattern = digit_pattern_field[digit, row]
+        for col in range(5):
+            if (row_pattern >> (4 - col)) & 1:  # Check if bit is set (reversed for correct orientation)
+                # Calculate scaled position from center
+                offset_x = (col - 2) * scale
+                offset_y = (6 - row) * scale  # Flip row so 0 is at bottom
+
+                # Place voxel at scaled position
+                vx = ti.cast(base_x + offset_x, ti.i32)
+                vy = ti.cast(base_y + offset_y, ti.i32)
+                vz = base_z
+
+                # Bounds check
+                if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
+                    simulation.voxel_type[vx, vy, vz] = voxel_type
+
+@ti.kernel
+def clear_score_digits():
+    """Clear all score digit voxels"""
+    for i, j, k in ti.ndrange(128, 128, 128):
+        if simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_BLUE or \
+           simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_RED:
+            simulation.voxel_type[i, j, k] = simulation.EMPTY
+
 @ti.kernel
 def clear_beetles():
     """Remove all beetle voxels"""
@@ -6821,12 +6897,14 @@ while window.running:
                             g['ball_scored_this_fall'] = True
                             g['goal_scored_by'] = "RED"
                             g['goal_celebration_timer'] = 0.0
+                            g['red_score_bounce_timer'] = SCORE_BOUNCE_DURATION  # Start bounce animation
                             print(f"RED SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
                         elif beetle_ball.x > 32:  # Red goal pit (east) - BLUE scores
                             g['blue_score'] = g['blue_score'] + 1
                             g['ball_scored_this_fall'] = True
                             g['goal_scored_by'] = "BLUE"
                             g['goal_celebration_timer'] = 0.0
+                            g['blue_score_bounce_timer'] = SCORE_BOUNCE_DURATION  # Start bounce animation
                             print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
             else:
                 # Ball is above ground - reset scored flag for next fall
@@ -7770,6 +7848,47 @@ while window.running:
                 ball_shadow_radius = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
                 place_shadow_kernel(ball_render_x, ball_render_z, ball_shadow_radius, floor_y)
                 shadows_were_placed = True
+
+        # Render floating score digits above goal pits
+        clear_score_digits()
+
+        # Update bounce timers
+        if blue_score_bounce_timer > 0:
+            blue_score_bounce_timer -= 1.0 / 60.0  # Approximate frame time
+            if blue_score_bounce_timer < 0:
+                blue_score_bounce_timer = 0
+
+        if red_score_bounce_timer > 0:
+            red_score_bounce_timer -= 1.0 / 60.0
+            if red_score_bounce_timer < 0:
+                red_score_bounce_timer = 0
+
+        # Calculate bounce scale using sin for smooth bounce (1.0 -> 1.5 -> 1.0)
+        def get_bounce_scale(timer):
+            if timer <= 0:
+                return 1.0
+            # Normalize timer to 0-1 range (1 at start, 0 at end)
+            t = timer / SCORE_BOUNCE_DURATION
+            # Use sin for smooth bounce: peaks at t=0.5
+            return 1.0 + 0.5 * math.sin(t * math.pi)
+
+        blue_scale = get_bounce_scale(blue_score_bounce_timer)
+        red_scale = get_bounce_scale(red_score_bounce_timer)
+
+        # Digit positions in grid coords:
+        # Blue score hovers above RED goal pit (east, x=96) - where blue tries to score
+        # Red score hovers above BLUE goal pit (west, x=32) - where red tries to score
+        digit_y = 53  # Height above floor (floor is at y=33)
+
+        # Blue score digit above red goal (east)
+        blue_digit_x = 96  # Center over red goal pit
+        render_score_digit(blue_score % 10, blue_digit_x, digit_y, 64,
+                          simulation.SCORE_DIGIT_BLUE, blue_scale)
+
+        # Red score digit above blue goal (west)
+        red_digit_x = 32  # Center over blue goal pit
+        render_score_digit(red_score % 10, red_digit_x, digit_y, 64,
+                          simulation.SCORE_DIGIT_RED, red_scale)
 
     perf_monitor.stop('ball_render')
 
