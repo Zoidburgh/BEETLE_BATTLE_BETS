@@ -541,6 +541,29 @@ def reset_match():
     victory_pulse_timer = 0.0
     victory_confetti_timer = 0.0
 
+    # Restore beetle colors from saved window values (in case restart during victory pulse)
+    b = window.blue_body_color
+    simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+    b = window.blue_leg_color
+    simulation.blue_leg_color[None] = ti.Vector([b[0], b[1], b[2]])
+    b = window.blue_leg_tip_color
+    simulation.blue_leg_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
+    b = window.blue_stripe_color
+    simulation.blue_stripe_color[None] = ti.Vector([b[0], b[1], b[2]])
+    b = window.blue_horn_tip_color
+    simulation.blue_horn_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
+
+    r = window.red_body_color
+    simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+    r = window.red_leg_color
+    simulation.red_leg_color[None] = ti.Vector([r[0], r[1], r[2]])
+    r = window.red_leg_tip_color
+    simulation.red_leg_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
+    r = window.red_stripe_color
+    simulation.red_stripe_color[None] = ti.Vector([r[0], r[1], r[2]])
+    r = window.red_horn_tip_color
+    simulation.red_horn_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
+
     # Reset scorpion tracking variables to prevent geometry cache desync
     previous_stinger_curvature = 0.0
     previous_tail_rotation = 0.0
@@ -1272,14 +1295,22 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
         # Main shaft with overlapping layers
         shaft_segments = round(horn_shaft_len)
 
-        # Add extra meaty base layer at attachment point (x=2 and x=3)
+        # Add extra meaty base layer at attachment point (x=2, x=3, x=4)
         # Makes the neck thicker where it connects to body, tapers toward shaft
-        for dx_base in range(2, 4):  # x=2 and x=3 (two layers deep)
-            # Front layer (x=3) starts at y=1, back layer (x=2) starts at y=0
-            y_start = 0 if dx_base == 2 else 1
+        for dx_base in range(2, 5):  # x=2, x=3, x=4 (three layers deep)
+            # Front layers start higher, back layer starts at y=0
+            if dx_base == 2:
+                y_start = 0
+            elif dx_base == 3:
+                y_start = 1
+            else:  # x=4 - transition layer
+                y_start = 1
             for dy_base in range(y_start, 3):  # 3 voxels tall at base
                 # Taper: wider at bottom (y=0,1), narrower at top (y=2)
-                if dy_base < 2:
+                # x=4 layer is narrower (just the shaft width)
+                if dx_base == 4:
+                    z_range = range(-1, 2)  # 3 voxels wide (matches shaft)
+                elif dy_base < 2:
                     z_range = range(-2, 3)  # 5 voxels wide at bottom
                 else:
                     z_range = range(-1, 2)  # 3 voxels wide at top (tapered)
@@ -1297,6 +1328,13 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
                 # Add overlapping voxel below (unless at bottom)
                 if dy > 1:
                     body_voxels.append((dx, dy - 1, dz))
+            # Add second layer behind the shaft at the base (first 3 segments)
+            # This makes the base 2 voxels deep in X for better collision
+            if i < 3:
+                for dz in range(-thickness, thickness + 1):
+                    body_voxels.append((dx - 1, dy, dz))
+                    if dy > 1:
+                        body_voxels.append((dx - 1, dy - 1, dz))
 
         # Y-fork - Left prong with overlapping layers
         prong_segments = round(horn_prong_len)
@@ -2574,8 +2612,9 @@ def generate_atlas_cephalic_horn(shaft_len=5):
     """
     horn_voxels = []
 
-    # Scale horn length - cephalic horn is 1.3x shaft_len (6-13 voxels)
-    horn_length = int(shaft_len * 1.3)
+    # Scale horn length - cephalic horn grows moderately (6-10 voxels)
+    # Using 0.8x multiplier + 2 base gives: slider 5→6, slider 10→10
+    horn_length = int(shaft_len * 0.8) + 2
 
     # Base attachment point (will be rotated by horn_pitch in rendering)
     base_x = 3  # Matches horn pivot point
