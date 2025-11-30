@@ -130,6 +130,10 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 20:  # SHADOW
         color = ti.math.vec3(0.25, 0.23, 0.21)  # ~60% of arena floor color
 
+    # Slippery bowl perimeter (slightly blue-tinted to indicate slippery)
+    elif voxel_type == 21:  # SLIPPERY
+        color = ti.math.vec3(0.35, 0.40, 0.50)  # Blue-gray to indicate slippery ice-like surface
+
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
     if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts
         shimmer = get_shimmer_from_lut(world_x, world_z)

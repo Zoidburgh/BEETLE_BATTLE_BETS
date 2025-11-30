@@ -252,13 +252,16 @@ BALL_ROLLING_FRICTION = 0.84  # Horizontal slowdown (0.80=high friction, 0.99=ic
 BALL_GROUND_BOUNCE = 0.8  # Floor bounce coefficient (0=dead stop, 0.8=super bouncy)
 BALL_PUSH_MULTIPLIER = 3.9  # How easily beetles can push the ball (1.0=normal, 3.0=very easy)
 BALL_SPIN_MULTIPLIER = 4.3  # How easily ball spins when hit (1.0=normal, 4.0=very spinny)
-BALL_ANGULAR_FRICTION = 0.98  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
+BALL_ANGULAR_FRICTION = 0.995  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
 
 # Ball torque/lift physics (realistic soccer ball behavior)
 BALL_LIFT_STRENGTH = 6.0  # How much ball lifts when hit from below (0.0-10.0)
 BALL_TIP_STRENGTH = 5.0  # How much ball tips down when hit from above (0.0-5.0)
 BALL_TORQUE_STRENGTH = 8.0  # How much ball spins from side hits (0.0-10.0)
 BALL_GRAVITY_MULTIPLIER = 1.8  # Extra gravity for ball (multiplier, 1.0-5.0)
+
+# Bowl perimeter physics (ball mode)
+BOWL_SLIDE_STRENGTH = 1.2  # Inward push force on slippery surface (0.0-2.0)
 
 # Beetle state with physics
 class Beetle:
@@ -747,8 +750,17 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                 # Check if Y-ranges overlap or are adjacent (variable tolerance based on voxel types)
                 if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
                     # Use stricter tolerance (±5 voxels) for hook interior collisions to catch them earlier
-                    # Use normal tolerance (±2 voxels) for regular collisions
-                    tolerance = 5 if has_hook_interior == 1 else 2
+                    # Use normal tolerance (±2 voxels) for beetle-beetle, tight (±0) for ball collisions
+                    is_ball_involved = 0
+                    if color1 == simulation.BALL or color2 == simulation.BALL:
+                        is_ball_involved = 1
+
+                    # Initialize tolerance (required by Taichi)
+                    tolerance = 2  # Default: beetle-beetle
+                    if has_hook_interior == 1:
+                        tolerance = 5
+                    elif is_ball_involved == 1:
+                        tolerance = 0  # Ball needs tight collision - no early detection
 
                     if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
                         collision = 1
@@ -2692,13 +2704,79 @@ def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
                 # Check around the expected floor height (with some margin for variations)
                 for j in range(floor_base_y - 5, floor_base_y + 5):
                     if 0 <= j < simulation.n_grid:
-                        if simulation.voxel_type[i, j, k] == simulation.CONCRETE:
+                        vtype = simulation.voxel_type[i, j, k]
+                        if vtype == simulation.CONCRETE or vtype == simulation.SLIPPERY:
                             # Convert grid Y back to world Y for return value
                             world_floor_y = float(j) - RENDER_Y_OFFSET
                             if world_floor_y > highest_floor_y:
                                 highest_floor_y = world_floor_y
 
     return highest_floor_y
+
+
+def apply_bowl_slide(entity, params):
+    """Push entity toward arena center if on slippery bowl perimeter"""
+    dist_from_center = math.sqrt(entity.x**2 + entity.z**2)
+    if dist_from_center > ARENA_RADIUS:
+        # On the bowl - apply direct position slide (can't be resisted)
+        slide_strength = params["BOWL_SLIDE_STRENGTH"]
+        dist_into_bowl = dist_from_center - ARENA_RADIUS
+        # Scale force by how far into the bowl (stronger at edges)
+        force_multiplier = 1.0 + dist_into_bowl * 0.2
+        # Direction toward center (normalized)
+        if dist_from_center > 0.01:  # Avoid division by zero
+            dir_x = -entity.x / dist_from_center
+            dir_z = -entity.z / dist_from_center
+            # Direct position slide (smooth, constant pull toward center)
+            slide_amount = slide_strength * force_multiplier * 0.05
+            entity.x += dir_x * slide_amount
+            entity.z += dir_z * slide_amount
+            # Also update prev position to avoid jitter
+            entity.prev_x += dir_x * slide_amount
+            entity.prev_z += dir_z * slide_amount
+
+
+def apply_bowl_tilt(beetle):
+    """Tilt beetle to match bowl slope when on the perimeter"""
+    dist_from_center = math.sqrt(beetle.x**2 + beetle.z**2)
+    if dist_from_center > ARENA_RADIUS and dist_from_center > 0.01:
+        # Calculate the slope angle based on bowl geometry
+        # Bowl rises 0.4 voxels per voxel outward = ~22 degree slope
+        bowl_slope_angle = math.atan(0.4)  # ~0.38 radians (~22 degrees)
+
+        # Direction FROM center (outward) - this is the "uphill" direction
+        outward_x = beetle.x / dist_from_center
+        outward_z = beetle.z / dist_from_center
+
+        # Calculate beetle's facing direction
+        facing_x = math.cos(beetle.rotation)
+        facing_z = math.sin(beetle.rotation)
+
+        # Right direction (perpendicular to facing)
+        right_x = -math.sin(beetle.rotation)
+        right_z = math.cos(beetle.rotation)
+
+        # How much is the beetle facing uphill vs sideways?
+        # Dot product of facing with outward = how much pitch needed
+        # Dot product of right with outward = how much roll needed
+        pitch_factor = facing_x * outward_x + facing_z * outward_z
+        roll_factor = right_x * outward_x + right_z * outward_z
+
+        # Apply tilt (facing uphill = pitch back, facing downhill = pitch forward)
+        # Negative pitch_factor means facing toward center (downhill)
+        target_pitch = -pitch_factor * bowl_slope_angle
+        target_roll = -roll_factor * bowl_slope_angle
+
+        # Smoothly blend toward target tilt
+        blend_speed = 0.15
+        beetle.pitch += (target_pitch - beetle.pitch) * blend_speed
+        beetle.roll += (target_roll - beetle.roll) * blend_speed
+    else:
+        # On flat arena - gradually return to level
+        blend_speed = 0.1
+        beetle.pitch *= (1.0 - blend_speed)
+        beetle.roll *= (1.0 - blend_speed)
+
 
 @ti.kernel
 def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32) -> ti.f32:
@@ -3045,9 +3123,9 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         grid_z = center_z + int(ti.round(final_z))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-            # Don't overwrite floor (CONCRETE) or shadow voxels
+            # Don't overwrite floor (CONCRETE), shadow, or slippery bowl voxels
             existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
-            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW:
+            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY:
                 # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
                 # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
                 is_hook_interior = blue_body_hook_flags[i]
@@ -3195,7 +3273,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
                 # Don't overwrite floor (CONCRETE) or shadow voxels
                 existing_leg = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_leg != simulation.CONCRETE and existing_leg != simulation.SHADOW:
+                if existing_leg != simulation.CONCRETE and existing_leg != simulation.SHADOW and existing_leg != simulation.SLIPPERY:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3238,7 +3316,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
                 # Don't overwrite floor (CONCRETE) or shadow voxels
                 existing_tip = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_tip != simulation.CONCRETE and existing_tip != simulation.SHADOW:
+                if existing_tip != simulation.CONCRETE and existing_tip != simulation.SHADOW and existing_tip != simulation.SLIPPERY:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3484,9 +3562,9 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         grid_z = center_z + int(ti.round(final_z))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-            # Don't overwrite floor (CONCRETE) or shadow voxels
+            # Don't overwrite floor (CONCRETE), shadow, or slippery bowl voxels
             existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
-            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW:
+            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY:
                 # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
                 # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
                 is_hook_interior = red_body_hook_flags[i]
@@ -3634,7 +3712,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
                 # Don't overwrite floor (CONCRETE) or shadow voxels
                 existing_leg_r = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_leg_r != simulation.CONCRETE and existing_leg_r != simulation.SHADOW:
+                if existing_leg_r != simulation.CONCRETE and existing_leg_r != simulation.SHADOW and existing_leg_r != simulation.SLIPPERY:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3677,7 +3755,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
                 # Don't overwrite floor (CONCRETE) or shadow voxels
                 existing_tip_r = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_tip_r != simulation.CONCRETE and existing_tip_r != simulation.SHADOW:
+                if existing_tip_r != simulation.CONCRETE and existing_tip_r != simulation.SHADOW and existing_tip_r != simulation.SLIPPERY:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3696,8 +3774,8 @@ def clear_dirty_voxels():
     """Clear only the voxels we tracked during placement (400x faster than scanning 250K voxels) - Parallel GPU execution"""
     for i in ti.ndrange(dirty_voxel_count[None]):  # Parallel iteration on GPU
         vtype = simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]]
-        # Only clear beetle voxels (not floor/concrete/shadow) - shadows cleared separately
-        if vtype >= simulation.BEETLE_BLUE and vtype != simulation.SHADOW:
+        # Only clear beetle voxels (not floor/concrete/shadow/slippery) - shadows cleared separately
+        if vtype >= simulation.BEETLE_BLUE and vtype != simulation.SHADOW and vtype != simulation.SLIPPERY:
             simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]] = simulation.EMPTY
 
 @ti.kernel
@@ -4005,12 +4083,20 @@ def clear_ball():
             simulation.voxel_type[i, j, k] = 0
 
 @ti.kernel
-def render_ball(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, radius: ti.f32, rotation: ti.f32):
-    """Render ball as sphere voxels with rotating stripe pattern (GPU kernel)"""
+def render_ball(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, radius: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32):
+    """Render ball as sphere voxels with 3D rotating stripe pattern (GPU kernel)"""
     # Convert to grid coordinates
     grid_x = int(ball_x + simulation.n_grid / 2.0)
     grid_y = int(ball_y + RENDER_Y_OFFSET)
     grid_z = int(ball_z + simulation.n_grid / 2.0)
+
+    # Pre-calculate trig for full 3D rotation
+    cos_yaw = ti.cos(rotation)
+    sin_yaw = ti.sin(rotation)
+    cos_pitch = ti.cos(pitch)
+    sin_pitch = ti.sin(pitch)
+    cos_roll = ti.cos(roll)
+    sin_roll = ti.sin(roll)
 
     # Render sphere voxels with rotating stripe pattern
     r_int = int(radius) + 1
@@ -4027,21 +4113,28 @@ def render_ball(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, radius: ti.f32, 
                     # Bounds check and only set if voxel is empty (don't overwrite floor/other objects)
                     if 0 <= vx < simulation.n_grid and 0 <= vy < simulation.n_grid and 0 <= vz < simulation.n_grid:
                         if simulation.voxel_type[vx, vy, vz] == 0:  # Only set if empty
-                            # Add rotating stripe pattern to visualize spin
-                            # Rotate the X-Z coordinates based on rotation angle
-                            cos_r = ti.cos(rotation)
-                            sin_r = ti.sin(rotation)
+                            # Full 3D rotation for stripe pattern (yaw, pitch, roll)
+                            # Step 1: Yaw rotation (around Y axis)
+                            temp_x = float(dx) * cos_yaw - float(dz) * sin_yaw
+                            temp_z = float(dx) * sin_yaw + float(dz) * cos_yaw
+                            temp_y = float(dy)
 
-                            # Rotate position around Y axis
-                            rotated_x = dx * cos_r - dz * sin_r
-                            rotated_z = dx * sin_r + dz * cos_r
+                            # Step 2: Pitch rotation (around Z axis) - topspin/backspin
+                            rot_x = temp_x * cos_pitch - temp_y * sin_pitch
+                            rot_y = temp_x * sin_pitch + temp_y * cos_pitch
+                            rot_z = temp_z
+
+                            # Step 3: Roll rotation (around X axis) - sidespin
+                            final_x = rot_x
+                            final_y = rot_y * cos_roll - rot_z * sin_roll
+                            final_z = rot_y * sin_roll + rot_z * cos_roll
 
                             # Create single thick stripe down the middle (2 voxels wide on each side)
                             # Stripe appears when rotated X is near 0 (center)
                             stripe_width = 2.0
 
                             # Use BALL_STRIPE for center stripe, BALL for rest
-                            if abs(rotated_x) <= stripe_width:
+                            if abs(final_x) <= stripe_width:
                                 simulation.voxel_type[vx, vy, vz] = simulation.BALL_STRIPE
                             else:
                                 simulation.voxel_type[vx, vy, vz] = simulation.BALL
@@ -5917,22 +6010,39 @@ def beetle_collision(b1, b2, params):
                         tip_force = params["BALL_TIP_STRENGTH"]
                         ball.vy -= tip_force
 
-                    # TORQUE: Side hits create spin (cross product of lever arm and impact force)
-                    # Calculate horizontal offset from ball center
+                    # TORQUE: Hits create spin on all 3 axes based on contact point
+                    # Calculate offset from ball center (contact_offset_y already calculated above)
                     contact_offset_x = collision_x - ball.x
                     contact_offset_z = collision_z - ball.z
 
-                    # Apply rotational spin based on horizontal impact location
+                    # Apply rotational spin based on impact location
                     # Torque = r × F (lever arm cross force)
                     # Use spin_mult to make ball spin easier
-                    ball_torque = contact_offset_x * impulse_z - contact_offset_z * impulse_x
-                    ball_angular_impulse = (ball_torque / ball.moment_of_inertia) * params["BALL_TORQUE_STRENGTH"] * spin_mult
+                    torque_strength = params["BALL_TORQUE_STRENGTH"] * spin_mult / ball.moment_of_inertia
 
-                    # Apply the torque (add to existing angular velocity for realistic spin accumulation)
+                    # YAW spin (around Y axis) - from horizontal offset
+                    ball_yaw_torque = contact_offset_x * impulse_z - contact_offset_z * impulse_x
+                    ball_yaw_impulse = ball_yaw_torque * torque_strength
+
+                    # PITCH spin (around Z axis) - from vertical offset with forward/back force
+                    # Hit from above + pushed forward = topspin (pitch forward)
+                    # Hit from below + pushed forward = backspin (pitch backward)
+                    ball_pitch_torque = contact_offset_y * impulse_x
+                    ball_pitch_impulse = ball_pitch_torque * torque_strength * 0.2
+
+                    # ROLL spin (around X axis) - from vertical offset with side force
+                    ball_roll_torque = contact_offset_y * impulse_z
+                    ball_roll_impulse = ball_roll_torque * torque_strength * 0.2
+
+                    # Apply all torques (add to existing angular velocity for realistic spin accumulation)
                     if ball_is_b1:
-                        ball.angular_velocity += ball_angular_impulse
+                        ball.angular_velocity += ball_yaw_impulse
+                        ball.pitch_velocity += ball_pitch_impulse
+                        ball.roll_velocity += ball_roll_impulse
                     else:
-                        ball.angular_velocity -= ball_angular_impulse  # Reverse sign for b2
+                        ball.angular_velocity -= ball_yaw_impulse  # Reverse sign for b2
+                        ball.pitch_velocity -= ball_pitch_impulse
+                        ball.roll_velocity -= ball_roll_impulse
 
             # === PHASE 3: BODY ROTATION DAMPING ===
             # Track collision-induced spin direction and set damping
@@ -6060,6 +6170,9 @@ physics_params = {
     "BALL_TIP_STRENGTH": BALL_TIP_STRENGTH,  # How much ball tips down when hit from above
     "BALL_TORQUE_STRENGTH": BALL_TORQUE_STRENGTH,  # How much ball spins from side hits
     "BALL_GRAVITY_MULTIPLIER": BALL_GRAVITY_MULTIPLIER,  # Extra gravity for ball (1.0-5.0)
+
+    # Bowl perimeter physics (ball mode)
+    "BOWL_SLIDE_STRENGTH": BOWL_SLIDE_STRENGTH,  # Inward push force on slippery surface
 
     # Camera parameters (for auto-follow mode)
     "CAMERA_PITCH": -30.85,  # Camera pitch angle (-90=top-down, -45=side view, -30.85=default)
@@ -6598,6 +6711,11 @@ while window.running:
         beetle_blue.update_physics(PHYSICS_TIMESTEP)
         beetle_red.update_physics(PHYSICS_TIMESTEP)
 
+        # Apply bowl slide physics when ball mode is active (slippery perimeter)
+        if beetle_ball.active:
+            apply_bowl_slide(beetle_blue, physics_params)
+            apply_bowl_slide(beetle_red, physics_params)
+
         # Ball physics update (uses same beetle physics now)
         if beetle_ball.active:
             beetle_ball.update_physics(PHYSICS_TIMESTEP)
@@ -6610,10 +6728,19 @@ while window.running:
             if beetle_ball.on_ground:
                 beetle_ball.vx *= physics_params["BALL_ROLLING_FRICTION"]
                 beetle_ball.vz *= physics_params["BALL_ROLLING_FRICTION"]
+                # Apply angular friction to all spin axes when on ground
+                beetle_ball.angular_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
+                beetle_ball.pitch_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
+                beetle_ball.roll_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
 
-            # Update ball rotation from angular velocity (makes stripes spin)
+            # Apply bowl slide to ball (slippery perimeter pushes toward center)
+            apply_bowl_slide(beetle_ball, physics_params)
+
+            # Update ball rotation from angular velocity (all 3 axes for full 3D spin)
             beetle_ball.rotation += beetle_ball.angular_velocity * PHYSICS_TIMESTEP
             beetle_ball.rotation = normalize_angle(beetle_ball.rotation)
+            beetle_ball.pitch += beetle_ball.pitch_velocity * PHYSICS_TIMESTEP
+            beetle_ball.roll += beetle_ball.roll_velocity * PHYSICS_TIMESTEP
 
             # Ball-beetle collision (uses same collision system as beetle-beetle)
             # IMPORTANT: Re-render beetles AND ball before collision to use current positions
@@ -6622,7 +6749,7 @@ while window.running:
             reset_dirty_voxels()
             # Re-render ball at current physics position
             clear_ball()
-            render_ball(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.radius, beetle_ball.rotation)
+            render_ball(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.radius, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
             if beetle_blue.active:
                 blue_horn_type_id_phys = 1 if beetle_blue.horn_type == "stag" else (2 if beetle_blue.horn_type == "hercules" else (3 if beetle_blue.horn_type == "scorpion" else (4 if beetle_blue.horn_type == "atlas" else 0)))
                 blue_default_pitch_phys = HORN_DEFAULT_PITCH_SCORPION if beetle_blue.horn_type == "scorpion" else (HORN_DEFAULT_PITCH_STAG if beetle_blue.horn_type == "stag" else (HORN_DEFAULT_PITCH_HERCULES if beetle_blue.horn_type == "hercules" else (HORN_DEFAULT_PITCH_ATLAS if beetle_blue.horn_type == "atlas" else HORN_DEFAULT_PITCH)))
@@ -7464,9 +7591,11 @@ while window.running:
         ball_render_y = beetle_ball.prev_y + (beetle_ball.y - beetle_ball.prev_y) * alpha
         ball_render_z = beetle_ball.prev_z + (beetle_ball.z - beetle_ball.prev_z) * alpha
         ball_render_rotation = lerp_angle(beetle_ball.prev_rotation, beetle_ball.rotation, alpha)
+        ball_render_pitch = lerp_angle(beetle_ball.prev_pitch, beetle_ball.pitch, alpha)
+        ball_render_roll = lerp_angle(beetle_ball.prev_roll, beetle_ball.roll, alpha)
 
         clear_ball()
-        render_ball(ball_render_x, ball_render_y, ball_render_z, beetle_ball.radius, ball_render_rotation)
+        render_ball(ball_render_x, ball_render_y, ball_render_z, beetle_ball.radius, ball_render_rotation, ball_render_pitch, ball_render_roll)
 
     perf_monitor.stop('ball_render')
 
@@ -7887,8 +8016,9 @@ while window.running:
     ball_button_text = "Disable Ball" if beetle_ball.active else "Enable Ball"
     if window.GUI.button(ball_button_text):
         if beetle_ball.active:
-            # Disabling ball - clear voxels first
+            # Disabling ball - clear voxels and bowl perimeter
             clear_ball()
+            simulation.clear_bowl_perimeter()
         beetle_ball.active = not beetle_ball.active
         if beetle_ball.active:
             # Reset ball to center when enabling
@@ -7900,11 +8030,19 @@ while window.running:
             beetle_ball.vz = 0.0
             beetle_ball.rotation = 0.0
             beetle_ball.angular_velocity = 0.0
+            beetle_ball.pitch = 0.0
+            beetle_ball.pitch_velocity = 0.0
+            beetle_ball.roll = 0.0
+            beetle_ball.roll_velocity = 0.0
             # Reset prev state to avoid interpolation jump
             beetle_ball.prev_x = beetle_ball.x
             beetle_ball.prev_y = beetle_ball.y
             beetle_ball.prev_z = beetle_ball.z
             beetle_ball.prev_rotation = beetle_ball.rotation
+            beetle_ball.prev_pitch = beetle_ball.pitch
+            beetle_ball.prev_roll = beetle_ball.roll
+            # Render the bowl perimeter for ball mode
+            simulation.render_bowl_perimeter()
 
     # Ball radius slider (only show when ball is enabled)
     if beetle_ball.active:

@@ -55,6 +55,7 @@ BALL_STRIPE = 17  # Soccer ball stripe pattern (darker for contrast)
 STAG_HOOK_INTERIOR_BLUE = 18  # Blue beetle stag hook interior (curved inward section)
 STAG_HOOK_INTERIOR_RED = 19  # Red beetle stag hook interior (curved inward section)
 SHADOW = 20  # Shadow blob beneath airborne beetles
+SLIPPERY = 21  # Slippery bowl perimeter (ball mode only)
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors
@@ -348,6 +349,64 @@ def init_beetle_arena():
 
     print(f"BEETLE BATTLE ARENA constructed - {arena_radius}m radius circular pit")
     print(f"Two beetles placed: blue (center-west) and red (center-east)")
+
+@ti.kernel
+def render_bowl_perimeter():
+    """
+    Render slippery bowl perimeter around arena (for ball mode)
+    Creates shallow upward slope extending 8 voxels from arena edge
+    """
+    center_x = 64
+    center_z = 64
+    arena_radius = 32
+    bowl_width = 12
+    floor_y_offset = 33
+    bowl_slope = 0.4  # Height increase per voxel outward
+
+    # Iterate through the bowl ring area
+    for i in range(center_x - arena_radius - bowl_width - 1, center_x + arena_radius + bowl_width + 2):
+        for k in range(center_z - arena_radius - bowl_width - 1, center_z + arena_radius + bowl_width + 2):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+            dist = ti.sqrt(dx * dx + dz * dz)
+
+            # Only place voxels in the bowl ring (outside arena, within bowl width)
+            if dist > arena_radius and dist <= arena_radius + bowl_width:
+                # Calculate height based on distance from arena edge
+                dist_from_edge = dist - arena_radius
+                bowl_height = int(dist_from_edge * bowl_slope)
+                bowl_y = floor_y_offset + bowl_height
+
+                # Place slippery voxel
+                if 0 <= i < n_grid and 0 <= bowl_y < n_grid and 0 <= k < n_grid:
+                    voxel_type[i, bowl_y, k] = SLIPPERY
+
+@ti.kernel
+def clear_bowl_perimeter():
+    """
+    Clear the bowl perimeter voxels (when disabling ball mode)
+    """
+    center_x = 64
+    center_z = 64
+    arena_radius = 32
+    bowl_width = 12
+    floor_y_offset = 33
+    bowl_slope = 0.4
+    max_bowl_height = int(bowl_width * bowl_slope) + 2
+
+    # Clear the bowl ring area
+    for i in range(center_x - arena_radius - bowl_width - 1, center_x + arena_radius + bowl_width + 2):
+        for k in range(center_z - arena_radius - bowl_width - 1, center_z + arena_radius + bowl_width + 2):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+            dist = ti.sqrt(dx * dx + dz * dz)
+
+            # Only clear voxels in the bowl ring area
+            if dist > arena_radius and dist <= arena_radius + bowl_width + 1:
+                for j in range(floor_y_offset, floor_y_offset + max_bowl_height + 1):
+                    if 0 <= i < n_grid and 0 <= j < n_grid and 0 <= k < n_grid:
+                        if voxel_type[i, j, k] == SLIPPERY:
+                            voxel_type[i, j, k] = EMPTY
 
 @ti.kernel
 def init_mega_fortress():
