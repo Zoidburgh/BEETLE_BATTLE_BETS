@@ -608,6 +608,17 @@ blue_score = 0
 red_score = 0
 ball_scored_this_fall = False  # Prevent multiple scores while ball falling
 
+# Ball explosion state
+ball_has_exploded = False
+ball_explosion_timer = 0.0
+ball_explosion_pos_x = 0.0
+ball_explosion_pos_y = 0.0
+ball_explosion_pos_z = 0.0
+
+# Goal celebration state (scored-on beetle explodes, then winner confetti/flash)
+goal_scored_by = None  # "BLUE" or "RED" - who scored
+goal_celebration_timer = 0.0  # Timer for celebration sequence
+
 @ti.kernel
 def clear_beetles():
     """Remove all beetle voxels"""
@@ -5426,6 +5437,48 @@ def spawn_death_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                 simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.5  # 0.5-1.0 sec - varied lifetime for more random fade timing
 
 @ti.kernel
+def spawn_ball_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
+                                batch_offset: ti.i32, batch_size: ti.i32, total_particles: ti.i32):
+    """Spawn a batch of ball explosion particles with dung ball colors"""
+    # Ball colors (light brown and dark brown stripe)
+    ball_main_color = ti.math.vec3(0.65, 0.45, 0.25)  # Light brown
+    ball_stripe_color = ti.math.vec3(0.35, 0.22, 0.1)  # Dark brown stripe
+
+    # Pre-compute golden angle constant
+    golden_angle = 3.14159 * (1.0 + ti.sqrt(5.0))
+
+    for batch_idx in range(batch_size):
+        i = batch_offset + batch_idx
+        if i < total_particles:
+            # Simplified spherical distribution
+            t = (i + 0.5) / total_particles
+            phi = ti.acos(1.0 - 2.0 * t)  # Vertical angle
+            theta = golden_angle * i  # Golden angle for horizontal
+
+            # Speed similar to beetle explosion
+            speed = 140.4 + ti.random() * 171.6  # 140-312 units/sec
+
+            # Convert spherical to Cartesian with upward bias
+            sin_phi = ti.sin(phi)
+            vx = sin_phi * ti.cos(theta) * speed
+            vy = ti.abs(ti.cos(phi)) * speed * 1.5  # Upward bias (1.5x vertical)
+            vz = sin_phi * ti.sin(theta) * speed
+
+            # 70% main ball color, 30% stripe color
+            rand = ti.random()
+            particle_color = ball_main_color
+            if rand >= 0.7:
+                particle_color = ball_stripe_color
+
+            # Add particle to debris system
+            idx = ti.atomic_add(simulation.num_debris[None], 1)
+            if idx < simulation.MAX_DEBRIS:
+                simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
+                simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+                simulation.debris_material[idx] = particle_color
+                simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.5  # 0.5-1.0 sec
+
+@ti.kernel
 def spawn_victory_confetti(center_x: ti.f32, center_z: ti.f32, spawn_height: ti.f32,
                            body_r: ti.f32, body_g: ti.f32, body_b: ti.f32,
                            leg_r: ti.f32, leg_g: ti.f32, leg_b: ti.f32,
@@ -6729,7 +6782,8 @@ while window.running:
             apply_bowl_slide(beetle_red, physics_params)
 
         # Ball physics update (uses same beetle physics now)
-        if beetle_ball.active:
+        # Skip physics if ball has exploded (waiting for celebration to end)
+        if beetle_ball.active and not g['ball_has_exploded']:
             beetle_ball.update_physics(PHYSICS_TIMESTEP)
 
             # Apply extra gravity to ball for faster, more natural falling (on top of normal gravity)
@@ -6765,10 +6819,14 @@ while window.running:
                         if beetle_ball.x < -32:  # Blue goal pit (west) - RED scores
                             g['red_score'] = g['red_score'] + 1
                             g['ball_scored_this_fall'] = True
+                            g['goal_scored_by'] = "RED"
+                            g['goal_celebration_timer'] = 0.0
                             print(f"RED SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
                         elif beetle_ball.x > 32:  # Red goal pit (east) - BLUE scores
                             g['blue_score'] = g['blue_score'] + 1
                             g['ball_scored_this_fall'] = True
+                            g['goal_scored_by'] = "BLUE"
+                            g['goal_celebration_timer'] = 0.0
                             print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
             else:
                 # Ball is above ground - reset scored flag for next fall
@@ -6779,9 +6837,10 @@ while window.running:
             # (Voxels from previous frame would cause "ghost bouncing" off stale positions)
             clear_dirty_voxels()
             reset_dirty_voxels()
-            # Re-render ball at current physics position
+            # Re-render ball at current physics position (skip if exploded)
             clear_ball()
-            render_ball(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.radius, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
+            if not g['ball_has_exploded']:
+                render_ball(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.radius, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
             if beetle_blue.active:
                 blue_horn_type_id_phys = 1 if beetle_blue.horn_type == "stag" else (2 if beetle_blue.horn_type == "hercules" else (3 if beetle_blue.horn_type == "scorpion" else (4 if beetle_blue.horn_type == "atlas" else 0)))
                 blue_default_pitch_phys = HORN_DEFAULT_PITCH_SCORPION if beetle_blue.horn_type == "scorpion" else (HORN_DEFAULT_PITCH_STAG if beetle_blue.horn_type == "stag" else (HORN_DEFAULT_PITCH_HERCULES if beetle_blue.horn_type == "hercules" else (HORN_DEFAULT_PITCH_ATLAS if beetle_blue.horn_type == "atlas" else HORN_DEFAULT_PITCH)))
@@ -6887,6 +6946,68 @@ while window.running:
                                            red_stripe[0], red_stripe[1], red_stripe[2],
                                            red_tip[0], red_tip[1], red_tip[2],
                                            batch_offset, batch_size, TOTAL_PARTICLES)
+
+        # Ball explosion - trigger when ball falls to same level as beetles
+        g = globals()
+        if beetle_ball.active and not g['ball_has_exploded'] and beetle_ball.y < EXPLOSION_TRIGGER_Y:
+            # Start ball explosion - store position
+            g['ball_explosion_pos_x'] = beetle_ball.x
+            g['ball_explosion_pos_y'] = beetle_ball.y + 4.0  # Offset by ball radius
+            g['ball_explosion_pos_z'] = beetle_ball.z
+            g['ball_explosion_timer'] = EXPLOSION_DURATION
+            g['ball_has_exploded'] = True
+            # Hide the ball (stop rendering/physics) but keep it "active" for respawn
+            beetle_ball.visible = False
+            print("BALL EXPLOSION!")
+
+        # Continue spawning ball particles during explosion
+        if g['ball_has_exploded'] and g['ball_explosion_timer'] > 0.0:
+            g['ball_explosion_timer'] = g['ball_explosion_timer'] - PHYSICS_TIMESTEP
+            # Calculate which batch to spawn
+            progress = 1.0 - (g['ball_explosion_timer'] / EXPLOSION_DURATION)
+            particles_spawned = int(progress * TOTAL_PARTICLES)
+            batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
+            batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
+
+            if batch_size > 0:
+                spawn_ball_explosion_batch(g['ball_explosion_pos_x'], g['ball_explosion_pos_y'],
+                                          g['ball_explosion_pos_z'],
+                                          batch_offset, batch_size, TOTAL_PARTICLES)
+
+        # Goal celebration - winner gets confetti/flash after ball explodes
+        if g['goal_scored_by'] is not None:
+            g['goal_celebration_timer'] = g['goal_celebration_timer'] + PHYSICS_TIMESTEP
+
+            # After ball explosion completes, trigger winner celebration (confetti + flash)
+            CELEBRATION_DELAY = 0.7  # After ball explosion
+            if g['goal_celebration_timer'] >= CELEBRATION_DELAY and victory_pulse_timer == 0.0:
+                # Trigger victory pulse for the scorer
+                victory_pulse_timer = 0.001  # Start the pulse (non-zero triggers it)
+                # Set temporary winner for confetti colors
+                match_winner = g['goal_scored_by']
+                print(f"{g['goal_scored_by']} SCORES!")
+
+            # Reset celebration after it's done
+            CELEBRATION_DURATION = 4.0  # Total celebration time
+            if g['goal_celebration_timer'] >= CELEBRATION_DURATION:
+                g['goal_scored_by'] = None
+                g['goal_celebration_timer'] = 0.0
+                # Reset match_winner so it doesn't permanently affect the game
+                match_winner = None
+                victory_pulse_timer = 0.0
+                # Reset ball for next round - respawn at center
+                g['ball_has_exploded'] = False
+                g['ball_explosion_timer'] = 0.0
+                beetle_ball.x = 0.0
+                beetle_ball.y = 15.0  # Drop from above
+                beetle_ball.z = 0.0
+                beetle_ball.vx = 0.0
+                beetle_ball.vy = 0.0
+                beetle_ball.vz = 0.0
+                beetle_ball.angular_velocity = 0.0
+                beetle_ball.pitch_velocity = 0.0
+                beetle_ball.roll_velocity = 0.0
+                print("Ball respawned!")
 
         # Stage 2: Full removal - deactivate completely
         if beetle_blue.active and beetle_blue.y < FALL_DEATH_Y:
@@ -7635,17 +7756,20 @@ while window.running:
         ball_render_roll = lerp_angle(beetle_ball.prev_roll, beetle_ball.roll, alpha)
 
         clear_ball()
-        render_ball(ball_render_x, ball_render_y, ball_render_z, beetle_ball.radius, ball_render_rotation, ball_render_pitch, ball_render_roll)
+        # Only render ball if it hasn't exploded
+        if not ball_has_exploded:
+            render_ball(ball_render_x, ball_render_y, ball_render_z, beetle_ball.radius, ball_render_rotation, ball_render_pitch, ball_render_roll)
 
-        # Add shadow under ball when airborne (ball center must be high enough that bottom clears ground)
-        # Ball bottom = ball_render_y - radius, so ball is airborne when bottom > ~1
-        ball_bottom_y = ball_render_y - beetle_ball.radius
-        if ball_bottom_y > 2.0:  # Ball is clearly off the ground
-            height_factor = min((ball_bottom_y - 2.0) / (SHADOW_MAX_HEIGHT - 2.0), 1.0)
-            # Ball shadow uses same size formula as beetles (SHADOW_BASE_RADIUS to SHADOW_MAX_RADIUS)
-            ball_shadow_radius = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
-            place_shadow_kernel(ball_render_x, ball_render_z, ball_shadow_radius, floor_y)
-            shadows_were_placed = True
+            # Add shadow under ball when airborne (ball center must be high enough that bottom clears ground)
+            # Ball bottom = ball_render_y - radius, so ball is airborne when bottom > ~1
+            ball_bottom_y = ball_render_y - beetle_ball.radius
+            if ball_bottom_y > 2.0:  # Ball is clearly off the ground
+                # Ball shadow grows slower than beetles - larger height range
+                ball_shadow_max_height = 35.0  # Slower growth than beetles (25)
+                height_factor = min((ball_bottom_y - 2.0) / (ball_shadow_max_height - 2.0), 1.0)
+                ball_shadow_radius = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+                place_shadow_kernel(ball_render_x, ball_render_z, ball_shadow_radius, floor_y)
+                shadows_were_placed = True
 
     perf_monitor.stop('ball_render')
 
@@ -8095,6 +8219,8 @@ while window.running:
             blue_score = 0
             red_score = 0
             ball_scored_this_fall = False
+            ball_has_exploded = False
+            ball_explosion_timer = 0.0
             # Render the bowl perimeter for ball mode (with goal pit cutouts)
             simulation.render_bowl_perimeter()
 
