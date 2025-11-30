@@ -725,13 +725,24 @@ assembly_scatter_x = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
 assembly_scatter_y = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
 assembly_scatter_z = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
 
+# Ball-specific scatter offsets (more compact since ball is smaller)
+ball_scatter_x = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
+ball_scatter_y = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
+ball_scatter_z = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
+
 # Pre-compute scatter offsets once at startup
 import random as _random
 for _i in range(MAX_ASSEMBLY_VOXELS):
     _random.seed(_i * 31337)
+    # Beetle scatter - wider spread
     assembly_scatter_x[_i] = _random.uniform(-20, 20)
     assembly_scatter_y[_i] = _random.uniform(25, 45)
     assembly_scatter_z[_i] = _random.uniform(-20, 20)
+    # Ball scatter - more compact (smaller range)
+    _random.seed(_i * 31337 + 1)  # Different seed for variation
+    ball_scatter_x[_i] = _random.uniform(-8, 8)
+    ball_scatter_y[_i] = _random.uniform(10, 20)
+    ball_scatter_z[_i] = _random.uniform(-8, 8)
 
 @ti.kernel
 def clear_assembly_voxels():
@@ -860,10 +871,10 @@ def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti
         target_y = center_y + ly
         target_z = center_z + lz
 
-        # Start position (scattered above)
-        start_x = target_x + assembly_scatter_x[i]
-        start_y = target_y + assembly_scatter_y[i]
-        start_z = target_z + assembly_scatter_z[i]
+        # Start position (scattered above) - use ball-specific compact scatter
+        start_x = target_x + ball_scatter_x[i]
+        start_y = target_y + ball_scatter_y[i]
+        start_z = target_z + ball_scatter_z[i]
 
         # Interpolate
         current_x = ti.cast(start_x + (target_x - start_x) * t, ti.i32)
@@ -7161,12 +7172,11 @@ while window.running:
             beetle_blue.explosion_pos_z = beetle_blue.z
             beetle_blue.explosion_timer = EXPLOSION_DURATION
             beetle_blue.has_exploded = True
-            # In normal mode (not ball mode), opponent scores and we start respawn timer
-            if not beetle_ball.active:
-                g['red_score'] = g['red_score'] + 1
-                g['red_score_bounce_timer'] = SCORE_BOUNCE_DURATION
-                g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
-                print(f"RED SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
+            # Opponent scores and we start respawn timer (works in both normal and ball mode)
+            g['red_score'] = g['red_score'] + 1
+            g['red_score_bounce_timer'] = SCORE_BOUNCE_DURATION
+            g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
+            print(f"RED SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
             print("BLUE BEETLE EXPLOSION STARTED!")
 
         # Continue spawning particles during explosion
@@ -7200,12 +7210,11 @@ while window.running:
             beetle_red.explosion_pos_z = beetle_red.z
             beetle_red.explosion_timer = EXPLOSION_DURATION
             beetle_red.has_exploded = True
-            # In normal mode (not ball mode), opponent scores and we start respawn timer
-            if not beetle_ball.active:
-                g['blue_score'] = g['blue_score'] + 1
-                g['blue_score_bounce_timer'] = SCORE_BOUNCE_DURATION
-                g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
-                print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
+            # Opponent scores and we start respawn timer (works in both normal and ball mode)
+            g['blue_score'] = g['blue_score'] + 1
+            g['blue_score_bounce_timer'] = SCORE_BOUNCE_DURATION
+            g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
+            print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
             print("RED BEETLE EXPLOSION STARTED!")
 
         # Continue spawning particles during explosion
@@ -7299,7 +7308,7 @@ while window.running:
                 g['ball_assembling'] = False
                 g['ball_assembly_timer'] = 0.0
                 beetle_ball.x = 0.0
-                beetle_ball.y = 30.0  # Drop from higher than beetles (assembly happens at y=55)
+                beetle_ball.y = 28.0  # Drop from higher than beetles (assembly happens at y=57)
                 beetle_ball.z = 0.0
                 beetle_ball.vx = 0.0
                 beetle_ball.vy = 0.0
@@ -7333,85 +7342,84 @@ while window.running:
                 print("BLUE BEETLE WINS!")
                 print("="*50 + "\n")
 
-        # Beetle respawn timers (normal mode only - ball mode doesn't respawn beetles from falling)
-        if not beetle_ball.active:
-            # Blue beetle respawn with assembly animation
-            if g['blue_respawn_timer'] > 0:
-                g['blue_respawn_timer'] -= PHYSICS_TIMESTEP
-                # Start assembly animation when 1.5s remains
-                remaining = g['blue_respawn_timer']
-                if remaining <= ASSEMBLY_DURATION and not g['blue_assembling']:
-                    g['blue_assembling'] = True
-                    g['blue_assembly_timer'] = 0.0
-                    print("Blue beetle assembly started!")
-                # Update assembly timer
-                if g['blue_assembling']:
-                    g['blue_assembly_timer'] += PHYSICS_TIMESTEP
-                # Complete respawn when timer hits 0
-                if g['blue_respawn_timer'] <= 0:
-                    g['blue_respawn_timer'] = 0
-                    g['blue_assembling'] = False
-                    g['blue_assembly_timer'] = 0.0
-                    # Respawn blue beetle at center (drop from above)
-                    beetle_blue.x = 0.0   # Center
-                    beetle_blue.y = 15.0  # Drop from above
-                    beetle_blue.z = 0.0
-                    beetle_blue.vx = 0.0
-                    beetle_blue.vy = 0.0
-                    beetle_blue.vz = 0.0
-                    beetle_blue.rotation = 0.0  # Facing east
-                    beetle_blue.pitch = 0.0
-                    beetle_blue.roll = 0.0
-                    beetle_blue.angular_velocity = 0.0
-                    beetle_blue.pitch_velocity = 0.0
-                    beetle_blue.roll_velocity = 0.0
-                    beetle_blue.active = True
-                    beetle_blue.has_exploded = False
-                    beetle_blue.is_falling = False
-                    beetle_blue.on_ground = False  # Will fall to ground
-                    # Reset match winner so next death can trigger celebration
-                    match_winner = None
-                    victory_pulse_timer = 0.0
-                    print("Blue beetle respawned!")
+        # Beetle respawn timers (works in both normal and ball mode)
+        # Blue beetle respawn with assembly animation
+        if g['blue_respawn_timer'] > 0:
+            g['blue_respawn_timer'] -= PHYSICS_TIMESTEP
+            # Start assembly animation when 1.5s remains
+            remaining = g['blue_respawn_timer']
+            if remaining <= ASSEMBLY_DURATION and not g['blue_assembling']:
+                g['blue_assembling'] = True
+                g['blue_assembly_timer'] = 0.0
+                print("Blue beetle assembly started!")
+            # Update assembly timer
+            if g['blue_assembling']:
+                g['blue_assembly_timer'] += PHYSICS_TIMESTEP
+            # Complete respawn when timer hits 0
+            if g['blue_respawn_timer'] <= 0:
+                g['blue_respawn_timer'] = 0
+                g['blue_assembling'] = False
+                g['blue_assembly_timer'] = 0.0
+                # Respawn blue beetle at center (drop from above)
+                beetle_blue.x = 0.0   # Center
+                beetle_blue.y = 15.0  # Drop from above
+                beetle_blue.z = 0.0
+                beetle_blue.vx = 0.0
+                beetle_blue.vy = 0.0
+                beetle_blue.vz = 0.0
+                beetle_blue.rotation = 0.0  # Facing east
+                beetle_blue.pitch = 0.0
+                beetle_blue.roll = 0.0
+                beetle_blue.angular_velocity = 0.0
+                beetle_blue.pitch_velocity = 0.0
+                beetle_blue.roll_velocity = 0.0
+                beetle_blue.active = True
+                beetle_blue.has_exploded = False
+                beetle_blue.is_falling = False
+                beetle_blue.on_ground = False  # Will fall to ground
+                # Reset match winner so next death can trigger celebration
+                match_winner = None
+                victory_pulse_timer = 0.0
+                print("Blue beetle respawned!")
 
-            # Red beetle respawn with assembly animation
-            if g['red_respawn_timer'] > 0:
-                g['red_respawn_timer'] -= PHYSICS_TIMESTEP
-                # Start assembly animation when 1.5s remains
-                remaining = g['red_respawn_timer']
-                if remaining <= ASSEMBLY_DURATION and not g['red_assembling']:
-                    g['red_assembling'] = True
-                    g['red_assembly_timer'] = 0.0
-                    print("Red beetle assembly started!")
-                # Update assembly timer
-                if g['red_assembling']:
-                    g['red_assembly_timer'] += PHYSICS_TIMESTEP
-                # Complete respawn when timer hits 0
-                if g['red_respawn_timer'] <= 0:
-                    g['red_respawn_timer'] = 0
-                    g['red_assembling'] = False
-                    g['red_assembly_timer'] = 0.0
-                    # Respawn red beetle at center (drop from above)
-                    beetle_red.x = 0.0    # Center
-                    beetle_red.y = 15.0   # Drop from above
-                    beetle_red.z = 0.0
-                    beetle_red.vx = 0.0
-                    beetle_red.vy = 0.0
-                    beetle_red.vz = 0.0
-                    beetle_red.rotation = math.pi  # Facing west
-                    beetle_red.pitch = 0.0
-                    beetle_red.roll = 0.0
-                    beetle_red.angular_velocity = 0.0
-                    beetle_red.pitch_velocity = 0.0
-                    beetle_red.roll_velocity = 0.0
-                    beetle_red.active = True
-                    beetle_red.has_exploded = False
-                    beetle_red.is_falling = False
-                    beetle_red.on_ground = False  # Will fall to ground
-                    # Reset match winner so next death can trigger celebration
-                    match_winner = None
-                    victory_pulse_timer = 0.0
-                    print("Red beetle respawned!")
+        # Red beetle respawn with assembly animation
+        if g['red_respawn_timer'] > 0:
+            g['red_respawn_timer'] -= PHYSICS_TIMESTEP
+            # Start assembly animation when 1.5s remains
+            remaining = g['red_respawn_timer']
+            if remaining <= ASSEMBLY_DURATION and not g['red_assembling']:
+                g['red_assembling'] = True
+                g['red_assembly_timer'] = 0.0
+                print("Red beetle assembly started!")
+            # Update assembly timer
+            if g['red_assembling']:
+                g['red_assembly_timer'] += PHYSICS_TIMESTEP
+            # Complete respawn when timer hits 0
+            if g['red_respawn_timer'] <= 0:
+                g['red_respawn_timer'] = 0
+                g['red_assembling'] = False
+                g['red_assembly_timer'] = 0.0
+                # Respawn red beetle at center (drop from above)
+                beetle_red.x = 0.0    # Center
+                beetle_red.y = 15.0   # Drop from above
+                beetle_red.z = 0.0
+                beetle_red.vx = 0.0
+                beetle_red.vy = 0.0
+                beetle_red.vz = 0.0
+                beetle_red.rotation = math.pi  # Facing west
+                beetle_red.pitch = 0.0
+                beetle_red.roll = 0.0
+                beetle_red.angular_velocity = 0.0
+                beetle_red.pitch_velocity = 0.0
+                beetle_red.roll_velocity = 0.0
+                beetle_red.active = True
+                beetle_red.has_exploded = False
+                beetle_red.is_falling = False
+                beetle_red.on_ground = False  # Will fall to ground
+                # Reset match winner so next death can trigger celebration
+                match_winner = None
+                victory_pulse_timer = 0.0
+                print("Red beetle respawned!")
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling
@@ -8143,7 +8151,7 @@ while window.running:
     if g['ball_assembling'] and ball_cache_size[None] > 0:
         progress = min(g['ball_assembly_timer'] / BALL_ASSEMBLY_DURATION, 1.0)
         # Assemble high above arena (y=59), ball will drop from y=30 after assembly
-        render_ball_assembly_fast(0.0, 59.0, 0.0, progress)
+        render_ball_assembly_fast(0.0, 57.0, 0.0, progress)
 
     perf_monitor.stop('beetle_render')
 
@@ -8650,7 +8658,7 @@ while window.running:
                 ball_cache_initialized = True
             # Reset ball to center when enabling
             beetle_ball.x = 0.0
-            beetle_ball.y = 30.0  # Drop from higher than beetles
+            beetle_ball.y = 28.0  # Drop from higher than beetles
             beetle_ball.z = 0.0
             beetle_ball.vx = 0.0
             beetle_ball.vy = 0.0
