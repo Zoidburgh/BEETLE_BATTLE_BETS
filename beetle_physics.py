@@ -7094,7 +7094,7 @@ while window.running:
                 g['ball_has_exploded'] = False
                 g['ball_explosion_timer'] = 0.0
                 beetle_ball.x = 0.0
-                beetle_ball.y = 15.0  # Drop from above
+                beetle_ball.y = 20.0  # Drop from higher than beetles
                 beetle_ball.z = 0.0
                 beetle_ball.vx = 0.0
                 beetle_ball.vy = 0.0
@@ -7110,6 +7110,9 @@ while window.running:
             print("BLUE BEETLE FELL INTO THE ABYSS!")
             if match_winner is None:
                 match_winner = "RED"
+                # Start victory celebration (flash + confetti) in normal mode
+                if not beetle_ball.active:
+                    victory_pulse_timer = 0.001  # Trigger victory pulse
                 print("\n" + "="*50)
                 print("RED BEETLE WINS!")
                 print("="*50 + "\n")
@@ -7118,6 +7121,9 @@ while window.running:
             print("RED BEETLE FELL INTO THE ABYSS!")
             if match_winner is None:
                 match_winner = "BLUE"
+                # Start victory celebration (flash + confetti) in normal mode
+                if not beetle_ball.active:
+                    victory_pulse_timer = 0.001  # Trigger victory pulse
                 print("\n" + "="*50)
                 print("BLUE BEETLE WINS!")
                 print("="*50 + "\n")
@@ -7129,9 +7135,9 @@ while window.running:
                 g['blue_respawn_timer'] -= PHYSICS_TIMESTEP
                 if g['blue_respawn_timer'] <= 0:
                     g['blue_respawn_timer'] = 0
-                    # Respawn blue beetle at spawn position (west side)
-                    beetle_blue.x = -20.0  # West spawn in physics space
-                    beetle_blue.y = 15.0   # Drop from above
+                    # Respawn blue beetle at center (drop from above)
+                    beetle_blue.x = 0.0   # Center
+                    beetle_blue.y = 15.0  # Drop from above
                     beetle_blue.z = 0.0
                     beetle_blue.vx = 0.0
                     beetle_blue.vy = 0.0
@@ -7146,6 +7152,9 @@ while window.running:
                     beetle_blue.has_exploded = False
                     beetle_blue.is_falling = False
                     beetle_blue.on_ground = False  # Will fall to ground
+                    # Reset match winner so next death can trigger celebration
+                    match_winner = None
+                    victory_pulse_timer = 0.0
                     print("Blue beetle respawned!")
 
             # Red beetle respawn
@@ -7153,8 +7162,8 @@ while window.running:
                 g['red_respawn_timer'] -= PHYSICS_TIMESTEP
                 if g['red_respawn_timer'] <= 0:
                     g['red_respawn_timer'] = 0
-                    # Respawn red beetle at spawn position (east side)
-                    beetle_red.x = 20.0   # East spawn in physics space
+                    # Respawn red beetle at center (drop from above)
+                    beetle_red.x = 0.0    # Center
                     beetle_red.y = 15.0   # Drop from above
                     beetle_red.z = 0.0
                     beetle_red.vx = 0.0
@@ -7170,6 +7179,9 @@ while window.running:
                     beetle_red.has_exploded = False
                     beetle_red.is_falling = False
                     beetle_red.on_ground = False  # Will fall to ground
+                    # Reset match winner so next death can trigger celebration
+                    match_winner = None
+                    victory_pulse_timer = 0.0
                     print("Red beetle respawned!")
 
         # Floor collision - prevent penetration by pushing beetles upward
@@ -8386,7 +8398,7 @@ while window.running:
         if beetle_ball.active:
             # Reset ball to center when enabling
             beetle_ball.x = 0.0
-            beetle_ball.y = 10.0
+            beetle_ball.y = 20.0  # Drop from higher than beetles
             beetle_ball.z = 0.0
             beetle_ball.vx = 0.0
             beetle_ball.vy = 0.0
