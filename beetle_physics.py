@@ -2240,11 +2240,19 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
         for attach_y in range(attach_y_start, attach_y_end):
             # Taper the neck: wider at base, narrower at top
             progress = (attach_y - attach_y_start) / float(attach_y_end - attach_y_start) if attach_y_end > attach_y_start else 0
-            x_range = 3 if progress > 0.7 else 4 if progress > 0.3 else 5  # Taper width
-            z_width = 1 if progress > 0.5 else 1  # 3 voxels wide (-1, 0, 1)
-            for attach_x in range(1, x_range):
-                for dz in range(-z_width, z_width + 1):
-                    horn_voxels.append((attach_x, attach_y, dz))
+            # Only build the lower portion (first 1/2) to avoid the tall stack at top
+            if progress < 0.5:
+                x_range = 3 if progress > 0.5 else 4 if progress > 0.25 else 5  # Taper width
+                z_width = 1  # 3 voxels wide (-1, 0, 1)
+                for attach_x in range(1, x_range):
+                    for dz in range(-z_width, z_width + 1):
+                        horn_voxels.append((attach_x, attach_y, dz))
+
+    # Fill the empty layer at the base of top horn (Y=6 and Y=7 at x=3,4)
+    for fill_y in [6, 7]:
+        for fill_x in [3, 4]:
+            for dz in [-1, 0]:
+                horn_voxels.append((fill_x, fill_y, dz))
 
     # BOTTOM HORN (Cephalic - lower jaw from head)
     # Clean, smooth upward curve from below head to meet top horn
