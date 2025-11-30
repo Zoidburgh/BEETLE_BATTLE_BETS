@@ -603,6 +603,11 @@ beetle_ball.horn_type = "ball"  # Special type for sphere rendering
 beetle_ball.active = False  # Ball starts disabled
 beetle_ball.radius = 4.0  # Default ball radius
 
+# Ball mode scoring
+blue_score = 0
+red_score = 0
+ball_scored_this_fall = False  # Prevent multiple scores while ball falling
+
 @ti.kernel
 def clear_beetles():
     """Remove all beetle voxels"""
@@ -2718,6 +2723,13 @@ def apply_bowl_slide(entity, params):
     """Push entity toward arena center if on slippery bowl perimeter"""
     dist_from_center = math.sqrt(entity.x**2 + entity.z**2)
     if dist_from_center > ARENA_RADIUS:
+        # Check if in goal pit area (no ice there, so no slide)
+        # Goal pits: x <= -32 or x >= 32, and z within ±12 of center (z=0 in physics space)
+        goal_pit_half_width = 12
+        in_goal_pit = abs(entity.z) < goal_pit_half_width and (entity.x <= -32 or entity.x >= 32)
+        if in_goal_pit:
+            return  # No slide in goal pit areas
+
         # On the bowl - apply direct position slide (can't be resisted)
         slide_strength = params["BOWL_SLIDE_STRENGTH"]
         dist_into_bowl = dist_from_center - ARENA_RADIUS
@@ -3123,9 +3135,9 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         grid_z = center_z + int(ti.round(final_z))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-            # Don't overwrite floor (CONCRETE), shadow, or slippery bowl voxels
+            # Don't overwrite floor (CONCRETE), shadow, slippery bowl, or goal voxels
             existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
-            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY:
+            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY and existing_voxel != simulation.GOAL:
                 # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
                 # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
                 is_hook_interior = blue_body_hook_flags[i]
@@ -3271,9 +3283,9 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             grid_z = center_z + int(ti.round(final_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE) or shadow voxels
+                # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
                 existing_leg = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_leg != simulation.CONCRETE and existing_leg != simulation.SHADOW and existing_leg != simulation.SLIPPERY:
+                if existing_leg != simulation.CONCRETE and existing_leg != simulation.SHADOW and existing_leg != simulation.SLIPPERY and existing_leg != simulation.GOAL:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3314,9 +3326,9 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             grid_z = center_z + int(ti.round(final_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE) or shadow voxels
+                # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
                 existing_tip = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_tip != simulation.CONCRETE and existing_tip != simulation.SHADOW and existing_tip != simulation.SLIPPERY:
+                if existing_tip != simulation.CONCRETE and existing_tip != simulation.SHADOW and existing_tip != simulation.SLIPPERY and existing_tip != simulation.GOAL:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3562,9 +3574,9 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         grid_z = center_z + int(ti.round(final_z))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-            # Don't overwrite floor (CONCRETE), shadow, or slippery bowl voxels
+            # Don't overwrite floor (CONCRETE), shadow, slippery bowl, or goal voxels
             existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
-            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY:
+            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY and existing_voxel != simulation.GOAL:
                 # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
                 # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
                 is_hook_interior = red_body_hook_flags[i]
@@ -3710,9 +3722,9 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             grid_z = center_z + int(ti.round(final_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE) or shadow voxels
+                # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
                 existing_leg_r = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_leg_r != simulation.CONCRETE and existing_leg_r != simulation.SHADOW and existing_leg_r != simulation.SLIPPERY:
+                if existing_leg_r != simulation.CONCRETE and existing_leg_r != simulation.SHADOW and existing_leg_r != simulation.SLIPPERY and existing_leg_r != simulation.GOAL:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3753,9 +3765,9 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             grid_z = center_z + int(ti.round(final_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE) or shadow voxels
+                # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
                 existing_tip_r = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_tip_r != simulation.CONCRETE and existing_tip_r != simulation.SHADOW and existing_tip_r != simulation.SLIPPERY:
+                if existing_tip_r != simulation.CONCRETE and existing_tip_r != simulation.SHADOW and existing_tip_r != simulation.SLIPPERY and existing_tip_r != simulation.GOAL:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
@@ -3774,8 +3786,8 @@ def clear_dirty_voxels():
     """Clear only the voxels we tracked during placement (400x faster than scanning 250K voxels) - Parallel GPU execution"""
     for i in ti.ndrange(dirty_voxel_count[None]):  # Parallel iteration on GPU
         vtype = simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]]
-        # Only clear beetle voxels (not floor/concrete/shadow/slippery) - shadows cleared separately
-        if vtype >= simulation.BEETLE_BLUE and vtype != simulation.SHADOW and vtype != simulation.SLIPPERY:
+        # Only clear beetle voxels (not floor/concrete/shadow/slippery/goal) - shadows cleared separately
+        if vtype >= simulation.BEETLE_BLUE and vtype != simulation.SHADOW and vtype != simulation.SLIPPERY and vtype != simulation.GOAL:
             simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]] = simulation.EMPTY
 
 @ti.kernel
@@ -6742,6 +6754,26 @@ while window.running:
             beetle_ball.pitch += beetle_ball.pitch_velocity * PHYSICS_TIMESTEP
             beetle_ball.roll += beetle_ball.roll_velocity * PHYSICS_TIMESTEP
 
+            # Score detection - check if ball fell through goal pit
+            # Ball Y is in physics space where floor is at ~0, so check well below
+            # Goals are at x=-32 (blue) and x=32 (red) in physics space
+            goal_pit_half_width = 12
+            g = globals()
+            if beetle_ball.y < -10:  # Ball fell well below floor level
+                if not g['ball_scored_this_fall']:  # Only score once per fall
+                    if abs(beetle_ball.z) < goal_pit_half_width:  # In goal lane (z is centered at 0 in physics space)
+                        if beetle_ball.x < -32:  # Blue goal pit (west) - RED scores
+                            g['red_score'] = g['red_score'] + 1
+                            g['ball_scored_this_fall'] = True
+                            print(f"RED SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
+                        elif beetle_ball.x > 32:  # Red goal pit (east) - BLUE scores
+                            g['blue_score'] = g['blue_score'] + 1
+                            g['ball_scored_this_fall'] = True
+                            print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
+            else:
+                # Ball is above ground - reset scored flag for next fall
+                g['ball_scored_this_fall'] = False
+
             # Ball-beetle collision (uses same collision system as beetle-beetle)
             # IMPORTANT: Re-render beetles AND ball before collision to use current positions
             # (Voxels from previous frame would cause "ghost bouncing" off stale positions)
@@ -6920,33 +6952,41 @@ while window.running:
                 elif lowest_point_red < floor_surface + 0.5:
                     beetle_red.on_ground = True
 
-        # Ball floor collision (same as beetles)
+        # Ball floor collision (same as beetles, but skip in goal pit areas)
         if beetle_ball.active:
-            floor_y_ball = check_floor_collision(beetle_ball.x, beetle_ball.z)
-            if floor_y_ball > -100.0:  # Floor detected under ball
-                # Ball's lowest point is center Y minus radius
-                lowest_point_ball = beetle_ball.y - beetle_ball.radius
-                floor_surface = floor_y_ball + 0.5  # Top of floor voxel in world space
+            # Check if ball is in goal pit area (no floor there)
+            goal_pit_half_width = 12
+            in_goal_pit = abs(beetle_ball.z) < goal_pit_half_width and (beetle_ball.x <= -32 or beetle_ball.x >= 32)
 
-                if lowest_point_ball < floor_surface:  # Ball penetrating floor
-                    # Push ball upward to sit on floor
-                    beetle_ball.y = floor_surface + beetle_ball.radius
-                    # Also update prev_y to prevent interpolation artifacts (teleport, not smooth)
-                    beetle_ball.prev_y = beetle_ball.y
+            if in_goal_pit:
+                # Ball is in goal pit - no floor collision, let it fall
+                beetle_ball.on_ground = False
+            else:
+                floor_y_ball = check_floor_collision(beetle_ball.x, beetle_ball.z)
+                if floor_y_ball > -100.0:  # Floor detected under ball
+                    # Ball's lowest point is center Y minus radius
+                    lowest_point_ball = beetle_ball.y - beetle_ball.radius
+                    floor_surface = floor_y_ball + 0.5  # Top of floor voxel in world space
 
-                    # Apply bounce (reverse velocity with bounce coefficient)
-                    if beetle_ball.vy < 0:
-                        beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
-                        # If bounce is very small, stop bouncing and settle
-                        if abs(beetle_ball.vy) < 0.5:
-                            beetle_ball.vy = 0.0
+                    if lowest_point_ball < floor_surface:  # Ball penetrating floor
+                        # Push ball upward to sit on floor
+                        beetle_ball.y = floor_surface + beetle_ball.radius
+                        # Also update prev_y to prevent interpolation artifacts (teleport, not smooth)
+                        beetle_ball.prev_y = beetle_ball.y
 
-                    beetle_ball.on_ground = True
-                elif lowest_point_ball < floor_surface + 0.5:  # Close to ground
-                    beetle_ball.on_ground = True
-                else:
-                    # Ball is airborne - clear on_ground so rolling friction doesn't apply
-                    beetle_ball.on_ground = False
+                        # Apply bounce (reverse velocity with bounce coefficient)
+                        if beetle_ball.vy < 0:
+                            beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
+                            # If bounce is very small, stop bouncing and settle
+                            if abs(beetle_ball.vy) < 0.5:
+                                beetle_ball.vy = 0.0
+
+                        beetle_ball.on_ground = True
+                    elif lowest_point_ball < floor_surface + 0.5:  # Close to ground
+                        beetle_ball.on_ground = True
+                    else:
+                        # Ball is airborne - clear on_ground so rolling friction doesn't apply
+                        beetle_ball.on_ground = False
 
         # Apply edge tipping physics (GPU-accelerated)
         if beetle_blue.active and not beetle_blue.is_falling:
@@ -8051,11 +8091,18 @@ while window.running:
             beetle_ball.prev_rotation = beetle_ball.rotation
             beetle_ball.prev_pitch = beetle_ball.pitch
             beetle_ball.prev_roll = beetle_ball.roll
-            # Render the bowl perimeter for ball mode
+            # Reset scores and flags
+            blue_score = 0
+            red_score = 0
+            ball_scored_this_fall = False
+            # Render the bowl perimeter for ball mode (with goal pit cutouts)
             simulation.render_bowl_perimeter()
 
     # Ball radius slider (only show when ball is enabled)
     if beetle_ball.active:
+        # Display score
+        window.GUI.text(f"SCORE: Blue {blue_score} - {red_score} Red")
+        window.GUI.text("")
         new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
         if new_ball_radius != int(beetle_ball.radius):
             beetle_ball.radius = float(new_ball_radius)
