@@ -1295,20 +1295,22 @@ def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_heig
         # Main shaft with overlapping layers
         shaft_segments = round(horn_shaft_len)
 
-        # Add extra meaty base layer at attachment point (x=2, x=3, x=4)
+        # Add extra meaty base layer at attachment point (x=2, x=3, x=4, x=5)
         # Makes the neck thicker where it connects to body, tapers toward shaft
-        for dx_base in range(2, 5):  # x=2, x=3, x=4 (three layers deep)
+        for dx_base in range(2, 6):  # x=2, x=3, x=4, x=5 (four layers deep)
             # Front layers start higher, back layer starts at y=0
             if dx_base == 2:
                 y_start = 0
             elif dx_base == 3:
                 y_start = 1
-            else:  # x=4 - transition layer
+            elif dx_base == 4:
+                y_start = 1
+            else:  # x=5 - extra front layer for thickness
                 y_start = 1
             for dy_base in range(y_start, 3):  # 3 voxels tall at base
                 # Taper: wider at bottom (y=0,1), narrower at top (y=2)
-                # x=4 layer is narrower (just the shaft width)
-                if dx_base == 4:
+                # x=4 and x=5 layers are narrower (just the shaft width)
+                if dx_base >= 4:
                     z_range = range(-1, 2)  # 3 voxels wide (matches shaft)
                 elif dy_base < 2:
                     z_range = range(-2, 3)  # 5 voxels wide at bottom
