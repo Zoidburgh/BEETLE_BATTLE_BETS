@@ -4951,15 +4951,13 @@ def check_stag_inner_edge_collision(stag_beetle, target_beetle, pitch, yaw):
             dist_to_left_inner = abs(dot_right - (-pincer_offset))
             dist_to_right_inner = abs(dot_right - pincer_offset)
 
-            inner_edge_threshold = 5.0
+            inner_edge_threshold = 2.5
             near_left_inner = dist_to_left_inner < inner_edge_threshold and dot_right < 0
             near_right_inner = dist_to_right_inner < inner_edge_threshold and dot_right > 0
 
-            # Only trigger squeeze when actually touching pincers, not when in center gap
-            # Center gap collision only counts when pincers are nearly closed (pincer_offset < 4)
-            in_center_gap = abs(dot_right) < pincer_offset and pincer_offset < 4.0
-
-            if near_left_inner or near_right_inner or in_center_gap:
+            # Only trigger squeeze when actually touching pincer inner edges
+            # No center gap check - squeeze requires contact with the pincers themselves
+            if near_left_inner or near_right_inner:
                 collision_detected = True
                 min_dist = min(dist_to_left_inner, dist_to_right_inner)
 
@@ -6278,11 +6276,15 @@ while window.running:
                     # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
 
-                    # STAG SQUEEZE CHECK: Use actual voxel collision detection
-                    # Only apply squeeze effects if hook interior voxels are touching opponent
+                    # STAG SQUEEZE CHECK: Only apply when there's actual voxel collision
                     if beetle_blue.horn_type == "stag" and beetle_red.active:
-                        has_hook_contact = collision_has_hook_interiors[None] == 1
-                        if has_hook_contact:
+                        # First verify actual voxel collision exists (not just geometric proximity)
+                        has_real_collision = check_collision_kernel(
+                            beetle_blue.x, beetle_blue.z, beetle_blue.y,
+                            beetle_red.x, beetle_red.z, beetle_red.y,
+                            beetle_blue.color, beetle_red.color
+                        )
+                        if has_real_collision:
                             # Squeeze with resistance: apply heavy damping
                             effective_speed *= (1.0 - STAG_SQUEEZE_DAMPING)
                             # Apply push force to trapped beetle (forward + pitch up front + lift)
@@ -6417,11 +6419,15 @@ while window.running:
                     # N key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
 
-                    # STAG SQUEEZE CHECK: Use actual voxel collision detection
-                    # Only apply squeeze effects if hook interior voxels are touching opponent
+                    # STAG SQUEEZE CHECK: Only apply when there's actual voxel collision
                     if beetle_red.horn_type == "stag" and beetle_blue.active:
-                        has_hook_contact = collision_has_hook_interiors[None] == 1
-                        if has_hook_contact:
+                        # First verify actual voxel collision exists (not just geometric proximity)
+                        has_real_collision = check_collision_kernel(
+                            beetle_red.x, beetle_red.z, beetle_red.y,
+                            beetle_blue.x, beetle_blue.z, beetle_blue.y,
+                            beetle_red.color, beetle_blue.color
+                        )
+                        if has_real_collision:
                             # Squeeze with resistance: apply heavy damping
                             effective_speed *= (1.0 - STAG_SQUEEZE_DAMPING)
                             # Apply push force to trapped beetle (forward + pitch up front + lift)
