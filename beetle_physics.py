@@ -244,16 +244,19 @@ RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128
 
 # Ball physics constants (tunable via sliders for smooth rolling/bouncing)
 # These will be overridden by slider values in the main loop
-BALL_SEPARATION_FORCE = 0.33  # How hard ball pushes away from beetles (0.1-2.0)
-BALL_MOMENTUM_TRANSFER = 1.2  # How much beetle velocity transfers to ball (0.0-2.0)
+BALL_SEPARATION_FORCE = 0.9  # How hard ball pushes away from beetles (0.1-2.0)
+BALL_MOMENTUM_TRANSFER = 1.5  # How much beetle velocity transfers to ball (0.0-2.0)
 BALL_RESTITUTION = 0.2  # Bounciness coefficient (0=no bounce, 1=full bounce)
 BALL_MASS_RATIO = 0.6  # Ball weight vs beetle (0.1=very light, 2.0=heavy)
-BALL_ROLLING_FRICTION = 0.92  # Horizontal slowdown (0.80=high friction, 0.99=ice)
+BALL_ROLLING_FRICTION = 0.84  # Horizontal slowdown (0.80=high friction, 0.99=ice)
 BALL_GROUND_BOUNCE = 0.8  # Floor bounce coefficient (0=dead stop, 0.8=super bouncy)
+BALL_PUSH_MULTIPLIER = 3.9  # How easily beetles can push the ball (1.0=normal, 3.0=very easy)
+BALL_SPIN_MULTIPLIER = 4.3  # How easily ball spins when hit (1.0=normal, 4.0=very spinny)
+BALL_ANGULAR_FRICTION = 0.98  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
 
 # Ball torque/lift physics (realistic soccer ball behavior)
-BALL_LIFT_STRENGTH = 4.0  # How much ball lifts when hit from below (0.0-5.0)
-BALL_TIP_STRENGTH = 2.0  # How much ball tips down when hit from above (0.0-5.0)
+BALL_LIFT_STRENGTH = 6.0  # How much ball lifts when hit from below (0.0-10.0)
+BALL_TIP_STRENGTH = 5.0  # How much ball tips down when hit from above (0.0-5.0)
 BALL_TORQUE_STRENGTH = 8.0  # How much ball spins from side hits (0.0-10.0)
 BALL_GRAVITY_MULTIPLIER = 1.8  # Extra gravity for ball (multiplier, 1.0-5.0)
 
@@ -421,12 +424,21 @@ class Beetle:
         # (No hardcoded floor level here - floor is detected via voxel checking)
 
         # === HORIZONTAL PHYSICS (existing) ===
-        # Apply linear friction
-        self.vx *= FRICTION
-        self.vz *= FRICTION
+        # Apply linear friction (skip for ball when airborne to allow proper arc)
+        if self.horn_type == "ball":
+            # Ball uses its own rolling friction only when on ground (applied in main loop)
+            pass
+        else:
+            self.vx *= FRICTION
+            self.vz *= FRICTION
 
         # Apply angular friction (yaw)
-        self.angular_velocity *= ANGULAR_FRICTION
+        # Ball uses lighter angular friction for better spin retention
+        if self.horn_type == "ball":
+            ball_angular_friction = physics_params.get("BALL_ANGULAR_FRICTION", 0.98)
+            self.angular_velocity *= ball_angular_friction
+        else:
+            self.angular_velocity *= ANGULAR_FRICTION
 
         # Apply angular friction (pitch/roll) - different damping based on ground contact
         if self.on_ground:
@@ -586,7 +598,7 @@ beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (t
 beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of arena, no rotation matters)
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
 beetle_ball.active = False  # Ball starts disabled
-beetle_ball.radius = 3.0  # Start at minimum size
+beetle_ball.radius = 5.0  # Default ball radius
 
 @ti.kernel
 def clear_beetles():
@@ -5556,15 +5568,23 @@ def beetle_collision(b1, b2, params):
             normal_z = b1.contact_normal_z
 
             # HORN LEVERAGE: Strong vertical lift when contact is high (horn collision)
-            # SKIP HORN PHYSICS FOR BALL COLLISIONS - ball needs gentle rolling, not combat lifts
+            # Ball collisions now treated like beetle collisions for consistent physics
             center_y = (b1.y + b2.y) / 2.0
             contact_height_above_center = collision_y - center_y
-            is_horn_contact = contact_height_above_center > 0.0 and not is_ball_collision  # Horn contact (at or above center height - includes low horn collisions)
+            is_horn_contact = contact_height_above_center > 0.0  # Horn contact (at or above center height - includes low horn collisions)
 
             if is_horn_contact:
-                # Mark both beetles as in horn collision (blocks rotation during contact)
-                b1.in_horn_collision = True
-                b2.in_horn_collision = True
+                # Mark beetles as in horn collision (blocks rotation during contact)
+                # For ball collisions, only mark the beetle (not the ball)
+                if is_ball_collision:
+                    # Only block rotation on the beetle, not the ball
+                    if b1.horn_type != "ball":
+                        b1.in_horn_collision = True
+                    if b2.horn_type != "ball":
+                        b2.in_horn_collision = True
+                else:
+                    b1.in_horn_collision = True
+                    b2.in_horn_collision = True
 
                 # === PHASE 2: HORN ROTATION DAMPING ===
                 # Calculate engagement factor (how much horn contact exists)
@@ -5578,188 +5598,193 @@ def beetle_collision(b1, b2, params):
                 if has_horn_tips == 1:
                     engagement_factor = max(engagement_factor, MIN_TIP_ENGAGEMENT)
 
-                # Calculate damping for both beetles based on their rotation direction
-                b1.horn_rotation_damping = calculate_horn_rotation_damping(
-                    b1, collision_x, collision_y, collision_z, engagement_factor)
-                b2.horn_rotation_damping = calculate_horn_rotation_damping(
-                    b2, collision_x, collision_y, collision_z, engagement_factor)
-                # Scale up vertical component based on height - logarithmic scaling for diminishing returns
-                raw_leverage = contact_height_above_center / 3.0
-                horn_leverage = min(math.log(raw_leverage + 1.0) * 2.0, 2.5)
+                # Calculate damping for beetles (not ball) based on their rotation direction
+                if b1.horn_type != "ball":
+                    b1.horn_rotation_damping = calculate_horn_rotation_damping(
+                        b1, collision_x, collision_y, collision_z, engagement_factor)
+                if b2.horn_type != "ball":
+                    b2.horn_rotation_damping = calculate_horn_rotation_damping(
+                        b2, collision_x, collision_y, collision_z, engagement_factor)
 
-                # Add MASSIVE upward bias to the collision normal
-                normal_y += horn_leverage * 2.5  # 5x stronger than before!
+                # Skip lift/leverage combat physics for ball collisions (ball has its own physics below)
+                # Only apply beetle-vs-beetle lift physics when no ball is involved
+                if not is_ball_collision:
+                    # Scale up vertical component based on height - logarithmic scaling for diminishing returns
+                    raw_leverage = contact_height_above_center / 3.0
+                    horn_leverage = min(math.log(raw_leverage + 1.0) * 2.0, 2.5)
 
-                # Re-normalize
-                norm_len = math.sqrt(normal_x**2 + normal_y**2 + normal_z**2)
-                if norm_len > 0.001:
-                    normal_x /= norm_len
-                    normal_y /= norm_len
-                    normal_z /= norm_len
+                    # Add MASSIVE upward bias to the collision normal
+                    normal_y += horn_leverage * 2.5  # 5x stronger than before!
 
-                # SIMPLIFIED SYMMETRIC LIFTING - PURE VELOCITY (for debugging)
-                # Whoever is pressing their lift key (R/U) lifts the opponent
-                lift_impulse = horn_leverage * 30.0  # Upward kick
+                    # Re-normalize
+                    norm_len = math.sqrt(normal_x**2 + normal_y**2 + normal_z**2)
+                    if norm_len > 0.001:
+                        normal_x /= norm_len
+                        normal_y /= norm_len
+                        normal_z /= norm_len
 
-                # Calculate where the collision is relative to each beetle's center
-                collision_above_b1 = collision_y - b1.y
-                collision_above_b2 = collision_y - b2.y
+                    # SIMPLIFIED SYMMETRIC LIFTING - PURE VELOCITY (for debugging)
+                    # Whoever is pressing their lift key (R/U) lifts the opponent
+                    lift_impulse = horn_leverage * 30.0  # Upward kick
 
-                # PURE VELOCITY ADVANTAGE - who's actively pressing R or U?
-                # Positive velocity = tilting horn UP = you lift opponent
-                # Blue pressing R: b1.horn_pitch_velocity = +2.0
-                # Red pressing U: b2.horn_pitch_velocity = +2.0
-                lift_advantage = b1.horn_pitch_velocity - b2.horn_pitch_velocity
+                    # Calculate where the collision is relative to each beetle's center
+                    collision_above_b1 = collision_y - b1.y
+                    collision_above_b2 = collision_y - b2.y
 
-                # DEBUG: Print collision info
-                # print(f"HORN COLLISION:")
-                # print(f"  Blue: vel={b1.horn_pitch_velocity:.2f}, y={b1.y:.1f}")
-                # print(f"  Red:  vel={b2.horn_pitch_velocity:.2f}, y={b2.y:.1f}")
-                # print(f"  Lift advantage: {lift_advantage:.2f} (>0 = Blue lifts Red, <0 = Red lifts Blue)")
+                    # PURE VELOCITY ADVANTAGE - who's actively pressing R or U?
+                    # Positive velocity = tilting horn UP = you lift opponent
+                    # Blue pressing R: b1.horn_pitch_velocity = +2.0
+                    # Red pressing U: b2.horn_pitch_velocity = +2.0
+                    lift_advantage = b1.horn_pitch_velocity - b2.horn_pitch_velocity
 
-                # Very low threshold - almost any velocity difference triggers
-                ADVANTAGE_THRESHOLD = 0.5
-                LIFT_COOLDOWN_DURATION = 0.1  # Seconds between lift applications
+                    # DEBUG: Print collision info
+                    # print(f"HORN COLLISION:")
+                    # print(f"  Blue: vel={b1.horn_pitch_velocity:.2f}, y={b1.y:.1f}")
+                    # print(f"  Red:  vel={b2.horn_pitch_velocity:.2f}, y={b2.y:.1f}")
+                    # print(f"  Lift advantage: {lift_advantage:.2f} (>0 = Blue lifts Red, <0 = Red lifts Blue)")
 
-                # Calculate height penalty (reduces lift when beetles are already airborne)
-                NORMAL_HEIGHT = 2.0  # Height where lifts start weakening (lower = earlier penalty)
-                HEIGHT_PENALTY_FACTOR = 0.35  # How quickly lift weakens with height (higher = steeper)
-                avg_height = (b1.y + b2.y) / 2.0
-                height_penalty = 1.0
-                if avg_height > NORMAL_HEIGHT:
-                    height_above_normal = avg_height - NORMAL_HEIGHT
-                    height_penalty = 1.0 / (1.0 + height_above_normal * HEIGHT_PENALTY_FACTOR)
+                    # Very low threshold - almost any velocity difference triggers
+                    ADVANTAGE_THRESHOLD = 0.5
+                    LIFT_COOLDOWN_DURATION = 0.1  # Seconds between lift applications
 
-                # Check if both beetles are off cooldown before applying lift forces
-                if b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
-                    # Cooldown expired - can apply lift force
-                    if lift_advantage > ADVANTAGE_THRESHOLD:
-                        # Blue has advantage - lifts red
-                        # print(f"  -> BLUE lifts RED!")
-                        lift_force = lift_impulse * 0.195 * height_penalty
-                        b2.vy += lift_force  # Red gets lifted HIGHER
-                        b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
+                    # Calculate height penalty (reduces lift when beetles are already airborne)
+                    NORMAL_HEIGHT = 2.0  # Height where lifts start weakening (lower = earlier penalty)
+                    HEIGHT_PENALTY_FACTOR = 0.35  # How quickly lift weakens with height (higher = steeper)
+                    avg_height = (b1.y + b2.y) / 2.0
+                    height_penalty = 1.0
+                    if avg_height > NORMAL_HEIGHT:
+                        height_above_normal = avg_height - NORMAL_HEIGHT
+                        height_penalty = 1.0 / (1.0 + height_above_normal * HEIGHT_PENALTY_FACTOR)
 
-                        # TORQUE: Apply rotation from off-center force
-                        # Calculate lever arm from red's center to collision point
-                        lever_x = collision_x - b2.x  # X offset (causes roll)
-                        lever_z = collision_z - b2.z  # Z offset (causes pitch)
+                    # Check if both beetles are off cooldown before applying lift forces
+                    if b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
+                        # Cooldown expired - can apply lift force
+                        if lift_advantage > ADVANTAGE_THRESHOLD:
+                            # Blue has advantage - lifts red
+                            # print(f"  -> BLUE lifts RED!")
+                            lift_force = lift_impulse * 0.195 * height_penalty
+                            b2.vy += lift_force  # Red gets lifted HIGHER
+                            b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
 
-                        # Pitch torque: force in +Y at position +Z causes nose-up pitch
-                        tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
-                        pitch_torque = lever_z * lift_force * tumble_mult
-                        b2.pitch_velocity += pitch_torque / b2.pitch_inertia
+                            # TORQUE: Apply rotation from off-center force
+                            # Calculate lever arm from red's center to collision point
+                            lever_x = collision_x - b2.x  # X offset (causes roll)
+                            lever_z = collision_z - b2.z  # Z offset (causes pitch)
 
-                        # Roll torque: force in +Y at position +X causes right-side-up roll
-                        roll_torque = lever_x * lift_force * tumble_mult
-                        b2.roll_velocity += roll_torque / b2.roll_inertia
+                            # Pitch torque: force in +Y at position +Z causes nose-up pitch
+                            tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
+                            pitch_torque = lever_z * lift_force * tumble_mult
+                            b2.pitch_velocity += pitch_torque / b2.pitch_inertia
 
-                        # Set cooldown for both beetles
-                        b1.lift_cooldown = LIFT_COOLDOWN_DURATION
-                        b2.lift_cooldown = LIFT_COOLDOWN_DURATION
+                            # Roll torque: force in +Y at position +X causes right-side-up roll
+                            roll_torque = lever_x * lift_force * tumble_mult
+                            b2.roll_velocity += roll_torque / b2.roll_inertia
 
-                    elif lift_advantage < -ADVANTAGE_THRESHOLD:
-                        # Red has advantage - lifts blue
-                        # print(f"  -> RED lifts BLUE!")
-                        lift_force = lift_impulse * 0.195 * height_penalty
-                        b1.vy += lift_force  # Blue gets lifted HIGHER
-                        b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
+                            # Set cooldown for both beetles
+                            b1.lift_cooldown = LIFT_COOLDOWN_DURATION
+                            b2.lift_cooldown = LIFT_COOLDOWN_DURATION
 
-                        # TORQUE: Apply rotation from off-center force
-                        lever_x = collision_x - b1.x  # X offset (causes roll)
-                        lever_z = collision_z - b1.z  # Z offset (causes pitch)
+                        elif lift_advantage < -ADVANTAGE_THRESHOLD:
+                            # Red has advantage - lifts blue
+                            # print(f"  -> RED lifts BLUE!")
+                            lift_force = lift_impulse * 0.195 * height_penalty
+                            b1.vy += lift_force  # Blue gets lifted HIGHER
+                            b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
 
-                        # Pitch torque: force in +Y at position +Z causes nose-up pitch
-                        tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
-                        pitch_torque = lever_z * lift_force * tumble_mult
-                        b1.pitch_velocity += pitch_torque / b1.pitch_inertia
+                            # TORQUE: Apply rotation from off-center force
+                            lever_x = collision_x - b1.x  # X offset (causes roll)
+                            lever_z = collision_z - b1.z  # Z offset (causes pitch)
 
-                        # Roll torque
-                        roll_torque = lever_x * lift_force * tumble_mult
-                        b1.roll_velocity += roll_torque / b1.roll_inertia
+                            # Pitch torque: force in +Y at position +Z causes nose-up pitch
+                            tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
+                            pitch_torque = lever_z * lift_force * tumble_mult
+                            b1.pitch_velocity += pitch_torque / b1.pitch_inertia
 
-                        # Set cooldown for both beetles
-                        b1.lift_cooldown = LIFT_COOLDOWN_DURATION
-                        b2.lift_cooldown = LIFT_COOLDOWN_DURATION
+                            # Roll torque
+                            roll_torque = lever_x * lift_force * tumble_mult
+                            b1.roll_velocity += roll_torque / b1.roll_inertia
 
+                            # Set cooldown for both beetles
+                            b1.lift_cooldown = LIFT_COOLDOWN_DURATION
+                            b2.lift_cooldown = LIFT_COOLDOWN_DURATION
+
+                        else:
+                            # Evenly matched - both get pushed (with torque)
+                            # print(f"  -> BOTH beetles pushed!")
+                            push_force = lift_impulse * 0.06 * height_penalty
+                            b1.vy += push_force
+                            b2.vy += push_force
+
+                            # Apply torque to both
+                            lever_x1 = collision_x - b1.x
+                            lever_z1 = collision_z - b1.z
+                            b1.pitch_velocity += (-lever_z1 * push_force) / b1.pitch_inertia
+                            b1.roll_velocity += (lever_x1 * push_force) / b1.roll_inertia
+
+                            lever_x2 = collision_x - b2.x
+                            lever_z2 = collision_z - b2.z
+                            b2.pitch_velocity += (-lever_z2 * push_force) / b2.pitch_inertia
+                            b2.roll_velocity += (lever_x2 * push_force) / b2.roll_inertia
+
+                            # Set cooldown for both beetles
+                            b1.lift_cooldown = LIFT_COOLDOWN_DURATION
+                            b2.lift_cooldown = LIFT_COOLDOWN_DURATION
                     else:
-                        # Evenly matched - both get pushed (with torque)
-                        # print(f"  -> BOTH beetles pushed!")
-                        push_force = lift_impulse * 0.06 * height_penalty
-                        b1.vy += push_force
-                        b2.vy += push_force
+                        # Cooldown active - skip lift force but still print debug info
+                        pass  # print(f"  -> COOLDOWN ACTIVE (Blue: {b1.lift_cooldown:.3f}s, Red: {b2.lift_cooldown:.3f}s)")
 
-                        # Apply torque to both
-                        lever_x1 = collision_x - b1.x
-                        lever_z1 = collision_z - b1.z
-                        b1.pitch_velocity += (-lever_z1 * push_force) / b1.pitch_inertia
-                        b1.roll_velocity += (lever_x1 * push_force) / b1.roll_inertia
+                    # Add horizontal spin based on where horn hit BOTH beetles
+                    # Calculate lever arms from beetle centers to collision point
+                    dx_to_b1 = collision_x - b1.x
+                    dz_to_b1 = collision_z - b1.z
+                    dx_to_b2 = collision_x - b2.x
+                    dz_to_b2 = collision_z - b2.z
 
-                        lever_x2 = collision_x - b2.x
-                        lever_z2 = collision_z - b2.z
-                        b2.pitch_velocity += (-lever_z2 * push_force) / b2.pitch_inertia
-                        b2.roll_velocity += (lever_x2 * push_force) / b2.roll_inertia
+                    # Calculate tangential velocity at collision point (perpendicular to normal)
+                    # This captures rotation effects even when linear velocity is small
+                    v1_at_collision_x = b1.vx + dz_to_b1 * b1.angular_velocity
+                    v1_at_collision_z = b1.vz - dx_to_b1 * b1.angular_velocity
+                    v2_at_collision_x = b2.vx + dz_to_b2 * b2.angular_velocity
+                    v2_at_collision_z = b2.vz - dx_to_b2 * b2.angular_velocity
 
-                        # Set cooldown for both beetles
-                        b1.lift_cooldown = LIFT_COOLDOWN_DURATION
-                        b2.lift_cooldown = LIFT_COOLDOWN_DURATION
-                else:
-                    # Cooldown active - skip lift force but still print debug info
-                    pass  # print(f"  -> COOLDOWN ACTIVE (Blue: {b1.lift_cooldown:.3f}s, Red: {b2.lift_cooldown:.3f}s)")
+                    # Relative velocity at collision point
+                    rel_vx = v1_at_collision_x - v2_at_collision_x
+                    rel_vz = v1_at_collision_z - v2_at_collision_z
 
-                # Add horizontal spin based on where horn hit BOTH beetles
-                # Calculate lever arms from beetle centers to collision point
-                dx_to_b1 = collision_x - b1.x
-                dz_to_b1 = collision_z - b1.z
-                dx_to_b2 = collision_x - b2.x
-                dz_to_b2 = collision_z - b2.z
+                    # Calculate tangential component (perpendicular to normal) for spin torque
+                    # Project onto tangent direction (perpendicular to normal)
+                    tangent_x = -normal_z
+                    tangent_z = normal_x
+                    rel_vel_tangent = rel_vx * tangent_x + rel_vz * tangent_z
 
-                # Calculate tangential velocity at collision point (perpendicular to normal)
-                # This captures rotation effects even when linear velocity is small
-                v1_at_collision_x = b1.vx + dz_to_b1 * b1.angular_velocity
-                v1_at_collision_z = b1.vz - dx_to_b1 * b1.angular_velocity
-                v2_at_collision_x = b2.vx + dz_to_b2 * b2.angular_velocity
-                v2_at_collision_z = b2.vz - dx_to_b2 * b2.angular_velocity
+                    # Hybrid approach: base torque from geometry + velocity modulation
+                    # This ensures torque always exists but scales with collision dynamics
+                    base_torque_b1 = dx_to_b1 * normal_z - dz_to_b1 * normal_x
+                    base_torque_b2 = dx_to_b2 * normal_z - dz_to_b2 * normal_x
 
-                # Relative velocity at collision point
-                rel_vx = v1_at_collision_x - v2_at_collision_x
-                rel_vz = v1_at_collision_z - v2_at_collision_z
+                    # Modulate by tangential velocity (captures rotation into each other)
+                    # Add baseline factor to ensure minimum torque even when stationary
+                    velocity_factor = 1.0 + abs(rel_vel_tangent) * 0.5
 
-                # Calculate tangential component (perpendicular to normal) for spin torque
-                # Project onto tangent direction (perpendicular to normal)
-                tangent_x = -normal_z
-                tangent_z = normal_x
-                rel_vel_tangent = rel_vx * tangent_x + rel_vz * tangent_z
+                    torque_b1 = base_torque_b1 * velocity_factor
+                    torque_b2 = base_torque_b2 * velocity_factor
 
-                # Hybrid approach: base torque from geometry + velocity modulation
-                # This ensures torque always exists but scales with collision dynamics
-                base_torque_b1 = dx_to_b1 * normal_z - dz_to_b1 * normal_x
-                base_torque_b2 = dx_to_b2 * normal_z - dz_to_b2 * normal_x
-
-                # Modulate by tangential velocity (captures rotation into each other)
-                # Add baseline factor to ensure minimum torque even when stationary
-                velocity_factor = 1.0 + abs(rel_vel_tangent) * 0.5
-
-                torque_b1 = base_torque_b1 * velocity_factor
-                torque_b2 = base_torque_b2 * velocity_factor
-
-                # Apply angular impulses with horn leverage
-                angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 2.0
-                angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 2.0
-                b1.angular_velocity += angular_impulse_b1
-                b2.angular_velocity -= angular_impulse_b2
+                    # Apply angular impulses with horn leverage
+                    angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 2.0
+                    angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 2.0
+                    b1.angular_velocity += angular_impulse_b1
+                    b2.angular_velocity -= angular_impulse_b2
 
             # STRONG separation to prevent stuck collisions (now 3D!)
             # Read hook interior collision status
             has_hook_interiors = collision_has_hook_interiors[None]
 
-            # Use gentler separation for ball collisions, 2.5x stronger for hook interiors
-            if is_ball_collision:
-                separation_force = params["BALL_SEPARATION_FORCE"]  # Much gentler for smooth rolling
-            elif has_hook_interiors == 1:
+            # Use full beetle-strength separation for all collisions (including ball) for consistent physics
+            # 2.5x stronger for hook interior collisions
+            if has_hook_interiors == 1:
                 separation_force = params["SEPARATION_FORCE"] * 2.5  # 2.5x stronger for hook interior collisions (1.5 force)
             else:
-                separation_force = params["SEPARATION_FORCE"]  # Full strength for beetle combat
+                separation_force = params["SEPARATION_FORCE"]  # Full strength for all collisions
 
             b1.x += normal_x * separation_force
             b1.z += normal_z * separation_force
@@ -5771,6 +5796,13 @@ def beetle_collision(b1, b2, params):
             if not b1.on_ground and not b2.on_ground:
                 b1.y += normal_y * separation_force
                 b2.y -= normal_y * separation_force
+                # Update prev positions to prevent interpolation choppiness from position corrections
+                # (Ball especially needs this for smooth vertical motion during collisions)
+                if is_ball_collision:
+                    if b1.horn_type == "ball":
+                        b1.prev_y = b1.y
+                    if b2.horn_type == "ball":
+                        b2.prev_y = b2.y
 
             # Safety clamp to prevent going below floor voxel layer
             # (Main floor collision handles proper positioning above floor)
@@ -5840,20 +5872,43 @@ def beetle_collision(b1, b2, params):
                     # Identify which entity is the ball
                     if b1.horn_type == "ball":
                         ball = b1
-                        other = b2
+                        beetle = b2
                         ball_is_b1 = True
                     else:
                         ball = b2
-                        other = b1
+                        beetle = b1
                         ball_is_b1 = False
+
+                    # Get push and spin multipliers for lighter/heavier ball feel
+                    push_mult = params["BALL_PUSH_MULTIPLIER"]
+                    spin_mult = params["BALL_SPIN_MULTIPLIER"]
+
+                    # Apply extra push force to ball based on push multiplier
+                    # This makes the ball feel lighter and easier to push
+                    if ball_is_b1:
+                        ball.vx += impulse_x * (push_mult - 1.0)  # Extra push on top of normal impulse
+                        ball.vz += impulse_z * (push_mult - 1.0)
+                    else:
+                        ball.vx -= impulse_x * (push_mult - 1.0)
+                        ball.vz -= impulse_z * (push_mult - 1.0)
 
                     # Calculate contact offset from ball center (Y-axis for lift/tip)
                     contact_offset_y = collision_y - ball.y
 
+                    # HORN SCOOP LIFT: When beetle tilts horn UP while touching bottom of ball, lift it!
+                    # This mimics beetle-to-beetle combat where horn pitch velocity determines lift
+                    if contact_offset_y < ball.radius * 0.3:  # Contact at or below ball center (bottom 80%)
+                        # Check if beetle is actively tilting horn upward (positive horn_pitch_velocity)
+                        if beetle.horn_pitch_velocity > 0.5:  # Beetle is scooping up
+                            # Scale lift force by horn velocity (more aggressive scoop = more lift)
+                            scoop_strength = min(beetle.horn_pitch_velocity / 2.0, 1.5)  # Cap at 1.5x
+                            horn_scoop_lift = params["BALL_LIFT_STRENGTH"] * 2.0 * scoop_strength * push_mult
+                            ball.vy += horn_scoop_lift
+
                     # LIFT: Hit from below (contact point is below ball center)
-                    # When beetle pushes ball from below, apply upward force
+                    # Base upward force when beetle pushes ball from below
                     if contact_offset_y < -ball.radius * 0.2:  # Bottom 20% of ball
-                        lift_force = params["BALL_LIFT_STRENGTH"]
+                        lift_force = params["BALL_LIFT_STRENGTH"] * push_mult
                         ball.vy += lift_force
 
                     # TIP: Hit from above (contact point is above ball center)
@@ -5869,8 +5924,9 @@ def beetle_collision(b1, b2, params):
 
                     # Apply rotational spin based on horizontal impact location
                     # Torque = r × F (lever arm cross force)
+                    # Use spin_mult to make ball spin easier
                     ball_torque = contact_offset_x * impulse_z - contact_offset_z * impulse_x
-                    ball_angular_impulse = (ball_torque / ball.moment_of_inertia) * params["BALL_TORQUE_STRENGTH"]
+                    ball_angular_impulse = (ball_torque / ball.moment_of_inertia) * params["BALL_TORQUE_STRENGTH"] * spin_mult
 
                     # Apply the torque (add to existing angular velocity for realistic spin accumulation)
                     if ball_is_b1:
@@ -5995,6 +6051,9 @@ physics_params = {
     "BALL_MASS_RATIO": BALL_MASS_RATIO,  # Ball weight vs beetle
     "BALL_ROLLING_FRICTION": BALL_ROLLING_FRICTION,  # Horizontal slowdown
     "BALL_GROUND_BOUNCE": BALL_GROUND_BOUNCE,  # Floor bounce coefficient
+    "BALL_PUSH_MULTIPLIER": BALL_PUSH_MULTIPLIER,  # How easily beetles can push the ball
+    "BALL_SPIN_MULTIPLIER": BALL_SPIN_MULTIPLIER,  # How easily ball spins when hit
+    "BALL_ANGULAR_FRICTION": BALL_ANGULAR_FRICTION,  # How quickly ball spin slows
 
     # Ball torque/lift/tip parameters (realistic contact physics)
     "BALL_LIFT_STRENGTH": BALL_LIFT_STRENGTH,  # How much ball lifts when hit from below
@@ -6547,15 +6606,34 @@ while window.running:
             extra_gravity = physics_params["GRAVITY"] * (physics_params["BALL_GRAVITY_MULTIPLIER"] - 1.0)
             beetle_ball.vy -= extra_gravity * PHYSICS_TIMESTEP
 
-            # Apply rolling friction to ball (stronger than beetle friction for realistic slowing)
-            beetle_ball.vx *= physics_params["BALL_ROLLING_FRICTION"]
-            beetle_ball.vz *= physics_params["BALL_ROLLING_FRICTION"]
+            # Apply rolling friction to ball only when on ground (allows proper arc when airborne)
+            if beetle_ball.on_ground:
+                beetle_ball.vx *= physics_params["BALL_ROLLING_FRICTION"]
+                beetle_ball.vz *= physics_params["BALL_ROLLING_FRICTION"]
 
             # Update ball rotation from angular velocity (makes stripes spin)
             beetle_ball.rotation += beetle_ball.angular_velocity * PHYSICS_TIMESTEP
             beetle_ball.rotation = normalize_angle(beetle_ball.rotation)
 
             # Ball-beetle collision (uses same collision system as beetle-beetle)
+            # IMPORTANT: Re-render beetles AND ball before collision to use current positions
+            # (Voxels from previous frame would cause "ghost bouncing" off stale positions)
+            clear_dirty_voxels()
+            reset_dirty_voxels()
+            # Re-render ball at current physics position
+            clear_ball()
+            render_ball(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.radius, beetle_ball.rotation)
+            if beetle_blue.active:
+                blue_horn_type_id_phys = 1 if beetle_blue.horn_type == "stag" else (2 if beetle_blue.horn_type == "hercules" else (3 if beetle_blue.horn_type == "scorpion" else (4 if beetle_blue.horn_type == "atlas" else 0)))
+                blue_default_pitch_phys = HORN_DEFAULT_PITCH_SCORPION if beetle_blue.horn_type == "scorpion" else (HORN_DEFAULT_PITCH_STAG if beetle_blue.horn_type == "stag" else (HORN_DEFAULT_PITCH_HERCULES if beetle_blue.horn_type == "hercules" else (HORN_DEFAULT_PITCH_ATLAS if beetle_blue.horn_type == "atlas" else HORN_DEFAULT_PITCH)))
+                blue_tail_pitch_phys = math.radians(15.0 + beetle_blue.tail_rotation_angle)
+                place_animated_beetle_blue(beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll, beetle_blue.horn_pitch, beetle_blue.horn_yaw, blue_tail_pitch_phys, blue_horn_type_id_phys, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_pitch_phys, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction)
+            if beetle_red.active:
+                red_horn_type_id_phys = 1 if beetle_red.horn_type == "stag" else (2 if beetle_red.horn_type == "hercules" else (3 if beetle_red.horn_type == "scorpion" else (4 if beetle_red.horn_type == "atlas" else 0)))
+                red_default_pitch_phys = HORN_DEFAULT_PITCH_SCORPION if beetle_red.horn_type == "scorpion" else (HORN_DEFAULT_PITCH_STAG if beetle_red.horn_type == "stag" else (HORN_DEFAULT_PITCH_HERCULES if beetle_red.horn_type == "hercules" else (HORN_DEFAULT_PITCH_ATLAS if beetle_red.horn_type == "atlas" else HORN_DEFAULT_PITCH)))
+                red_tail_pitch_phys = math.radians(15.0 + beetle_red.tail_rotation_angle)
+                place_animated_beetle_red(beetle_red.x, beetle_red.y, beetle_red.z, beetle_red.rotation, beetle_red.pitch, beetle_red.roll, beetle_red.horn_pitch, beetle_red.horn_yaw, red_tail_pitch_phys, red_horn_type_id_phys, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_pitch_phys, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction)
+            # Now run collision with fresh voxel data
             beetle_collision(beetle_blue, beetle_ball, physics_params)
             beetle_collision(beetle_red, beetle_ball, physics_params)
 
@@ -6739,6 +6817,9 @@ while window.running:
                     beetle_ball.on_ground = True
                 elif lowest_point_ball < floor_surface + 0.5:  # Close to ground
                     beetle_ball.on_ground = True
+                else:
+                    # Ball is airborne - clear on_ground so rolling friction doesn't apply
+                    beetle_ball.on_ground = False
 
         # Apply edge tipping physics (GPU-accelerated)
         if beetle_blue.active and not beetle_blue.is_falling:
@@ -7805,6 +7886,9 @@ while window.running:
     # Ball toggle button
     ball_button_text = "Disable Ball" if beetle_ball.active else "Enable Ball"
     if window.GUI.button(ball_button_text):
+        if beetle_ball.active:
+            # Disabling ball - clear voxels first
+            clear_ball()
         beetle_ball.active = not beetle_ball.active
         if beetle_ball.active:
             # Reset ball to center when enabling
@@ -7814,6 +7898,13 @@ while window.running:
             beetle_ball.vx = 0.0
             beetle_ball.vy = 0.0
             beetle_ball.vz = 0.0
+            beetle_ball.rotation = 0.0
+            beetle_ball.angular_velocity = 0.0
+            # Reset prev state to avoid interpolation jump
+            beetle_ball.prev_x = beetle_ball.x
+            beetle_ball.prev_y = beetle_ball.y
+            beetle_ball.prev_z = beetle_ball.z
+            beetle_ball.prev_rotation = beetle_ball.rotation
 
     # Ball radius slider (only show when ball is enabled)
     if beetle_ball.active:
@@ -7857,7 +7948,7 @@ while window.running:
         window.GUI.text("--- Ball Contact Physics ---")
 
         # Lift Strength (upward force when hit from below)
-        new_lift = window.GUI.slider_float("Lift Strength", physics_params["BALL_LIFT_STRENGTH"], 0.0, 5.0)
+        new_lift = window.GUI.slider_float("Lift Strength", physics_params["BALL_LIFT_STRENGTH"], 0.0, 10.0)
         if new_lift != physics_params["BALL_LIFT_STRENGTH"]:
             physics_params["BALL_LIFT_STRENGTH"] = new_lift
 
@@ -7875,6 +7966,24 @@ while window.running:
         new_grav = window.GUI.slider_float("Gravity Multiplier", physics_params["BALL_GRAVITY_MULTIPLIER"], 1.0, 5.0)
         if new_grav != physics_params["BALL_GRAVITY_MULTIPLIER"]:
             physics_params["BALL_GRAVITY_MULTIPLIER"] = new_grav
+
+        window.GUI.text("")
+        window.GUI.text("--- Ball Feel (Mass/Spin) ---")
+
+        # Push Multiplier (how easily beetles can push the ball)
+        new_push = window.GUI.slider_float("Push Ease", physics_params["BALL_PUSH_MULTIPLIER"], 0.5, 4.0)
+        if new_push != physics_params["BALL_PUSH_MULTIPLIER"]:
+            physics_params["BALL_PUSH_MULTIPLIER"] = new_push
+
+        # Spin Multiplier (how easily ball spins when hit)
+        new_spin = window.GUI.slider_float("Spin Ease", physics_params["BALL_SPIN_MULTIPLIER"], 0.5, 5.0)
+        if new_spin != physics_params["BALL_SPIN_MULTIPLIER"]:
+            physics_params["BALL_SPIN_MULTIPLIER"] = new_spin
+
+        # Angular Friction (how quickly ball spin slows down)
+        new_ang_fric = window.GUI.slider_float("Spin Retain", physics_params["BALL_ANGULAR_FRICTION"], 0.90, 0.995)
+        if new_ang_fric != physics_params["BALL_ANGULAR_FRICTION"]:
+            physics_params["BALL_ANGULAR_FRICTION"] = new_ang_fric
 
     # Winner announcement and restart button
     if match_winner is not None:

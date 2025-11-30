@@ -224,12 +224,134 @@ This is NOTHING. Voice chat uses 30-50 kbps.
 
 ---
 
-## Testing Locally
+## Steam Testing Setup
+
+### Option A: Quick Testing with Spacewar (No Account Needed)
+
+Use Steam's public test App ID `480`:
 
 1. Create `steam_appid.txt` in game folder containing just: `480`
-2. Run two instances of the game
-3. One hosts, one joins via lobby browser
-4. Both Steam accounts must be logged in (can use Steam Family Sharing)
+2. Have Steam running on both test machines
+3. Both players must be Steam friends (for lobby discovery)
+4. Run the game on both machines
+
+**Limitation:** Shares lobby pool with other devs using 480. Filter lobbies by name.
+
+---
+
+### Option B: Private Testing with Steamworks (Recommended)
+
+#### One-Time Setup (Developer)
+
+1. **Create Steamworks account** (free)
+   - Go to: https://partner.steamgames.com
+   - Sign in with your Steam account
+   - Accept the developer agreement
+
+2. **Create your app** (free, no $100 fee needed)
+   - Steamworks dashboard → "Create new app"
+   - Choose "Game"
+   - Fill in basic info (name, etc.)
+   - You'll get an **App ID** (e.g., `2847590`)
+
+3. **Add testers**
+   - Steamworks → Your App → "Users & Permissions" → "Manage Testers"
+   - Add your friends' Steam account names or emails
+   - They'll receive access instantly
+
+#### Tester Setup (Your Friends)
+
+**If running from source (no Steam upload):**
+
+Your friends need these files (send via zip, Google Drive, GitHub, etc.):
+
+```
+BeetleBattle/
+├── beetle_physics.py
+├── beetle_battle_main.py
+├── simulation.py
+├── renderer.py
+├── network.py              ← (once implemented)
+├── steam_appid.txt         ← Contains YOUR App ID (not 480)
+├── requirements.txt
+└── ... (other game files)
+```
+
+**Requirements for testers:**
+1. Python 3.10+ installed
+2. Run `pip install -r requirements.txt`
+3. Steam client running & logged in
+4. Be added as tester in your Steamworks dashboard
+5. Run `python beetle_physics.py`
+
+**If uploading build to Steam (more polished):**
+
+1. You upload build via Steamworks SDK (SteamPipe)
+2. Friends see "Beetle Battle" in their Steam library
+3. They just click "Play" - no Python install needed
+4. Requires packaging game as executable (PyInstaller)
+
+---
+
+### Required Files for Testing
+
+#### steam_appid.txt
+Create this file in your game folder:
+```
+YOUR_APP_ID_HERE
+```
+Replace with `480` for quick tests or your actual Steamworks App ID.
+
+#### requirements.txt
+```
+taichi
+py_steam_net
+```
+Or if using SteamworksPy:
+```
+taichi
+steamworkspy
+```
+
+---
+
+### Testing Checklist
+
+| Step | Developer | Tester |
+|------|-----------|--------|
+| Steam running | ✓ | ✓ |
+| Steamworks tester access | Grant it | Receive it |
+| Game files | Have them | Get from dev |
+| steam_appid.txt | Create | Included in files |
+| Python + deps | Install | Install |
+| Run game | Host lobby | Join lobby |
+
+---
+
+### Network Testing on One Machine
+
+For solo testing without a friend:
+
+1. Have two Steam accounts (use Family Sharing for second)
+2. Run Steam on main account
+3. Run game instance 1 → Host lobby
+4. Log into second Steam account (via Steam website or second PC)
+5. Run game instance 2 → Join lobby
+
+Or use two computers on same network - easier.
+
+---
+
+### The $100 Fee - When Do You Pay?
+
+| What You Want | Cost |
+|---------------|------|
+| Private testing with friends | **Free** |
+| Steamworks App ID | **Free** |
+| Upload builds for testers | **Free** |
+| Public store page | **$100** (refundable after $1000 revenue) |
+
+You only pay when ready to release publicly.
 
 ---
 
@@ -261,6 +383,257 @@ If checksums differ, you have a desync bug to fix.
 
 ---
 
+## Game Events That Need Syncing
+
+Beyond inputs, these discrete events must be synchronized:
+
+### Match Start Synchronization
+
+Both players must start physics on the same frame:
+
+```python
+# Host sends START signal with initial frame number
+def start_match(network):
+    if network.is_host:
+        # Wait for guest to be ready
+        network.send_event('READY_CHECK')
+        # Guest responds with 'READY'
+        # Host sends 'START', frame=0, seed=random_seed
+        network.send_event('START', frame=0, seed=12345)
+
+    # Both players now start physics_frame = 0
+```
+
+### Events to Sync (not inputs)
+
+| Event | Data | When |
+|-------|------|------|
+| `READY` | none | Player loaded, waiting |
+| `START` | frame, rng_seed | Match begins |
+| `DEATH` | which_beetle, frame | Beetle dies (falls off) |
+| `RESET` | frame | Rematch requested |
+| `PAUSE` | frame | Player paused |
+| `DISCONNECT` | none | Player left |
+
+### Victory/Death Handling
+
+```python
+# When beetle falls off arena (y < -10)
+if beetle.y < DEATH_Y_THRESHOLD:
+    # Don't process locally - send event
+    network.send_event('DEATH', beetle='blue', frame=physics_frame)
+
+# On receiving DEATH event
+def on_death_event(beetle_id, frame):
+    # Both clients process death on same frame
+    trigger_victory(winner='red' if beetle_id == 'blue' else 'blue')
+```
+
+---
+
+## Horn Type Selection
+
+Players choose their horn type before match starts:
+
+```python
+# Sync horn selection in lobby
+HORN_TYPES = ['rhino', 'stag', 'hercules', 'scorpion', 'atlas']
+
+# During lobby phase
+def select_horn(horn_type):
+    network.send_event('HORN_SELECT', horn=horn_type)
+    my_horn = horn_type
+
+def on_horn_select(peer_horn):
+    opponent_horn = peer_horn
+    # Both players now know horn types before START
+```
+
+Include horn types in START event:
+```python
+network.send_event('START',
+    frame=0,
+    seed=12345,
+    host_horn='rhino',
+    guest_horn='stag'
+)
+```
+
+---
+
+## Lobby UI Flow
+
+### Game States
+
+```
+MAIN_MENU
+    ├── "Host Game" → HOSTING (waiting for player)
+    ├── "Join Game" → BROWSING (lobby list)
+    └── "Local Play" → existing single-machine mode
+
+HOSTING
+    ├── Show lobby code / "Waiting for player..."
+    ├── Player joins → HORN_SELECT
+    └── Cancel → MAIN_MENU
+
+BROWSING
+    ├── Show available lobbies
+    ├── Select lobby → HORN_SELECT
+    └── Back → MAIN_MENU
+
+HORN_SELECT
+    ├── Both players pick horn type
+    ├── Both ready → COUNTDOWN
+    └── Player leaves → MAIN_MENU
+
+COUNTDOWN
+    └── 3... 2... 1... FIGHT! → PLAYING
+
+PLAYING
+    ├── Normal gameplay (physics loop)
+    ├── Beetle dies → VICTORY
+    └── Disconnect → DISCONNECTED
+
+VICTORY
+    ├── "BLUE WINS!" / "RED WINS!"
+    ├── Rematch → COUNTDOWN
+    └── Leave → MAIN_MENU
+
+DISCONNECTED
+    └── "Opponent disconnected" → MAIN_MENU
+```
+
+### Simple Lobby UI (Taichi GUI)
+
+```python
+# During HOSTING state
+gui.text(f"Lobby Code: {lobby_id}", pos=(0.5, 0.6))
+gui.text("Waiting for opponent...", pos=(0.5, 0.5))
+if gui.button("Cancel", pos=(0.5, 0.3)):
+    network.leave_lobby()
+    state = MAIN_MENU
+```
+
+---
+
+## Disconnect Handling
+
+### Detection
+
+```python
+# Steam provides disconnect callbacks
+def on_peer_disconnect(peer_id):
+    if game_state == PLAYING:
+        # Mid-match disconnect
+        show_message("Opponent disconnected")
+        # Option: count as win, or just return to menu
+    game_state = MAIN_MENU
+```
+
+### Timeout for Missing Inputs
+
+```python
+TIMEOUT_FRAMES = 180  # 3 seconds at 60fps
+
+def check_input_timeout(input_buffer, physics_frame):
+    # If we haven't received remote input for too long
+    last_remote = max(input_buffer.remote_inputs.keys(), default=0)
+    if physics_frame - last_remote > TIMEOUT_FRAMES:
+        # Connection probably dead
+        handle_disconnect()
+```
+
+### Graceful Pause
+
+If remote inputs are late but not timed out, pause physics:
+
+```python
+while accumulator >= PHYSICS_TIMESTEP:
+    target_frame = physics_frame - input_buffer.delay
+
+    if target_frame not in input_buffer.remote_inputs:
+        # Missing input - wait (don't advance physics)
+        break  # Exit physics loop, keep accumulator
+
+    # Have inputs, proceed normally
+    ...
+```
+
+---
+
+## Troubleshooting Guide
+
+### Common Issues
+
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| "Steam not initialized" | Steam client not running | Start Steam first |
+| "Lobby not found" | Wrong App ID or not friends | Check steam_appid.txt, add as Steam friends |
+| Can't see friend's lobby | NAT issues | Steam Relay should handle, but try restarting Steam |
+| Beetles move differently | Desync | Check for random() calls, verify same game version |
+| Input feels laggy | 4-frame delay (~67ms) | Normal - can reduce to 3 frames for LAN |
+| Game freezes | Waiting for remote input | Check opponent connection, add timeout |
+| "py_steam_net not found" | Missing dependency | `pip install py_steam_net` |
+
+### Debug Mode
+
+Add debug overlay for network testing:
+
+```python
+DEBUG_NETWORK = True
+
+if DEBUG_NETWORK:
+    gui.text(f"Frame: {physics_frame}", pos=(0.02, 0.98))
+    gui.text(f"Ping: {network.ping_ms}ms", pos=(0.02, 0.95))
+    gui.text(f"Remote buffer: {len(input_buffer.remote_inputs)}", pos=(0.02, 0.92))
+    gui.text(f"Local buffer: {len(input_buffer.local_inputs)}", pos=(0.02, 0.89))
+```
+
+### Logging for Desync Debugging
+
+```python
+# Log inputs for replay/debugging
+if DEBUG_NETWORK:
+    with open('netlog.txt', 'a') as f:
+        f.write(f"{physics_frame},{local_inputs},{remote_inputs}\n")
+```
+
+Compare logs between players to find where desync started.
+
+---
+
+## Future Upgrade Path: Rollback Netcode
+
+If delay-based feels too sluggish for competitive play, upgrade to rollback:
+
+### What Changes
+
+| Delay-Based (Current Plan) | Rollback (Future) |
+|---------------------------|-------------------|
+| 4-frame input delay | 0-frame delay (instant response) |
+| Wait for remote inputs | Predict remote inputs |
+| Simple implementation | Complex state management |
+| ~67ms added latency | Feels like offline |
+
+### Rollback Requirements
+
+1. **Save/load game state** - Must snapshot and restore beetle positions
+2. **Re-simulate frames** - When prediction wrong, rewind and replay
+3. **State serialization** - Quick save/load of all beetle state
+4. **GGPO library** - Consider using existing rollback library
+
+### Estimated Additional Work
+
+- Rollback adds ~500-1000 lines of code
+- Requires careful state management
+- Test thoroughly - rollback bugs are subtle
+
+### Recommendation
+
+Start with delay-based. If players complain about lag feel, then invest in rollback. Many successful indie fighting games ship with delay-based netcode.
+
+---
+
 ## Summary
 
 This is a well-structured game for networking. The hard parts (deterministic physics, fixed timestep, small state) are already solved. The implementation is mostly plumbing:
@@ -269,5 +642,7 @@ This is a well-structured game for networking. The hard parts (deterministic phy
 2. Add delay buffer
 3. Hook up Steam SDK
 4. Send/receive 5 bytes per frame
+5. Handle game events (start, death, rematch)
+6. Add lobby UI flow
 
-Total new code: ~200-300 lines across 2 files.
+Total new code: ~300-500 lines across 2-3 files.
