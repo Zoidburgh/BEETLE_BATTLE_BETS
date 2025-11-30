@@ -133,6 +133,22 @@ class PerformanceMonitor:
 # Global performance monitor instance
 perf_monitor = PerformanceMonitor()
 
+# Physics breakdown timing (similar to renderer breakdown)
+_physics_timing = {
+    'input_controls': 0.0,
+    'beetle_physics': 0.0,
+    'ball_physics': 0.0,
+    'debris_particles': 0.0,
+    'death_explosions': 0.0,
+    'respawn_timers': 0.0,
+    'floor_collision': 0.0,
+    'beetle_collision': 0.0,
+}
+
+def get_physics_timing():
+    """Get last frame's physics timing breakdown"""
+    return _physics_timing
+
 # OPTIMIZATION: Pre-computed constants to avoid repeated calculations
 TWO_PI = 2.0 * math.pi  # Avoids ~20 multiplications per frame
 PI_HALF = math.pi * 0.5
@@ -643,6 +659,9 @@ ball_assembling = False
 ball_assembly_timer = 0.0
 BALL_ASSEMBLY_DURATION = 1.5  # Time for ball voxels to assemble
 
+# Track if assembly happened last frame (need one final clear after assembly ends)
+assembly_needs_final_clear = False
+
 # Digit patterns for 0-9 (5 wide x 7 tall, stored as row bitmasks)
 # Each digit is 7 rows, each row is 5 bits (bit 0 = leftmost)
 # Pattern: .###. = 0b01110, .#.#. = 0b01010, etc.
@@ -758,12 +777,20 @@ MAX_BALL_VOXELS = 1000  # Ball is much smaller than beetles
 ball_cache_x = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
 ball_cache_y = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
 ball_cache_z = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
+ball_cache_is_stripe = ti.field(ti.i32, shape=MAX_BALL_VOXELS)  # 1 if stripe, 0 if not (for fast render)
 ball_cache_size = ti.field(ti.i32, shape=())
 
+# Track last rendered ball position for fast clearing (grid coordinates)
+ball_last_grid_x = ti.field(ti.i32, shape=())
+ball_last_grid_y = ti.field(ti.i32, shape=())
+ball_last_grid_z = ti.field(ti.i32, shape=())
+ball_last_rendered = ti.field(ti.i32, shape=())  # 1 if ball was rendered, 0 if not
+
 def init_ball_cache(radius: float):
-    """Pre-compute ball voxel positions relative to center"""
+    """Pre-compute ball voxel positions relative to center (with stripe info)"""
     idx = 0
     r_int = int(radius) + 1
+    stripe_width = 2.0  # Same as render_ball
     for dx in range(-r_int, r_int + 1):
         for dy in range(-r_int, r_int + 1):
             for dz in range(-r_int, r_int + 1):
@@ -773,8 +800,11 @@ def init_ball_cache(radius: float):
                         ball_cache_x[idx] = dx
                         ball_cache_y[idx] = dy
                         ball_cache_z[idx] = dz
+                        # Pre-compute stripe based on x position (default orientation)
+                        ball_cache_is_stripe[idx] = 1 if abs(dx) <= stripe_width else 0
                         idx += 1
     ball_cache_size[None] = idx
+    ball_last_rendered[None] = 0  # No ball rendered yet
     print(f"Ball cache initialized with {idx} voxels (radius={radius})")
 
 @ti.kernel
@@ -859,12 +889,24 @@ def render_beetle_assembly_fast(is_blue, spawn_x, spawn_y, spawn_z, progress):
 @ti.kernel
 def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
                                  t: ti.f32, num_voxels: ti.i32):
-    """GPU-accelerated assembly rendering for ball"""
+    """GPU-accelerated assembly rendering for ball - smooth with per-voxel timing"""
     for i in range(num_voxels):
         # Get cached voxel offset
         lx = ball_cache_x[i]
         ly = ball_cache_y[i]
         lz = ball_cache_z[i]
+
+        # Per-voxel timing offset for staggered assembly (inner voxels arrive first)
+        # Distance from center determines delay - outer voxels start later
+        dist_from_center = ti.sqrt(float(lx*lx + ly*ly + lz*lz))
+        max_dist = 5.0  # Ball radius
+        # Stagger: inner voxels (dist=0) get t, outer voxels (dist=max) get t delayed by 0.3
+        stagger = (dist_from_center / max_dist) * 0.3
+        local_t = ti.max(0.0, ti.min(1.0, (t - stagger) / (1.0 - stagger)))
+
+        # Smooth ease-in-out for less choppy motion
+        # Using smoothstep: 3t^2 - 2t^3
+        smooth_t = local_t * local_t * (3.0 - 2.0 * local_t)
 
         # Target position
         target_x = center_x + lx
@@ -876,10 +918,10 @@ def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti
         start_y = target_y + ball_scatter_y[i]
         start_z = target_z + ball_scatter_z[i]
 
-        # Interpolate
-        current_x = ti.cast(start_x + (target_x - start_x) * t, ti.i32)
-        current_y = ti.cast(start_y + (target_y - start_y) * t, ti.i32)
-        current_z = ti.cast(start_z + (target_z - start_z) * t, ti.i32)
+        # Interpolate with smooth timing
+        current_x = ti.cast(start_x + (target_x - start_x) * smooth_t, ti.i32)
+        current_y = ti.cast(start_y + (target_y - start_y) * smooth_t, ti.i32)
+        current_z = ti.cast(start_z + (target_z - start_z) * smooth_t, ti.i32)
 
         # Bounds check and place only in empty space
         if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
@@ -889,8 +931,8 @@ def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti
 
 def render_ball_assembly_fast(spawn_x, spawn_y, spawn_z, progress):
     """Fast ball assembly rendering using GPU kernel"""
-    # Cubic ease-in
-    t = progress * progress * progress
+    # Use linear progress - smoothing is done per-voxel in the kernel
+    t = progress
 
     # Convert to grid coordinates
     center_x = int(spawn_x) + 64
@@ -4443,6 +4485,86 @@ def render_ball(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, radius: ti.f32, 
                             else:
                                 simulation.voxel_type[vx, vy, vz] = simulation.BALL
 
+@ti.kernel
+def clear_ball_fast(last_gx: ti.i32, last_gy: ti.i32, last_gz: ti.i32, num_voxels: ti.i32):
+    """Clear ball voxels using cached positions (FAST - only clears ~257 voxels instead of 2M)"""
+    for i in range(num_voxels):
+        vx = last_gx + ball_cache_x[i]
+        vy = last_gy + ball_cache_y[i]
+        vz = last_gz + ball_cache_z[i]
+        if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
+            vtype = simulation.voxel_type[vx, vy, vz]
+            if vtype == simulation.BALL or vtype == simulation.BALL_STRIPE:
+                simulation.voxel_type[vx, vy, vz] = 0
+
+@ti.kernel
+def render_ball_fast(grid_x: ti.i32, grid_y: ti.i32, grid_z: ti.i32,
+                     rotation: ti.f32, pitch: ti.f32, roll: ti.f32, num_voxels: ti.i32):
+    """Render ball using cached positions with 3D rotating stripe (FAST)"""
+    # Pre-calculate trig for full 3D rotation
+    cos_yaw = ti.cos(rotation)
+    sin_yaw = ti.sin(rotation)
+    cos_pitch = ti.cos(pitch)
+    sin_pitch = ti.sin(pitch)
+    cos_roll = ti.cos(roll)
+    sin_roll = ti.sin(roll)
+    stripe_width = 2.0
+
+    for i in range(num_voxels):
+        dx = ball_cache_x[i]
+        dy = ball_cache_y[i]
+        dz = ball_cache_z[i]
+
+        vx = grid_x + dx
+        vy = grid_y + dy
+        vz = grid_z + dz
+
+        if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
+            if simulation.voxel_type[vx, vy, vz] == 0:  # Only set if empty
+                # Full 3D rotation for stripe pattern
+                # Step 1: Yaw rotation (around Y axis)
+                temp_x = float(dx) * cos_yaw - float(dz) * sin_yaw
+                temp_z = float(dx) * sin_yaw + float(dz) * cos_yaw
+                temp_y = float(dy)
+
+                # Step 2: Pitch rotation (around Z axis)
+                rot_x = temp_x * cos_pitch - temp_y * sin_pitch
+                rot_y = temp_x * sin_pitch + temp_y * cos_pitch
+                rot_z = temp_z
+
+                # Step 3: Roll rotation (around X axis)
+                final_x = rot_x
+
+                # Use BALL_STRIPE for center stripe, BALL for rest
+                if ti.abs(final_x) <= stripe_width:
+                    simulation.voxel_type[vx, vy, vz] = simulation.BALL_STRIPE
+                else:
+                    simulation.voxel_type[vx, vy, vz] = simulation.BALL
+
+def clear_and_render_ball_fast(ball_x, ball_y, ball_z, rotation, pitch, roll):
+    """Clear old ball position and render at new position using cache (wrapper function)"""
+    num_voxels = ball_cache_size[None]
+    if num_voxels == 0:
+        return  # Cache not initialized
+
+    # Calculate new grid position
+    grid_x = int(ball_x + simulation.n_grid / 2.0)
+    grid_y = int(ball_y + RENDER_Y_OFFSET)
+    grid_z = int(ball_z + simulation.n_grid / 2.0)
+
+    # Clear old position if ball was previously rendered
+    if ball_last_rendered[None] == 1:
+        clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+
+    # Render at new position
+    render_ball_fast(grid_x, grid_y, grid_z, rotation, pitch, roll, num_voxels)
+
+    # Store current position for next clear
+    ball_last_grid_x[None] = grid_x
+    ball_last_grid_y[None] = grid_y
+    ball_last_grid_z[None] = grid_z
+    ball_last_rendered[None] = 1
+
 def check_ball_beetle_collision(beetle_x, beetle_y, beetle_z, beetle_vx, beetle_vz):
     """Check if ball collides with beetle using voxel-perfect detection and apply impulse"""
     if simulation.ball_active[None] == 0:
@@ -6760,12 +6882,20 @@ while window.running:
     # Run physics in fixed increments (may run 0+ times per frame)
     perf_monitor.start('physics')
     physics_iterations_this_frame = 0
+
+    # Reset physics timing for this frame
+    for key in _physics_timing:
+        _physics_timing[key] = 0.0
+
     while accumulator >= PHYSICS_TIMESTEP:
         # Save previous state for interpolation
         beetle_blue.save_previous_state()
         beetle_red.save_previous_state()
         if beetle_ball.active:
             beetle_ball.save_previous_state()
+
+        # === INPUT/CONTROLS TIMING START ===
+        _t_input_start = time.perf_counter()
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
         if beetle_blue.active and not beetle_blue.is_falling:
@@ -7053,6 +7183,10 @@ while window.running:
             beetle_red.rotation += beetle_red.angular_velocity * PHYSICS_TIMESTEP
             beetle_red.rotation = normalize_angle(beetle_red.rotation)
 
+        # === INPUT/CONTROLS TIMING END, BEETLE PHYSICS START ===
+        _t_input_end = time.perf_counter()
+        _physics_timing['input_controls'] += (_t_input_end - _t_input_start) * 1000
+
         # Physics update
         beetle_blue.update_physics(PHYSICS_TIMESTEP)
         beetle_red.update_physics(PHYSICS_TIMESTEP)
@@ -7061,6 +7195,10 @@ while window.running:
         if beetle_ball.active:
             apply_bowl_slide(beetle_blue, physics_params)
             apply_bowl_slide(beetle_red, physics_params)
+
+        # === BEETLE PHYSICS TIMING END ===
+        _t_beetle_phys_end = time.perf_counter()
+        _physics_timing['beetle_physics'] += (_t_beetle_phys_end - _t_input_end) * 1000
 
         # Ball physics update (uses same beetle physics now)
         # Skip physics if ball has exploded (waiting for celebration to end)
@@ -7116,27 +7254,36 @@ while window.running:
                 g['ball_scored_this_fall'] = False
 
             # Ball-beetle collision (uses same collision system as beetle-beetle)
-            # IMPORTANT: Re-render beetles AND ball before collision to use current positions
-            # (Voxels from previous frame would cause "ghost bouncing" off stale positions)
-            clear_dirty_voxels()
-            reset_dirty_voxels()
-            # Re-render ball at current physics position (skip if exploded)
-            clear_ball()
-            if not g['ball_has_exploded']:
-                render_ball(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.radius, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
-            if beetle_blue.active:
-                blue_horn_type_id_phys = 1 if beetle_blue.horn_type == "stag" else (2 if beetle_blue.horn_type == "hercules" else (3 if beetle_blue.horn_type == "scorpion" else (4 if beetle_blue.horn_type == "atlas" else 0)))
-                blue_default_pitch_phys = HORN_DEFAULT_PITCH_SCORPION if beetle_blue.horn_type == "scorpion" else (HORN_DEFAULT_PITCH_STAG if beetle_blue.horn_type == "stag" else (HORN_DEFAULT_PITCH_HERCULES if beetle_blue.horn_type == "hercules" else (HORN_DEFAULT_PITCH_ATLAS if beetle_blue.horn_type == "atlas" else HORN_DEFAULT_PITCH)))
-                blue_tail_pitch_phys = math.radians(15.0 + beetle_blue.tail_rotation_angle)
-                place_animated_beetle_blue(beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll, beetle_blue.horn_pitch, beetle_blue.horn_yaw, blue_tail_pitch_phys, blue_horn_type_id_phys, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_pitch_phys, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction)
-            if beetle_red.active:
-                red_horn_type_id_phys = 1 if beetle_red.horn_type == "stag" else (2 if beetle_red.horn_type == "hercules" else (3 if beetle_red.horn_type == "scorpion" else (4 if beetle_red.horn_type == "atlas" else 0)))
-                red_default_pitch_phys = HORN_DEFAULT_PITCH_SCORPION if beetle_red.horn_type == "scorpion" else (HORN_DEFAULT_PITCH_STAG if beetle_red.horn_type == "stag" else (HORN_DEFAULT_PITCH_HERCULES if beetle_red.horn_type == "hercules" else (HORN_DEFAULT_PITCH_ATLAS if beetle_red.horn_type == "atlas" else HORN_DEFAULT_PITCH)))
-                red_tail_pitch_phys = math.radians(15.0 + beetle_red.tail_rotation_angle)
-                place_animated_beetle_red(beetle_red.x, beetle_red.y, beetle_red.z, beetle_red.rotation, beetle_red.pitch, beetle_red.roll, beetle_red.horn_pitch, beetle_red.horn_yaw, red_tail_pitch_phys, red_horn_type_id_phys, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_pitch_phys, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction)
-            # Now run collision with fresh voxel data
-            beetle_collision(beetle_blue, beetle_ball, physics_params)
-            beetle_collision(beetle_red, beetle_ball, physics_params)
+            # OPTIMIZATION: Only re-render ball and run ball collision if ball is close to beetle
+            # Ball radius ~4, beetle max reach ~20, so collision only possible within ~25 units
+            BALL_COLLISION_THRESHOLD_SQ = 30.0 * 30.0  # 900 = 30 units squared
+
+            # Check distance from ball to each beetle (fast squared distance)
+            blue_dx = beetle_ball.x - beetle_blue.x
+            blue_dy = beetle_ball.y - beetle_blue.y
+            blue_dz = beetle_ball.z - beetle_blue.z
+            blue_dist_sq = blue_dx*blue_dx + blue_dy*blue_dy + blue_dz*blue_dz
+            blue_close_to_ball = beetle_blue.active and blue_dist_sq < BALL_COLLISION_THRESHOLD_SQ
+
+            red_dx = beetle_ball.x - beetle_red.x
+            red_dy = beetle_ball.y - beetle_red.y
+            red_dz = beetle_ball.z - beetle_red.z
+            red_dist_sq = red_dx*red_dx + red_dy*red_dy + red_dz*red_dz
+            red_close_to_ball = beetle_red.active and red_dist_sq < BALL_COLLISION_THRESHOLD_SQ
+
+            # Re-render ball only if any beetle is close (OPTIMIZATION)
+            if blue_close_to_ball or red_close_to_ball:
+                if not g['ball_has_exploded']:
+                    clear_and_render_ball_fast(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
+                # Run ball collision only for close beetles
+                if blue_close_to_ball:
+                    beetle_collision(beetle_blue, beetle_ball, physics_params)
+                if red_close_to_ball:
+                    beetle_collision(beetle_red, beetle_ball, physics_params)
+
+        # === BALL PHYSICS TIMING END ===
+        _t_ball_end = time.perf_counter()
+        _physics_timing['ball_physics'] += (_t_ball_end - _t_beetle_phys_end) * 1000
 
         # Update debris particles (physics, aging) - skip if no debris
         if simulation.num_debris[None] > 0:
@@ -7145,6 +7292,10 @@ while window.running:
             # Cleanup dead debris every 2 frames
             if physics_frame % 2 == 0:
                 cleanup_dead_debris()
+
+        # === DEBRIS PARTICLES TIMING END ===
+        _t_debris_end = time.perf_counter()
+        _physics_timing['debris_particles'] += (_t_debris_end - _t_ball_end) * 1000
 
         # Fall death detection - two-stage system
         POINT_OF_NO_RETURN = -5.0  # Once below this, can't recover (5 voxels below floor)
@@ -7251,6 +7402,12 @@ while window.running:
             g['ball_has_exploded'] = True
             # Hide the ball (stop rendering/physics) but keep it "active" for respawn
             beetle_ball.visible = False
+            # Clear ball voxels immediately when explosion starts (same as beetles)
+            if ball_last_rendered[None] == 1:
+                num_voxels = ball_cache_size[None]
+                if num_voxels > 0:
+                    clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                ball_last_rendered[None] = 0
             print("BALL EXPLOSION!")
 
         # Continue spawning ball particles during explosion
@@ -7266,6 +7423,10 @@ while window.running:
                 spawn_ball_explosion_batch(g['ball_explosion_pos_x'], g['ball_explosion_pos_y'],
                                           g['ball_explosion_pos_z'],
                                           batch_offset, batch_size, TOTAL_PARTICLES)
+
+        # === DEATH/EXPLOSIONS TIMING END ===
+        _t_death_end = time.perf_counter()
+        _physics_timing['death_explosions'] += (_t_death_end - _t_debris_end) * 1000
 
         # Goal celebration - winner gets confetti/flash after ball explodes
         if g['goal_scored_by'] is not None:
@@ -7421,6 +7582,10 @@ while window.running:
                 victory_pulse_timer = 0.0
                 print("Red beetle respawned!")
 
+        # === RESPAWN TIMERS TIMING END ===
+        _t_respawn_end = time.perf_counter()
+        _physics_timing['respawn_timers'] += (_t_respawn_end - _t_death_end) * 1000
+
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling
         if beetle_blue.active and not beetle_blue.is_falling:
@@ -7522,9 +7687,17 @@ while window.running:
                 beetle_red.pitch_velocity += edge_tipping_pitch_vel[None]
                 beetle_red.roll_velocity += edge_tipping_roll_vel[None]
 
+        # === FLOOR COLLISION TIMING END ===
+        _t_floor_end = time.perf_counter()
+        _physics_timing['floor_collision'] += (_t_floor_end - _t_respawn_end) * 1000
+
         # Beetle collision (voxel-perfect) - only if both beetles are active
         if beetle_blue.active and beetle_red.active:
             beetle_collision(beetle_blue, beetle_red, physics_params)
+
+        # === BEETLE COLLISION TIMING END ===
+        _t_collision_end = time.perf_counter()
+        _physics_timing['beetle_collision'] += (_t_collision_end - _t_floor_end) * 1000
 
         # Subtract fixed timestep from accumulator
         accumulator -= PHYSICS_TIMESTEP
@@ -8135,8 +8308,13 @@ while window.running:
         place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction)
 
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
-    clear_assembly_voxels()  # Clear previous frame's assembly voxels
     g = globals()
+    # Track if any assembly is happening this frame
+    any_assembling = g['blue_assembling'] or g['red_assembling'] or g['ball_assembling']
+    # Only clear assembly voxels if assembly is happening OR we need one final clear (OPTIMIZATION)
+    if any_assembling or g['assembly_needs_final_clear']:
+        clear_assembly_voxels()  # Clear previous frame's assembly voxels
+        g['assembly_needs_final_clear'] = any_assembling  # Set flag for next frame if still assembling
     if g['blue_assembling']:
         progress = min(g['blue_assembly_timer'] / ASSEMBLY_DURATION, 1.0)
         # Assemble high above arena (y=50), beetle will drop from y=15 after assembly
@@ -8168,10 +8346,9 @@ while window.running:
         ball_render_pitch = lerp_angle(beetle_ball.prev_pitch, beetle_ball.pitch, alpha)
         ball_render_roll = lerp_angle(beetle_ball.prev_roll, beetle_ball.roll, alpha)
 
-        clear_ball()
-        # Only render ball if it hasn't exploded
+        # Only render ball if it hasn't exploded - OPTIMIZED (clear+render in one call)
         if not ball_has_exploded:
-            render_ball(ball_render_x, ball_render_y, ball_render_z, beetle_ball.radius, ball_render_rotation, ball_render_pitch, ball_render_roll)
+            clear_and_render_ball_fast(ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
 
             # Add shadow under ball when airborne (ball center must be high enough that bottom clears ground)
             # Ball bottom = ball_render_y - radius, so ball is airborne when bottom > ~1
@@ -8276,6 +8453,19 @@ while window.running:
                 window.GUI.text(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms")
                 window.GUI.text(f"  voxel_count: {rt.get('voxel_count', 0)}")
 
+            # Physics sub-timing breakdown
+            pt = get_physics_timing()
+            if pt:
+                window.GUI.text("--- Physics Breakdown (last frame) ---")
+                window.GUI.text(f"  input_controls: {pt.get('input_controls', 0):.2f}ms")
+                window.GUI.text(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms")
+                window.GUI.text(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms")
+                window.GUI.text(f"  debris_particles: {pt.get('debris_particles', 0):.2f}ms")
+                window.GUI.text(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms")
+                window.GUI.text(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms")
+                window.GUI.text(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms")
+                window.GUI.text(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms")
+
     # Performance display toggle buttons
     if window.GUI.button("Toggle Perf Stats"):
         perf_monitor.show_stats = not perf_monitor.show_stats
@@ -8297,6 +8487,18 @@ while window.running:
                     f.write(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms\n")
                     f.write(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms\n")
                     f.write(f"  voxel_count: {rt.get('voxel_count', 0)}\n")
+                # Add physics breakdown
+                pt = get_physics_timing()
+                if pt:
+                    f.write("\n--- Physics Breakdown (last frame) ---\n")
+                    f.write(f"  input_controls: {pt.get('input_controls', 0):.2f}ms\n")
+                    f.write(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms\n")
+                    f.write(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms\n")
+                    f.write(f"  debris_particles: {pt.get('debris_particles', 0):.2f}ms\n")
+                    f.write(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms\n")
+                    f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
+                    f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")
+                    f.write(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms\n")
             print("Performance log saved to perf_log.txt")
 
     window.GUI.text("")
@@ -8644,8 +8846,14 @@ while window.running:
     ball_button_text = "Disable Ball" if beetle_ball.active else "Enable Ball"
     if window.GUI.button(ball_button_text):
         if beetle_ball.active:
-            # Disabling ball - clear voxels and bowl perimeter
-            clear_ball()
+            # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
+            if ball_last_rendered[None] == 1:
+                num_voxels = ball_cache_size[None]
+                if num_voxels > 0:
+                    clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                ball_last_rendered[None] = 0
+            else:
+                clear_ball()  # Fallback to full clear if ball position unknown
             simulation.clear_bowl_perimeter()
             # Reset scores when leaving ball mode
             blue_score = 0
