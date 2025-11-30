@@ -602,6 +602,7 @@ beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of a
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
 beetle_ball.active = False  # Ball starts disabled
 beetle_ball.radius = 4.0  # Default ball radius
+ball_cache_initialized = False  # Will be initialized when ball is first activated
 
 # Ball mode scoring
 blue_score = 0
@@ -628,6 +629,19 @@ SCORE_BOUNCE_DURATION = 0.5  # Duration of bounce animation
 blue_respawn_timer = 0.0  # Timer for blue beetle respawn
 red_respawn_timer = 0.0   # Timer for red beetle respawn
 BEETLE_RESPAWN_DELAY = 4.0  # Same timing as ball celebration
+
+# Beetle assembly animation state (voxel rain effect)
+blue_assembling = False
+red_assembling = False
+blue_assembly_timer = 0.0
+red_assembly_timer = 0.0
+ASSEMBLY_DURATION = 1.5  # Time for voxels to assemble
+ASSEMBLY_START_TIME = 2.5  # When assembly starts during respawn delay
+
+# Ball assembly animation state (voxel rain effect)
+ball_assembling = False
+ball_assembly_timer = 0.0
+BALL_ASSEMBLY_DURATION = 1.5  # Time for ball voxels to assemble
 
 # Digit patterns for 0-9 (5 wide x 7 tall, stored as row bitmasks)
 # Each digit is 7 rows, each row is 5 bits (bit 0 = leftmost)
@@ -699,6 +713,181 @@ def clear_score_digits():
         if simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_BLUE or \
            simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_RED:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+# Assembly animation voxel type (temporary, for clearing)
+ASSEMBLY_VOXEL_BLUE = 25
+ASSEMBLY_VOXEL_RED = 26
+ASSEMBLY_VOXEL_BALL = 27
+
+# Pre-computed scatter offsets for assembly animation (computed once at startup)
+MAX_ASSEMBLY_VOXELS = 2500  # Same as MAX_BODY_VOXELS
+assembly_scatter_x = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
+assembly_scatter_y = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
+assembly_scatter_z = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
+
+# Pre-compute scatter offsets once at startup
+import random as _random
+for _i in range(MAX_ASSEMBLY_VOXELS):
+    _random.seed(_i * 31337)
+    assembly_scatter_x[_i] = _random.uniform(-20, 20)
+    assembly_scatter_y[_i] = _random.uniform(25, 45)
+    assembly_scatter_z[_i] = _random.uniform(-20, 20)
+
+@ti.kernel
+def clear_assembly_voxels():
+    """Clear all assembly animation voxels"""
+    for i, j, k in ti.ndrange(128, 128, 128):
+        if simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BLUE or \
+           simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_RED or \
+           simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BALL:
+            simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+# Ball voxel cache for assembly animation (pre-computed sphere voxels)
+MAX_BALL_VOXELS = 1000  # Ball is much smaller than beetles
+ball_cache_x = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
+ball_cache_y = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
+ball_cache_z = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
+ball_cache_size = ti.field(ti.i32, shape=())
+
+def init_ball_cache(radius: float):
+    """Pre-compute ball voxel positions relative to center"""
+    idx = 0
+    r_int = int(radius) + 1
+    for dx in range(-r_int, r_int + 1):
+        for dy in range(-r_int, r_int + 1):
+            for dz in range(-r_int, r_int + 1):
+                dist_sq = dx*dx + dy*dy + dz*dz
+                if dist_sq <= radius * radius:
+                    if idx < MAX_BALL_VOXELS:
+                        ball_cache_x[idx] = dx
+                        ball_cache_y[idx] = dy
+                        ball_cache_z[idx] = dz
+                        idx += 1
+    ball_cache_size[None] = idx
+    print(f"Ball cache initialized with {idx} voxels (radius={radius})")
+
+@ti.kernel
+def render_assembly_kernel_blue(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
+                                 t: ti.f32, num_voxels: ti.i32):
+    """GPU-accelerated assembly rendering for blue beetle"""
+    for i in range(num_voxels):
+        # Get cached voxel offset
+        lx = blue_body_cache_x[i]
+        ly = blue_body_cache_y[i]
+        lz = blue_body_cache_z[i]
+
+        # Target position
+        target_x = center_x + lx
+        target_y = center_y + ly
+        target_z = center_z + lz
+
+        # Start position (scattered above)
+        start_x = target_x + assembly_scatter_x[i]
+        start_y = target_y + assembly_scatter_y[i]
+        start_z = target_z + assembly_scatter_z[i]
+
+        # Interpolate
+        current_x = ti.cast(start_x + (target_x - start_x) * t, ti.i32)
+        current_y = ti.cast(start_y + (target_y - start_y) * t, ti.i32)
+        current_z = ti.cast(start_z + (target_z - start_z) * t, ti.i32)
+
+        # Bounds check and place only in empty space
+        if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
+            existing = simulation.voxel_type[current_x, current_y, current_z]
+            if existing == 0 or existing == ASSEMBLY_VOXEL_BLUE or existing == ASSEMBLY_VOXEL_RED:
+                simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_BLUE
+
+@ti.kernel
+def render_assembly_kernel_red(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
+                                t: ti.f32, num_voxels: ti.i32):
+    """GPU-accelerated assembly rendering for red beetle"""
+    for i in range(num_voxels):
+        # Get cached voxel offset
+        lx = red_body_cache_x[i]
+        ly = red_body_cache_y[i]
+        lz = red_body_cache_z[i]
+
+        # Target position
+        target_x = center_x + lx
+        target_y = center_y + ly
+        target_z = center_z + lz
+
+        # Start position (scattered above)
+        start_x = target_x + assembly_scatter_x[i]
+        start_y = target_y + assembly_scatter_y[i]
+        start_z = target_z + assembly_scatter_z[i]
+
+        # Interpolate
+        current_x = ti.cast(start_x + (target_x - start_x) * t, ti.i32)
+        current_y = ti.cast(start_y + (target_y - start_y) * t, ti.i32)
+        current_z = ti.cast(start_z + (target_z - start_z) * t, ti.i32)
+
+        # Bounds check and place only in empty space
+        if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
+            existing = simulation.voxel_type[current_x, current_y, current_z]
+            if existing == 0 or existing == ASSEMBLY_VOXEL_BLUE or existing == ASSEMBLY_VOXEL_RED:
+                simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_RED
+
+def render_beetle_assembly_fast(is_blue, spawn_x, spawn_y, spawn_z, progress):
+    """Fast assembly rendering using GPU kernel"""
+    # Cubic ease-in
+    t = progress * progress * progress
+
+    # Convert to grid coordinates
+    center_x = int(spawn_x) + 64
+    center_y = int(spawn_y)
+    center_z = int(spawn_z) + 64
+
+    if is_blue:
+        num_voxels = blue_body_cache_size[None]
+        render_assembly_kernel_blue(center_x, center_y, center_z, t, num_voxels)
+    else:
+        num_voxels = red_body_cache_size[None]
+        render_assembly_kernel_red(center_x, center_y, center_z, t, num_voxels)
+
+@ti.kernel
+def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
+                                 t: ti.f32, num_voxels: ti.i32):
+    """GPU-accelerated assembly rendering for ball"""
+    for i in range(num_voxels):
+        # Get cached voxel offset
+        lx = ball_cache_x[i]
+        ly = ball_cache_y[i]
+        lz = ball_cache_z[i]
+
+        # Target position
+        target_x = center_x + lx
+        target_y = center_y + ly
+        target_z = center_z + lz
+
+        # Start position (scattered above)
+        start_x = target_x + assembly_scatter_x[i]
+        start_y = target_y + assembly_scatter_y[i]
+        start_z = target_z + assembly_scatter_z[i]
+
+        # Interpolate
+        current_x = ti.cast(start_x + (target_x - start_x) * t, ti.i32)
+        current_y = ti.cast(start_y + (target_y - start_y) * t, ti.i32)
+        current_z = ti.cast(start_z + (target_z - start_z) * t, ti.i32)
+
+        # Bounds check and place only in empty space
+        if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
+            existing = simulation.voxel_type[current_x, current_y, current_z]
+            if existing == 0 or existing == ASSEMBLY_VOXEL_BALL:
+                simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_BALL
+
+def render_ball_assembly_fast(spawn_x, spawn_y, spawn_z, progress):
+    """Fast ball assembly rendering using GPU kernel"""
+    # Cubic ease-in
+    t = progress * progress * progress
+
+    # Convert to grid coordinates
+    center_x = int(spawn_x) + 64
+    center_y = int(spawn_y)
+    center_z = int(spawn_z) + 64
+
+    num_voxels = ball_cache_size[None]
+    render_assembly_kernel_ball(center_x, center_y, center_z, t, num_voxels)
 
 @ti.kernel
 def clear_beetles():
@@ -7084,6 +7273,20 @@ while window.running:
 
             # Reset celebration after it's done
             CELEBRATION_DURATION = 4.0  # Total celebration time
+
+            # Start ball assembly animation at 2.5 seconds into celebration
+            if g['goal_celebration_timer'] >= ASSEMBLY_START_TIME and not g['ball_assembling']:
+                # Initialize ball cache for assembly animation if not already done
+                if ball_cache_size[None] == 0:
+                    init_ball_cache(beetle_ball.radius)
+                g['ball_assembling'] = True
+                g['ball_assembly_timer'] = 0.0
+                print("Ball assembly started!")
+
+            # Update ball assembly timer during assembly
+            if g['ball_assembling']:
+                g['ball_assembly_timer'] += PHYSICS_TIMESTEP
+
             if g['goal_celebration_timer'] >= CELEBRATION_DURATION:
                 g['goal_scored_by'] = None
                 g['goal_celebration_timer'] = 0.0
@@ -7093,8 +7296,10 @@ while window.running:
                 # Reset ball for next round - respawn at center
                 g['ball_has_exploded'] = False
                 g['ball_explosion_timer'] = 0.0
+                g['ball_assembling'] = False
+                g['ball_assembly_timer'] = 0.0
                 beetle_ball.x = 0.0
-                beetle_ball.y = 20.0  # Drop from higher than beetles
+                beetle_ball.y = 30.0  # Drop from higher than beetles (assembly happens at y=55)
                 beetle_ball.z = 0.0
                 beetle_ball.vx = 0.0
                 beetle_ball.vy = 0.0
@@ -7130,11 +7335,23 @@ while window.running:
 
         # Beetle respawn timers (normal mode only - ball mode doesn't respawn beetles from falling)
         if not beetle_ball.active:
-            # Blue beetle respawn
+            # Blue beetle respawn with assembly animation
             if g['blue_respawn_timer'] > 0:
                 g['blue_respawn_timer'] -= PHYSICS_TIMESTEP
+                # Start assembly animation when 1.5s remains
+                remaining = g['blue_respawn_timer']
+                if remaining <= ASSEMBLY_DURATION and not g['blue_assembling']:
+                    g['blue_assembling'] = True
+                    g['blue_assembly_timer'] = 0.0
+                    print("Blue beetle assembly started!")
+                # Update assembly timer
+                if g['blue_assembling']:
+                    g['blue_assembly_timer'] += PHYSICS_TIMESTEP
+                # Complete respawn when timer hits 0
                 if g['blue_respawn_timer'] <= 0:
                     g['blue_respawn_timer'] = 0
+                    g['blue_assembling'] = False
+                    g['blue_assembly_timer'] = 0.0
                     # Respawn blue beetle at center (drop from above)
                     beetle_blue.x = 0.0   # Center
                     beetle_blue.y = 15.0  # Drop from above
@@ -7157,11 +7374,23 @@ while window.running:
                     victory_pulse_timer = 0.0
                     print("Blue beetle respawned!")
 
-            # Red beetle respawn
+            # Red beetle respawn with assembly animation
             if g['red_respawn_timer'] > 0:
                 g['red_respawn_timer'] -= PHYSICS_TIMESTEP
+                # Start assembly animation when 1.5s remains
+                remaining = g['red_respawn_timer']
+                if remaining <= ASSEMBLY_DURATION and not g['red_assembling']:
+                    g['red_assembling'] = True
+                    g['red_assembly_timer'] = 0.0
+                    print("Red beetle assembly started!")
+                # Update assembly timer
+                if g['red_assembling']:
+                    g['red_assembly_timer'] += PHYSICS_TIMESTEP
+                # Complete respawn when timer hits 0
                 if g['red_respawn_timer'] <= 0:
                     g['red_respawn_timer'] = 0
+                    g['red_assembling'] = False
+                    g['red_assembly_timer'] = 0.0
                     # Respawn red beetle at center (drop from above)
                     beetle_red.x = 0.0    # Center
                     beetle_red.y = 15.0   # Drop from above
@@ -7897,6 +8126,25 @@ while window.running:
         # Render red beetle using its own cache
         place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction)
 
+    # Render beetle assembly animations (voxel rain effect) - GPU accelerated
+    clear_assembly_voxels()  # Clear previous frame's assembly voxels
+    g = globals()
+    if g['blue_assembling']:
+        progress = min(g['blue_assembly_timer'] / ASSEMBLY_DURATION, 1.0)
+        # Assemble high above arena (y=50), beetle will drop from y=15 after assembly
+        render_beetle_assembly_fast(True, 0.0, 50.0, 0.0, progress)
+
+    if g['red_assembling']:
+        progress = min(g['red_assembly_timer'] / ASSEMBLY_DURATION, 1.0)
+        # Assemble high above arena (y=50), beetle will drop from y=15 after assembly
+        render_beetle_assembly_fast(False, 0.0, 50.0, 0.0, progress)
+
+    # Render ball assembly animation (voxel rain effect)
+    if g['ball_assembling'] and ball_cache_size[None] > 0:
+        progress = min(g['ball_assembly_timer'] / BALL_ASSEMBLY_DURATION, 1.0)
+        # Assemble high above arena (y=59), ball will drop from y=30 after assembly
+        render_ball_assembly_fast(0.0, 59.0, 0.0, progress)
+
     perf_monitor.stop('beetle_render')
 
     # === BALL RENDER TIMING ===
@@ -8396,9 +8644,13 @@ while window.running:
             red_score = 0
         beetle_ball.active = not beetle_ball.active
         if beetle_ball.active:
+            # Initialize ball cache for assembly animation if not already done
+            if not ball_cache_initialized:
+                init_ball_cache(beetle_ball.radius)
+                ball_cache_initialized = True
             # Reset ball to center when enabling
             beetle_ball.x = 0.0
-            beetle_ball.y = 20.0  # Drop from higher than beetles
+            beetle_ball.y = 30.0  # Drop from higher than beetles
             beetle_ball.z = 0.0
             beetle_ball.vx = 0.0
             beetle_ball.vy = 0.0
@@ -8433,6 +8685,8 @@ while window.running:
         new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
         if new_ball_radius != int(beetle_ball.radius):
             beetle_ball.radius = float(new_ball_radius)
+            # Reinitialize ball cache when radius changes
+            init_ball_cache(beetle_ball.radius)
         window.GUI.text(f"Ball Position: ({beetle_ball.x:.1f}, {beetle_ball.y:.1f}, {beetle_ball.z:.1f})")
         window.GUI.text(f"Ball Velocity: ({beetle_ball.vx:.1f}, {beetle_ball.vy:.1f}, {beetle_ball.vz:.1f})")
 

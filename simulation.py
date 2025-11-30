@@ -59,6 +59,7 @@ SLIPPERY = 21  # Slippery bowl perimeter (ball mode only)
 GOAL = 22  # Goal doorway walls (ball mode only)
 SCORE_DIGIT_BLUE = 23  # Blue team floating score digit
 SCORE_DIGIT_RED = 24  # Red team floating score digit
+ASSEMBLY_VOXEL_BALL = 27  # Ball assembly animation voxel
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors
@@ -87,6 +88,12 @@ red_leg_color[None] = ti.Vector([1.0, 0.5, 0.3])  # Lighter orange/red
 red_leg_tip_color[None] = ti.Vector([0.3, 0.0, 0.0])  # Very dark red
 red_stripe_color[None] = ti.Vector([0.85, 0.65, 0.2])  # Rich gold/bronze
 red_horn_tip_color[None] = ti.Vector([0.4, 0.1, 0.1])  # Deep crimson
+
+# Ball colors (for future customization)
+ball_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+ball_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+ball_color[None] = ti.Vector([0.65, 0.45, 0.25])  # Light brown dung color
+ball_stripe_color[None] = ti.Vector([0.35, 0.22, 0.1])  # Darker brown stripe
 
 # Material property functions (for physics calculations)
 @ti.func
