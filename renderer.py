@@ -118,13 +118,13 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 15:  # STINGER_TIP_BLACK
         color = ti.math.vec3(0.15, 0.15, 0.15)  # Dark grey/black
 
-    # Soccer ball - bright orange/yellow
+    # Dung ball - light brown
     elif voxel_type == 16:  # BALL
-        color = ti.math.vec3(1.0, 0.6, 0.0)  # Bright orange
+        color = ti.math.vec3(0.65, 0.45, 0.25)  # Light brown dung color
 
-    # Soccer ball stripe - darker for contrast
+    # Dung ball stripe - darker brown for contrast
     elif voxel_type == 17:  # BALL_STRIPE
-        color = ti.math.vec3(0.2, 0.1, 0.0)  # Dark brown/black
+        color = ti.math.vec3(0.35, 0.22, 0.1)  # Darker brown stripe
 
     # Shadow blob beneath airborne beetles (darker than arena floor)
     elif voxel_type == 20:  # SHADOW

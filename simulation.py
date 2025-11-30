@@ -361,7 +361,7 @@ def render_bowl_perimeter():
     arena_radius = 32
     bowl_width = 12
     floor_y_offset = 33
-    bowl_slope = 0.4  # Height increase per voxel outward
+    bowl_slope = 0.15  # Height increase per voxel outward (0.15 = rises 1 voxel every ~7 voxels)
 
     # Iterate through the bowl ring area
     for i in range(center_x - arena_radius - bowl_width - 1, center_x + arena_radius + bowl_width + 2):
@@ -391,7 +391,7 @@ def clear_bowl_perimeter():
     arena_radius = 32
     bowl_width = 12
     floor_y_offset = 33
-    bowl_slope = 0.4
+    bowl_slope = 0.15
     max_bowl_height = int(bowl_width * bowl_slope) + 2
 
     # Clear the bowl ring area

@@ -248,7 +248,7 @@ BALL_SEPARATION_FORCE = 0.9  # How hard ball pushes away from beetles (0.1-2.0)
 BALL_MOMENTUM_TRANSFER = 1.5  # How much beetle velocity transfers to ball (0.0-2.0)
 BALL_RESTITUTION = 0.2  # Bounciness coefficient (0=no bounce, 1=full bounce)
 BALL_MASS_RATIO = 0.6  # Ball weight vs beetle (0.1=very light, 2.0=heavy)
-BALL_ROLLING_FRICTION = 0.84  # Horizontal slowdown (0.80=high friction, 0.99=ice)
+BALL_ROLLING_FRICTION = 0.99  # Horizontal slowdown (0.80=high friction, 0.99=ice)
 BALL_GROUND_BOUNCE = 0.8  # Floor bounce coefficient (0=dead stop, 0.8=super bouncy)
 BALL_PUSH_MULTIPLIER = 3.9  # How easily beetles can push the ball (1.0=normal, 3.0=very easy)
 BALL_SPIN_MULTIPLIER = 4.3  # How easily ball spins when hit (1.0=normal, 4.0=very spinny)
@@ -601,7 +601,7 @@ beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (t
 beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of arena, no rotation matters)
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
 beetle_ball.active = False  # Ball starts disabled
-beetle_ball.radius = 5.0  # Default ball radius
+beetle_ball.radius = 4.0  # Default ball radius
 
 @ti.kernel
 def clear_beetles():
@@ -7596,6 +7596,16 @@ while window.running:
 
         clear_ball()
         render_ball(ball_render_x, ball_render_y, ball_render_z, beetle_ball.radius, ball_render_rotation, ball_render_pitch, ball_render_roll)
+
+        # Add shadow under ball when airborne (ball center must be high enough that bottom clears ground)
+        # Ball bottom = ball_render_y - radius, so ball is airborne when bottom > ~1
+        ball_bottom_y = ball_render_y - beetle_ball.radius
+        if ball_bottom_y > 2.0:  # Ball is clearly off the ground
+            height_factor = min((ball_bottom_y - 2.0) / (SHADOW_MAX_HEIGHT - 2.0), 1.0)
+            # Ball shadow uses same size formula as beetles (SHADOW_BASE_RADIUS to SHADOW_MAX_RADIUS)
+            ball_shadow_radius = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+            place_shadow_kernel(ball_render_x, ball_render_z, ball_shadow_radius, floor_y)
+            shadows_were_placed = True
 
     perf_monitor.stop('ball_render')
 
