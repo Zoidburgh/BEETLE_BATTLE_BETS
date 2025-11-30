@@ -624,6 +624,11 @@ blue_score_bounce_timer = 0.0  # Timer for blue digit bounce animation
 red_score_bounce_timer = 0.0  # Timer for red digit bounce animation
 SCORE_BOUNCE_DURATION = 0.5  # Duration of bounce animation
 
+# Beetle respawn state
+blue_respawn_timer = 0.0  # Timer for blue beetle respawn
+red_respawn_timer = 0.0   # Timer for red beetle respawn
+BEETLE_RESPAWN_DELAY = 4.0  # Same timing as ball celebration
+
 # Digit patterns for 0-9 (5 wide x 7 tall, stored as row bitmasks)
 # Each digit is 7 rows, each row is 5 bits (bit 0 = leftmost)
 # Pattern: .###. = 0b01110, .#.#. = 0b01010, etc.
@@ -6967,6 +6972,12 @@ while window.running:
             beetle_blue.explosion_pos_z = beetle_blue.z
             beetle_blue.explosion_timer = EXPLOSION_DURATION
             beetle_blue.has_exploded = True
+            # In normal mode (not ball mode), opponent scores and we start respawn timer
+            if not beetle_ball.active:
+                g['red_score'] = g['red_score'] + 1
+                g['red_score_bounce_timer'] = SCORE_BOUNCE_DURATION
+                g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                print(f"RED SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
             print("BLUE BEETLE EXPLOSION STARTED!")
 
         # Continue spawning particles during explosion
@@ -7000,6 +7011,12 @@ while window.running:
             beetle_red.explosion_pos_z = beetle_red.z
             beetle_red.explosion_timer = EXPLOSION_DURATION
             beetle_red.has_exploded = True
+            # In normal mode (not ball mode), opponent scores and we start respawn timer
+            if not beetle_ball.active:
+                g['blue_score'] = g['blue_score'] + 1
+                g['blue_score_bounce_timer'] = SCORE_BOUNCE_DURATION
+                g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
             print("RED BEETLE EXPLOSION STARTED!")
 
         # Continue spawning particles during explosion
@@ -7104,6 +7121,56 @@ while window.running:
                 print("\n" + "="*50)
                 print("BLUE BEETLE WINS!")
                 print("="*50 + "\n")
+
+        # Beetle respawn timers (normal mode only - ball mode doesn't respawn beetles from falling)
+        if not beetle_ball.active:
+            # Blue beetle respawn
+            if g['blue_respawn_timer'] > 0:
+                g['blue_respawn_timer'] -= PHYSICS_TIMESTEP
+                if g['blue_respawn_timer'] <= 0:
+                    g['blue_respawn_timer'] = 0
+                    # Respawn blue beetle at spawn position (west side)
+                    beetle_blue.x = -20.0  # West spawn in physics space
+                    beetle_blue.y = 15.0   # Drop from above
+                    beetle_blue.z = 0.0
+                    beetle_blue.vx = 0.0
+                    beetle_blue.vy = 0.0
+                    beetle_blue.vz = 0.0
+                    beetle_blue.rotation = 0.0  # Facing east
+                    beetle_blue.pitch = 0.0
+                    beetle_blue.roll = 0.0
+                    beetle_blue.angular_velocity = 0.0
+                    beetle_blue.pitch_velocity = 0.0
+                    beetle_blue.roll_velocity = 0.0
+                    beetle_blue.active = True
+                    beetle_blue.has_exploded = False
+                    beetle_blue.is_falling = False
+                    beetle_blue.on_ground = False  # Will fall to ground
+                    print("Blue beetle respawned!")
+
+            # Red beetle respawn
+            if g['red_respawn_timer'] > 0:
+                g['red_respawn_timer'] -= PHYSICS_TIMESTEP
+                if g['red_respawn_timer'] <= 0:
+                    g['red_respawn_timer'] = 0
+                    # Respawn red beetle at spawn position (east side)
+                    beetle_red.x = 20.0   # East spawn in physics space
+                    beetle_red.y = 15.0   # Drop from above
+                    beetle_red.z = 0.0
+                    beetle_red.vx = 0.0
+                    beetle_red.vy = 0.0
+                    beetle_red.vz = 0.0
+                    beetle_red.rotation = math.pi  # Facing west
+                    beetle_red.pitch = 0.0
+                    beetle_red.roll = 0.0
+                    beetle_red.angular_velocity = 0.0
+                    beetle_red.pitch_velocity = 0.0
+                    beetle_red.roll_velocity = 0.0
+                    beetle_red.active = True
+                    beetle_red.has_exploded = False
+                    beetle_red.is_falling = False
+                    beetle_red.on_ground = False  # Will fall to ground
+                    print("Red beetle respawned!")
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling
@@ -7849,48 +7916,48 @@ while window.running:
                 place_shadow_kernel(ball_render_x, ball_render_z, ball_shadow_radius, floor_y)
                 shadows_were_placed = True
 
-        # Render floating score digits above goal pits
-        clear_score_digits()
-
-        # Update bounce timers
-        if blue_score_bounce_timer > 0:
-            blue_score_bounce_timer -= 1.0 / 60.0  # Approximate frame time
-            if blue_score_bounce_timer < 0:
-                blue_score_bounce_timer = 0
-
-        if red_score_bounce_timer > 0:
-            red_score_bounce_timer -= 1.0 / 60.0
-            if red_score_bounce_timer < 0:
-                red_score_bounce_timer = 0
-
-        # Calculate bounce scale using sin for smooth bounce (1.0 -> 1.5 -> 1.0)
-        def get_bounce_scale(timer):
-            if timer <= 0:
-                return 1.0
-            # Normalize timer to 0-1 range (1 at start, 0 at end)
-            t = timer / SCORE_BOUNCE_DURATION
-            # Use sin for smooth bounce: peaks at t=0.5
-            return 1.0 + 0.5 * math.sin(t * math.pi)
-
-        blue_scale = get_bounce_scale(blue_score_bounce_timer)
-        red_scale = get_bounce_scale(red_score_bounce_timer)
-
-        # Digit positions in grid coords:
-        # Blue score hovers above RED goal pit (east, x=96) - where blue tries to score
-        # Red score hovers above BLUE goal pit (west, x=32) - where red tries to score
-        digit_y = 53  # Height above floor (floor is at y=33)
-
-        # Blue score digit above red goal (east)
-        blue_digit_x = 96  # Center over red goal pit
-        render_score_digit(blue_score % 10, blue_digit_x, digit_y, 64,
-                          simulation.SCORE_DIGIT_BLUE, blue_scale)
-
-        # Red score digit above blue goal (west)
-        red_digit_x = 32  # Center over blue goal pit
-        render_score_digit(red_score % 10, red_digit_x, digit_y, 64,
-                          simulation.SCORE_DIGIT_RED, red_scale)
-
     perf_monitor.stop('ball_render')
+
+    # Render floating score digits above goal pits (always visible, not just in ball mode)
+    clear_score_digits()
+
+    # Update bounce timers
+    if blue_score_bounce_timer > 0:
+        blue_score_bounce_timer -= 1.0 / 60.0  # Approximate frame time
+        if blue_score_bounce_timer < 0:
+            blue_score_bounce_timer = 0
+
+    if red_score_bounce_timer > 0:
+        red_score_bounce_timer -= 1.0 / 60.0
+        if red_score_bounce_timer < 0:
+            red_score_bounce_timer = 0
+
+    # Calculate bounce scale using sin for smooth bounce (1.0 -> 1.5 -> 1.0)
+    def get_bounce_scale(timer):
+        if timer <= 0:
+            return 1.0
+        # Normalize timer to 0-1 range (1 at start, 0 at end)
+        t = timer / SCORE_BOUNCE_DURATION
+        # Use sin for smooth bounce: peaks at t=0.5
+        return 1.0 + 0.5 * math.sin(t * math.pi)
+
+    blue_scale = get_bounce_scale(blue_score_bounce_timer)
+    red_scale = get_bounce_scale(red_score_bounce_timer)
+
+    # Digit positions in grid coords:
+    # Blue score hovers above RED goal pit (east, x=96)
+    # Red score hovers above BLUE goal pit (west, x=32)
+    digit_y = 53  # Height above floor (floor is at y=33)
+
+    # Blue score digit above red goal (east)
+    blue_digit_x = 96  # Center over red goal pit
+    render_score_digit(blue_score % 10, blue_digit_x, digit_y, 64,
+                      simulation.SCORE_DIGIT_BLUE, blue_scale)
+
+    # Red score digit above blue goal (west)
+    red_digit_x = 32  # Center over blue goal pit
+    render_score_digit(red_score % 10, red_digit_x, digit_y, 64,
+                      simulation.SCORE_DIGIT_RED, red_scale)
 
     # === SCENE RENDER TIMING ===
     perf_monitor.start('scene_render')
@@ -8312,6 +8379,9 @@ while window.running:
             # Disabling ball - clear voxels and bowl perimeter
             clear_ball()
             simulation.clear_bowl_perimeter()
+            # Reset scores when leaving ball mode
+            blue_score = 0
+            red_score = 0
         beetle_ball.active = not beetle_ball.active
         if beetle_ball.active:
             # Reset ball to center when enabling
