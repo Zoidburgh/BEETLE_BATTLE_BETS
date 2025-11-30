@@ -139,7 +139,7 @@ PI_HALF = math.pi * 0.5
 PI_ONE_HALF = math.pi * 1.5
 
 # Shadow blob constants (for airborne beetles)
-SHADOW_HEIGHT_THRESHOLD = 2.0  # Only show shadow when Y > 2
+SHADOW_HEIGHT_THRESHOLD = 3.0  # Only show shadow when Y > 3
 SHADOW_MAX_HEIGHT = 25.0  # Shadow max size at this height
 SHADOW_BASE_RADIUS = 1  # Base radius in voxels (close to ground)
 SHADOW_MAX_RADIUS = 8  # Max radius at max height
@@ -4954,7 +4954,10 @@ def check_stag_inner_edge_collision(stag_beetle, target_beetle, pitch, yaw):
             inner_edge_threshold = 5.0
             near_left_inner = dist_to_left_inner < inner_edge_threshold and dot_right < 0
             near_right_inner = dist_to_right_inner < inner_edge_threshold and dot_right > 0
-            in_center_gap = abs(dot_right) < pincer_offset
+
+            # Only trigger squeeze when actually touching pincers, not when in center gap
+            # Center gap collision only counts when pincers are nearly closed (pincer_offset < 4)
+            in_center_gap = abs(dot_right) < pincer_offset and pincer_offset < 4.0
 
             if near_left_inner or near_right_inner or in_center_gap:
                 collision_detected = True
@@ -6275,18 +6278,19 @@ while window.running:
                     # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
 
-                    # STAG SQUEEZE CHECK: When closing stag pincers, check for inner edge collision
+                    # STAG SQUEEZE CHECK: Use actual voxel collision detection
+                    # Only apply squeeze effects if hook interior voxels are touching opponent
                     if beetle_blue.horn_type == "stag" and beetle_red.active:
-                        collision, dist, push_x, push_z = check_stag_inner_edge_collision(
-                            beetle_blue, beetle_red, beetle_blue.horn_pitch, beetle_blue.horn_yaw
-                        )
-                        if collision:
+                        has_hook_contact = collision_has_hook_interiors[None] == 1
+                        if has_hook_contact:
                             # Squeeze with resistance: apply heavy damping
                             effective_speed *= (1.0 - STAG_SQUEEZE_DAMPING)
                             # Apply push force to trapped beetle (forward + pitch up front + lift)
+                            forward_x = math.cos(beetle_blue.rotation)
+                            forward_z = math.sin(beetle_blue.rotation)
                             push_force = 40.0 * PHYSICS_TIMESTEP
-                            beetle_red.vx += push_x * push_force
-                            beetle_red.vz += push_z * push_force
+                            beetle_red.vx += forward_x * push_force
+                            beetle_red.vz += forward_z * push_force
                             beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
                             beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
 
@@ -6413,18 +6417,19 @@ while window.running:
                     # N key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
 
-                    # STAG SQUEEZE CHECK: When closing stag pincers, check for inner edge collision
+                    # STAG SQUEEZE CHECK: Use actual voxel collision detection
+                    # Only apply squeeze effects if hook interior voxels are touching opponent
                     if beetle_red.horn_type == "stag" and beetle_blue.active:
-                        collision, dist, push_x, push_z = check_stag_inner_edge_collision(
-                            beetle_red, beetle_blue, beetle_red.horn_pitch, beetle_red.horn_yaw
-                        )
-                        if collision:
+                        has_hook_contact = collision_has_hook_interiors[None] == 1
+                        if has_hook_contact:
                             # Squeeze with resistance: apply heavy damping
                             effective_speed *= (1.0 - STAG_SQUEEZE_DAMPING)
                             # Apply push force to trapped beetle (forward + pitch up front + lift)
+                            forward_x = math.cos(beetle_red.rotation)
+                            forward_z = math.sin(beetle_red.rotation)
                             push_force = 40.0 * PHYSICS_TIMESTEP
-                            beetle_blue.vx += push_x * push_force
-                            beetle_blue.vz += push_z * push_force
+                            beetle_blue.vx += forward_x * push_force
+                            beetle_blue.vz += forward_z * push_force
                             beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
                             beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
 
