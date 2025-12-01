@@ -651,13 +651,13 @@ blue_assembling = False
 red_assembling = False
 blue_assembly_timer = 0.0
 red_assembly_timer = 0.0
-ASSEMBLY_DURATION = 1.5  # Time for voxels to assemble
-ASSEMBLY_START_TIME = 2.5  # When assembly starts during respawn delay
+ASSEMBLY_DURATION = 3.0  # Time for voxels to assemble (slower, more dramatic)
+ASSEMBLY_START_TIME = 1.0  # When assembly starts during respawn delay (earlier to compensate)
 
 # Ball assembly animation state (voxel rain effect)
 ball_assembling = False
 ball_assembly_timer = 0.0
-BALL_ASSEMBLY_DURATION = 1.5  # Time for ball voxels to assemble
+BALL_ASSEMBLY_DURATION = 3.0  # Time for ball voxels to assemble (slower, more dramatic)
 
 # Track if assembly happened last frame (need one final clear after assembly ends)
 assembly_needs_final_clear = False
@@ -785,6 +785,30 @@ ball_last_grid_x = ti.field(ti.i32, shape=())
 ball_last_grid_y = ti.field(ti.i32, shape=())
 ball_last_grid_z = ti.field(ti.i32, shape=())
 ball_last_rendered = ti.field(ti.i32, shape=())  # 1 if ball was rendered, 0 if not
+
+# Floor height cache for fast collision lookups (128x128 grid)
+floor_height_cache = ti.field(ti.f32, shape=(128, 128))
+
+@ti.kernel
+def build_floor_height_cache_kernel():
+    """Pre-compute floor heights for entire arena (including bowl ice)"""
+    for i, k in ti.ndrange(128, 128):
+        highest_y = -1000.0
+        floor_base_y = int(RENDER_Y_OFFSET)  # 33
+        # Check Y range that includes main floor and bowl slope
+        for j in range(floor_base_y - 2, floor_base_y + 5):
+            if 0 <= j < 128:
+                vtype = simulation.voxel_type[i, j, k]
+                if vtype == simulation.CONCRETE or vtype == simulation.SLIPPERY:
+                    world_y = float(j) - RENDER_Y_OFFSET
+                    if world_y > highest_y:
+                        highest_y = world_y
+        floor_height_cache[i, k] = highest_y
+
+def build_floor_height_cache():
+    """Build/rebuild the floor height cache (call after arena init or ball mode toggle)"""
+    build_floor_height_cache_kernel()
+    print("Floor height cache built")
 
 def init_ball_cache(radius: float):
     """Pre-compute ball voxel positions relative to center (with stripe info)"""
@@ -3027,28 +3051,23 @@ def generate_atlas_cephalic_horn(shaft_len=5):
 
 @ti.kernel
 def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
-    """Check if beetle would collide with floor - returns highest floor Y coordinate in WORLD space"""
-    center_x = int(world_x + simulation.n_grid / 2.0)
-    center_z = int(world_z + simulation.n_grid / 2.0)
+    """Check floor height using pre-computed cache - FAST version
+    Returns highest floor Y coordinate in WORLD space for the beetle's footprint"""
+    center_x = int(world_x + 64.0)  # Convert world to grid coords
+    center_z = int(world_z + 64.0)
 
     # Check area around beetle (beetles are ~20 voxels wide)
     check_radius = 3
-    highest_floor_y = -1000.0  # Start very low in world space
-
-    floor_base_y = int(RENDER_Y_OFFSET)  # Floor is at offset position in grid
+    highest_floor_y = -1000.0
 
     for i in range(center_x - check_radius, center_x + check_radius + 1):
         for k in range(center_z - check_radius, center_z + check_radius + 1):
-            if 0 <= i < simulation.n_grid and 0 <= k < simulation.n_grid:
-                # Check around the expected floor height (with some margin for variations)
-                for j in range(floor_base_y - 5, floor_base_y + 5):
-                    if 0 <= j < simulation.n_grid:
-                        vtype = simulation.voxel_type[i, j, k]
-                        if vtype == simulation.CONCRETE or vtype == simulation.SLIPPERY:
-                            # Convert grid Y back to world Y for return value
-                            world_floor_y = float(j) - RENDER_Y_OFFSET
-                            if world_floor_y > highest_floor_y:
-                                highest_floor_y = world_floor_y
+            # Clamp to valid grid bounds
+            gi = ti.max(0, ti.min(127, i))
+            gk = ti.max(0, ti.min(127, k))
+            cached_y = floor_height_cache[gi, gk]
+            if cached_y > highest_floor_y:
+                highest_floor_y = cached_y
 
     return highest_floor_y
 
@@ -6710,6 +6729,9 @@ ti.sync()
 
 print("All kernels warmed up (pre-compiled)")
 
+# Build initial floor height cache (for fast collision lookups)
+build_floor_height_cache()
+
 while window.running:
     # === START FRAME TIMING ===
     perf_monitor.start('frame_total')
@@ -8855,6 +8877,8 @@ while window.running:
             else:
                 clear_ball()  # Fallback to full clear if ball position unknown
             simulation.clear_bowl_perimeter()
+            # Rebuild floor height cache without the ice bowl
+            build_floor_height_cache()
             # Reset scores when leaving ball mode
             blue_score = 0
             red_score = 0
@@ -8892,6 +8916,8 @@ while window.running:
             ball_explosion_timer = 0.0
             # Render the bowl perimeter for ball mode (with goal pit cutouts)
             simulation.render_bowl_perimeter()
+            # Rebuild floor height cache to include the ice bowl
+            build_floor_height_cache()
 
     # Ball radius slider (only show when ball is enabled)
     if beetle_ball.active:

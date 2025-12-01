@@ -1,31 +1,31 @@
-FPS: 53
-Frame count: 8009
+FPS: 52
+Frame count: 2501
 
 --- Performance Breakdown (avg ms) ---
-  frame_total: 14.65ms (last: 15.06, max: 20.93)
-  scene_render: 6.31ms (last: 6.09, max: 7.89)
-  physics: 4.40ms (last: 4.77, max: 11.17)
-  gui: 1.03ms (last: 1.03, max: 1.45)
-  ball_render: 0.82ms (last: 0.79, max: 1.33)
-  beetle_render: 0.74ms (last: 0.62, max: 1.22)
-  voxel_clear: 0.20ms (last: 0.16, max: 0.63)
-  camera: 0.18ms (last: 0.18, max: 0.26)
-  animation: 0.04ms (last: 0.04, max: 0.11)
+  frame_total: 15.17ms (last: 12.72, max: 55.15)
+  scene_render: 7.12ms (last: 7.54, max: 8.64)
+  physics: 4.56ms (last: 2.34, max: 44.30)
+  gui: 1.02ms (last: 1.06, max: 1.86)
+  beetle_render: 0.67ms (last: 0.48, max: 1.44)
+  ball_render: 0.36ms (last: 0.00, max: 1.40)
+  voxel_clear: 0.25ms (last: 0.18, max: 0.69)
+  animation: 0.04ms (last: 0.03, max: 0.16)
+  camera: 0.04ms (last: 0.03, max: 0.15)
   physics_iters/frame: 1.0
 
 --- Renderer Breakdown (last frame) ---
-  extract_voxels: 1.26ms
-  extract_debris: 0.11ms
-  lighting_setup: 0.13ms
-  scene_particles: 2.89ms
-  voxel_count: 6636
+  extract_voxels: 1.63ms
+  extract_debris: 0.14ms
+  lighting_setup: 0.15ms
+  scene_particles: 4.00ms
+  voxel_count: 7118
 
 --- Physics Breakdown (last frame) ---
-  input_controls: 0.18ms
-  beetle_physics: 0.03ms
-  ball_physics: 4.56ms
-  debris_particles: 0.12ms
+  input_controls: 0.07ms
+  beetle_physics: 0.01ms
+  ball_physics: 0.00ms
+  debris_particles: 0.31ms
   death_explosions: 0.01ms
   respawn_timers: 0.00ms
-  floor_collision: 2.80ms
-  beetle_collision: 1.24ms
+  floor_collision: 1.02ms
+  beetle_collision: 0.93ms
