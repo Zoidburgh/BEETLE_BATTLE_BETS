@@ -4152,11 +4152,20 @@ def clear_dirty_voxels():
             simulation.voxel_type[dirty_voxel_x[i], dirty_voxel_y[i], dirty_voxel_z[i]] = simulation.EMPTY
 
 @ti.kernel
-def clear_shadow_layer(floor_y: ti.i32):
-    """Restore shadow voxels back to concrete floor"""
+def clear_shadow_layer(floor_y: ti.i32, ball_mode_active: ti.i32):
+    """Restore shadow voxels back to concrete floor (or slippery if in bowl area and ball mode)"""
+    center = 64
+    arena_radius = 32.0
     for i, k in ti.ndrange(128, 128):
         if simulation.voxel_type[i, floor_y, k] == simulation.SHADOW:
-            simulation.voxel_type[i, floor_y, k] = simulation.CONCRETE
+            # Check if in bowl area (outside arena radius) and ball mode is on
+            dx = ti.cast(i - center, ti.f32)
+            dz = ti.cast(k - center, ti.f32)
+            dist = ti.sqrt(dx * dx + dz * dz)
+            if ball_mode_active == 1 and dist > arena_radius:
+                simulation.voxel_type[i, floor_y, k] = simulation.SLIPPERY
+            else:
+                simulation.voxel_type[i, floor_y, k] = simulation.CONCRETE
 
 @ti.kernel
 def place_shadow_kernel(x: ti.f32, z: ti.f32, radius: ti.f32, floor_y: ti.i32):
@@ -4171,8 +4180,9 @@ def place_shadow_kernel(x: ti.f32, z: ti.f32, radius: ti.f32, floor_y: ti.i32):
             gx = grid_x + dx
             gz = grid_z + dz
             if 0 <= gx < 128 and 0 <= gz < 128:
-                # Only replace concrete floor voxels (don't overwrite beetles/other stuff)
-                if simulation.voxel_type[gx, floor_y, gz] == simulation.CONCRETE:
+                # Replace concrete or slippery floor voxels (don't overwrite beetles/other stuff)
+                vtype = simulation.voxel_type[gx, floor_y, gz]
+                if vtype == simulation.CONCRETE or vtype == simulation.SLIPPERY:
                     simulation.voxel_type[gx, floor_y, gz] = simulation.SHADOW
 
 @ti.kernel
@@ -6793,9 +6803,9 @@ clear_beetles()
 clear_beetles_bounded(0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
 
 # Shadow kernels (triggered when beetles are airborne)
-clear_shadow_layer(int(RENDER_Y_OFFSET))
+clear_shadow_layer(int(RENDER_Y_OFFSET), 0)
 place_shadow_kernel(0.0, 0.0, 3.0, int(RENDER_Y_OFFSET))
-clear_shadow_layer(int(RENDER_Y_OFFSET))  # Clear the warm-up shadow so it doesn't show on load
+clear_shadow_layer(int(RENDER_Y_OFFSET), 0)  # Clear the warm-up shadow so it doesn't show on load
 
 # Victory confetti kernel (triggered on match win)
 spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
@@ -8318,7 +8328,7 @@ while window.running:
 
     # Always clear shadows if they existed last frame (prevents artifacts when beetles land)
     if shadows_were_placed:
-        clear_shadow_layer(floor_y)
+        clear_shadow_layer(floor_y, 1 if beetle_ball.active else 0)
         shadows_were_placed = False
 
     if blue_needs_shadow or red_needs_shadow:
