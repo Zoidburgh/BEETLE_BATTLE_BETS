@@ -735,11 +735,15 @@ def clear_score_digits():
            simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_RED:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
-# Assembly animation voxel type (temporary, for clearing)
+# Assembly animation voxel types (temporary, for clearing)
 ASSEMBLY_VOXEL_BLUE = 25
 ASSEMBLY_VOXEL_RED = 26
 ASSEMBLY_VOXEL_BALL = 27
 ASSEMBLY_VOXEL_BALL_STRIPE = 28
+ASSEMBLY_VOXEL_BLUE_STRIPE = 29
+ASSEMBLY_VOXEL_RED_STRIPE = 30
+ASSEMBLY_VOXEL_BLUE_HORN_TIP = 31
+ASSEMBLY_VOXEL_RED_HORN_TIP = 32
 
 # Pre-computed scatter offsets for assembly animation (computed once at startup)
 MAX_ASSEMBLY_VOXELS = 2500  # Same as MAX_BODY_VOXELS
@@ -770,10 +774,11 @@ for _i in range(MAX_ASSEMBLY_VOXELS):
 def clear_assembly_voxels():
     """Clear all assembly animation voxels"""
     for i, j, k in ti.ndrange(128, 128, 128):
-        if simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BLUE or \
-           simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_RED or \
-           simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BALL or \
-           simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BALL_STRIPE:
+        vtype = simulation.voxel_type[i, j, k]
+        if vtype == ASSEMBLY_VOXEL_BLUE or vtype == ASSEMBLY_VOXEL_RED or \
+           vtype == ASSEMBLY_VOXEL_BALL or vtype == ASSEMBLY_VOXEL_BALL_STRIPE or \
+           vtype == ASSEMBLY_VOXEL_BLUE_STRIPE or vtype == ASSEMBLY_VOXEL_RED_STRIPE or \
+           vtype == ASSEMBLY_VOXEL_BLUE_HORN_TIP or vtype == ASSEMBLY_VOXEL_RED_HORN_TIP:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 # Ball voxel cache for assembly animation (pre-computed sphere voxels)
@@ -838,7 +843,7 @@ def init_ball_cache(radius: float):
 @ti.kernel
 def render_assembly_kernel_blue(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
                                  t: ti.f32, num_voxels: ti.i32):
-    """GPU-accelerated assembly rendering for blue beetle"""
+    """GPU-accelerated assembly rendering for blue beetle with proper colors"""
     for i in range(num_voxels):
         # Get cached voxel offset
         lx = blue_body_cache_x[i]
@@ -863,18 +868,24 @@ def render_assembly_kernel_blue(center_x: ti.i32, center_y: ti.i32, center_z: ti
         # Bounds check and place only in empty space
         if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
             existing = simulation.voxel_type[current_x, current_y, current_z]
-            if existing == 0 or existing == ASSEMBLY_VOXEL_BLUE or existing == ASSEMBLY_VOXEL_RED:
-                simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_BLUE
+            if existing == 0 or existing >= ASSEMBLY_VOXEL_BLUE:
+                # Determine voxel type based on cached flags
+                voxel_type = ASSEMBLY_VOXEL_BLUE  # Default body color
+                if blue_body_horn_tip_flags[i] == 1:
+                    voxel_type = ASSEMBLY_VOXEL_BLUE_HORN_TIP
+                elif blue_body_stripe_flags[i] == 1:
+                    voxel_type = ASSEMBLY_VOXEL_BLUE_STRIPE
+                simulation.voxel_type[current_x, current_y, current_z] = voxel_type
 
 @ti.kernel
 def render_assembly_kernel_red(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
                                 t: ti.f32, num_voxels: ti.i32):
-    """GPU-accelerated assembly rendering for red beetle"""
+    """GPU-accelerated assembly rendering for red beetle with proper colors"""
     for i in range(num_voxels):
-        # Get cached voxel offset
-        lx = red_body_cache_x[i]
+        # Get cached voxel offset - flip X to face opposite direction (180° rotation)
+        lx = -red_body_cache_x[i]  # Flip X for 180° rotation
         ly = red_body_cache_y[i]
-        lz = red_body_cache_z[i]
+        lz = -red_body_cache_z[i]  # Flip Z for 180° rotation
 
         # Target position
         target_x = center_x + lx
@@ -894,8 +905,14 @@ def render_assembly_kernel_red(center_x: ti.i32, center_y: ti.i32, center_z: ti.
         # Bounds check and place only in empty space
         if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
             existing = simulation.voxel_type[current_x, current_y, current_z]
-            if existing == 0 or existing == ASSEMBLY_VOXEL_BLUE or existing == ASSEMBLY_VOXEL_RED:
-                simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_RED
+            if existing == 0 or existing >= ASSEMBLY_VOXEL_BLUE:
+                # Determine voxel type based on cached flags
+                voxel_type = ASSEMBLY_VOXEL_RED  # Default body color
+                if red_body_horn_tip_flags[i] == 1:
+                    voxel_type = ASSEMBLY_VOXEL_RED_HORN_TIP
+                elif red_body_stripe_flags[i] == 1:
+                    voxel_type = ASSEMBLY_VOXEL_RED_STRIPE
+                simulation.voxel_type[current_x, current_y, current_z] = voxel_type
 
 def render_beetle_assembly_fast(is_blue, spawn_x, spawn_y, spawn_z, progress):
     """Fast assembly rendering using GPU kernel"""
@@ -7311,29 +7328,34 @@ while window.running:
         # Ball physics update (uses same beetle physics now)
         # Skip physics if ball has exploded (waiting for celebration to end)
         if beetle_ball.active and not g['ball_has_exploded']:
-            beetle_ball.update_physics(PHYSICS_TIMESTEP)
+            # If ball has scored, just apply gravity and let it fall (no collisions/bounces)
+            if g['ball_scored_this_fall']:
+                beetle_ball.vy -= physics_params["GRAVITY"] * PHYSICS_TIMESTEP
+                beetle_ball.y += beetle_ball.vy * PHYSICS_TIMESTEP
+            else:
+                beetle_ball.update_physics(PHYSICS_TIMESTEP)
 
-            # Apply extra gravity to ball for faster, more natural falling (on top of normal gravity)
-            extra_gravity = physics_params["GRAVITY"] * (physics_params["BALL_GRAVITY_MULTIPLIER"] - 1.0)
-            beetle_ball.vy -= extra_gravity * PHYSICS_TIMESTEP
+                # Apply extra gravity to ball for faster, more natural falling (on top of normal gravity)
+                extra_gravity = physics_params["GRAVITY"] * (physics_params["BALL_GRAVITY_MULTIPLIER"] - 1.0)
+                beetle_ball.vy -= extra_gravity * PHYSICS_TIMESTEP
 
-            # Apply rolling friction to ball only when on ground (allows proper arc when airborne)
-            if beetle_ball.on_ground:
-                beetle_ball.vx *= physics_params["BALL_ROLLING_FRICTION"]
-                beetle_ball.vz *= physics_params["BALL_ROLLING_FRICTION"]
-                # Apply angular friction to all spin axes when on ground
-                beetle_ball.angular_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
-                beetle_ball.pitch_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
-                beetle_ball.roll_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
+                # Apply rolling friction to ball only when on ground (allows proper arc when airborne)
+                if beetle_ball.on_ground:
+                    beetle_ball.vx *= physics_params["BALL_ROLLING_FRICTION"]
+                    beetle_ball.vz *= physics_params["BALL_ROLLING_FRICTION"]
+                    # Apply angular friction to all spin axes when on ground
+                    beetle_ball.angular_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
+                    beetle_ball.pitch_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
+                    beetle_ball.roll_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
 
-            # Apply bowl slide to ball (slippery perimeter pushes toward center)
-            apply_bowl_slide(beetle_ball, physics_params)
+                # Apply bowl slide to ball (slippery perimeter pushes toward center)
+                apply_bowl_slide(beetle_ball, physics_params)
 
-            # Update ball rotation from angular velocity (all 3 axes for full 3D spin)
-            beetle_ball.rotation += beetle_ball.angular_velocity * PHYSICS_TIMESTEP
-            beetle_ball.rotation = normalize_angle(beetle_ball.rotation)
-            beetle_ball.pitch += beetle_ball.pitch_velocity * PHYSICS_TIMESTEP
-            beetle_ball.roll += beetle_ball.roll_velocity * PHYSICS_TIMESTEP
+                # Update ball rotation from angular velocity (all 3 axes for full 3D spin)
+                beetle_ball.rotation += beetle_ball.angular_velocity * PHYSICS_TIMESTEP
+                beetle_ball.rotation = normalize_angle(beetle_ball.rotation)
+                beetle_ball.pitch += beetle_ball.pitch_velocity * PHYSICS_TIMESTEP
+                beetle_ball.roll += beetle_ball.roll_velocity * PHYSICS_TIMESTEP
 
             # Score detection - check if ball fell through goal pit
             # Ball Y is in physics space where floor is at ~0, so check well below
@@ -7357,9 +7379,8 @@ while window.running:
                             g['goal_celebration_timer'] = 0.0
                             g['blue_score_bounce_timer'] = SCORE_BOUNCE_DURATION  # Start bounce animation
                             print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
-            else:
-                # Ball is above ground - reset scored flag for next fall
-                g['ball_scored_this_fall'] = False
+            # NOTE: ball_scored_this_fall is only reset on ball respawn, not when ball goes above ground
+            # This prevents double-scoring if ball bounces in the goal pit
 
             # Ball-beetle collision (uses same collision system as beetle-beetle)
             # OPTIMIZATION: Only re-render ball and run ball collision if ball is close to beetle
@@ -7576,6 +7597,7 @@ while window.running:
                 g['ball_explosion_timer'] = 0.0
                 g['ball_assembling'] = False
                 g['ball_assembly_timer'] = 0.0
+                g['ball_scored_this_fall'] = False  # Reset score flag for new ball
                 beetle_ball.x = 0.0
                 beetle_ball.y = 28.0  # Drop from higher than beetles (assembly happens at y=57)
                 beetle_ball.z = 0.0
@@ -7585,6 +7607,7 @@ while window.running:
                 beetle_ball.angular_velocity = 0.0
                 beetle_ball.pitch_velocity = 0.0
                 beetle_ball.roll_velocity = 0.0
+                beetle_ball.visible = True  # Make ball visible again
                 print("Ball respawned!")
 
         # Stage 2: Full removal - deactivate completely

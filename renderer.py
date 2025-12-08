@@ -142,17 +142,23 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
         color = ti.math.vec3(0.3, 0.6, 1.0)  # Bright blue
     elif voxel_type == 24:  # SCORE_DIGIT_RED
         color = ti.math.vec3(1.0, 0.3, 0.2)  # Bright red
-    # Assembly animation voxels - use beetle body colors (slightly brighter for glow effect)
+    # Assembly animation voxels - use exact beetle body colors (dynamically from settings)
     elif voxel_type == 25:  # ASSEMBLY_VOXEL_BLUE
-        base = simulation.blue_body_color[None]
-        color = ti.math.vec3(ti.min(base[0] * 1.3, 1.0), ti.min(base[1] * 1.3, 1.0), ti.min(base[2] * 1.3, 1.0))
+        color = simulation.blue_body_color[None]
     elif voxel_type == 26:  # ASSEMBLY_VOXEL_RED
-        base = simulation.red_body_color[None]
-        color = ti.math.vec3(ti.min(base[0] * 1.3, 1.0), ti.min(base[1] * 1.3, 1.0), ti.min(base[2] * 1.3, 1.0))
+        color = simulation.red_body_color[None]
     elif voxel_type == 27:  # ASSEMBLY_VOXEL_BALL
-        color = simulation.ball_color[None]  # Use exact ball color, no brightness boost
+        color = simulation.ball_color[None]
     elif voxel_type == 28:  # ASSEMBLY_VOXEL_BALL_STRIPE
-        color = simulation.ball_stripe_color[None]  # Use exact ball stripe color, no brightness boost
+        color = simulation.ball_stripe_color[None]
+    elif voxel_type == 29:  # ASSEMBLY_VOXEL_BLUE_STRIPE
+        color = simulation.blue_stripe_color[None]
+    elif voxel_type == 30:  # ASSEMBLY_VOXEL_RED_STRIPE
+        color = simulation.red_stripe_color[None]
+    elif voxel_type == 31:  # ASSEMBLY_VOXEL_BLUE_HORN_TIP
+        color = simulation.blue_horn_tip_color[None]
+    elif voxel_type == 32:  # ASSEMBLY_VOXEL_RED_HORN_TIP
+        color = simulation.red_horn_tip_color[None]
 
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
     if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts
