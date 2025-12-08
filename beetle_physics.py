@@ -271,7 +271,8 @@ BALL_SPIN_MULTIPLIER = 4.3  # How easily ball spins when hit (1.0=normal, 4.0=ve
 BALL_ANGULAR_FRICTION = 0.995  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
 
 # Ball torque/lift physics (realistic soccer ball behavior)
-BALL_LIFT_STRENGTH = 6.0  # How much ball lifts when hit from below (0.0-10.0)
+BALL_LIFT_STRENGTH = 3.6  # How much ball lifts when scooping with horn (0.0-10.0)
+BALL_PASSIVE_LIFT_STRENGTH = 0.5  # Passive lift when touching bottom of ball (0.0-10.0)
 BALL_TIP_STRENGTH = 5.0  # How much ball tips down when hit from above (0.0-5.0)
 BALL_TORQUE_STRENGTH = 8.0  # How much ball spins from side hits (0.0-10.0)
 BALL_GRAVITY_MULTIPLIER = 1.8  # Extra gravity for ball (multiplier, 1.0-5.0)
@@ -737,6 +738,7 @@ def clear_score_digits():
 ASSEMBLY_VOXEL_BLUE = 25
 ASSEMBLY_VOXEL_RED = 26
 ASSEMBLY_VOXEL_BALL = 27
+ASSEMBLY_VOXEL_BALL_STRIPE = 28
 
 # Pre-computed scatter offsets for assembly animation (computed once at startup)
 MAX_ASSEMBLY_VOXELS = 2500  # Same as MAX_BODY_VOXELS
@@ -769,7 +771,8 @@ def clear_assembly_voxels():
     for i, j, k in ti.ndrange(128, 128, 128):
         if simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BLUE or \
            simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_RED or \
-           simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BALL:
+           simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BALL or \
+           simulation.voxel_type[i, j, k] == ASSEMBLY_VOXEL_BALL_STRIPE:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 # Ball voxel cache for assembly animation (pre-computed sphere voxels)
@@ -950,8 +953,12 @@ def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti
         # Bounds check and place only in empty space
         if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
             existing = simulation.voxel_type[current_x, current_y, current_z]
-            if existing == 0 or existing == ASSEMBLY_VOXEL_BALL:
-                simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_BALL
+            if existing == 0 or existing == ASSEMBLY_VOXEL_BALL or existing == ASSEMBLY_VOXEL_BALL_STRIPE:
+                # Use stripe or main color based on cached stripe info
+                if ball_cache_is_stripe[i] == 1:
+                    simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_BALL_STRIPE
+                else:
+                    simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_BALL
 
 def render_ball_assembly_fast(spawn_x, spawn_y, spawn_z, progress):
     """Fast ball assembly rendering using GPU kernel"""
@@ -1443,7 +1450,7 @@ def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rota
                 simulation.voxel_type[grid_x, grid_y, grid_z] = color_type
 
 # ========== PERFORMANCE OPTIMIZATION: GEOMETRY CACHING ==========
-def generate_beetle_geometry(horn_shaft_len=9, horn_prong_len=5, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
+def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Generate beetle geometry separated into body and legs for animation
 
     Args:
@@ -6400,8 +6407,26 @@ def beetle_collision(b1, b2, params):
             rel_vz = b1.vz - b2.vz
             vel_along_normal = rel_vx * normal_x + rel_vy * normal_y + rel_vz * normal_z
 
-            # Only apply impulse if moving toward each other
-            if vel_along_normal < 0:
+            # For ball collisions: allow redirection even when ball is moving away (airborne hits)
+            # For beetle collisions: only apply impulse if moving toward each other
+            apply_impulse = vel_along_normal < 0  # Default: only when approaching
+            if is_ball_collision and vel_along_normal >= 0:
+                # Ball is moving away - still apply a redirection impulse based on beetle velocity
+                # This allows "steering" the ball mid-air by hitting it from a new angle
+                apply_impulse = True
+                # Use beetle's velocity projected onto collision normal as the impulse basis
+                # This makes the ball respond to where the beetle is pushing, not relative motion
+                if b1.horn_type == "ball":
+                    beetle = b2
+                    beetle_vel_along_normal = -(beetle.vx * normal_x + beetle.vz * normal_z)
+                else:
+                    beetle = b1
+                    beetle_vel_along_normal = beetle.vx * normal_x + beetle.vz * normal_z
+                # Override vel_along_normal with beetle's push direction (negative = toward ball)
+                if abs(beetle_vel_along_normal) > 0.5:  # Beetle must be actively moving
+                    vel_along_normal = -abs(beetle_vel_along_normal) * 0.8  # Treat as approaching
+
+            if apply_impulse:
                 # Impulse magnitude (use ball-specific restitution for ball collisions)
                 if is_ball_collision:
                     # Ball collision: use ball restitution and momentum transfer
@@ -6485,10 +6510,10 @@ def beetle_collision(b1, b2, params):
                             horn_scoop_lift = params["BALL_LIFT_STRENGTH"] * 2.0 * scoop_strength * push_mult
                             ball.vy += horn_scoop_lift
 
-                    # LIFT: Hit from below (contact point is below ball center)
+                    # PASSIVE LIFT: Hit from below (contact point is below ball center)
                     # Base upward force when beetle pushes ball from below
-                    if contact_offset_y < -ball.radius * 0.2:  # Bottom 20% of ball
-                        lift_force = params["BALL_LIFT_STRENGTH"] * push_mult
+                    if contact_offset_y < -ball.radius * 0.35:  # Bottom 15% of ball
+                        lift_force = params["BALL_PASSIVE_LIFT_STRENGTH"] * push_mult
                         ball.vy += lift_force
 
                     # TIP: Hit from above (contact point is above ball center)
@@ -6653,7 +6678,8 @@ physics_params = {
     "BALL_ANGULAR_FRICTION": BALL_ANGULAR_FRICTION,  # How quickly ball spin slows
 
     # Ball torque/lift/tip parameters (realistic contact physics)
-    "BALL_LIFT_STRENGTH": BALL_LIFT_STRENGTH,  # How much ball lifts when hit from below
+    "BALL_LIFT_STRENGTH": BALL_LIFT_STRENGTH,  # How much ball lifts when hit from below (scoop)
+    "BALL_PASSIVE_LIFT_STRENGTH": BALL_PASSIVE_LIFT_STRENGTH,  # Passive lift when touching bottom of ball
     "BALL_TIP_STRENGTH": BALL_TIP_STRENGTH,  # How much ball tips down when hit from above
     "BALL_TORQUE_STRENGTH": BALL_TORQUE_STRENGTH,  # How much ball spins from side hits
     "BALL_GRAVITY_MULTIPLIER": BALL_GRAVITY_MULTIPLIER,  # Extra gravity for ball (1.0-5.0)
@@ -8281,7 +8307,7 @@ while window.running:
     # Initialize persistent slider values (needed for kernel parameters) - separate for each beetle
     if not hasattr(window, 'blue_horn_shaft_value'):
         # Blue beetle sliders
-        window.blue_horn_shaft_value = 9
+        window.blue_horn_shaft_value = 12
         window.blue_horn_prong_value = 5
         window.blue_back_body_height_value = 6
         window.blue_body_length_value = 12
@@ -8289,7 +8315,7 @@ while window.running:
         window.blue_leg_length_value = 8
 
         # Red beetle sliders
-        window.red_horn_shaft_value = 9
+        window.red_horn_shaft_value = 12
         window.red_horn_prong_value = 5
         window.red_back_body_height_value = 6
         window.red_body_length_value = 12
@@ -8297,7 +8323,7 @@ while window.running:
         window.red_leg_length_value = 8
 
         # Old slider variables (for compatibility with existing UI - they update BOTH beetles)
-        window.horn_shaft_value = 9
+        window.horn_shaft_value = 12
         window.horn_prong_value = 5
         window.back_body_height_value = 6
         window.body_length_value = 12
@@ -8965,10 +8991,15 @@ while window.running:
         window.GUI.text("")
         window.GUI.text("--- Ball Contact Physics ---")
 
-        # Lift Strength (upward force when hit from below)
-        new_lift = window.GUI.slider_float("Lift Strength", physics_params["BALL_LIFT_STRENGTH"], 0.0, 10.0)
+        # Lift Strength (upward force when scooping with horn)
+        new_lift = window.GUI.slider_float("Scoop Lift", physics_params["BALL_LIFT_STRENGTH"], 0.0, 10.0)
         if new_lift != physics_params["BALL_LIFT_STRENGTH"]:
             physics_params["BALL_LIFT_STRENGTH"] = new_lift
+
+        # Passive Lift Strength (automatic lift when touching bottom of ball)
+        new_passive_lift = window.GUI.slider_float("Passive Lift", physics_params["BALL_PASSIVE_LIFT_STRENGTH"], 0.0, 10.0)
+        if new_passive_lift != physics_params["BALL_PASSIVE_LIFT_STRENGTH"]:
+            physics_params["BALL_PASSIVE_LIFT_STRENGTH"] = new_passive_lift
 
         # Tip Strength (downward force when hit from above)
         new_tip = window.GUI.slider_float("Tip Strength", physics_params["BALL_TIP_STRENGTH"], 0.0, 5.0)

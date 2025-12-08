@@ -150,8 +150,9 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
         base = simulation.red_body_color[None]
         color = ti.math.vec3(ti.min(base[0] * 1.3, 1.0), ti.min(base[1] * 1.3, 1.0), ti.min(base[2] * 1.3, 1.0))
     elif voxel_type == 27:  # ASSEMBLY_VOXEL_BALL
-        base = simulation.ball_color[None]
-        color = ti.math.vec3(ti.min(base[0] * 1.3, 1.0), ti.min(base[1] * 1.3, 1.0), ti.min(base[2] * 1.3, 1.0))
+        color = simulation.ball_color[None]  # Use exact ball color, no brightness boost
+    elif voxel_type == 28:  # ASSEMBLY_VOXEL_BALL_STRIPE
+        color = simulation.ball_stripe_color[None]  # Use exact ball stripe color, no brightness boost
 
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
     if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts
