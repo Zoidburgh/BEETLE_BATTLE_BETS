@@ -632,6 +632,7 @@ ball_explosion_timer = 0.0
 ball_explosion_pos_x = 0.0
 ball_explosion_pos_y = 0.0
 ball_explosion_pos_z = 0.0
+ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
 
 # Goal celebration state (scored-on beetle explodes, then winner confetti/flash)
 goal_scored_by = None  # "BLUE" or "RED" - who scored
@@ -6024,6 +6025,55 @@ def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             simulation.debris_material[idx] = ti.math.vec3(blended_r, blended_g, blended_b)
             simulation.debris_lifetime[idx] = 1.0 + ti.random() * 0.1  # 1.0-1.1s consistent trail
 
+@ti.kernel
+def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
+                           impact_speed: ti.f32, ball_radius: ti.f32):
+    """Spawn radial dust ring when ball bounces - more particles for harder impacts"""
+    # Scale particle count with impact - fewer at min, more dramatic at high speeds
+    # At threshold (7.0): 2 particles, at high speed (15+): ~20 particles
+    scaled_speed = ti.max(0.0, impact_speed - 7.0)  # Subtract threshold
+    num_particles = 2 + ti.cast(scaled_speed * 2.0, ti.i32)
+    num_particles = ti.min(num_particles, 22)  # Cap at 22
+
+    # Dust color (same brownish-gray as leg dust)
+    color_r = 0.45
+    color_g = 0.40
+    color_b = 0.35
+
+    # Speed scales with impact (harder hit = faster dust)
+    base_speed = 1.5 + impact_speed * 0.6
+    upward_ratio = 0.466  # ~25° angle like leg dust
+
+    # Fixed loop with conditional (Taichi needs compile-time loop bounds)
+    for i in range(32):
+        if i < num_particles:
+            idx = ti.atomic_add(simulation.num_debris[None], 1)
+            if idx < simulation.MAX_DEBRIS:
+                # Random angle around circle (radial spread)
+                angle = ti.random() * 2.0 * 3.14159
+
+                # Spawn at ball edge (slightly inside to look like impact point)
+                spawn_radius = ball_radius * 0.8
+                spawn_x = pos_x + ti.cos(angle) * spawn_radius
+                spawn_z = pos_z + ti.sin(angle) * spawn_radius
+
+                simulation.debris_pos[idx] = ti.math.vec3(spawn_x, pos_y + 0.5, spawn_z)
+
+                # Velocity points outward from center
+                particle_speed = base_speed * (0.8 + ti.random() * 0.4)
+                vx = ti.cos(angle) * particle_speed
+                vz = ti.sin(angle) * particle_speed
+                vy = particle_speed * upward_ratio * (0.8 + ti.random() * 0.4)
+
+                simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+
+                # Dust color with slight variation
+                color_var = 0.9 + ti.random() * 0.2
+                simulation.debris_material[idx] = ti.math.vec3(color_r * color_var, color_g * color_var, color_b * color_var)
+
+                # Lifetime scales slightly with impact (bigger bounce = longer hang time)
+                simulation.debris_lifetime[idx] = 0.4 + ti.min(impact_speed * 0.06, 0.4) + ti.random() * 0.15
+
 # Base leg tip offsets from beetle center (unrotated, in voxel units) for leg_length=6
 # Beetle coordinate system: +X = forward (head), -X = backward (rear)
 # +Z = left side, -Z = right side
@@ -7680,6 +7730,10 @@ while window.running:
                 elif lowest_point_red < floor_surface + 0.5:
                     beetle_red.on_ground = True
 
+        # Decrement ball dust cooldown
+        if g['ball_dust_cooldown'] > 0.0:
+            g['ball_dust_cooldown'] -= PHYSICS_TIMESTEP
+
         # Ball floor collision (same as beetles, but skip in goal pit areas)
         if beetle_ball.active:
             # Check if ball is in goal pit area (no floor there)
@@ -7704,6 +7758,15 @@ while window.running:
 
                         # Apply bounce (reverse velocity with bounce coefficient)
                         if beetle_ball.vy < 0:
+                            # Capture impact speed before reversing velocity
+                            impact_speed = abs(beetle_ball.vy)
+
+                            # Spawn dust ring on bounce (only if impact was significant and off cooldown)
+                            if impact_speed > 7.0 and g['ball_dust_cooldown'] <= 0.0:
+                                spawn_ball_bounce_dust(beetle_ball.x, RENDER_Y_OFFSET + 0.5, beetle_ball.z,
+                                                       impact_speed, beetle_ball.radius)
+                                g['ball_dust_cooldown'] = 0.1  # 0.1 second cooldown
+
                             beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
                             # If bounce is very small, stop bouncing and settle
                             if abs(beetle_ball.vy) < 0.5:
