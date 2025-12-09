@@ -709,31 +709,72 @@ for d in range(10):
         digit_pattern_field[d, r] = DIGIT_PATTERNS[d][r]
 
 @ti.kernel
-def render_score_digit(digit: ti.i32, base_x: ti.i32, base_y: ti.i32, base_z: ti.i32,
-                       voxel_type: ti.i32, scale_x: ti.f32, scale_y: ti.f32):
-    """Render a single digit (0-9) as voxels with optional X/Y scale for squash/stretch effect
+def render_score_digit(digit: ti.i32, base_x: ti.f32, base_y: ti.f32, base_z: ti.f32,
+                       voxel_type: ti.i32, scale_x: ti.f32, scale_y: ti.f32,
+                       cam_x: ti.f32, cam_z: ti.f32):
+    """Render a single digit (0-9) as 3D extruded voxels with billboarding (always faces camera)
     base_x, base_y, base_z: center of digit in grid coords
     voxel_type: SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
     scale_x: horizontal scale (>1.0 = wider, <1.0 = narrower)
     scale_y: vertical scale (>1.0 = taller, <1.0 = squashed)
+    cam_x, cam_z: camera position in world coords (for billboarding)
     """
+    # Convert digit grid position to world coords (grid center is 64)
+    digit_world_x = base_x - 64.0
+    digit_world_z = base_z - 64.0
+
+    # Calculate direction from digit to camera
+    dx = cam_x - digit_world_x
+    dz = cam_z - digit_world_z
+
+    # Normalize to get facing direction
+    dist = ti.sqrt(dx * dx + dz * dz)
+    if dist > 0.001:
+        dx = dx / dist
+        dz = dz / dist
+    else:
+        dx = 0.0
+        dz = 1.0
+
+    # The digit's "right" vector is perpendicular to the facing direction
+    right_x = dz  # Perpendicular to (dx, dz) - flipped for correct reading direction
+    right_z = -dx
+
+    # Forward vector (depth direction, pointing toward camera)
+    forward_x = dx
+    forward_z = dz
+
+    # Extrusion depth (3 voxels deep)
+    depth = 3
+
     for row in range(7):
         row_pattern = digit_pattern_field[digit, row]
         for col in range(5):
             if (row_pattern >> (4 - col)) & 1:  # Check if bit is set (reversed for correct orientation)
-                # Calculate scaled position from center
-                offset_x = (col - 2) * scale_x
+                # Calculate scaled position from center (horizontal offset)
+                local_h = (col - 2) * scale_x  # Horizontal offset in digit's local space
                 # Flip row so 0 is at bottom, scale from bottom (y offset adjusted)
-                offset_y = (6 - row) * scale_y
+                local_y = (6 - row) * scale_y
 
-                # Place voxel at scaled position
-                vx = ti.cast(base_x + offset_x, ti.i32)
-                vy = ti.cast(base_y + offset_y, ti.i32)
-                vz = base_z
+                # Rotate horizontal offset to face camera
+                base_offset_x = local_h * right_x
+                base_offset_z = local_h * right_z
+                offset_y = local_y
 
-                # Bounds check
-                if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
-                    simulation.voxel_type[vx, vy, vz] = voxel_type
+                # Extrude along depth (forward/backward from face)
+                for d in range(depth):
+                    depth_offset = (d - depth // 2) * 1.0  # Center the depth around the base position
+                    offset_x = base_offset_x + depth_offset * forward_x
+                    offset_z = base_offset_z + depth_offset * forward_z
+
+                    # Place voxel at rotated position
+                    vx = ti.cast(base_x + offset_x, ti.i32)
+                    vy = ti.cast(base_y + offset_y, ti.i32)
+                    vz = ti.cast(base_z + offset_z, ti.i32)
+
+                    # Bounds check
+                    if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
+                        simulation.voxel_type[vx, vy, vz] = voxel_type
 
 @ti.kernel
 def clear_score_digits():
@@ -8744,16 +8785,16 @@ while window.running:
     digit_y = 53  # Height above floor (floor is at y=33)
 
     # Blue score digit above red goal (east)
-    blue_digit_x = 96  # Center over red goal pit
-    render_score_digit(blue_score % 10, blue_digit_x, digit_y, 64,
+    blue_digit_x = 96.0  # Center over red goal pit
+    render_score_digit(blue_score % 10, blue_digit_x, float(digit_y), 64.0,
                       simulation.SCORE_DIGIT_BLUE,
-                      blue_scale_x, blue_scale_y)
+                      blue_scale_x, blue_scale_y, camera.pos_x, camera.pos_z)
 
     # Red score digit above blue goal (west)
-    red_digit_x = 32  # Center over blue goal pit
-    render_score_digit(red_score % 10, red_digit_x, digit_y, 64,
+    red_digit_x = 32.0  # Center over blue goal pit
+    render_score_digit(red_score % 10, red_digit_x, float(digit_y), 64.0,
                       simulation.SCORE_DIGIT_RED,
-                      red_scale_x, red_scale_y)
+                      red_scale_x, red_scale_y, camera.pos_x, camera.pos_z)
 
     # === SCENE RENDER TIMING ===
     perf_monitor.start('scene_render')
