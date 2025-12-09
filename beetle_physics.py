@@ -632,6 +632,7 @@ ball_scored_this_fall = False  # Prevent multiple scores while ball falling
 
 # Ball explosion state
 ball_has_exploded = False
+ball_explosion_delay = 0.0  # Delay before particles start spawning
 ball_explosion_timer = 0.0
 ball_explosion_pos_x = 0.0
 ball_explosion_pos_y = 0.0
@@ -7691,33 +7692,38 @@ while window.running:
         if beetle_ball.active and not g['ball_has_exploded'] and beetle_ball.y < EXPLOSION_TRIGGER_Y:
             # Start ball explosion - store position
             g['ball_explosion_pos_x'] = beetle_ball.x
-            g['ball_explosion_pos_y'] = beetle_ball.y + 4.0  # Offset by ball radius
+            g['ball_explosion_pos_y'] = beetle_ball.y + 30.0  # Same offset as beetles
             g['ball_explosion_pos_z'] = beetle_ball.z
+            g['ball_explosion_delay'] = 0.02  # Slightly shorter delay than beetles
             g['ball_explosion_timer'] = EXPLOSION_DURATION
             g['ball_has_exploded'] = True
-            # Hide the ball (stop rendering/physics) but keep it "active" for respawn
-            beetle_ball.visible = False
-            # Clear ball voxels immediately when explosion starts (same as beetles)
-            if ball_last_rendered[None] == 1:
-                num_voxels = ball_cache_size[None]
-                if num_voxels > 0:
-                    clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                ball_last_rendered[None] = 0
             print("BALL EXPLOSION!")
 
-        # Continue spawning ball particles during explosion
-        if g['ball_has_exploded'] and g['ball_explosion_timer'] > 0.0:
-            g['ball_explosion_timer'] = g['ball_explosion_timer'] - PHYSICS_TIMESTEP
-            # Calculate which batch to spawn
-            progress = 1.0 - (g['ball_explosion_timer'] / EXPLOSION_DURATION)
-            particles_spawned = int(progress * TOTAL_PARTICLES)
-            batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
-            batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
+        # Continue spawning ball particles during explosion (after delay)
+        if g['ball_has_exploded']:
+            if g['ball_explosion_delay'] > 0.0:
+                g['ball_explosion_delay'] -= PHYSICS_TIMESTEP
+                # Hide ball when delay expires (right as particles start)
+                if g['ball_explosion_delay'] <= 0.0:
+                    beetle_ball.visible = False
+                    # Clear ball voxels
+                    if ball_last_rendered[None] == 1:
+                        num_voxels = ball_cache_size[None]
+                        if num_voxels > 0:
+                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                        ball_last_rendered[None] = 0
+            elif g['ball_explosion_timer'] > 0.0:
+                g['ball_explosion_timer'] = g['ball_explosion_timer'] - PHYSICS_TIMESTEP
+                # Calculate which batch to spawn
+                progress = 1.0 - (g['ball_explosion_timer'] / EXPLOSION_DURATION)
+                particles_spawned = int(progress * TOTAL_PARTICLES)
+                batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
+                batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
 
-            if batch_size > 0:
-                spawn_ball_explosion_batch(g['ball_explosion_pos_x'], g['ball_explosion_pos_y'],
-                                          g['ball_explosion_pos_z'],
-                                          batch_offset, batch_size, TOTAL_PARTICLES)
+                if batch_size > 0:
+                    spawn_ball_explosion_batch(g['ball_explosion_pos_x'], g['ball_explosion_pos_y'],
+                                              g['ball_explosion_pos_z'],
+                                              batch_offset, batch_size, TOTAL_PARTICLES)
 
         # === DEATH/EXPLOSIONS TIMING END ===
         _t_death_end = time.perf_counter()
@@ -7760,6 +7766,7 @@ while window.running:
                 victory_pulse_timer = 0.0
                 # Reset ball for next round - respawn at center
                 g['ball_has_exploded'] = False
+                g['ball_explosion_delay'] = 0.0
                 g['ball_explosion_timer'] = 0.0
                 g['ball_assembling'] = False
                 g['ball_assembly_timer'] = 0.0
@@ -9346,6 +9353,7 @@ while window.running:
             red_score = 0
             ball_scored_this_fall = False
             ball_has_exploded = False
+            ball_explosion_delay = 0.0
             ball_explosion_timer = 0.0
             # Render the bowl perimeter for ball mode (with goal pit cutouts)
             simulation.render_bowl_perimeter()
