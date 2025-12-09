@@ -7036,8 +7036,7 @@ while window.running:
         else:
             angle_to_midpoint = math.atan2(mid_z, mid_x)
 
-        # Smooth angle transitions to prevent flipping when beetle falls off edge
-        # Only update edge angle if change is gradual (prevents 180-degree flips)
+        # Smooth angle transitions
         if camera_edge_angle is None:
             # First frame: initialize with current angle
             camera_edge_angle = angle_to_midpoint
@@ -7050,12 +7049,8 @@ while window.running:
             while angle_diff < -math.pi:
                 angle_diff += 2.0 * math.pi
 
-            # If change is too large (> 90 degrees), likely due to beetle falling off
-            # Keep the previous angle to maintain perspective
-            if abs(angle_diff) < math.pi / 2.0:  # Less than 90 degrees
-                # Gradual change: smooth transition
-                camera_edge_angle += angle_diff * 0.3  # 30% blend factor
-            # else: keep previous angle (ignore sudden large changes)
+            # Always track beetles with smooth transition
+            camera_edge_angle += angle_diff * 0.3  # 30% blend factor
 
         # Nearest edge point is along smoothed angle at ARENA_RADIUS
         nearest_edge_x = math.cos(camera_edge_angle) * ARENA_RADIUS
