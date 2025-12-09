@@ -61,6 +61,10 @@ SCORE_DIGIT_BLUE = 23  # Blue team floating score digit
 SCORE_DIGIT_RED = 24  # Red team floating score digit
 ASSEMBLY_VOXEL_BALL = 27  # Ball assembly animation voxel
 
+# Score digit flash brightness (1.0 = normal, >1.0 = bright flash)
+blue_score_flash = ti.field(dtype=ti.f32, shape=())
+red_score_flash = ti.field(dtype=ti.f32, shape=())
+
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors
 blue_body_color = ti.Vector.field(3, dtype=ti.f32, shape=())
@@ -82,6 +86,10 @@ blue_leg_color[None] = ti.Vector([0.4, 0.7, 1.0])  # Lighter cyan/blue
 blue_leg_tip_color[None] = ti.Vector([0.0, 0.0, 0.3])  # Very dark blue
 blue_stripe_color[None] = ti.Vector([0.6, 0.9, 1.0])  # Bright cyan
 blue_horn_tip_color[None] = ti.Vector([0.4, 0.75, 1.0])  # Bright electric blue
+
+# Initialize score flash to normal brightness
+blue_score_flash[None] = 1.0
+red_score_flash[None] = 1.0
 
 red_body_color[None] = ti.Vector([0.95, 0.25, 0.15])  # Desaturated red
 red_leg_color[None] = ti.Vector([1.0, 0.5, 0.3])  # Lighter orange/red

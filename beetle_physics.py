@@ -171,7 +171,7 @@ ROTATION_SPEED = 2.5  # Rotation speed for controlled turning
 ANGULAR_FRICTION = 0.65  # How quickly spin slows down (lower value = more friction, less spin)
 MAX_ANGULAR_SPEED = 8.0  # Max spin speed (radians/sec) from collision impacts
 TORQUE_MULTIPLIER = 1.95  # Rotational forces on collision
-RESTITUTION = 0.0  # Bounce coefficient (0 = no bounce, 1 = full bounce)
+RESTITUTION = 0.025  # Bounce coefficient (0 = no bounce, 1 = full bounce)
 IMPULSE_MULTIPLIER = 0.7  # Linear momentum transfer
 MOMENT_OF_INERTIA_FACTOR = 1.15  # Resistance to rotation
 ARENA_RADIUS = 32.0  # 25% smaller for closer combat
@@ -198,7 +198,7 @@ HORN_MAX_PITCH_ATLAS = math.radians(20)  # +20 degrees (full upward lift)
 HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward ground)
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
-HORN_YAW_SPEED = 2.0  # Radians per second
+HORN_YAW_SPEED = 1.0  # Radians per second (50% slower for less clipping)
 # Default yaw limits (for beetles with symmetric horn movement)
 HORN_MAX_YAW = math.radians(20)  # +20 degrees horizontal
 HORN_MIN_YAW = math.radians(-20)  # -20 degrees horizontal
@@ -331,7 +331,8 @@ class Beetle:
         self.horn_yaw = 0.0    # Horizontal angle (stag=pincer spread, rhino=horn yaw) in radians
         self.horn_pitch_velocity = 0.0  # Rate of change of horn pitch (radians/sec)
         self.horn_yaw_velocity = 0.0  # Rate of change of horn yaw (radians/sec)
-        self.horn_rotation_damping = 0.0  # Horn rotation resistance during collision (0.0-1.0)
+        self.horn_pitch_damping = 0.0  # Horn pitch resistance during collision (0.0-1.0)
+        self.horn_yaw_damping = 0.0    # Horn yaw resistance during collision (0.0-1.0)
 
         # OPTIMIZATION: Cached horn tip positions to avoid recalculating every frame
         self.cached_horn_pitch = HORN_DEFAULT_PITCH  # Last pitch used for calculation
@@ -367,6 +368,7 @@ class Beetle:
         self.active = True  # False when beetle has fallen off arena
         self.is_falling = False  # True when beetle has passed point of no return
         self.has_exploded = False  # True when death particle explosion has been triggered
+        self.explosion_delay = 0.0  # Delay before particles start spawning
         self.explosion_timer = 0.0  # Timer for gradual particle spawning (0.3 seconds)
         self.explosion_pos_x = 0.0  # Store explosion position
         self.explosion_pos_y = 0.0
@@ -409,9 +411,11 @@ class Beetle:
         if self.lift_cooldown > 0.0:
             self.lift_cooldown = max(0.0, self.lift_cooldown - dt)
 
-        # Decay horn rotation damping when not in contact (Phase 2: Horn Clipping Prevention)
-        if self.horn_rotation_damping > 0.0:
-            self.horn_rotation_damping = max(0.0, self.horn_rotation_damping - HORN_DAMPING_DECAY_RATE * dt)
+        # Decay horn pitch/yaw damping when not in contact (Phase 2: Horn Clipping Prevention)
+        if self.horn_pitch_damping > 0.0:
+            self.horn_pitch_damping = max(0.0, self.horn_pitch_damping - HORN_DAMPING_DECAY_RATE * dt)
+        if self.horn_yaw_damping > 0.0:
+            self.horn_yaw_damping = max(0.0, self.horn_yaw_damping - HORN_DAMPING_DECAY_RATE * dt)
 
         # Clear horn collision flag (will be reset each frame if still colliding)
         self.in_horn_collision = False
@@ -641,7 +645,13 @@ goal_celebration_timer = 0.0  # Timer for celebration sequence
 # Score digit display state
 blue_score_bounce_timer = 0.0  # Timer for blue digit bounce animation
 red_score_bounce_timer = 0.0  # Timer for red digit bounce animation
-SCORE_BOUNCE_DURATION = 0.5  # Duration of bounce animation
+blue_score_delay_timer = 0.0  # Delay before animation/explosion starts
+red_score_delay_timer = 0.0   # Delay before animation/explosion starts
+blue_score_pending = False    # Whether blue has a pending score to add after delay
+red_score_pending = False     # Whether red has a pending score to add after delay
+SCORE_ANIMATION_DELAY = 1.0   # 1 second delay before score animation and explosion
+SCORE_BOUNCE_DURATION = 0.8  # Duration of pop & squash animation (slightly longer for spring effect)
+BASE_DIGIT_SCALE = 2.0  # Base size multiplier for score digits (1.0 = 5x7 voxels)
 
 # Beetle respawn state
 blue_respawn_timer = 0.0  # Timer for blue beetle respawn
@@ -700,23 +710,21 @@ for d in range(10):
 
 @ti.kernel
 def render_score_digit(digit: ti.i32, base_x: ti.i32, base_y: ti.i32, base_z: ti.i32,
-                       voxel_type: ti.i32, scale: ti.f32):
-    """Render a single digit (0-9) as voxels with optional scale for bounce effect
+                       voxel_type: ti.i32, scale_x: ti.f32, scale_y: ti.f32):
+    """Render a single digit (0-9) as voxels with optional X/Y scale for squash/stretch effect
     base_x, base_y, base_z: center of digit in grid coords
     voxel_type: SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
-    scale: 1.0 = normal, >1.0 = enlarged for bounce effect
+    scale_x: horizontal scale (>1.0 = wider, <1.0 = narrower)
+    scale_y: vertical scale (>1.0 = taller, <1.0 = squashed)
     """
-    # Digit is 5 wide x 7 tall, center it on base position
-    half_width = 2.5 * scale
-    half_height = 3.5 * scale
-
     for row in range(7):
         row_pattern = digit_pattern_field[digit, row]
         for col in range(5):
             if (row_pattern >> (4 - col)) & 1:  # Check if bit is set (reversed for correct orientation)
                 # Calculate scaled position from center
-                offset_x = (col - 2) * scale
-                offset_y = (6 - row) * scale  # Flip row so 0 is at bottom
+                offset_x = (col - 2) * scale_x
+                # Flip row so 0 is at bottom, scale from bottom (y offset adjusted)
+                offset_y = (6 - row) * scale_y
 
                 # Place voxel at scaled position
                 vx = ti.cast(base_x + offset_x, ti.i32)
@@ -1144,7 +1152,7 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                         is_ball_involved = 1
 
                     # Initialize tolerance (required by Taichi)
-                    tolerance = 2  # Default: beetle-beetle
+                    tolerance = 3  # Default: beetle-beetle (±3 voxels for earlier detection)
                     if has_hook_interior == 1:
                         tolerance = 5
                     elif is_ball_involved == 1:
@@ -6101,6 +6109,62 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                 # Lifetime scales slightly with impact (bigger bounce = longer hang time)
                 simulation.debris_lifetime[idx] = 0.4 + ti.min(impact_speed * 0.06, 0.4) + ti.random() * 0.15
 
+@ti.kernel
+def spawn_score_burst(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
+                      body_r: ti.f32, body_g: ti.f32, body_b: ti.f32,
+                      leg_r: ti.f32, leg_g: ti.f32, leg_b: ti.f32,
+                      stripe_r: ti.f32, stripe_g: ti.f32, stripe_b: ti.f32,
+                      tip_r: ti.f32, tip_g: ti.f32, tip_b: ti.f32,
+                      num_particles: ti.i32):
+    """Spawn celebratory particle burst when score changes - particles fly outward from digit center"""
+    for i in range(num_particles):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            # Spherical distribution using golden angle for even spread
+            golden_angle = 3.14159 * (3.0 - ti.sqrt(5.0))
+            theta = golden_angle * ti.cast(i, ti.f32)
+            # Vary elevation with some randomness
+            phi = ti.acos(1.0 - 2.0 * (ti.cast(i, ti.f32) + ti.random()) / ti.cast(num_particles, ti.f32))
+
+            # Convert to direction
+            sin_phi = ti.sin(phi)
+            dir_x = sin_phi * ti.cos(theta)
+            dir_y = ti.cos(phi)
+            dir_z = sin_phi * ti.sin(theta)
+
+            # Spawn at center with slight random offset
+            spawn_x = pos_x + (ti.random() - 0.5) * 2.0
+            spawn_y = pos_y + (ti.random() - 0.5) * 2.0
+            spawn_z = pos_z + (ti.random() - 0.5) * 2.0
+
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
+
+            # Burst outward with varying speeds
+            speed = 40.0 + ti.random() * 60.0  # 40-100 units/sec
+            simulation.debris_vel[idx] = ti.math.vec3(dir_x * speed, dir_y * speed + 20.0, dir_z * speed)
+
+            # Sample color from beetle colors (same distribution as victory confetti)
+            # 55% body, 20% leg, 15% stripe, 10% tip
+            rand = ti.random()
+            particle_color = ti.math.vec3(body_r, body_g, body_b)  # Default to body
+            if rand >= 0.55 and rand < 0.75:
+                particle_color = ti.math.vec3(leg_r, leg_g, leg_b)
+            elif rand >= 0.75 and rand < 0.90:
+                particle_color = ti.math.vec3(stripe_r, stripe_g, stripe_b)
+            elif rand >= 0.90:
+                particle_color = ti.math.vec3(tip_r, tip_g, tip_b)
+
+            # Add brightness variation (some particles brighter/whiter)
+            brightness = 0.8 + ti.random() * 0.4  # 0.8-1.2x
+            white_blend = ti.random() * 0.3  # 0-30% white blend for sparkle
+            r = particle_color.x * brightness * (1.0 - white_blend) + white_blend
+            g = particle_color.y * brightness * (1.0 - white_blend) + white_blend
+            b = particle_color.z * brightness * (1.0 - white_blend) + white_blend
+            simulation.debris_material[idx] = ti.math.vec3(r, g, b)
+
+            # Short lifetime for snappy burst
+            simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.4  # 0.4-0.8 sec
+
 # Base leg tip offsets from beetle center (unrotated, in voxel units) for leg_length=6
 # Beetle coordinate system: +X = forward (head), -X = backward (rear)
 # +Z = left side, -Z = right side
@@ -6131,36 +6195,59 @@ def get_leg_tip_world_position(beetle, leg_id, leg_length=8):
     world_z = beetle.z + local_x * sin_r + local_z * cos_r
     return world_x, world_z
 
-def calculate_horn_rotation_damping(beetle, collision_x, collision_y, collision_z, engagement_factor):
-    """Calculate damping factor based on horn rotation direction (Phase 2: Horn Clipping Prevention)"""
+def calculate_horn_damping(beetle, collision_x, collision_y, collision_z, engagement_factor):
+    """Calculate separate pitch and yaw damping based on their own rotation directions (Phase 2: Horn Clipping Prevention)"""
     # Get horn tip position
     horn_tip_x, horn_tip_y, horn_tip_z = calculate_horn_tip_position(beetle)
 
     # Vector from horn tip to collision point
+    to_collision_x = collision_x - horn_tip_x
     to_collision_y = collision_y - horn_tip_y
+    to_collision_z = collision_z - horn_tip_z
 
-    # Determine rotation direction relative to collision
+    # === PITCH DAMPING (R/Y controls - vertical movement) ===
     rotating_up = beetle.horn_pitch_velocity > 0.1
     rotating_down = beetle.horn_pitch_velocity < -0.1
     collision_above_tip = to_collision_y > 0.0
 
-    # Calculate if rotating toward or away from collision
-    rotating_toward = (rotating_up and collision_above_tip) or (rotating_down and not collision_above_tip)
-    rotating_away = (rotating_up and not collision_above_tip) or (rotating_down and collision_above_tip)
+    # Calculate if pitch is rotating toward or away from collision
+    pitch_toward = (rotating_up and collision_above_tip) or (rotating_down and not collision_above_tip)
+    pitch_away = (rotating_up and not collision_above_tip) or (rotating_down and collision_above_tip)
 
-    # Select damping amount based on direction
-    if rotating_toward:
-        target_damping = HORN_DAMPING_INTO * engagement_factor
-    elif rotating_away:
-        target_damping = HORN_DAMPING_AWAY * engagement_factor
+    if pitch_toward:
+        target_pitch_damping = HORN_DAMPING_INTO * engagement_factor
+    elif pitch_away:
+        target_pitch_damping = HORN_DAMPING_AWAY * engagement_factor
     else:
-        target_damping = HORN_DAMPING_NEUTRAL * engagement_factor
+        target_pitch_damping = HORN_DAMPING_NEUTRAL * engagement_factor
+
+    # === YAW DAMPING (V/B controls - horizontal spread) ===
+    # Calculate horizontal direction to collision relative to beetle facing
+    cos_r = math.cos(beetle.rotation)
+    sin_r = math.sin(beetle.rotation)
+    # Transform collision offset to beetle-local coordinates
+    local_collision_x = to_collision_x * cos_r + to_collision_z * sin_r
+
+    rotating_open = beetle.horn_yaw_velocity > 0.1   # Opening pincers / yawing outward
+    rotating_close = beetle.horn_yaw_velocity < -0.1  # Closing pincers / yawing inward
+    collision_outside = local_collision_x > 0.0  # Collision is in front/outside of horn arc
+
+    # Calculate if yaw is rotating toward or away from collision
+    yaw_toward = (rotating_open and collision_outside) or (rotating_close and not collision_outside)
+    yaw_away = (rotating_open and not collision_outside) or (rotating_close and collision_outside)
+
+    if yaw_toward:
+        target_yaw_damping = HORN_DAMPING_INTO * engagement_factor
+    elif yaw_away:
+        target_yaw_damping = HORN_DAMPING_AWAY * engagement_factor
+    else:
+        target_yaw_damping = HORN_DAMPING_NEUTRAL * engagement_factor
 
     # Smooth interpolation to avoid jerky feel
-    current_damping = beetle.horn_rotation_damping
-    new_damping = current_damping + (target_damping - current_damping) * HORN_DAMPING_SMOOTHING
+    new_pitch_damping = beetle.horn_pitch_damping + (target_pitch_damping - beetle.horn_pitch_damping) * HORN_DAMPING_SMOOTHING
+    new_yaw_damping = beetle.horn_yaw_damping + (target_yaw_damping - beetle.horn_yaw_damping) * HORN_DAMPING_SMOOTHING
 
-    return new_damping
+    return new_pitch_damping, new_yaw_damping
 
 
 def beetle_collision(b1, b2, params):
@@ -6262,12 +6349,12 @@ def beetle_collision(b1, b2, params):
                 if has_horn_tips == 1:
                     engagement_factor = max(engagement_factor, MIN_TIP_ENGAGEMENT)
 
-                # Calculate damping for beetles (not ball) based on their rotation direction
+                # Calculate separate pitch and yaw damping for beetles (not ball) based on their rotation directions
                 if b1.horn_type != "ball":
-                    b1.horn_rotation_damping = calculate_horn_rotation_damping(
+                    b1.horn_pitch_damping, b1.horn_yaw_damping = calculate_horn_damping(
                         b1, collision_x, collision_y, collision_z, engagement_factor)
                 if b2.horn_type != "ball":
-                    b2.horn_rotation_damping = calculate_horn_rotation_damping(
+                    b2.horn_pitch_damping, b2.horn_yaw_damping = calculate_horn_damping(
                         b2, collision_x, collision_y, collision_z, engagement_factor)
 
                 # Skip lift/leverage combat physics for ball collisions (ball has its own physics below)
@@ -6440,15 +6527,7 @@ def beetle_collision(b1, b2, params):
                     b2.angular_velocity -= angular_impulse_b2
 
             # STRONG separation to prevent stuck collisions (now 3D!)
-            # Read hook interior collision status
-            has_hook_interiors = collision_has_hook_interiors[None]
-
-            # Use full beetle-strength separation for all collisions (including ball) for consistent physics
-            # 2.5x stronger for hook interior collisions
-            if has_hook_interiors == 1:
-                separation_force = params["SEPARATION_FORCE"] * 2.5  # 2.5x stronger for hook interior collisions (1.5 force)
-            else:
-                separation_force = params["SEPARATION_FORCE"]  # Full strength for all collisions
+            separation_force = params["SEPARATION_FORCE"]
 
             b1.x += normal_x * separation_force
             b1.z += normal_z * separation_force
@@ -7063,12 +7142,12 @@ while window.running:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
 
             if window.is_pressed('r'):
-                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_pitch_damping)
                 new_pitch = beetle_blue.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                 new_pitch = min(max_pitch_limit, new_pitch)
                 pitch_speed = effective_speed
             elif window.is_pressed('y'):
-                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_pitch_damping)
                 new_pitch = beetle_blue.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                 new_pitch = max(min_pitch_limit, new_pitch)
                 pitch_speed = -effective_speed
@@ -7096,20 +7175,17 @@ while window.running:
 
                 if window.is_pressed('v'):
                     # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_yaw_damping)
 
-                    # STAG SQUEEZE CHECK: Only apply when there's actual voxel collision
-                    if beetle_blue.horn_type == "stag" and beetle_red.active:
-                        # First verify actual voxel collision exists (not just geometric proximity)
+                    # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                    if beetle_red.active:
                         has_real_collision = check_collision_kernel(
                             beetle_blue.x, beetle_blue.z, beetle_blue.y,
                             beetle_red.x, beetle_red.z, beetle_red.y,
                             beetle_blue.color, beetle_red.color
                         )
                         if has_real_collision:
-                            # Squeeze with resistance: apply heavy damping
-                            effective_speed *= (1.0 - STAG_SQUEEZE_DAMPING)
-                            # Apply push force to trapped beetle (forward + pitch up front + lift)
+                            # Apply push force to opponent (forward + lift)
                             forward_x = math.cos(beetle_blue.rotation)
                             forward_z = math.sin(beetle_blue.rotation)
                             push_force = 40.0 * PHYSICS_TIMESTEP
@@ -7123,7 +7199,25 @@ while window.running:
                     yaw_speed = -effective_speed
                 elif window.is_pressed('b'):
                     # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_rotation_damping)
+                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_yaw_damping)
+
+                    # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                    if beetle_red.active:
+                        has_real_collision = check_collision_kernel(
+                            beetle_blue.x, beetle_blue.z, beetle_blue.y,
+                            beetle_red.x, beetle_red.z, beetle_red.y,
+                            beetle_blue.color, beetle_red.color
+                        )
+                        if has_real_collision:
+                            # Apply push force to opponent (forward + lift)
+                            forward_x = math.cos(beetle_blue.rotation)
+                            forward_z = math.sin(beetle_blue.rotation)
+                            push_force = 40.0 * PHYSICS_TIMESTEP
+                            beetle_red.vx += forward_x * push_force
+                            beetle_red.vz += forward_z * push_force
+                            beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                            beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+
                     new_yaw = beetle_blue.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
                     yaw_speed = effective_speed
@@ -7206,12 +7300,12 @@ while window.running:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
 
             if window.is_pressed('u'):
-                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_pitch_damping)
                 new_pitch = beetle_red.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                 new_pitch = min(max_pitch_limit, new_pitch)
                 pitch_speed = effective_speed
             elif window.is_pressed('o'):
-                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_pitch_damping)
                 new_pitch = beetle_red.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                 new_pitch = max(min_pitch_limit, new_pitch)
                 pitch_speed = -effective_speed
@@ -7239,20 +7333,17 @@ while window.running:
 
                 if window.is_pressed('n'):
                     # N key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_yaw_damping)
 
-                    # STAG SQUEEZE CHECK: Only apply when there's actual voxel collision
-                    if beetle_red.horn_type == "stag" and beetle_blue.active:
-                        # First verify actual voxel collision exists (not just geometric proximity)
+                    # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                    if beetle_blue.active:
                         has_real_collision = check_collision_kernel(
                             beetle_red.x, beetle_red.z, beetle_red.y,
                             beetle_blue.x, beetle_blue.z, beetle_blue.y,
                             beetle_red.color, beetle_blue.color
                         )
                         if has_real_collision:
-                            # Squeeze with resistance: apply heavy damping
-                            effective_speed *= (1.0 - STAG_SQUEEZE_DAMPING)
-                            # Apply push force to trapped beetle (forward + pitch up front + lift)
+                            # Apply push force to opponent (forward + lift)
                             forward_x = math.cos(beetle_red.rotation)
                             forward_z = math.sin(beetle_red.rotation)
                             push_force = 40.0 * PHYSICS_TIMESTEP
@@ -7266,7 +7357,25 @@ while window.running:
                     yaw_speed = -effective_speed
                 elif window.is_pressed('m'):
                     # M key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_rotation_damping)
+                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_yaw_damping)
+
+                    # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                    if beetle_blue.active:
+                        has_real_collision = check_collision_kernel(
+                            beetle_red.x, beetle_red.z, beetle_red.y,
+                            beetle_blue.x, beetle_blue.z, beetle_blue.y,
+                            beetle_red.color, beetle_blue.color
+                        )
+                        if has_real_collision:
+                            # Apply push force to opponent (forward + lift)
+                            forward_x = math.cos(beetle_red.rotation)
+                            forward_z = math.sin(beetle_red.rotation)
+                            push_force = 40.0 * PHYSICS_TIMESTEP
+                            beetle_blue.vx += forward_x * push_force
+                            beetle_blue.vz += forward_z * push_force
+                            beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                            beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+
                     new_yaw = beetle_red.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
                     yaw_speed = effective_speed
@@ -7366,19 +7475,19 @@ while window.running:
                 if not g['ball_scored_this_fall']:  # Only score once per fall
                     if abs(beetle_ball.z) < goal_pit_half_width:  # In goal lane (z is centered at 0 in physics space)
                         if beetle_ball.x < -32:  # Blue goal pit (west) - RED scores
-                            g['red_score'] = g['red_score'] + 1
                             g['ball_scored_this_fall'] = True
                             g['goal_scored_by'] = "RED"
                             g['goal_celebration_timer'] = 0.0
-                            g['red_score_bounce_timer'] = SCORE_BOUNCE_DURATION  # Start bounce animation
-                            print(f"RED SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
+                            g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
+                            g['red_score_pending'] = True  # Score will be added after delay
+                            print(f"RED SCORES!")
                         elif beetle_ball.x > 32:  # Red goal pit (east) - BLUE scores
-                            g['blue_score'] = g['blue_score'] + 1
                             g['ball_scored_this_fall'] = True
                             g['goal_scored_by'] = "BLUE"
                             g['goal_celebration_timer'] = 0.0
-                            g['blue_score_bounce_timer'] = SCORE_BOUNCE_DURATION  # Start bounce animation
-                            print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
+                            g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
+                            g['blue_score_pending'] = True  # Score will be added after delay
+                            print(f"BLUE SCORES!")
             # NOTE: ball_scored_this_fall is only reset on ball respawn, not when ball goes above ground
             # This prevents double-scoring if ball bounces in the goal pit
 
@@ -7439,7 +7548,8 @@ while window.running:
             print("RED BEETLE IS FALLING!")
 
         # Stage 1.5: Death explosion - gradual particle burst over 0.7 seconds
-        EXPLOSION_TRIGGER_Y = -20.0  # Trigger explosion after falling 20 voxels
+        EXPLOSION_TRIGGER_Y = -16.0  # Trigger explosion after falling 16 voxels
+        EXPLOSION_DELAY = 0.1  # Delay before particles start spawning
         EXPLOSION_DURATION = 0.7  # Spawn particles over 0.7 seconds
         TOTAL_PARTICLES = 1012  # 50% more than 675 (675 * 1.5 = 1012)
         PARTICLES_PER_FRAME = int(TOTAL_PARTICLES / (EXPLOSION_DURATION * 60))  # ~24 particles per frame at 60 FPS
@@ -7448,77 +7558,85 @@ while window.running:
         if beetle_blue.is_falling and not beetle_blue.has_exploded and beetle_blue.y < EXPLOSION_TRIGGER_Y:
             # Start explosion - store position
             beetle_blue.explosion_pos_x = beetle_blue.x
-            beetle_blue.explosion_pos_y = beetle_blue.y + 21.0
+            beetle_blue.explosion_pos_y = beetle_blue.y + 30.0
             beetle_blue.explosion_pos_z = beetle_blue.z
+            beetle_blue.explosion_delay = EXPLOSION_DELAY  # Delay before particles
             beetle_blue.explosion_timer = EXPLOSION_DURATION
             beetle_blue.has_exploded = True
             # Opponent scores and we start respawn timer (works in both normal and ball mode)
-            g['red_score'] = g['red_score'] + 1
-            g['red_score_bounce_timer'] = SCORE_BOUNCE_DURATION
+            g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
+            g['red_score_pending'] = True  # Score will be added after delay
             g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
-            print(f"RED SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
+            print(f"RED SCORES!")
             print("BLUE BEETLE EXPLOSION STARTED!")
 
-        # Continue spawning particles during explosion
-        if beetle_blue.has_exploded and beetle_blue.explosion_timer > 0.0:
-            beetle_blue.explosion_timer -= PHYSICS_TIMESTEP
-            # Calculate which batch to spawn
-            progress = 1.0 - (beetle_blue.explosion_timer / EXPLOSION_DURATION)
-            particles_spawned = int(progress * TOTAL_PARTICLES)
-            batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
-            batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
+        # Continue spawning particles during explosion (after delay)
+        if beetle_blue.has_exploded:
+            if beetle_blue.explosion_delay > 0.0:
+                beetle_blue.explosion_delay -= PHYSICS_TIMESTEP
+            elif beetle_blue.explosion_timer > 0.0:
+                beetle_blue.explosion_timer -= PHYSICS_TIMESTEP
+                # Calculate which batch to spawn
+                progress = 1.0 - (beetle_blue.explosion_timer / EXPLOSION_DURATION)
+                particles_spawned = int(progress * TOTAL_PARTICLES)
+                batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
+                batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
 
-            if batch_size > 0:
-                # Get blue beetle colors from window
-                blue_body = window.blue_body_color
-                blue_leg = window.blue_leg_color
-                blue_stripe = window.blue_stripe_color
-                blue_tip = window.blue_leg_tip_color
-                spawn_death_explosion_batch(beetle_blue.explosion_pos_x, beetle_blue.explosion_pos_y,
-                                           beetle_blue.explosion_pos_z,
-                                           blue_body[0], blue_body[1], blue_body[2],
-                                           blue_leg[0], blue_leg[1], blue_leg[2],
-                                           blue_stripe[0], blue_stripe[1], blue_stripe[2],
-                                           blue_tip[0], blue_tip[1], blue_tip[2],
-                                           batch_offset, batch_size, TOTAL_PARTICLES)
+                if batch_size > 0:
+                    # Get blue beetle colors from window
+                    blue_body = window.blue_body_color
+                    blue_leg = window.blue_leg_color
+                    blue_stripe = window.blue_stripe_color
+                    blue_tip = window.blue_leg_tip_color
+                    spawn_death_explosion_batch(beetle_blue.explosion_pos_x, beetle_blue.explosion_pos_y,
+                                               beetle_blue.explosion_pos_z,
+                                               blue_body[0], blue_body[1], blue_body[2],
+                                               blue_leg[0], blue_leg[1], blue_leg[2],
+                                               blue_stripe[0], blue_stripe[1], blue_stripe[2],
+                                               blue_tip[0], blue_tip[1], blue_tip[2],
+                                               batch_offset, batch_size, TOTAL_PARTICLES)
 
         # Red beetle explosion
         if beetle_red.is_falling and not beetle_red.has_exploded and beetle_red.y < EXPLOSION_TRIGGER_Y:
             # Start explosion - store position
             beetle_red.explosion_pos_x = beetle_red.x
-            beetle_red.explosion_pos_y = beetle_red.y + 21.0
+            beetle_red.explosion_pos_y = beetle_red.y + 30.0
             beetle_red.explosion_pos_z = beetle_red.z
+            beetle_red.explosion_delay = EXPLOSION_DELAY  # Delay before particles
             beetle_red.explosion_timer = EXPLOSION_DURATION
             beetle_red.has_exploded = True
             # Opponent scores and we start respawn timer (works in both normal and ball mode)
-            g['blue_score'] = g['blue_score'] + 1
-            g['blue_score_bounce_timer'] = SCORE_BOUNCE_DURATION
+            g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
+            g['blue_score_pending'] = True  # Score will be added after delay
             g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
-            print(f"BLUE SCORES! Blue {g['blue_score']} - {g['red_score']} Red")
+            print(f"BLUE SCORES!")
             print("RED BEETLE EXPLOSION STARTED!")
 
-        # Continue spawning particles during explosion
-        if beetle_red.has_exploded and beetle_red.explosion_timer > 0.0:
-            beetle_red.explosion_timer -= PHYSICS_TIMESTEP
-            # Calculate which batch to spawn
-            progress = 1.0 - (beetle_red.explosion_timer / EXPLOSION_DURATION)
-            particles_spawned = int(progress * TOTAL_PARTICLES)
-            batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
-            batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
+        # Continue spawning particles during explosion (after delay)
+        if beetle_red.has_exploded:
+            if beetle_red.explosion_delay > 0.0:
+                beetle_red.explosion_delay -= PHYSICS_TIMESTEP
+            elif beetle_red.explosion_timer > 0.0:
+                beetle_red.explosion_timer -= PHYSICS_TIMESTEP
+                # Calculate which batch to spawn
+                progress = 1.0 - (beetle_red.explosion_timer / EXPLOSION_DURATION)
+                particles_spawned = int(progress * TOTAL_PARTICLES)
+                batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
+                batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
 
-            if batch_size > 0:
-                # Get red beetle colors from window
-                red_body = window.red_body_color
-                red_leg = window.red_leg_color
-                red_stripe = window.red_stripe_color
-                red_tip = window.red_leg_tip_color
-                spawn_death_explosion_batch(beetle_red.explosion_pos_x, beetle_red.explosion_pos_y,
-                                           beetle_red.explosion_pos_z,
-                                           red_body[0], red_body[1], red_body[2],
-                                           red_leg[0], red_leg[1], red_leg[2],
-                                           red_stripe[0], red_stripe[1], red_stripe[2],
-                                           red_tip[0], red_tip[1], red_tip[2],
-                                           batch_offset, batch_size, TOTAL_PARTICLES)
+                if batch_size > 0:
+                    # Get red beetle colors from window
+                    red_body = window.red_body_color
+                    red_leg = window.red_leg_color
+                    red_stripe = window.red_stripe_color
+                    red_tip = window.red_leg_tip_color
+                    spawn_death_explosion_batch(beetle_red.explosion_pos_x, beetle_red.explosion_pos_y,
+                                               beetle_red.explosion_pos_z,
+                                               red_body[0], red_body[1], red_body[2],
+                                               red_leg[0], red_leg[1], red_leg[2],
+                                               red_stripe[0], red_stripe[1], red_stripe[2],
+                                               red_tip[0], red_tip[1], red_tip[2],
+                                               batch_offset, batch_size, TOTAL_PARTICLES)
 
         # Ball explosion - trigger when ball falls to same level as beetles
         g = globals()
@@ -8510,6 +8628,47 @@ while window.running:
     # Render floating score digits above goal pits (always visible, not just in ball mode)
     clear_score_digits()
 
+    # Update delay timers - when they hit zero, trigger animation, explosion, and score increment
+    if blue_score_delay_timer > 0:
+        blue_score_delay_timer -= 1.0 / 60.0
+        if blue_score_delay_timer <= 0:
+            blue_score_delay_timer = 0
+            if blue_score_pending:
+                blue_score += 1  # Now increment the score
+                blue_score_pending = False
+                print(f"Blue {blue_score} - {red_score} Red")
+            blue_score_bounce_timer = SCORE_BOUNCE_DURATION  # Start bounce animation
+            # Spawn score burst at blue digit
+            b_body = window.blue_body_color
+            b_leg = window.blue_leg_color
+            b_stripe = window.blue_stripe_color
+            b_tip = window.blue_horn_tip_color
+            spawn_score_burst(32.0, 58.0, 0.0,
+                              b_body[0], b_body[1], b_body[2],
+                              b_leg[0], b_leg[1], b_leg[2],
+                              b_stripe[0], b_stripe[1], b_stripe[2],
+                              b_tip[0], b_tip[1], b_tip[2], 150)
+
+    if red_score_delay_timer > 0:
+        red_score_delay_timer -= 1.0 / 60.0
+        if red_score_delay_timer <= 0:
+            red_score_delay_timer = 0
+            if red_score_pending:
+                red_score += 1  # Now increment the score
+                red_score_pending = False
+                print(f"Blue {blue_score} - {red_score} Red")
+            red_score_bounce_timer = SCORE_BOUNCE_DURATION  # Start bounce animation
+            # Spawn score burst at red digit
+            r_body = window.red_body_color
+            r_leg = window.red_leg_color
+            r_stripe = window.red_stripe_color
+            r_tip = window.red_horn_tip_color
+            spawn_score_burst(-32.0, 58.0, 0.0,
+                              r_body[0], r_body[1], r_body[2],
+                              r_leg[0], r_leg[1], r_leg[2],
+                              r_stripe[0], r_stripe[1], r_stripe[2],
+                              r_tip[0], r_tip[1], r_tip[2], 150)
+
     # Update bounce timers
     if blue_score_bounce_timer > 0:
         blue_score_bounce_timer -= 1.0 / 60.0  # Approximate frame time
@@ -8521,17 +8680,63 @@ while window.running:
         if red_score_bounce_timer < 0:
             red_score_bounce_timer = 0
 
-    # Calculate bounce scale using sin for smooth bounce (1.0 -> 1.5 -> 1.0)
-    def get_bounce_scale(timer):
+    # Pop & Squash animation using damped spring physics
+    # Phases: 1) Initial squash (flat & wide), 2) Spring up tall & thin, 3) Oscillate and settle
+    def get_pop_squash_scales(timer):
         if timer <= 0:
-            return 1.0
-        # Normalize timer to 0-1 range (1 at start, 0 at end)
-        t = timer / SCORE_BOUNCE_DURATION
-        # Use sin for smooth bounce: peaks at t=0.5
-        return 1.0 + 0.5 * math.sin(t * math.pi)
+            return 1.0, 1.0  # scale_x, scale_y
 
-    blue_scale = get_bounce_scale(blue_score_bounce_timer)
-    red_scale = get_bounce_scale(red_score_bounce_timer)
+        # Normalize timer: 1.0 at start, 0.0 at end
+        t = 1.0 - (timer / SCORE_BOUNCE_DURATION)  # t goes 0 -> 1 as animation progresses
+
+        # Damped spring parameters
+        frequency = 4.5  # Number of oscillations (more bounces)
+        damping = 2.5    # How quickly it settles (slower decay = longer animation)
+
+        # Initial squash phase (first 10% of animation) - snappy squash
+        if t < 0.10:
+            # Squash down: wide and flat
+            squash_t = t / 0.10  # 0 -> 1 during squash phase
+            scale_y = 1.0 - 0.85 * math.sin(squash_t * math.pi * 0.5)  # Squash to 0.15 (very flat)
+            scale_x = 1.0 + 1.2 * math.sin(squash_t * math.pi * 0.5)   # Widen to 2.2 (very wide)
+        else:
+            # Spring oscillation phase (remaining 90%)
+            spring_t = (t - 0.10) / 0.90  # Normalize to 0 -> 1
+
+            # Damped oscillation: exp decay * sin wave
+            decay = math.exp(-damping * spring_t)
+            oscillation = math.sin(frequency * math.pi * spring_t)
+
+            # Scale Y: starts stretched tall, oscillates and settles to 1.0
+            # First peak is tall (positive), then oscillates
+            scale_y = 1.0 + 1.8 * decay * oscillation  # Stretch up to 2.8x tall
+
+            # Scale X: inverse of Y for volume preservation (squash & stretch principle)
+            # When tall, get narrower; when short, get wider
+            scale_x = 1.0 - 0.6 * decay * oscillation  # Narrow to 0.4x when tall
+
+        # Clamp to reasonable values
+        scale_x = max(0.15, min(3.0, scale_x))
+        scale_y = max(0.15, min(3.0, scale_y))
+
+        return scale_x, scale_y
+
+    blue_scale_x, blue_scale_y = get_pop_squash_scales(blue_score_bounce_timer)
+    red_scale_x, red_scale_y = get_pop_squash_scales(red_score_bounce_timer)
+
+    # Calculate flash brightness (bright at start, fades quickly)
+    def get_flash_brightness(timer):
+        if timer <= 0:
+            return 1.0  # Normal brightness
+        # Flash is brightest at start, fades over first 30% of animation
+        t = timer / SCORE_BOUNCE_DURATION  # 1.0 at start, 0.0 at end
+        if t > 0.7:  # First 30% of animation (timer goes from 1.0 to 0.0)
+            flash_t = (t - 0.7) / 0.3  # 1.0 at start, 0.0 at 30%
+            return 1.0 + 1.5 * flash_t  # Up to 2.5x brightness
+        return 1.0
+
+    simulation.blue_score_flash[None] = get_flash_brightness(blue_score_bounce_timer)
+    simulation.red_score_flash[None] = get_flash_brightness(red_score_bounce_timer)
 
     # Digit positions in grid coords:
     # Blue score hovers above RED goal pit (east, x=96)
@@ -8541,12 +8746,14 @@ while window.running:
     # Blue score digit above red goal (east)
     blue_digit_x = 96  # Center over red goal pit
     render_score_digit(blue_score % 10, blue_digit_x, digit_y, 64,
-                      simulation.SCORE_DIGIT_BLUE, blue_scale)
+                      simulation.SCORE_DIGIT_BLUE,
+                      blue_scale_x, blue_scale_y)
 
     # Red score digit above blue goal (west)
     red_digit_x = 32  # Center over blue goal pit
     render_score_digit(red_score % 10, red_digit_x, digit_y, 64,
-                      simulation.SCORE_DIGIT_RED, red_scale)
+                      simulation.SCORE_DIGIT_RED,
+                      red_scale_x, red_scale_y)
 
     # === SCENE RENDER TIMING ===
     perf_monitor.start('scene_render')
