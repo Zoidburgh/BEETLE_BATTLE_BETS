@@ -200,7 +200,11 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
             if idx < MAX_VOXELS:
                 voxel_positions[idx] = world_pos
                 voxel_colors[idx] = color
-                voxel_radii[idx] = VOXEL_RADIUS  # Standard voxel size
+                # Score digits use smaller radius for see-through effect
+                if vtype == 23 or vtype == 24:  # SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
+                    voxel_radii[idx] = VOXEL_RADIUS * 0.68  # 68% size for transparency effect
+                else:
+                    voxel_radii[idx] = VOXEL_RADIUS  # Standard voxel size
 
     num_voxels[None] = min(count, MAX_VOXELS)
 

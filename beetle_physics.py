@@ -651,6 +651,13 @@ blue_score_pending = False    # Whether blue has a pending score to add after de
 red_score_pending = False     # Whether red has a pending score to add after delay
 SCORE_ANIMATION_DELAY = 1.0   # 1 second delay before score animation and explosion
 SCORE_BOUNCE_DURATION = 0.8  # Duration of pop & squash animation (slightly longer for spring effect)
+# Score burst particle spawning over time
+blue_burst_timer = 0.0        # Timer for spawning blue burst particles over time
+red_burst_timer = 0.0         # Timer for spawning red burst particles over time
+SCORE_BURST_DURATION = 0.2    # Spawn particles over 0.2 seconds
+SCORE_BURST_PARTICLES = 300   # Total particles to spawn
+blue_burst_spawned = 0        # Particles spawned so far for blue
+red_burst_spawned = 0         # Particles spawned so far for red
 BASE_DIGIT_SCALE = 2.0  # Base size multiplier for score digits (1.0 = 5x7 voxels)
 
 # Beetle respawn state
@@ -6156,16 +6163,17 @@ def spawn_score_burst(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                       leg_r: ti.f32, leg_g: ti.f32, leg_b: ti.f32,
                       stripe_r: ti.f32, stripe_g: ti.f32, stripe_b: ti.f32,
                       tip_r: ti.f32, tip_g: ti.f32, tip_b: ti.f32,
-                      num_particles: ti.i32):
+                      num_particles: ti.i32, start_index: ti.i32, total_particles: ti.i32):
     """Spawn celebratory particle burst when score changes - particles fly outward from digit center"""
     for i in range(num_particles):
+        particle_i = start_index + i  # Use global index for distribution
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             # Spherical distribution using golden angle for even spread
             golden_angle = 3.14159 * (3.0 - ti.sqrt(5.0))
-            theta = golden_angle * ti.cast(i, ti.f32)
+            theta = golden_angle * ti.cast(particle_i, ti.f32)
             # Vary elevation with some randomness
-            phi = ti.acos(1.0 - 2.0 * (ti.cast(i, ti.f32) + ti.random()) / ti.cast(num_particles, ti.f32))
+            phi = ti.acos(1.0 - 2.0 * (ti.cast(particle_i, ti.f32) + ti.random()) / ti.cast(total_particles, ti.f32))
 
             # Convert to direction
             sin_phi = ti.sin(phi)
@@ -6993,14 +7001,18 @@ while window.running:
         # Detect if beetles have fallen off the platform
         FALL_HEIGHT_THRESHOLD = -10.0  # Y position below which beetle is considered fallen
 
+        # Use extended radius when ball mode is active (ice bowl extends 12 voxels beyond arena)
+        BOWL_WIDTH = 12.0
+        effective_radius = ARENA_RADIUS + BOWL_WIDTH if beetle_ball.active else ARENA_RADIUS
+
         # Check both vertical fall AND horizontal arena boundary (prevents camera spazzing at edges)
         blue_dist_from_center = math.sqrt(beetle_blue.x**2 + beetle_blue.z**2)
         red_dist_from_center = math.sqrt(beetle_red.x**2 + beetle_red.z**2)
 
         blue_on_platform = (beetle_blue.y > FALL_HEIGHT_THRESHOLD and
-                            blue_dist_from_center < ARENA_RADIUS)
+                            blue_dist_from_center < effective_radius)
         red_on_platform = (beetle_red.y > FALL_HEIGHT_THRESHOLD and
-                           red_dist_from_center < ARENA_RADIUS)
+                           red_dist_from_center < effective_radius)
 
         # Calculate midpoint - only include beetles still on platform
         if blue_on_platform and red_on_platform:
@@ -7025,7 +7037,7 @@ while window.running:
         dz = beetle_red.z - beetle_blue.z
         separation = math.sqrt(dx*dx + dz*dz)
 
-        # Find nearest point on circular arena edge (ARENA_RADIUS = 32.0)
+        # Find nearest point on circular arena edge
         # Calculate distance and angle from origin to midpoint
         dist_from_origin = math.sqrt(mid_x*mid_x + mid_z*mid_z)
 
@@ -7052,9 +7064,9 @@ while window.running:
             # Always track beetles with smooth transition
             camera_edge_angle += angle_diff * 0.3  # 30% blend factor
 
-        # Nearest edge point is along smoothed angle at ARENA_RADIUS
-        nearest_edge_x = math.cos(camera_edge_angle) * ARENA_RADIUS
-        nearest_edge_z = math.sin(camera_edge_angle) * ARENA_RADIUS
+        # Nearest edge point is along smoothed angle at effective radius
+        nearest_edge_x = math.cos(camera_edge_angle) * effective_radius
+        nearest_edge_z = math.sin(camera_edge_angle) * effective_radius
 
         # Calculate direction vector FROM midpoint TO edge
         edge_dx = nearest_edge_x - mid_x
@@ -7071,7 +7083,7 @@ while window.running:
             edge_dz_norm = math.sin(angle_to_midpoint)
 
         # Calculate edge proximity (0.0 = center, 1.0 = at edge)
-        edge_proximity = dist_from_origin / ARENA_RADIUS
+        edge_proximity = dist_from_origin / effective_radius
 
         # Camera distance: reduce when beetles near edge (so edge is visible)
         base_camera_distance = physics_params["CAMERA_DISTANCE"]
@@ -8674,16 +8686,9 @@ while window.running:
                 blue_score_pending = False
                 print(f"Blue {blue_score} - {red_score} Red")
             blue_score_bounce_timer = SCORE_BOUNCE_DURATION  # Start bounce animation
-            # Spawn score burst at blue digit
-            b_body = window.blue_body_color
-            b_leg = window.blue_leg_color
-            b_stripe = window.blue_stripe_color
-            b_tip = window.blue_horn_tip_color
-            spawn_score_burst(32.0, 58.0, 0.0,
-                              b_body[0], b_body[1], b_body[2],
-                              b_leg[0], b_leg[1], b_leg[2],
-                              b_stripe[0], b_stripe[1], b_stripe[2],
-                              b_tip[0], b_tip[1], b_tip[2], 150)
+            # Start burst timer to spawn particles over time
+            blue_burst_timer = SCORE_BURST_DURATION
+            blue_burst_spawned = 0
 
     if red_score_delay_timer > 0:
         red_score_delay_timer -= 1.0 / 60.0
@@ -8694,16 +8699,9 @@ while window.running:
                 red_score_pending = False
                 print(f"Blue {blue_score} - {red_score} Red")
             red_score_bounce_timer = SCORE_BOUNCE_DURATION  # Start bounce animation
-            # Spawn score burst at red digit
-            r_body = window.red_body_color
-            r_leg = window.red_leg_color
-            r_stripe = window.red_stripe_color
-            r_tip = window.red_horn_tip_color
-            spawn_score_burst(-32.0, 58.0, 0.0,
-                              r_body[0], r_body[1], r_body[2],
-                              r_leg[0], r_leg[1], r_leg[2],
-                              r_stripe[0], r_stripe[1], r_stripe[2],
-                              r_tip[0], r_tip[1], r_tip[2], 150)
+            # Start burst timer to spawn particles over time
+            red_burst_timer = SCORE_BURST_DURATION
+            red_burst_spawned = 0
 
     # Update bounce timers
     if blue_score_bounce_timer > 0:
@@ -8716,6 +8714,76 @@ while window.running:
         if red_score_bounce_timer < 0:
             red_score_bounce_timer = 0
 
+    # Spawn burst particles over time for blue
+    if blue_burst_timer > 0:
+        blue_burst_timer -= 1.0 / 60.0
+        # Calculate how many particles should be spawned by now
+        progress = 1.0 - (blue_burst_timer / SCORE_BURST_DURATION)
+        target_spawned = int(progress * SCORE_BURST_PARTICLES)
+        particles_to_spawn = target_spawned - blue_burst_spawned
+        if particles_to_spawn > 0:
+            b_body = window.blue_body_color
+            b_leg = window.blue_leg_color
+            b_stripe = window.blue_stripe_color
+            b_tip = window.blue_horn_tip_color
+            spawn_score_burst(32.0, 58.0, 0.0,
+                              b_body[0], b_body[1], b_body[2],
+                              b_leg[0], b_leg[1], b_leg[2],
+                              b_stripe[0], b_stripe[1], b_stripe[2],
+                              b_tip[0], b_tip[1], b_tip[2],
+                              particles_to_spawn, blue_burst_spawned, SCORE_BURST_PARTICLES)
+            blue_burst_spawned = target_spawned
+        if blue_burst_timer <= 0:
+            blue_burst_timer = 0
+            # Spawn any remaining particles
+            remaining = SCORE_BURST_PARTICLES - blue_burst_spawned
+            if remaining > 0:
+                b_body = window.blue_body_color
+                b_leg = window.blue_leg_color
+                b_stripe = window.blue_stripe_color
+                b_tip = window.blue_horn_tip_color
+                spawn_score_burst(32.0, 58.0, 0.0,
+                                  b_body[0], b_body[1], b_body[2],
+                                  b_leg[0], b_leg[1], b_leg[2],
+                                  b_stripe[0], b_stripe[1], b_stripe[2],
+                                  b_tip[0], b_tip[1], b_tip[2],
+                                  remaining, blue_burst_spawned, SCORE_BURST_PARTICLES)
+
+    # Spawn burst particles over time for red
+    if red_burst_timer > 0:
+        red_burst_timer -= 1.0 / 60.0
+        # Calculate how many particles should be spawned by now
+        progress = 1.0 - (red_burst_timer / SCORE_BURST_DURATION)
+        target_spawned = int(progress * SCORE_BURST_PARTICLES)
+        particles_to_spawn = target_spawned - red_burst_spawned
+        if particles_to_spawn > 0:
+            r_body = window.red_body_color
+            r_leg = window.red_leg_color
+            r_stripe = window.red_stripe_color
+            r_tip = window.red_horn_tip_color
+            spawn_score_burst(-32.0, 58.0, 0.0,
+                              r_body[0], r_body[1], r_body[2],
+                              r_leg[0], r_leg[1], r_leg[2],
+                              r_stripe[0], r_stripe[1], r_stripe[2],
+                              r_tip[0], r_tip[1], r_tip[2],
+                              particles_to_spawn, red_burst_spawned, SCORE_BURST_PARTICLES)
+            red_burst_spawned = target_spawned
+        if red_burst_timer <= 0:
+            red_burst_timer = 0
+            # Spawn any remaining particles
+            remaining = SCORE_BURST_PARTICLES - red_burst_spawned
+            if remaining > 0:
+                r_body = window.red_body_color
+                r_leg = window.red_leg_color
+                r_stripe = window.red_stripe_color
+                r_tip = window.red_horn_tip_color
+                spawn_score_burst(-32.0, 58.0, 0.0,
+                                  r_body[0], r_body[1], r_body[2],
+                                  r_leg[0], r_leg[1], r_leg[2],
+                                  r_stripe[0], r_stripe[1], r_stripe[2],
+                                  r_tip[0], r_tip[1], r_tip[2],
+                                  remaining, red_burst_spawned, SCORE_BURST_PARTICLES)
+
     # Pop & Squash animation using damped spring physics
     # Phases: 1) Initial squash (flat & wide), 2) Spring up tall & thin, 3) Oscillate and settle
     def get_pop_squash_scales(timer):
@@ -8725,35 +8793,35 @@ while window.running:
         # Normalize timer: 1.0 at start, 0.0 at end
         t = 1.0 - (timer / SCORE_BOUNCE_DURATION)  # t goes 0 -> 1 as animation progresses
 
-        # Damped spring parameters
-        frequency = 4.5  # Number of oscillations (more bounces)
-        damping = 2.5    # How quickly it settles (slower decay = longer animation)
+        # Damped spring parameters - DRAMATIC BUT SMOOTH
+        frequency = 4.0  # Fewer oscillations for smoother feel
+        damping = 2.2    # Moderate damping for smooth settling
 
-        # Initial squash phase (first 10% of animation) - snappy squash
-        if t < 0.10:
-            # Squash down: wide and flat
-            squash_t = t / 0.10  # 0 -> 1 during squash phase
-            scale_y = 1.0 - 0.85 * math.sin(squash_t * math.pi * 0.5)  # Squash to 0.15 (very flat)
-            scale_x = 1.0 + 1.2 * math.sin(squash_t * math.pi * 0.5)   # Widen to 2.2 (very wide)
+        # Initial squash phase (first 12% of animation) - smooth squash
+        if t < 0.12:
+            # Squash down: very wide and flat
+            squash_t = t / 0.12  # 0 -> 1 during squash phase
+            scale_y = 1.0 - 0.88 * math.sin(squash_t * math.pi * 0.5)  # Squash to 0.12
+            scale_x = 1.0 + 1.6 * math.sin(squash_t * math.pi * 0.5)   # Widen to 2.6
         else:
-            # Spring oscillation phase (remaining 90%)
-            spring_t = (t - 0.10) / 0.90  # Normalize to 0 -> 1
+            # Spring oscillation phase (remaining 88%)
+            spring_t = (t - 0.12) / 0.88  # Normalize to 0 -> 1
 
             # Damped oscillation: exp decay * sin wave
             decay = math.exp(-damping * spring_t)
             oscillation = math.sin(frequency * math.pi * spring_t)
 
-            # Scale Y: starts stretched tall, oscillates and settles to 1.0
+            # Scale Y: starts stretched very tall, oscillates and settles to 1.0
             # First peak is tall (positive), then oscillates
-            scale_y = 1.0 + 1.8 * decay * oscillation  # Stretch up to 2.8x tall
+            scale_y = 1.0 + 2.5 * decay * oscillation  # Stretch up to 3.5x tall!
 
             # Scale X: inverse of Y for volume preservation (squash & stretch principle)
             # When tall, get narrower; when short, get wider
-            scale_x = 1.0 - 0.6 * decay * oscillation  # Narrow to 0.4x when tall
+            scale_x = 1.0 - 0.75 * decay * oscillation  # Narrow to 0.25x when tall
 
-        # Clamp to reasonable values
-        scale_x = max(0.15, min(3.0, scale_x))
-        scale_y = max(0.15, min(3.0, scale_y))
+        # Clamp to reasonable values (increased max for more dramatic effect)
+        scale_x = max(0.08, min(3.5, scale_x))
+        scale_y = max(0.08, min(3.5, scale_y))
 
         return scale_x, scale_y
 
