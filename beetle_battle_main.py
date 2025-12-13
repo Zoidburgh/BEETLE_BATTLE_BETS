@@ -9,6 +9,9 @@ import renderer
 import beetle
 import time
 
+# Physics substeps for more robust collision detection
+PHYSICS_SUBSTEPS = 4  # Run physics 4x per frame to catch fast collisions
+
 # Create Taichi window and scene
 window = ti.ui.Window("BEETLE BATTLE - Arena Test", (2560, 1600), vsync=True)
 canvas = window.get_canvas()
@@ -111,9 +114,11 @@ while window.running:
     renderer.handle_camera_controls(camera, window, dt)
     renderer.handle_mouse_look(camera, window)
 
-    # ===== PHYSICS UPDATE =====
-    beetle.update_beetle_physics(dt)
-    beetle.check_beetle_collisions()
+    # ===== PHYSICS UPDATE (with substeps for robust collision) =====
+    sub_dt = dt / PHYSICS_SUBSTEPS
+    for _ in range(PHYSICS_SUBSTEPS):
+        beetle.update_beetle_physics(sub_dt)
+        beetle.check_beetle_collisions()
 
     # ===== RENDER =====
     canvas.set_background_color((0.05, 0.05, 0.08))  # Dark arena
