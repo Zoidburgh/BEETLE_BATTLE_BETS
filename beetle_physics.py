@@ -211,7 +211,7 @@ HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to 
 
 # OPTIMIZATION: Horn type ID mapping and pitch/yaw limit lookup tables
 # Eliminates string comparisons in the physics loop (120 checks/sec -> integer lookup)
-HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4}
+HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5}
 # Pitch limits: (max_pitch, min_pitch) indexed by horn_type_id
 HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_RHINO, HORN_MIN_PITCH_RHINO),       # 0: rhino
@@ -219,6 +219,7 @@ HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_HERCULES, HORN_MIN_PITCH_HERCULES), # 2: hercules
     (HORN_MAX_PITCH, HORN_MIN_PITCH),                   # 3: scorpion (uses default)
     (HORN_MAX_PITCH_ATLAS, HORN_MIN_PITCH_ATLAS),       # 4: atlas
+    (0.0, 0.0),                                         # 5: bombardier (no horn - uses firing controls)
 ]
 # Yaw limits: (max_yaw, min_yaw) indexed by horn_type_id
 HORN_YAW_LIMITS = [
@@ -227,6 +228,7 @@ HORN_YAW_LIMITS = [
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 2: hercules
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 3: scorpion
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 4: atlas
+    (0.0, 0.0),                             # 5: bombardier (no horn - uses firing controls)
 ]
 
 # Edge tipping constants
@@ -1580,11 +1582,17 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             length_taper_sqrt = math.sqrt(length_taper)  # Calculate sqrt once per dx
 
             # SCORPION: Add Y offset that increases toward the rear (tail up)
+            # BOMBARDIER: Add Y offset that increases toward the front (front up, rear low for firing)
             if horn_type == "scorpion":
                 # Calculate how far back we are (0.0 at front, 1.0 at rear)
                 rear_progress = (dx - (-1)) / (-body_length - (-1))  # 0.0 at dx=-1, 1.0 at dx=-body_length
                 # Rear should be 4 voxels higher than front
                 y_offset = int(rear_progress * 4)
+            elif horn_type == "bombardier":
+                # Calculate how far forward we are (1.0 at front, 0.0 at rear)
+                front_progress = 1.0 - ((dx - (-1)) / (-body_length - (-1)))  # 1.0 at dx=-1, 0.0 at dx=-body_length
+                # Front should be 4 voxels higher than rear
+                y_offset = int(front_progress * 4)
             else:
                 y_offset = 0
 
@@ -1606,13 +1614,19 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     thorax_base_width = thorax_width / 2.0  # Scale from constrained thorax_width to prevent floating voxels
 
     for dx in range(-1, 2):
+        # BOMBARDIER: Thorax elevated to match tilted body (front +4)
+        if horn_type == "bombardier":
+            thorax_y_offset = 4
+        else:
+            thorax_y_offset = 0
+
         for dy in range(0, front_body_height):
             for dz in range(thorax_dz_min, thorax_dz_max):
                 width_at_height = thorax_base_width if dy < 1 else thorax_base_width * 0.83
                 length_factor = 1.0 - abs(dx) / 1.5
                 max_width = width_at_height * length_factor
                 if abs(dz) <= max_width:
-                    body_voxels.append((dx, dy, dz))
+                    body_voxels.append((dx, dy + thorax_y_offset, dz))
 
     # HEAD (front) - LEAN, scales with body_width (narrower taper)
     head_width = max(2, int(body_width * 3 / 7))  # 43% of abdomen width, min 2
@@ -1621,11 +1635,13 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     head_dz_max = head_half + 1
     head_base_width = head_width / 1.25  # Scale from constrained head_width to prevent floating voxels
 
-    for dx in range(2, 4):
-        for dy in range(0, 1):
-            for dz in range(head_dz_min, head_dz_max):
-                if abs(dz) <= head_base_width:
-                    body_voxels.append((dx, dy, dz))
+    # Skip default head base for bombardier (bombardier head section handles it)
+    if horn_type != "bombardier":
+        for dx in range(2, 4):
+            for dy in range(0, 1):
+                for dz in range(head_dz_min, head_dz_max):
+                    if abs(dz) <= head_base_width:
+                        body_voxels.append((dx, dy, dz))
 
     # HORN GENERATION - Choose between rhino, stag, hercules, or scorpion (claws)
     if horn_type == "scorpion":
@@ -1759,6 +1775,97 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         # This horn will be rotated in place_animated_beetle based on horn_pitch
         cephalic_horn = generate_atlas_cephalic_horn(horn_shaft_len)
         body_voxels.extend(cephalic_horn)
+    elif horn_type == "bombardier":
+        # BOMBARDIER BEETLE - No horn, just a rounded head with mandibles and antennae
+        # Head is small and rounded with powerful jaws
+        # Body is tilted with front UP so rear can fire underneath
+
+        # Base Y for head - matches elevated thorax
+        head_y_base = 4  # Elevated because front of body is tilted up
+
+        # NECK - Connect thorax (dx=1) to head (dx=2,3)
+        # Fills the gap between thorax and head capsule
+        neck_voxels = []
+        # Neck at dx=2 - wider to connect with thorax
+        for dy in range(0, front_body_height):
+            for dz in range(-2, 3):  # 5 voxels wide
+                neck_voxels.append((2, head_y_base + dy, dz))
+
+        body_voxels.extend(neck_voxels)
+
+        # HEAD CAPSULE - Rounded oval shape extending forward
+        head_voxels = []
+        for dx in range(3, 7):  # Head from dx=3 to dx=6
+            # Taper: wider in middle, narrower at front and back
+            if dx == 3:  # Back of head (connects to neck)
+                width = 3
+                height = front_body_height
+            elif dx == 4:  # Middle (widest)
+                width = 3
+                height = max(2, front_body_height - 1)
+            elif dx == 5:  # Front-middle
+                width = 2
+                height = 2
+            else:  # dx == 6, front of head (snout)
+                width = 1
+                height = 2
+
+            for dy in range(height):
+                for dz in range(-width, width + 1):
+                    # Create rounded shape by excluding corners on top
+                    if abs(dz) == width and dy == height - 1 and height > 1:
+                        continue  # Skip top corners for roundness
+                    head_voxels.append((dx, head_y_base + dy, dz))
+
+        body_voxels.extend(head_voxels)
+
+        # COMPOUND EYES - Bulging slightly on sides of head
+        eye_y = head_y_base + 1
+        # Left eye - two voxels bulging out
+        body_voxels.append((4, eye_y, -4))
+        body_voxels.append((5, eye_y, -3))
+        # Right eye
+        body_voxels.append((4, eye_y, 4))
+        body_voxels.append((5, eye_y, 3))
+
+        # MANDIBLES - Small but powerful jaws at front
+        mandible_y = head_y_base  # At bottom of head
+
+        # Left mandible - curves inward
+        for i in range(3):
+            dx = 7 + i
+            dz = -1 + (i // 2)  # Curves inward toward center
+            body_voxels.append((dx, mandible_y, dz))
+            if i == 0:  # Thicker at base
+                body_voxels.append((dx, mandible_y, dz - 1))
+                body_voxels.append((dx, mandible_y + 1, dz))
+
+        # Right mandible - curves inward (mirror)
+        for i in range(3):
+            dx = 7 + i
+            dz = 1 - (i // 2)  # Curves inward toward center
+            body_voxels.append((dx, mandible_y, dz))
+            if i == 0:  # Thicker at base
+                body_voxels.append((dx, mandible_y, dz + 1))
+                body_voxels.append((dx, mandible_y + 1, dz))
+
+        # ANTENNAE - Long, segmented, extend forward and outward
+        antenna_y = head_y_base + 2  # Top of head
+        antenna_start_x = 5
+
+        # Left antenna - extends forward-left and slightly up
+        for i in range(5):
+            dx = antenna_start_x + i
+            dz = -3 - i  # Extends outward
+            dy_offset = i // 3  # Slight rise
+            body_voxels.append((dx, antenna_y + dy_offset, dz))
+
+        # Right antenna - extends forward-right and slightly up (mirror)
+        for i in range(5):
+            dx = antenna_start_x + i
+            dz = 3 + i  # Extends outward
+            dy_offset = i // 3  # Slight rise
+            body_voxels.append((dx, antenna_y + dy_offset, dz))
     else:
         # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
         # Main shaft with overlapping layers
@@ -1850,12 +1957,35 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         tibia = max(1, total_length - coxa - femur)  # Remainder ensures exact total
         return coxa, femur, tibia
 
-    # For scorpion: graduated leg lengths (front shortest, rear longest)
-    # For beetles: all legs same length (multiplier = 1.0)
+    # For scorpion: graduated leg lengths (front shortest, rear longest) - rear is UP
+    # For bombardier: graduated leg lengths (front longest, rear shortest) - front is UP
+    # For other beetles: all legs same length (multiplier = 1.0)
     if horn_type == "scorpion":
-        leg_multipliers = [1.0, 1.0, 1.1, 1.1, 1.2, 1.2, 1.3, 1.3]  # Graduated lengths
+        leg_multipliers = [1.0, 1.0, 1.1, 1.1, 1.2, 1.2, 1.3, 1.3]  # Graduated lengths (rear longest)
+    elif horn_type == "bombardier":
+        leg_multipliers = [1.15, 1.15, 1.1, 1.1, 1.0, 1.0]  # Slightly longer front legs for tilted body
     else:
         leg_multipliers = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # All same length for beetles
+
+    # BOMBARDIER: Leg Y offsets for ATTACHMENT POINTS (where legs connect to body)
+    # Front legs attach where body is +4 higher, middle at +2, rear at +0
+    # Tips stay at ground level (y=0) so legs reach down from elevated body
+    if horn_type == "bombardier":
+        front_leg_y_offset = 4  # Body front is elevated - coxa/femur attach here
+        middle_leg_y_offset = 2  # Halfway
+        rear_leg_y_offset = 0   # Body rear at ground level
+        # Tips reach ground - NO offset for bombardier
+        front_tip_y_offset = 0
+        middle_tip_y_offset = 0
+        rear_tip_y_offset = 0
+    else:
+        front_leg_y_offset = 0
+        middle_leg_y_offset = 0
+        rear_leg_y_offset = 0
+        # Normal beetles: tips same as leg attachment
+        front_tip_y_offset = 0
+        middle_tip_y_offset = 0
+        rear_tip_y_offset = 0
 
     # Calculate segment lengths for front legs (legs 0, 1) - use multiplier[0]
     coxa_len, femur_len, tibia_len = calc_leg_segments(leg_length, leg_multipliers[0])
@@ -1867,33 +1997,73 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     front_left = []
     front_left_tips = []  # Separate tips for black coloring
     side = -1
-    # COXA
+    # Total leg length for cascade calculation
+    total_front_leg_len = coxa_len + femur_len + tibia_len
+    prev_cascade_y = front_leg_y_offset  # Track previous Y to fill gaps
+    # COXA - stays near body attachment level
     for i in range(coxa_len):
-        for extra_y in range(2):
-            front_left.append((1, 1 + extra_y, side * (coxa_start + i)))
-    # FEMUR
+        # Cascade: Y drops as we go outward (i increases)
+        progress = i / max(1, total_front_leg_len - 1)
+        cascade_y = int(front_leg_y_offset * (1.0 - progress))
+        # Fill from current cascade_y up to previous to avoid gaps
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            front_left.append((0, 1 + fill_y, side * (coxa_start + i)))
+        prev_cascade_y = cascade_y
+    # FEMUR - cascades down toward ground
     for i in range(femur_len):
-        for extra_y in range(2):
-            front_left.append((1, 0 + extra_y, side * (femur_start + i)))
-    # TIBIA (tips - will be rendered black)
+        progress = (coxa_len + i) / max(1, total_front_leg_len - 1)
+        cascade_y = int(front_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            front_left.append((0, fill_y, side * (femur_start + i)))
+        prev_cascade_y = cascade_y
+    # TIBIA (tips - will be rendered black) - cascade from femur down to ground
+    femur_end_y = prev_cascade_y  # Where femur ended
     for i in range(tibia_len):
-        tip_x = 1 + min(i // 2, 2)  # Extend forward gradually
-        front_left_tips.append((tip_x, 0, side * (tibia_start + i)))
+        tip_x = 0 + min(i // 2, 2)  # Extend forward gradually
+        # Cascade from femur_end_y down to front_tip_y_offset (ground)
+        progress = i / max(1, tibia_len - 1)
+        tip_y = int(femur_end_y * (1.0 - progress)) + front_tip_y_offset
+        # Only 1-2 voxels thick at each position (not filling to ground)
+        front_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+        if tip_y > front_tip_y_offset:  # Add one below if not at ground
+            front_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(front_left)
 
     # Front right leg (leg 1) - MOVED BACK 1 VOXEL
     front_right = []
     front_right_tips = []
     side = 1
+    prev_cascade_y = front_leg_y_offset
     for i in range(coxa_len):
-        for extra_y in range(2):
-            front_right.append((1, 1 + extra_y, side * (coxa_start + i)))
+        progress = i / max(1, total_front_leg_len - 1)
+        cascade_y = int(front_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            front_right.append((0, 1 + fill_y, side * (coxa_start + i)))
+        prev_cascade_y = cascade_y
     for i in range(femur_len):
-        for extra_y in range(2):
-            front_right.append((1, 0 + extra_y, side * (femur_start + i)))
+        progress = (coxa_len + i) / max(1, total_front_leg_len - 1)
+        cascade_y = int(front_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            front_right.append((0, fill_y, side * (femur_start + i)))
+        prev_cascade_y = cascade_y
+    # TIBIA (tips) - cascade from femur down to ground
+    femur_end_y = prev_cascade_y
     for i in range(tibia_len):
-        tip_x = 1 + min(i // 2, 2)
-        front_right_tips.append((tip_x, 0, side * (tibia_start + i)))
+        tip_x = 0 + min(i // 2, 2)
+        progress = i / max(1, tibia_len - 1)
+        tip_y = int(femur_end_y * (1.0 - progress)) + front_tip_y_offset
+        # Only 1-2 voxels thick at each position
+        front_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+        if tip_y > front_tip_y_offset:
+            front_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(front_right)
 
     # Calculate segment lengths for middle legs (legs 2, 3) - use multiplier[2]
@@ -1906,30 +2076,69 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     middle_left = []
     middle_left_tips = []
     side = -1
+    # Total leg length for cascade calculation
+    total_middle_leg_len = coxa_len + femur_len + tibia_len
+    prev_cascade_y = middle_leg_y_offset
     for i in range(coxa_len):
-        for extra_y in range(2):
-            middle_left.append((-3, 1 + extra_y, side * (coxa_start + i)))
+        # Cascade: Y drops as we go outward
+        progress = i / max(1, total_middle_leg_len - 1)
+        cascade_y = int(middle_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            middle_left.append((-3, 1 + fill_y, side * (coxa_start + i)))
+        prev_cascade_y = cascade_y
     for i in range(femur_len):
-        for extra_y in range(2):
-            middle_left.append((-3, 0 + extra_y, side * (femur_start + i)))
+        progress = (coxa_len + i) / max(1, total_middle_leg_len - 1)
+        cascade_y = int(middle_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            middle_left.append((-3, fill_y, side * (femur_start + i)))
+        prev_cascade_y = cascade_y
+    # TIBIA (tips) - cascade from femur down to ground
+    femur_end_y = prev_cascade_y
     for i in range(tibia_len):
         tip_x = -3 - min(i // 2, 2)  # Extend backward gradually
-        middle_left_tips.append((tip_x, 0, side * (tibia_start + i)))
+        progress = i / max(1, tibia_len - 1)
+        tip_y = int(femur_end_y * (1.0 - progress)) + middle_tip_y_offset
+        # Only 1-2 voxels thick at each position
+        middle_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+        if tip_y > middle_tip_y_offset:
+            middle_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(middle_left)
 
     # Middle right leg (leg 3) - MOVED BACK 1 VOXEL
     middle_right = []
     middle_right_tips = []
     side = 1
+    prev_cascade_y = middle_leg_y_offset
     for i in range(coxa_len):
-        for extra_y in range(2):
-            middle_right.append((-3, 1 + extra_y, side * (coxa_start + i)))
+        progress = i / max(1, total_middle_leg_len - 1)
+        cascade_y = int(middle_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            middle_right.append((-3, 1 + fill_y, side * (coxa_start + i)))
+        prev_cascade_y = cascade_y
     for i in range(femur_len):
-        for extra_y in range(2):
-            middle_right.append((-3, 0 + extra_y, side * (femur_start + i)))
+        progress = (coxa_len + i) / max(1, total_middle_leg_len - 1)
+        cascade_y = int(middle_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            middle_right.append((-3, fill_y, side * (femur_start + i)))
+        prev_cascade_y = cascade_y
+    # TIBIA (tips) - cascade from femur down to ground
+    femur_end_y = prev_cascade_y
     for i in range(tibia_len):
         tip_x = -3 - min(i // 2, 2)
-        middle_right_tips.append((tip_x, 0, side * (tibia_start + i)))
+        progress = i / max(1, tibia_len - 1)
+        tip_y = int(femur_end_y * (1.0 - progress)) + middle_tip_y_offset
+        # Only 1-2 voxels thick at each position
+        middle_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+        if tip_y > middle_tip_y_offset:
+            middle_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(middle_right)
 
     # Calculate segment lengths for rear legs (legs 4, 5) - use multiplier[4]
@@ -1943,30 +2152,69 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     rear_left = []
     rear_left_tips = []
     side = -1
+    # Total leg length for cascade calculation
+    total_rear_leg_len = coxa_len + femur_len + tibia_len
+    prev_cascade_y = rear_leg_y_offset
     for i in range(coxa_len):
-        for extra_y in range(2):
-            rear_left.append((rear_leg_attach_x, 1 + extra_y, side * (coxa_start + i)))
+        # Cascade: Y drops as we go outward (for consistency, though rear offset is 0 for bombardier)
+        progress = i / max(1, total_rear_leg_len - 1)
+        cascade_y = int(rear_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            rear_left.append((rear_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
+        prev_cascade_y = cascade_y
     for i in range(femur_len):
-        for extra_y in range(2):
-            rear_left.append((rear_leg_attach_x - i, 0 + extra_y, side * (femur_start + i)))
+        progress = (coxa_len + i) / max(1, total_rear_leg_len - 1)
+        cascade_y = int(rear_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            rear_left.append((rear_leg_attach_x - i, fill_y, side * (femur_start + i)))
+        prev_cascade_y = cascade_y
+    # TIBIA (tips) - cascade from femur down to ground
+    femur_end_y = prev_cascade_y
     for i in range(tibia_len):
         tip_x = rear_leg_attach_x - femur_len - min(i // 2, 2)  # Continue backward
-        rear_left_tips.append((tip_x, 0, side * (tibia_start + i)))
+        progress = i / max(1, tibia_len - 1)
+        tip_y = int(femur_end_y * (1.0 - progress)) + rear_tip_y_offset
+        # Only 1-2 voxels thick at each position
+        rear_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+        if tip_y > rear_tip_y_offset:
+            rear_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(rear_left)
 
     # Rear right leg (leg 5) - Position proportional to body length
     rear_right = []
     rear_right_tips = []
     side = 1
+    prev_cascade_y = rear_leg_y_offset
     for i in range(coxa_len):
-        for extra_y in range(2):
-            rear_right.append((rear_leg_attach_x, 1 + extra_y, side * (coxa_start + i)))
+        progress = i / max(1, total_rear_leg_len - 1)
+        cascade_y = int(rear_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            rear_right.append((rear_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
+        prev_cascade_y = cascade_y
     for i in range(femur_len):
-        for extra_y in range(2):
-            rear_right.append((rear_leg_attach_x - i, 0 + extra_y, side * (femur_start + i)))
+        progress = (coxa_len + i) / max(1, total_rear_leg_len - 1)
+        cascade_y = int(rear_leg_y_offset * (1.0 - progress))
+        y_min = cascade_y
+        y_max = max(cascade_y + 2, prev_cascade_y + 1)
+        for fill_y in range(y_min, y_max):
+            rear_right.append((rear_leg_attach_x - i, fill_y, side * (femur_start + i)))
+        prev_cascade_y = cascade_y
+    # TIBIA (tips) - cascade from femur down to ground
+    femur_end_y = prev_cascade_y
     for i in range(tibia_len):
         tip_x = rear_leg_attach_x - femur_len - min(i // 2, 2)
-        rear_right_tips.append((tip_x, 0, side * (tibia_start + i)))
+        progress = i / max(1, tibia_len - 1)
+        tip_y = int(femur_end_y * (1.0 - progress)) + rear_tip_y_offset
+        # Only 1-2 voxels thick at each position
+        rear_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+        if tip_y > rear_tip_y_offset:
+            rear_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(rear_right)
 
     # SCORPION ONLY: Add two extra rear legs (legs 6, 7) - furthest back, longest, raised attachment
@@ -8565,9 +8813,9 @@ while window.running:
             shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
             place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
 
-    # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas
-    blue_horn_type_id = 1 if blue_horn_type == "stag" else (2 if blue_horn_type == "hercules" else (3 if blue_horn_type == "scorpion" else (4 if blue_horn_type == "atlas" else 0)))
-    red_horn_type_id = 1 if red_horn_type == "stag" else (2 if red_horn_type == "hercules" else (3 if red_horn_type == "scorpion" else (4 if red_horn_type == "atlas" else 0)))
+    # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas, 5=bombardier
+    blue_horn_type_id = 1 if blue_horn_type == "stag" else (2 if blue_horn_type == "hercules" else (3 if blue_horn_type == "scorpion" else (4 if blue_horn_type == "atlas" else (5 if blue_horn_type == "bombardier" else 0))))
+    red_horn_type_id = 1 if red_horn_type == "stag" else (2 if red_horn_type == "hercules" else (3 if red_horn_type == "scorpion" else (4 if red_horn_type == "atlas" else (5 if red_horn_type == "bombardier" else 0))))
 
     # Get default horn pitch for blue beetle type
     if blue_horn_type == "scorpion":
@@ -8578,6 +8826,8 @@ while window.running:
         blue_default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
     elif blue_horn_type == "atlas":
         blue_default_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+    elif blue_horn_type == "bombardier":
+        blue_default_horn_pitch = 0.0  # No horn
     else:
         blue_default_horn_pitch = HORN_DEFAULT_PITCH
 
@@ -8590,6 +8840,8 @@ while window.running:
         red_default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
     elif red_horn_type == "atlas":
         red_default_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+    elif red_horn_type == "bombardier":
+        red_default_horn_pitch = 0.0  # No horn
     else:
         red_default_horn_pitch = HORN_DEFAULT_PITCH
 
@@ -9086,8 +9338,10 @@ while window.running:
         blue_button_text = "Blue: HERCULES (click for SCORPION)"
     elif blue_horn_type == "scorpion":
         blue_button_text = "Blue: SCORPION (click for ATLAS)"
-    else:  # atlas
-        blue_button_text = "Blue: ATLAS (click for RHINO)"
+    elif blue_horn_type == "atlas":
+        blue_button_text = "Blue: ATLAS (click for BOMBARDIER)"
+    else:  # bombardier
+        blue_button_text = "Blue: BOMBARDIER (click for RHINO)"
 
     if window.GUI.button(blue_button_text):
         # Cycle blue beetle horn type
@@ -9099,6 +9353,8 @@ while window.running:
             blue_horn_type = "scorpion"
         elif blue_horn_type == "scorpion":
             blue_horn_type = "atlas"
+        elif blue_horn_type == "atlas":
+            blue_horn_type = "bombardier"
         else:
             blue_horn_type = "rhino"
 
@@ -9120,6 +9376,10 @@ while window.running:
         elif blue_horn_type == "atlas":
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+            beetle_blue.horn_yaw = 0.0
+        elif blue_horn_type == "bombardier":
+            beetle_blue.horn_pitch = 0.0  # No horn - firing controls instead
+            beetle_blue.prev_horn_pitch = 0.0
             beetle_blue.horn_yaw = 0.0
         else:  # rhino
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
@@ -9234,8 +9494,10 @@ while window.running:
         red_button_text = "Red: HERCULES (click for SCORPION)"
     elif red_horn_type == "scorpion":
         red_button_text = "Red: SCORPION (click for ATLAS)"
-    else:  # atlas
-        red_button_text = "Red: ATLAS (click for RHINO)"
+    elif red_horn_type == "atlas":
+        red_button_text = "Red: ATLAS (click for BOMBARDIER)"
+    else:  # bombardier
+        red_button_text = "Red: BOMBARDIER (click for RHINO)"
 
     if window.GUI.button(red_button_text):
         # Cycle red beetle horn type
@@ -9247,6 +9509,8 @@ while window.running:
             red_horn_type = "scorpion"
         elif red_horn_type == "scorpion":
             red_horn_type = "atlas"
+        elif red_horn_type == "atlas":
+            red_horn_type = "bombardier"
         else:
             red_horn_type = "rhino"
 
@@ -9268,6 +9532,10 @@ while window.running:
         elif red_horn_type == "atlas":
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+            beetle_red.horn_yaw = 0.0
+        elif red_horn_type == "bombardier":
+            beetle_red.horn_pitch = 0.0  # No horn - firing controls instead
+            beetle_red.prev_horn_pitch = 0.0
             beetle_red.horn_yaw = 0.0
         else:  # rhino
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH
