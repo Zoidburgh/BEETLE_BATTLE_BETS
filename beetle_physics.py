@@ -6714,9 +6714,9 @@ def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32):
                 17.0 + ti.random() * 34.0,  # 70% higher pop
                 ti.sin(angle) * speed
             )
-            # Green color (matches spray)
-            green_var = 0.8 + ti.random() * 0.4
-            simulation.debris_material[idx] = ti.math.vec3(0.3 * green_var, 0.9 * green_var, 0.2 * green_var)
+            # Dark green color (toxic acid look)
+            green_var = 0.7 + ti.random() * 0.3
+            simulation.debris_material[idx] = ti.math.vec3(0.1 * green_var, 0.5 * green_var, 0.08 * green_var)
             simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.2  # 0.2-0.4s
 
 @ti.kernel
