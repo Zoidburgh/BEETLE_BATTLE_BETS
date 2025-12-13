@@ -7194,12 +7194,16 @@ while window.running:
                 effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_pitch_damping)
                 new_pitch = beetle_blue.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                 new_pitch = min(max_pitch_limit, new_pitch)
-                pitch_speed = effective_speed
+                # Only set velocity if horn actually moved (not clamped at max)
+                if abs(new_pitch - beetle_blue.horn_pitch) > 0.001:
+                    pitch_speed = effective_speed
             elif window.is_pressed('y'):
                 effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_pitch_damping)
                 new_pitch = beetle_blue.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                 new_pitch = max(min_pitch_limit, new_pitch)
-                pitch_speed = -effective_speed
+                # Only set velocity if horn actually moved (not clamped at min)
+                if abs(new_pitch - beetle_blue.horn_pitch) > 0.001:
+                    pitch_speed = -effective_speed
 
             # Calculate new yaw if yaw keys pressed
             # For scorpion type, V/B control tail rotation angle instead of horn yaw
@@ -7226,50 +7230,56 @@ while window.running:
                     # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_yaw_damping)
 
-                    # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                    if beetle_red.active:
-                        has_real_collision = check_collision_kernel(
-                            beetle_blue.x, beetle_blue.z, beetle_blue.y,
-                            beetle_red.x, beetle_red.z, beetle_red.y,
-                            beetle_blue.color, beetle_red.color
-                        )
-                        if has_real_collision:
-                            # Apply push force to opponent (forward + lift)
-                            forward_x = math.cos(beetle_blue.rotation)
-                            forward_z = math.sin(beetle_blue.rotation)
-                            push_force = 40.0 * PHYSICS_TIMESTEP
-                            beetle_red.vx += forward_x * push_force
-                            beetle_red.vz += forward_z * push_force
-                            beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                            beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-
                     new_yaw = beetle_blue.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
-                    yaw_speed = -effective_speed
+                    # Only set velocity if horn actually moved (not clamped at min)
+                    if abs(new_yaw - beetle_blue.horn_yaw) > 0.001:
+                        yaw_speed = -effective_speed
+
+                        # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                        # Only apply if horn is actually moving
+                        if beetle_red.active:
+                            has_real_collision = check_collision_kernel(
+                                beetle_blue.x, beetle_blue.z, beetle_blue.y,
+                                beetle_red.x, beetle_red.z, beetle_red.y,
+                                beetle_blue.color, beetle_red.color
+                            )
+                            if has_real_collision:
+                                # Apply push force to opponent (forward + lift)
+                                forward_x = math.cos(beetle_blue.rotation)
+                                forward_z = math.sin(beetle_blue.rotation)
+                                push_force = 40.0 * PHYSICS_TIMESTEP
+                                beetle_red.vx += forward_x * push_force
+                                beetle_red.vz += forward_z * push_force
+                                beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                                beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
                 elif window.is_pressed('b'):
                     # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_yaw_damping)
 
-                    # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                    if beetle_red.active:
-                        has_real_collision = check_collision_kernel(
-                            beetle_blue.x, beetle_blue.z, beetle_blue.y,
-                            beetle_red.x, beetle_red.z, beetle_red.y,
-                            beetle_blue.color, beetle_red.color
-                        )
-                        if has_real_collision:
-                            # Apply push force to opponent (forward + lift)
-                            forward_x = math.cos(beetle_blue.rotation)
-                            forward_z = math.sin(beetle_blue.rotation)
-                            push_force = 40.0 * PHYSICS_TIMESTEP
-                            beetle_red.vx += forward_x * push_force
-                            beetle_red.vz += forward_z * push_force
-                            beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                            beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-
                     new_yaw = beetle_blue.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
-                    yaw_speed = effective_speed
+                    # Only set velocity if horn actually moved (not clamped at max)
+                    if abs(new_yaw - beetle_blue.horn_yaw) > 0.001:
+                        yaw_speed = effective_speed
+
+                        # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                        # Only apply if horn is actually moving
+                        if beetle_red.active:
+                            has_real_collision = check_collision_kernel(
+                                beetle_blue.x, beetle_blue.z, beetle_blue.y,
+                                beetle_red.x, beetle_red.z, beetle_red.y,
+                                beetle_blue.color, beetle_red.color
+                            )
+                            if has_real_collision:
+                                # Apply push force to opponent (forward + lift)
+                                forward_x = math.cos(beetle_blue.rotation)
+                                forward_z = math.sin(beetle_blue.rotation)
+                                push_force = 40.0 * PHYSICS_TIMESTEP
+                                beetle_red.vx += forward_x * push_force
+                                beetle_red.vz += forward_z * push_force
+                                beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                                beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
 
             # Predictive collision check (optimized for combined movements + dual-pincer tracking)
             if (pitch_pressed or yaw_pressed) and beetle_red.active:
@@ -7352,12 +7362,16 @@ while window.running:
                 effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_pitch_damping)
                 new_pitch = beetle_red.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                 new_pitch = min(max_pitch_limit, new_pitch)
-                pitch_speed = effective_speed
+                # Only set velocity if horn actually moved (not clamped at max)
+                if abs(new_pitch - beetle_red.horn_pitch) > 0.001:
+                    pitch_speed = effective_speed
             elif window.is_pressed('o'):
                 effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_pitch_damping)
                 new_pitch = beetle_red.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                 new_pitch = max(min_pitch_limit, new_pitch)
-                pitch_speed = -effective_speed
+                # Only set velocity if horn actually moved (not clamped at min)
+                if abs(new_pitch - beetle_red.horn_pitch) > 0.001:
+                    pitch_speed = -effective_speed
 
             # Calculate new yaw if yaw keys pressed
             # For scorpion type, N/M control tail rotation angle instead of horn yaw
@@ -7384,50 +7398,56 @@ while window.running:
                     # N key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_yaw_damping)
 
-                    # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                    if beetle_blue.active:
-                        has_real_collision = check_collision_kernel(
-                            beetle_red.x, beetle_red.z, beetle_red.y,
-                            beetle_blue.x, beetle_blue.z, beetle_blue.y,
-                            beetle_red.color, beetle_blue.color
-                        )
-                        if has_real_collision:
-                            # Apply push force to opponent (forward + lift)
-                            forward_x = math.cos(beetle_red.rotation)
-                            forward_z = math.sin(beetle_red.rotation)
-                            push_force = 40.0 * PHYSICS_TIMESTEP
-                            beetle_blue.vx += forward_x * push_force
-                            beetle_blue.vz += forward_z * push_force
-                            beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                            beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-
                     new_yaw = beetle_red.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
-                    yaw_speed = -effective_speed
+                    # Only set velocity if horn actually moved (not clamped at min)
+                    if abs(new_yaw - beetle_red.horn_yaw) > 0.001:
+                        yaw_speed = -effective_speed
+
+                        # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                        # Only apply if horn is actually moving
+                        if beetle_blue.active:
+                            has_real_collision = check_collision_kernel(
+                                beetle_red.x, beetle_red.z, beetle_red.y,
+                                beetle_blue.x, beetle_blue.z, beetle_blue.y,
+                                beetle_red.color, beetle_blue.color
+                            )
+                            if has_real_collision:
+                                # Apply push force to opponent (forward + lift)
+                                forward_x = math.cos(beetle_red.rotation)
+                                forward_z = math.sin(beetle_red.rotation)
+                                push_force = 40.0 * PHYSICS_TIMESTEP
+                                beetle_blue.vx += forward_x * push_force
+                                beetle_blue.vz += forward_z * push_force
+                                beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                                beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
                 elif window.is_pressed('m'):
                     # M key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_yaw_damping)
 
-                    # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                    if beetle_blue.active:
-                        has_real_collision = check_collision_kernel(
-                            beetle_red.x, beetle_red.z, beetle_red.y,
-                            beetle_blue.x, beetle_blue.z, beetle_blue.y,
-                            beetle_red.color, beetle_blue.color
-                        )
-                        if has_real_collision:
-                            # Apply push force to opponent (forward + lift)
-                            forward_x = math.cos(beetle_red.rotation)
-                            forward_z = math.sin(beetle_red.rotation)
-                            push_force = 40.0 * PHYSICS_TIMESTEP
-                            beetle_blue.vx += forward_x * push_force
-                            beetle_blue.vz += forward_z * push_force
-                            beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                            beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-
                     new_yaw = beetle_red.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
-                    yaw_speed = effective_speed
+                    # Only set velocity if horn actually moved (not clamped at max)
+                    if abs(new_yaw - beetle_red.horn_yaw) > 0.001:
+                        yaw_speed = effective_speed
+
+                        # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                        # Only apply if horn is actually moving
+                        if beetle_blue.active:
+                            has_real_collision = check_collision_kernel(
+                                beetle_red.x, beetle_red.z, beetle_red.y,
+                                beetle_blue.x, beetle_blue.z, beetle_blue.y,
+                                beetle_red.color, beetle_blue.color
+                            )
+                            if has_real_collision:
+                                # Apply push force to opponent (forward + lift)
+                                forward_x = math.cos(beetle_red.rotation)
+                                forward_z = math.sin(beetle_red.rotation)
+                                push_force = 40.0 * PHYSICS_TIMESTEP
+                                beetle_blue.vx += forward_x * push_force
+                                beetle_blue.vz += forward_z * push_force
+                                beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                                beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
 
             # Predictive collision check (optimized for combined movements + dual-pincer tracking)
             if (pitch_pressed or yaw_pressed) and beetle_blue.active:
