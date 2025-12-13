@@ -656,12 +656,12 @@ butt_wiggle_blue = 0.0  # Wiggle timer for blue (0 = no wiggle, >0 = animating)
 butt_wiggle_red = 0.0   # Wiggle timer for red
 butt_wiggle_dir_blue = 1.0  # 1.0 = forward spray (contract), -1.0 = backward spray (extend)
 butt_wiggle_dir_red = 1.0   # 1.0 = forward spray (contract), -1.0 = backward spray (extend)
-BUTT_WIGGLE_DURATION = 0.25  # How long the pucker animation lasts (slower)
+BUTT_WIGGLE_DURATION = 0.4  # How long the pucker animation lasts
 BUTT_WIGGLE_INTENSITY = 1.5  # How much the butt contracts (voxels inward)
 
-SPRAY_COOLDOWN = 0.4  # Seconds between spray bursts
-SPRAY_BURST_PARTICLES = 20  # Total particles per burst
-SPRAY_PARTICLES_PER_FRAME = 2  # Particles spawned per frame (~0.2 sec burst at 60fps)
+SPRAY_COOLDOWN = 0.5  # Seconds between spray bursts
+SPRAY_BURST_PARTICLES = 42  # Total particles per burst (2/frame * 21 frames = 0.35 sec)
+SPRAY_PARTICLES_PER_FRAME = 2  # Particles spawned per frame
 SPRAY_SPEED = 80.0  # Spray particle velocity
 SPRAY_PUSH_FORCE = 25.0  # Force applied to beetle when hit by spray
 
@@ -3958,7 +3958,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                 depth = float(rear_thresh - orig_x) / 4.0
                 depth = ti.min(depth, 1.0)
                 # Smooth pucker - contract/extend then relax
-                t = butt_wiggle / 0.25  # 1.0 at start, fades to 0.0 (slower)
+                t = butt_wiggle / 0.4  # 1.0 at start, fades to 0.0
                 amt = depth * t * 2.0 * butt_wiggle_dir  # Direction controls in/out
                 # Move along beetle facing direction (+ = forward/contract, - = backward/extend)
                 grid_x = grid_x + int(ti.round(cos_yaw * amt))
@@ -4413,7 +4413,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 depth = float(rear_thresh - orig_x) / 4.0
                 depth = ti.min(depth, 1.0)
                 # Smooth pucker - contract/extend then relax
-                t = butt_wiggle / 0.25  # 1.0 at start, fades to 0.0 (slower)
+                t = butt_wiggle / 0.4  # 1.0 at start, fades to 0.0
                 amt = depth * t * 2.0 * butt_wiggle_dir  # Direction controls in/out
                 # Move along beetle facing direction (+ = forward/contract, - = backward/extend)
                 grid_x = grid_x + int(ti.round(cos_yaw * amt))
