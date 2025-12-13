@@ -753,6 +753,51 @@ def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
     # Kill the spray particle
     simulation.spray_lifetime[spray_idx] = 0
 
+def check_spray_ball_collision():
+    """Check if any spray particles hit the ball and apply impact."""
+    if simulation.ball_active[None] == 0:
+        return
+
+    ball_pos = simulation.ball_pos[None]
+    ball_radius = simulation.ball_radius[None]
+
+    num_spray = simulation.num_spray[None]
+    for idx in range(num_spray):
+        if simulation.spray_lifetime[idx] <= 0:
+            continue
+        # Grace period - skip newly spawned spray
+        if simulation.spray_lifetime[idx] > 0.5:
+            continue
+
+        spray_pos = simulation.spray_pos[idx]
+        spray_vel = simulation.spray_vel[idx]
+
+        # Distance check (sphere collision)
+        dx = spray_pos[0] - ball_pos[0]
+        dy = spray_pos[1] - ball_pos[1]
+        dz = spray_pos[2] - ball_pos[2]
+        dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        if dist < ball_radius + 2.0:  # Hit!
+            # Get spray direction for push
+            spray_speed = math.sqrt(spray_vel[0]**2 + spray_vel[1]**2 + spray_vel[2]**2)
+            if spray_speed > 0.1:
+                push_x = spray_vel[0] / spray_speed
+                push_y = spray_vel[1] / spray_speed
+                push_z = spray_vel[2] / spray_speed
+            else:
+                push_x, push_y, push_z = dx / dist, dy / dist, dz / dist
+
+            # Apply push to ball
+            push_force = SPRAY_PUSH_FORCE * 0.8  # Slightly less than beetle push
+            simulation.ball_vel[None][0] += push_x * push_force
+            simulation.ball_vel[None][1] += push_y * push_force * 0.3  # Less vertical
+            simulation.ball_vel[None][2] += push_z * push_force
+
+            # Spawn explosion and kill spray
+            spawn_spray_explosion(spray_pos[0], spray_pos[1], spray_pos[2])
+            simulation.spray_lifetime[idx] = 0
+
 # Goal celebration state (scored-on beetle explodes, then winner confetti/flash)
 goal_scored_by = None  # "BLUE" or "RED" - who scored
 goal_celebration_timer = 0.0  # Timer for celebration sequence
@@ -8259,6 +8304,9 @@ while window.running:
                 hits = process_spray_collisions(beetle_blue, 0, 0)  # target BLUE, skip owner 0
                 for hit_idx, hit_x, hit_y, hit_z in hits:
                     apply_spray_impact(beetle_blue, hit_idx, hit_x, hit_y, hit_z)
+
+            # Check if any spray hits the ball
+            check_spray_ball_collision()
 
             # Cleanup dead spray every 2 frames
             if physics_frame % 2 == 0:
