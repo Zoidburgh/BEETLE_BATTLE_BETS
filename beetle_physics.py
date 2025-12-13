@@ -799,6 +799,12 @@ def check_spray_ball_collision():
             beetle_ball.vy += push_y * push_force * 0.3  # Less vertical
             beetle_ball.vz += push_z * push_force
 
+            # Add spin from impact (consistent with beetle collision physics)
+            spin_strength = push_force * 0.1
+            beetle_ball.angular_velocity += push_z * spin_strength  # Yaw from z-push
+            beetle_ball.pitch_velocity += push_x * spin_strength    # Pitch from x-push
+            beetle_ball.roll_velocity += push_y * spin_strength     # Roll from y-push
+
             # Spawn explosion and kill spray
             spawn_spray_explosion(spray_pos[0], spray_pos[1], spray_pos[2])
             simulation.spray_lifetime[idx] = 0
