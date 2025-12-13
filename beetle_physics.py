@@ -6645,23 +6645,23 @@ def cleanup_dead_spray():
 
 @ti.kernel
 def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32):
-    """Small explosion when spray hits beetle - uses debris system for rendering"""
+    """Small puff when spray hits beetle - dust-sized particles"""
     for i in range(8):  # 8 small particles
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             angle = ti.random() * 6.28318
-            speed = 20.0 + ti.random() * 30.0
+            speed = 5.0 + ti.random() * 8.0  # Much slower = tighter puff
 
             simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
             simulation.debris_vel[idx] = ti.math.vec3(
                 ti.cos(angle) * speed,
-                10.0 + ti.random() * 20.0,  # Pop upward
+                3.0 + ti.random() * 6.0,  # Gentle upward
                 ti.sin(angle) * speed
             )
             # Green color (matches spray)
             green_var = 0.8 + ti.random() * 0.4
             simulation.debris_material[idx] = ti.math.vec3(0.3 * green_var, 0.9 * green_var, 0.2 * green_var)
-            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.2  # Short-lived 0.2-0.4s
+            simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.15  # Quick puff 0.15-0.3s
 
 @ti.kernel
 def check_spray_voxel_collision_kernel(target_color: ti.i32, skip_owner: ti.i32):
