@@ -237,8 +237,8 @@ def extract_debris_particles():
                 # Ease-out curve (starts fast, slows down) - more natural
                 alpha = t * t  # Quadratic ease-out
                 alpha = ti.max(alpha, 0.0)
-                # Fade toward transparent/light
-                fade_target = ti.math.vec3(0.6, 0.58, 0.55)  # Light color
+                # Fade toward lighter version of particle's own color (keeps green green, brown brown)
+                fade_target = base_color * 0.3 + ti.math.vec3(0.7, 0.7, 0.7)  # Lighten toward white-ish
                 voxel_colors[write_idx] = base_color * alpha + fade_target * (1.0 - alpha)
                 # Shrink particle as it fades for natural dissipation
                 voxel_radii[write_idx] = DEBRIS_RADIUS * (0.3 + 0.7 * t)
