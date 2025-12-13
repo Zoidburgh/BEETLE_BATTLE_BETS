@@ -1781,7 +1781,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         # Body is tilted with front UP so rear can fire underneath
 
         # Base Y for head - matches elevated thorax
-        head_y_base = 4  # Elevated because front of body is tilted up
+        head_y_base = 5  # Elevated because front of body is tilted up (raised 1 voxel higher)
 
         # NECK - Connect thorax (dx=1) to head (dx=2,3)
         # Fills the gap between thorax and head capsule
@@ -1854,23 +1854,31 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                 body_voxels.append((dx, mandible_y, dz + 1))
                 body_voxels.append((dx, mandible_y + 1, dz))
 
-        # ANTENNAE - Short, stubby antennae (2 voxels thick)
+        # ANTENNAE - Short, stubby antennae (2 voxels thick, gap-filled)
         antenna_y = head_y_base + 2  # Top of head
         antenna_start_x = 6
 
-        # Left antenna - short, extends forward-left, 2 voxels thick
-        for i in range(3):  # Shortened from 5 to 3
+        # Left antenna - short, extends forward-left, 2 voxels thick with gap fill
+        for i in range(3):
             dx = antenna_start_x + i
             dz = -4 - i  # Extends outward
             body_voxels.append((dx, antenna_y, dz))
             body_voxels.append((dx, antenna_y + 1, dz))  # Second layer for thickness
+            # Fill diagonal gap to next segment
+            if i < 2:
+                body_voxels.append((dx, antenna_y, dz - 1))
+                body_voxels.append((dx, antenna_y + 1, dz - 1))
 
-        # Right antenna - short, extends forward-right (mirror), 2 voxels thick
-        for i in range(3):  # Shortened from 5 to 3
+        # Right antenna - short, extends forward-right (mirror), 2 voxels thick with gap fill
+        for i in range(3):
             dx = antenna_start_x + i
             dz = 4 + i  # Extends outward
             body_voxels.append((dx, antenna_y, dz))
             body_voxels.append((dx, antenna_y + 1, dz))  # Second layer for thickness
+            # Fill diagonal gap to next segment
+            if i < 2:
+                body_voxels.append((dx, antenna_y, dz + 1))
+                body_voxels.append((dx, antenna_y + 1, dz + 1))
     else:
         # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
         # Main shaft with overlapping layers
@@ -2327,7 +2335,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                 is_horn_tip = 1
         horn_tip_flags.append(is_horn_tip)
 
-        # Very tip detection: for scorpion dual-layer tip coloring AND bombardier antennae/mandibles
+        # Very tip detection: for scorpion dual-layer tip coloring only
         is_very_tip = 0
         if horn_type_id == 3:  # Scorpion
             if abs(dz) > 2:  # Claws
@@ -2336,11 +2344,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             else:  # Stinger
                 if dx >= 3:
                     is_very_tip = 1
-        elif horn_type_id == 5:  # Bombardier - antennae and mandibles get dark tip color
-            if dx >= 6 and abs(dz) >= 4:  # Antennae region
-                is_very_tip = 1
-            elif dx >= 8 and abs(dz) <= 3:  # Mandibles region (front of head)
-                is_very_tip = 1
+        # Note: Bombardier antennae/mandibles use horn_tip (not very_tip) for horn prong color
         very_tip_flags.append(is_very_tip)
 
     return body_voxels, leg_voxels, leg_tips, hook_interior_flags, stripe_flags, horn_tip_flags, very_tip_flags
