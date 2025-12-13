@@ -654,6 +654,8 @@ spray_burst_angle_red = 0.0   # Red's current burst angle offset
 # Butt wiggle animation state (pucker when firing)
 butt_wiggle_blue = 0.0  # Wiggle timer for blue (0 = no wiggle, >0 = animating)
 butt_wiggle_red = 0.0   # Wiggle timer for red
+butt_wiggle_dir_blue = 1.0  # 1.0 = forward spray (contract), -1.0 = backward spray (extend)
+butt_wiggle_dir_red = 1.0   # 1.0 = forward spray (contract), -1.0 = backward spray (extend)
 BUTT_WIGGLE_DURATION = 0.15  # How long the pucker animation lasts
 BUTT_WIGGLE_INTENSITY = 1.5  # How much the butt contracts (voxels inward)
 
@@ -3711,7 +3713,7 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     return lowest_y
 
 @ti.kernel
-def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32):
+def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
@@ -3947,17 +3949,18 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         grid_y = base_y + int(ti.round(final_y))
         grid_z = center_z + int(ti.round(final_z))
 
-        # BUTT PUCKER: Contract rear voxels forward when spray fires (bombardier only)
+        # BUTT PUCKER: Contract/extend rear voxels when spray fires (bombardier only)
+        # Forward spray (dir=1): contract inward, Backward spray (dir=-1): extend outward
         if butt_wiggle > 0.0 and horn_type_id == 5:
             orig_x = body_cache_x[i]  # Original local X to detect rear
             rear_thresh = -body_length + 4
             if orig_x < rear_thresh:
                 depth = float(rear_thresh - orig_x) / 4.0
                 depth = ti.min(depth, 1.0)
-                # Smooth pucker - contract forward then relax (no jittery oscillation)
+                # Smooth pucker - contract/extend then relax
                 t = butt_wiggle / 0.15  # 1.0 at start, fades to 0.0
-                amt = depth * t * 2.0  # Pull forward by up to 2 voxels at tips
-                # Pull FORWARD (squeeze toward body center)
+                amt = depth * t * 2.0 * butt_wiggle_dir  # Direction controls in/out
+                # Move along beetle facing direction (+ = forward/contract, - = backward/extend)
                 grid_x = grid_x + int(ti.round(cos_yaw * amt))
                 grid_z = grid_z + int(ti.round(sin_yaw * amt))
 
@@ -4165,7 +4168,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                         dirty_voxel_z[idx] = grid_z
 
 @ti.kernel
-def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32):
+def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
@@ -4401,17 +4404,18 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         grid_y = base_y + int(ti.round(final_y))
         grid_z = center_z + int(ti.round(final_z))
 
-        # BUTT PUCKER: Contract rear voxels forward when spray fires (bombardier only)
+        # BUTT PUCKER: Contract/extend rear voxels when spray fires (bombardier only)
+        # Forward spray (dir=1): contract inward, Backward spray (dir=-1): extend outward
         if butt_wiggle > 0.0 and horn_type_id == 5:
             orig_x = red_body_cache_x[i]  # Original local X to detect rear
             rear_thresh = -body_length + 4
             if orig_x < rear_thresh:
                 depth = float(rear_thresh - orig_x) / 4.0
                 depth = ti.min(depth, 1.0)
-                # Smooth pucker - contract forward then relax (no jittery oscillation)
+                # Smooth pucker - contract/extend then relax
                 t = butt_wiggle / 0.15  # 1.0 at start, fades to 0.0
-                amt = depth * t * 2.0  # Pull forward by up to 2 voxels at tips
-                # Pull FORWARD (squeeze toward body center)
+                amt = depth * t * 2.0 * butt_wiggle_dir  # Direction controls in/out
+                # Move along beetle facing direction (+ = forward/contract, - = backward/extend)
                 grid_x = grid_x + int(ti.round(cos_yaw * amt))
                 grid_z = grid_z + int(ti.round(sin_yaw * amt))
 
@@ -7746,24 +7750,28 @@ while window.running:
                         spray_burst_angle_blue = 0.26  # +15 degrees
                         spray_cooldown_blue = SPRAY_COOLDOWN
                         butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir_blue = 1.0  # Forward = contract
                     elif window.is_pressed('y'):  # Forward-right spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (forward_x, forward_z)
                         spray_burst_angle_blue = -0.26  # -15 degrees
                         spray_cooldown_blue = SPRAY_COOLDOWN
                         butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir_blue = 1.0  # Forward = contract
                     elif window.is_pressed('v'):  # Backward-left spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (-forward_x, -forward_z)
                         spray_burst_angle_blue = 0.26  # +15 degrees
                         spray_cooldown_blue = SPRAY_COOLDOWN
                         butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir_blue = -1.0  # Backward = extend
                     elif window.is_pressed('b'):  # Backward-right spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (-forward_x, -forward_z)
                         spray_burst_angle_blue = -0.26  # -15 degrees
                         spray_cooldown_blue = SPRAY_COOLDOWN
                         butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir_blue = -1.0  # Backward = extend
 
                 # Skip horn controls for bombardier
                 pitch_pressed = False
@@ -7949,24 +7957,28 @@ while window.running:
                         spray_burst_angle_red = 0.26  # +15 degrees
                         spray_cooldown_red = SPRAY_COOLDOWN
                         butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir_red = 1.0  # Forward = contract
                     elif window.is_pressed('o'):  # Forward-right spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (forward_x, forward_z)
                         spray_burst_angle_red = -0.26  # -15 degrees
                         spray_cooldown_red = SPRAY_COOLDOWN
                         butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir_red = 1.0  # Forward = contract
                     elif window.is_pressed('n'):  # Backward-left spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (-forward_x, -forward_z)
                         spray_burst_angle_red = 0.26  # +15 degrees
                         spray_cooldown_red = SPRAY_COOLDOWN
                         butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir_red = -1.0  # Backward = extend
                     elif window.is_pressed('m'):  # Backward-right spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (-forward_x, -forward_z)
                         spray_burst_angle_red = -0.26  # -15 degrees
                         spray_cooldown_red = SPRAY_COOLDOWN
                         butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir_red = -1.0  # Backward = extend
 
                 # Skip horn controls for bombardier
                 pitch_pressed = False
@@ -9320,11 +9332,11 @@ while window.running:
 
     if beetle_blue.active:
         # Render blue beetle using its own cache
-        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue)
+        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue, butt_wiggle_dir_blue)
 
     if beetle_red.active:
         # Render red beetle using its own cache
-        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red)
+        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red, butt_wiggle_dir_red)
 
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
