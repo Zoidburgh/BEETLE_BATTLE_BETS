@@ -229,24 +229,22 @@ def extract_debris_particles():
             base_color = simulation.debris_material[idx]
 
             # Calculate alpha fade based on remaining lifetime
-            # Use ratio-based fade that works for any particle lifetime
             lifetime = simulation.debris_lifetime[idx]
 
-            # For short-lived particles (dust), fade over entire lifetime
-            # For longer particles (explosions), start fade at 0.4s remaining
+            # Smooth ease-out fade over last 0.4s
             if lifetime < 0.4:
-                # Normalize to 0-1 range based on shorter of lifetime or 0.4s
-                linear_fade = lifetime / 0.4  # 1.0 to 0.0
-                # Gentler curve - just linear fade, no darkening
-                alpha = ti.max(linear_fade, 0.0)
-                # Fade toward arena dust color (not dark)
-                fade_target = ti.math.vec3(0.5, 0.48, 0.45)  # Light dust color
+                t = lifetime / 0.4  # 1.0 to 0.0
+                # Ease-out curve (starts fast, slows down) - more natural
+                alpha = t * t  # Quadratic ease-out
+                alpha = ti.max(alpha, 0.0)
+                # Fade toward transparent/light
+                fade_target = ti.math.vec3(0.6, 0.58, 0.55)  # Light color
                 voxel_colors[write_idx] = base_color * alpha + fade_target * (1.0 - alpha)
+                # Shrink particle as it fades for natural dissipation
+                voxel_radii[write_idx] = DEBRIS_RADIUS * (0.3 + 0.7 * t)
             else:
                 voxel_colors[write_idx] = base_color
-
-            # Set smaller radius for debris particles
-            voxel_radii[write_idx] = DEBRIS_RADIUS
+                voxel_radii[write_idx] = DEBRIS_RADIUS
 
     # Update total voxel count to include debris
     num_voxels[None] = min(voxel_count + debris_count, MAX_VOXELS)
