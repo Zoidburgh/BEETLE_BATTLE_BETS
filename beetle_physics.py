@@ -6650,12 +6650,12 @@ def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32):
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             angle = ti.random() * 6.28318
-            speed = 20.0 + ti.random() * 30.0  # Spread outward
+            speed = 34.0 + ti.random() * 51.0  # 70% faster spread
 
             simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
             simulation.debris_vel[idx] = ti.math.vec3(
                 ti.cos(angle) * speed,
-                10.0 + ti.random() * 20.0,  # Pop upward
+                17.0 + ti.random() * 34.0,  # 70% higher pop
                 ti.sin(angle) * speed
             )
             # Green color (matches spray)
