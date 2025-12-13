@@ -7744,34 +7744,21 @@ while window.running:
                 forward_z = math.sin(beetle_blue.rotation)
 
                 if spray_cooldown_blue <= 0:
-                    if window.is_pressed('r'):  # Forward-left spray
+                    if window.is_pressed('r'):  # Forward spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (forward_x, forward_z)
-                        spray_burst_angle_blue = 0.26  # +15 degrees
+                        spray_burst_angle_blue = 0.0  # Straight ahead
                         spray_cooldown_blue = SPRAY_COOLDOWN
                         butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
                         butt_wiggle_dir_blue = 1.0  # Forward = contract
-                    elif window.is_pressed('y'):  # Forward-right spray
-                        spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
-                        spray_burst_dir_blue = (forward_x, forward_z)
-                        spray_burst_angle_blue = -0.26  # -15 degrees
-                        spray_cooldown_blue = SPRAY_COOLDOWN
-                        butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir_blue = 1.0  # Forward = contract
-                    elif window.is_pressed('v'):  # Backward-left spray
+                    elif window.is_pressed('y'):  # Backward spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (-forward_x, -forward_z)
-                        spray_burst_angle_blue = 0.26  # +15 degrees
+                        spray_burst_angle_blue = 0.0  # Straight back
                         spray_cooldown_blue = SPRAY_COOLDOWN
                         butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
                         butt_wiggle_dir_blue = -1.0  # Backward = extend
-                    elif window.is_pressed('b'):  # Backward-right spray
-                        spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
-                        spray_burst_dir_blue = (-forward_x, -forward_z)
-                        spray_burst_angle_blue = -0.26  # -15 degrees
-                        spray_cooldown_blue = SPRAY_COOLDOWN
-                        butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir_blue = -1.0  # Backward = extend
+                    # V and B reserved for future use
 
                 # Skip horn controls for bombardier
                 pitch_pressed = False
@@ -7951,34 +7938,21 @@ while window.running:
                 forward_z = math.sin(beetle_red.rotation)
 
                 if spray_cooldown_red <= 0:
-                    if window.is_pressed('u'):  # Forward-left spray
+                    if window.is_pressed('u'):  # Forward spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (forward_x, forward_z)
-                        spray_burst_angle_red = 0.26  # +15 degrees
+                        spray_burst_angle_red = 0.0  # Straight ahead
                         spray_cooldown_red = SPRAY_COOLDOWN
                         butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
                         butt_wiggle_dir_red = 1.0  # Forward = contract
-                    elif window.is_pressed('o'):  # Forward-right spray
-                        spray_burst_remaining_red = SPRAY_BURST_PARTICLES
-                        spray_burst_dir_red = (forward_x, forward_z)
-                        spray_burst_angle_red = -0.26  # -15 degrees
-                        spray_cooldown_red = SPRAY_COOLDOWN
-                        butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir_red = 1.0  # Forward = contract
-                    elif window.is_pressed('n'):  # Backward-left spray
+                    elif window.is_pressed('o'):  # Backward spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (-forward_x, -forward_z)
-                        spray_burst_angle_red = 0.26  # +15 degrees
+                        spray_burst_angle_red = 0.0  # Straight back
                         spray_cooldown_red = SPRAY_COOLDOWN
                         butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
                         butt_wiggle_dir_red = -1.0  # Backward = extend
-                    elif window.is_pressed('m'):  # Backward-right spray
-                        spray_burst_remaining_red = SPRAY_BURST_PARTICLES
-                        spray_burst_dir_red = (-forward_x, -forward_z)
-                        spray_burst_angle_red = -0.26  # -15 degrees
-                        spray_cooldown_red = SPRAY_COOLDOWN
-                        butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir_red = -1.0  # Backward = extend
+                    # N and M reserved for future use
 
                 # Skip horn controls for bombardier
                 pitch_pressed = False
