@@ -755,11 +755,13 @@ def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
 
 def check_spray_ball_collision():
     """Check if any spray particles hit the ball and apply impact."""
-    if simulation.ball_active[None] == 0:
+    if not beetle_ball.active:
         return
 
-    ball_pos = simulation.ball_pos[None]
-    ball_radius = simulation.ball_radius[None]
+    ball_x = beetle_ball.x
+    ball_y = beetle_ball.y + RENDER_Y_OFFSET  # Convert to render space
+    ball_z = beetle_ball.z
+    ball_radius = beetle_ball.radius
 
     num_spray = simulation.num_spray[None]
     for idx in range(num_spray):
@@ -773,9 +775,9 @@ def check_spray_ball_collision():
         spray_vel = simulation.spray_vel[idx]
 
         # Distance check (sphere collision)
-        dx = spray_pos[0] - ball_pos[0]
-        dy = spray_pos[1] - ball_pos[1]
-        dz = spray_pos[2] - ball_pos[2]
+        dx = spray_pos[0] - ball_x
+        dy = spray_pos[1] - ball_y
+        dz = spray_pos[2] - ball_z
         dist = math.sqrt(dx*dx + dy*dy + dz*dz)
 
         if dist < ball_radius + 2.0:  # Hit!
@@ -786,13 +788,16 @@ def check_spray_ball_collision():
                 push_y = spray_vel[1] / spray_speed
                 push_z = spray_vel[2] / spray_speed
             else:
-                push_x, push_y, push_z = dx / dist, dy / dist, dz / dist
+                if dist > 0.1:
+                    push_x, push_y, push_z = dx / dist, dy / dist, dz / dist
+                else:
+                    push_x, push_y, push_z = 1.0, 0.0, 0.0
 
             # Apply push to ball
             push_force = SPRAY_PUSH_FORCE * 0.8  # Slightly less than beetle push
-            simulation.ball_vel[None][0] += push_x * push_force
-            simulation.ball_vel[None][1] += push_y * push_force * 0.3  # Less vertical
-            simulation.ball_vel[None][2] += push_z * push_force
+            beetle_ball.vx += push_x * push_force
+            beetle_ball.vy += push_y * push_force * 0.3  # Less vertical
+            beetle_ball.vz += push_z * push_force
 
             # Spawn explosion and kill spray
             spawn_spray_explosion(spray_pos[0], spray_pos[1], spray_pos[2])
