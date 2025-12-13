@@ -641,6 +641,81 @@ ball_explosion_pos_y = 0.0
 ball_explosion_pos_z = 0.0
 ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
 
+# Bombardier spray attack state
+spray_cooldown_blue = 0.0  # Time until blue beetle can spray again
+spray_cooldown_red = 0.0   # Time until red beetle can spray again
+spray_burst_remaining_blue = 0  # Particles left in blue's current burst
+spray_burst_remaining_red = 0   # Particles left in red's current burst
+spray_burst_dir_blue = (0.0, 0.0)  # Blue's current burst direction (x, z)
+spray_burst_dir_red = (0.0, 0.0)   # Red's current burst direction (x, z)
+spray_burst_angle_blue = 0.0  # Blue's current burst angle offset
+spray_burst_angle_red = 0.0   # Red's current burst angle offset
+
+SPRAY_COOLDOWN = 0.4  # Seconds between spray bursts
+SPRAY_BURST_PARTICLES = 20  # Total particles per burst
+SPRAY_PARTICLES_PER_FRAME = 4  # Particles spawned per frame during burst
+SPRAY_SPEED = 80.0  # Spray particle velocity
+SPRAY_PUSH_FORCE = 25.0  # Force applied to beetle when hit by spray
+
+def get_bombardier_rear_position(beetle):
+    """Get world position of bombardier's butt (spray origin)"""
+    # Rear is opposite of facing direction
+    rear_offset = 9.0  # Distance from center to butt tip (further back)
+    rear_x = beetle.x - math.cos(beetle.rotation) * rear_offset
+    rear_z = beetle.z - math.sin(beetle.rotation) * rear_offset
+    rear_y = RENDER_Y_OFFSET + beetle.y - 1.0  # Lower to match butt height
+    return rear_x, rear_y, rear_z
+
+def process_spray_collisions(target_beetle, target_color, skip_owner):
+    """Run GPU kernel to check spray-voxel collisions, then process hits. Returns list of (idx, hit_x, hit_y, hit_z)."""
+    # Run GPU collision detection kernel
+    check_spray_voxel_collision_kernel(target_color, skip_owner)
+
+    # Collect hits from kernel results
+    hits = []
+    num_spray = simulation.num_spray[None]
+    for idx in range(num_spray):
+        if simulation.spray_hit[idx] == 1:
+            hit_pos = simulation.spray_hit_pos[idx]
+            hits.append((idx, hit_pos[0], hit_pos[1], hit_pos[2]))
+    return hits
+
+def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
+    """Push beetle back and spawn explosion when spray hits. Uses hit position for accurate effects."""
+    spray_vx = simulation.spray_vel[spray_idx][0]
+    spray_vz = simulation.spray_vel[spray_idx][2]
+
+    # Calculate push direction (spray velocity direction)
+    speed = math.sqrt(spray_vx*spray_vx + spray_vz*spray_vz)
+    if speed > 0.1:
+        push_x = spray_vx / speed
+        push_z = spray_vz / speed
+    else:
+        # Fallback: push away from hit position
+        dx = target_beetle.x - hit_x
+        dz = target_beetle.z - hit_z
+        dist = math.sqrt(dx*dx + dz*dz)
+        if dist > 0.1:
+            push_x = dx / dist
+            push_z = dz / dist
+        else:
+            push_x = 0.0
+            push_z = 0.0
+
+    # Apply impulse to target beetle
+    target_beetle.vx += push_x * SPRAY_PUSH_FORCE
+    target_beetle.vz += push_z * SPRAY_PUSH_FORCE
+    target_beetle.vy += 5.0  # Small upward pop
+
+    # TODO: Apply torque based on hit position offset from beetle center
+    # torque = cross(hit_pos - beetle_center, push_force)
+
+    # Spawn mini explosion at hit position
+    spawn_spray_explosion(hit_x, hit_y, hit_z)
+
+    # Kill the spray particle
+    simulation.spray_lifetime[spray_idx] = 0
+
 # Goal celebration state (scored-on beetle explodes, then winner confetti/flash)
 goal_scored_by = None  # "BLUE" or "RED" - who scored
 goal_celebration_timer = 0.0  # Timer for celebration sequence
@@ -6425,6 +6500,157 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                 # Lifetime scales slightly with impact (bigger bounce = longer hang time)
                 simulation.debris_lifetime[idx] = 0.4 + ti.min(impact_speed * 0.06, 0.4) + ti.random() * 0.15
 
+# ============================================================
+# BOMBARDIER BEETLE SPRAY ATTACK SYSTEM
+# ============================================================
+
+@ti.kernel
+def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
+                      dir_x: ti.f32, dir_z: ti.f32,
+                      angle_offset: ti.f32,
+                      speed: ti.f32,
+                      owner: ti.i32,
+                      num_particles: ti.i32):
+    """Spawn spray particles in cone from bombardier rear"""
+    for i in range(num_particles):
+        idx = ti.atomic_add(simulation.num_spray[None], 1)
+        if idx < simulation.MAX_SPRAY:
+            # Apply angle offset to direction (rotate direction by angle_offset)
+            cos_a = ti.cos(angle_offset)
+            sin_a = ti.sin(angle_offset)
+            rotated_x = dir_x * cos_a - dir_z * sin_a
+            rotated_z = dir_x * sin_a + dir_z * cos_a
+
+            # Add small random spread (±5°)
+            spread = (ti.random() - 0.5) * 0.17  # ~10° total spread
+            cos_s = ti.cos(spread)
+            sin_s = ti.sin(spread)
+            final_x = rotated_x * cos_s - rotated_z * sin_s
+            final_z = rotated_x * sin_s + rotated_z * cos_s
+
+            particle_speed = speed * (0.9 + ti.random() * 0.2)
+
+            # Slight random offset at spawn point for natural spray pattern
+            spawn_offset_x = (ti.random() - 0.5) * 2.0
+            spawn_offset_z = (ti.random() - 0.5) * 2.0
+
+            simulation.spray_pos[idx] = ti.math.vec3(origin_x + spawn_offset_x,
+                                                      origin_y + ti.random() * 1.0,
+                                                      origin_z + spawn_offset_z)
+            simulation.spray_vel[idx] = ti.math.vec3(final_x * particle_speed,
+                                                      12.0 + ti.random() * 5.0,  # Upward arc
+                                                      final_z * particle_speed)
+            # Bright toxic green color with slight variation
+            green_var = 0.9 + ti.random() * 0.2
+            simulation.spray_color[idx] = ti.math.vec3(0.2 * green_var, 1.0 * green_var, 0.3 * green_var)
+            simulation.spray_lifetime[idx] = 0.6 + ti.random() * 0.3  # 0.6-0.9 sec
+            simulation.spray_owner[idx] = owner
+
+@ti.kernel
+def update_spray_particles(dt: ti.f32):
+    """Update spray positions and apply gravity"""
+    for idx in range(simulation.num_spray[None]):
+        if simulation.spray_lifetime[idx] > 0:
+            simulation.spray_vel[idx].y -= 15.0 * dt  # Light gravity
+            simulation.spray_pos[idx] += simulation.spray_vel[idx] * dt
+            simulation.spray_lifetime[idx] -= dt
+
+@ti.kernel
+def cleanup_dead_spray():
+    """Remove expired spray particles by compacting array (serial due to compaction)"""
+    write_idx = 0
+
+    ti.loop_config(serialize=True)
+    for read_idx in range(simulation.num_spray[None]):
+        if simulation.spray_lifetime[read_idx] > 0.0:
+            # Particle still alive, keep it
+            if write_idx != read_idx:
+                simulation.spray_pos[write_idx] = simulation.spray_pos[read_idx]
+                simulation.spray_vel[write_idx] = simulation.spray_vel[read_idx]
+                simulation.spray_color[write_idx] = simulation.spray_color[read_idx]
+                simulation.spray_lifetime[write_idx] = simulation.spray_lifetime[read_idx]
+                simulation.spray_owner[write_idx] = simulation.spray_owner[read_idx]
+            write_idx += 1
+
+    simulation.num_spray[None] = write_idx
+
+@ti.kernel
+def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32):
+    """Small explosion when spray hits beetle - uses debris system for rendering"""
+    for i in range(8):  # 8 small particles
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            angle = ti.random() * 6.28318
+            speed = 20.0 + ti.random() * 30.0
+
+            simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
+            simulation.debris_vel[idx] = ti.math.vec3(
+                ti.cos(angle) * speed,
+                10.0 + ti.random() * 20.0,  # Pop upward
+                ti.sin(angle) * speed
+            )
+            # Green color (matches spray)
+            green_var = 0.8 + ti.random() * 0.4
+            simulation.debris_material[idx] = ti.math.vec3(0.3 * green_var, 0.9 * green_var, 0.2 * green_var)
+            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.2  # Short-lived 0.2-0.4s
+
+@ti.kernel
+def check_spray_voxel_collision_kernel(target_color: ti.i32, skip_owner: ti.i32):
+    """GPU kernel: Check spray particles against beetle voxels. Sets spray_hit[idx]=1 if hit."""
+    n_grid = simulation.n_grid
+    num = simulation.num_spray[None]
+
+    for idx in range(num):
+        # Reset hit flag
+        simulation.spray_hit[idx] = 0
+
+        # Skip if owned by target (don't hit own beetle)
+        if simulation.spray_owner[idx] == skip_owner:
+            continue
+        # Skip dead particles
+        if simulation.spray_lifetime[idx] <= 0.0:
+            continue
+        # Grace period - particles need 0.1+ sec to travel (lifetime starts at 0.6-0.9)
+        if simulation.spray_lifetime[idx] > 0.5:
+            continue
+
+        # Get spray position
+        spray_x = simulation.spray_pos[idx][0]
+        spray_y = simulation.spray_pos[idx][1]
+        spray_z = simulation.spray_pos[idx][2]
+
+        # Convert to grid coordinates
+        grid_x = int(spray_x + n_grid / 2.0)
+        grid_y = int(spray_y)  # Already includes RENDER_Y_OFFSET
+        grid_z = int(spray_z + n_grid / 2.0)
+
+        # Check ±1 voxel neighborhood for beetle voxels
+        hit = 0
+        for dx in ti.static(range(-1, 2)):
+            for dy in ti.static(range(-1, 2)):
+                for dz in ti.static(range(-1, 2)):
+                    gx = grid_x + dx
+                    gy = grid_y + dy
+                    gz = grid_z + dz
+                    # Bounds check
+                    if 0 <= gx < n_grid and 0 <= gy < n_grid and 0 <= gz < n_grid:
+                        vtype = simulation.voxel_type[gx, gy, gz]
+                        # Check if voxel belongs to target beetle
+                        if target_color == 0:  # Target is BLUE
+                            if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
+                               vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
+                               vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE:
+                                hit = 1
+                        else:  # Target is RED
+                            if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
+                               vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
+                               vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                                hit = 1
+
+        if hit == 1:
+            simulation.spray_hit[idx] = 1
+            simulation.spray_hit_pos[idx] = ti.math.vec3(spray_x, spray_y, spray_z)
+
 @ti.kernel
 def spawn_score_burst(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                       body_r: ti.f32, body_g: ti.f32, body_b: ti.f32,
@@ -7443,10 +7669,41 @@ while window.running:
                 move_z = -math.sin(beetle_blue.rotation)
                 beetle_blue.apply_force(move_x * BACKWARD_MOVE_FORCE, move_z * BACKWARD_MOVE_FORCE, PHYSICS_TIMESTEP)
 
-            # Horn controls - OPTIMIZED for combined pitch+yaw movements
-            # Calculate proposed pitch and yaw changes
-            pitch_pressed = window.is_pressed('r') or window.is_pressed('y')
-            yaw_pressed = window.is_pressed('v') or window.is_pressed('b')
+            # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
+            if beetle_blue.horn_type_id == 5:  # bombardier
+                forward_x = math.cos(beetle_blue.rotation)
+                forward_z = math.sin(beetle_blue.rotation)
+
+                if spray_cooldown_blue <= 0:
+                    if window.is_pressed('r'):  # Forward-left spray
+                        spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
+                        spray_burst_dir_blue = (forward_x, forward_z)
+                        spray_burst_angle_blue = 0.26  # +15 degrees
+                        spray_cooldown_blue = SPRAY_COOLDOWN
+                    elif window.is_pressed('y'):  # Forward-right spray
+                        spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
+                        spray_burst_dir_blue = (forward_x, forward_z)
+                        spray_burst_angle_blue = -0.26  # -15 degrees
+                        spray_cooldown_blue = SPRAY_COOLDOWN
+                    elif window.is_pressed('v'):  # Backward-left spray
+                        spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
+                        spray_burst_dir_blue = (-forward_x, -forward_z)
+                        spray_burst_angle_blue = 0.26  # +15 degrees
+                        spray_cooldown_blue = SPRAY_COOLDOWN
+                    elif window.is_pressed('b'):  # Backward-right spray
+                        spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
+                        spray_burst_dir_blue = (-forward_x, -forward_z)
+                        spray_burst_angle_blue = -0.26  # -15 degrees
+                        spray_cooldown_blue = SPRAY_COOLDOWN
+
+                # Skip horn controls for bombardier
+                pitch_pressed = False
+                yaw_pressed = False
+            else:
+                # Horn controls - OPTIMIZED for combined pitch+yaw movements
+                # Calculate proposed pitch and yaw changes
+                pitch_pressed = window.is_pressed('r') or window.is_pressed('y')
+                yaw_pressed = window.is_pressed('v') or window.is_pressed('b')
 
             new_pitch = beetle_blue.horn_pitch
             new_yaw = beetle_blue.horn_yaw
@@ -7611,10 +7868,41 @@ while window.running:
                 move_z = -math.sin(beetle_red.rotation)
                 beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE, move_z * BACKWARD_MOVE_FORCE, PHYSICS_TIMESTEP)
 
-            # Horn controls - OPTIMIZED for combined pitch+yaw movements
-            # Calculate proposed pitch and yaw changes
-            pitch_pressed = window.is_pressed('u') or window.is_pressed('o')
-            yaw_pressed = window.is_pressed('n') or window.is_pressed('m')
+            # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
+            if beetle_red.horn_type_id == 5:  # bombardier
+                forward_x = math.cos(beetle_red.rotation)
+                forward_z = math.sin(beetle_red.rotation)
+
+                if spray_cooldown_red <= 0:
+                    if window.is_pressed('u'):  # Forward-left spray
+                        spray_burst_remaining_red = SPRAY_BURST_PARTICLES
+                        spray_burst_dir_red = (forward_x, forward_z)
+                        spray_burst_angle_red = 0.26  # +15 degrees
+                        spray_cooldown_red = SPRAY_COOLDOWN
+                    elif window.is_pressed('o'):  # Forward-right spray
+                        spray_burst_remaining_red = SPRAY_BURST_PARTICLES
+                        spray_burst_dir_red = (forward_x, forward_z)
+                        spray_burst_angle_red = -0.26  # -15 degrees
+                        spray_cooldown_red = SPRAY_COOLDOWN
+                    elif window.is_pressed('n'):  # Backward-left spray
+                        spray_burst_remaining_red = SPRAY_BURST_PARTICLES
+                        spray_burst_dir_red = (-forward_x, -forward_z)
+                        spray_burst_angle_red = 0.26  # +15 degrees
+                        spray_cooldown_red = SPRAY_COOLDOWN
+                    elif window.is_pressed('m'):  # Backward-right spray
+                        spray_burst_remaining_red = SPRAY_BURST_PARTICLES
+                        spray_burst_dir_red = (-forward_x, -forward_z)
+                        spray_burst_angle_red = -0.26  # -15 degrees
+                        spray_cooldown_red = SPRAY_COOLDOWN
+
+                # Skip horn controls for bombardier
+                pitch_pressed = False
+                yaw_pressed = False
+            else:
+                # Horn controls - OPTIMIZED for combined pitch+yaw movements
+                # Calculate proposed pitch and yaw changes
+                pitch_pressed = window.is_pressed('u') or window.is_pressed('o')
+                yaw_pressed = window.is_pressed('n') or window.is_pressed('m')
 
             new_pitch = beetle_red.horn_pitch
             new_yaw = beetle_red.horn_yaw
@@ -7866,6 +8154,52 @@ while window.running:
             # Cleanup dead debris every 2 frames
             if physics_frame % 2 == 0:
                 cleanup_dead_debris()
+
+        # === SPRAY PARTICLE SYSTEM (BOMBARDIER BEETLE) ===
+        # Decrement spray cooldowns
+        spray_cooldown_blue = max(0.0, spray_cooldown_blue - PHYSICS_TIMESTEP)
+        spray_cooldown_red = max(0.0, spray_cooldown_red - PHYSICS_TIMESTEP)
+
+        # Spawn spray burst particles for blue beetle
+        if spray_burst_remaining_blue > 0 and beetle_blue.active and beetle_blue.horn_type_id == 5:
+            particles_this_frame = min(SPRAY_PARTICLES_PER_FRAME, spray_burst_remaining_blue)
+            rear_x, rear_y, rear_z = get_bombardier_rear_position(beetle_blue)
+            spawn_spray_burst(rear_x, rear_y, rear_z,
+                              spray_burst_dir_blue[0], spray_burst_dir_blue[1],
+                              spray_burst_angle_blue,
+                              SPRAY_SPEED, 0, particles_this_frame)
+            spray_burst_remaining_blue -= particles_this_frame
+
+        # Spawn spray burst particles for red beetle
+        if spray_burst_remaining_red > 0 and beetle_red.active and beetle_red.horn_type_id == 5:
+            particles_this_frame = min(SPRAY_PARTICLES_PER_FRAME, spray_burst_remaining_red)
+            rear_x, rear_y, rear_z = get_bombardier_rear_position(beetle_red)
+            spawn_spray_burst(rear_x, rear_y, rear_z,
+                              spray_burst_dir_red[0], spray_burst_dir_red[1],
+                              spray_burst_angle_red,
+                              SPRAY_SPEED, 1, particles_this_frame)
+            spray_burst_remaining_red -= particles_this_frame
+
+        # Update spray particles (physics, aging)
+        if simulation.num_spray[None] > 0:
+            update_spray_particles(PHYSICS_TIMESTEP)
+
+            # Spray-beetle collision detection (voxel-perfect GPU kernel)
+            # Check if blue's spray hits red (target=RED=1, skip red's own spray=1)
+            if beetle_red.active:
+                hits = process_spray_collisions(beetle_red, 1, 1)  # target RED, skip owner 1
+                for hit_idx, hit_x, hit_y, hit_z in hits:
+                    apply_spray_impact(beetle_red, hit_idx, hit_x, hit_y, hit_z)
+
+            # Check if red's spray hits blue (target=BLUE=0, skip blue's own spray=0)
+            if beetle_blue.active:
+                hits = process_spray_collisions(beetle_blue, 0, 0)  # target BLUE, skip owner 0
+                for hit_idx, hit_x, hit_y, hit_z in hits:
+                    apply_spray_impact(beetle_blue, hit_idx, hit_x, hit_y, hit_z)
+
+            # Cleanup dead spray every 2 frames
+            if physics_frame % 2 == 0:
+                cleanup_dead_spray()
 
         # === DEBRIS PARTICLES TIMING END ===
         _t_debris_end = time.perf_counter()

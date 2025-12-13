@@ -22,6 +22,17 @@ debris_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_material = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)  # RGB color (0.0-1.0)
 debris_lifetime = ti.field(dtype=ti.f32, shape=MAX_DEBRIS)  # Time alive (seconds)
 
+# Spray particle system (bombardier beetle acid spray)
+MAX_SPRAY = 500  # Pre-allocated pool for spray particles
+num_spray = ti.field(dtype=ti.i32, shape=())  # Active spray particle count
+spray_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)
+spray_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)
+spray_color = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)  # RGB color (0.0-1.0)
+spray_lifetime = ti.field(dtype=ti.f32, shape=MAX_SPRAY)  # Time alive (seconds)
+spray_owner = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 0=blue, 1=red (don't hit own beetle)
+spray_hit = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 1=hit beetle this frame, 0=no hit
+spray_hit_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)  # Position where hit occurred
+
 # Projectile system (cannonballs)
 MAX_PROJECTILES = 10  # Maximum active projectiles
 num_projectiles = ti.field(dtype=ti.i32, shape=())  # Active projectile count

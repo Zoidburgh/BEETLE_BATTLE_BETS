@@ -252,6 +252,41 @@ def extract_debris_particles():
     num_voxels[None] = min(voxel_count + debris_count, MAX_VOXELS)
 
 @ti.kernel
+def extract_spray_particles():
+    """Extract spray particles (bombardier beetle acid) and merge into main voxel buffer"""
+    # Get number of active spray particles from simulation
+    spray_count = simulation.num_spray[None]
+
+    # Get current voxel count to append spray after regular voxels
+    voxel_count = num_voxels[None]
+
+    # Merge spray particles into main voxel buffer
+    for idx in range(spray_count):
+        write_idx = voxel_count + idx
+        if write_idx < MAX_VOXELS:  # Bounds check
+            # Get position from physics system
+            spray_pos = simulation.spray_pos[idx]
+            voxel_positions[write_idx] = spray_pos
+
+            # Get color directly from spray (bright toxic green)
+            base_color = simulation.spray_color[idx]
+
+            # Calculate alpha fade based on remaining lifetime
+            lifetime = simulation.spray_lifetime[idx]
+            if lifetime < 0.3:
+                # Fade out in last 0.3 seconds
+                alpha = lifetime / 0.3
+                voxel_colors[write_idx] = base_color * alpha
+            else:
+                voxel_colors[write_idx] = base_color
+
+            # Set slightly smaller radius for spray particles (same as debris)
+            voxel_radii[write_idx] = DEBRIS_RADIUS
+
+    # Update total voxel count to include spray
+    num_voxels[None] = min(voxel_count + spray_count, MAX_VOXELS)
+
+@ti.kernel
 def extract_projectiles():
     """Extract active projectiles from physics simulation (runs on GPU)"""
     # Count and copy active projectiles to render buffers
@@ -414,6 +449,9 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
 
     # Extract debris particles from physics simulation
     extract_debris_particles()
+
+    # Extract spray particles from physics simulation (bombardier beetle acid)
+    extract_spray_particles()
 
     _t3 = time.perf_counter()
 
