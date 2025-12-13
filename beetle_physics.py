@@ -3947,18 +3947,19 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         grid_y = base_y + int(ti.round(final_y))
         grid_z = center_z + int(ti.round(final_z))
 
-        # BUTT WIGGLE: Apply to final grid position for rear voxels (bombardier only)
+        # BUTT PUCKER: Contract rear voxels forward when spray fires (bombardier only)
         if butt_wiggle > 0.0 and horn_type_id == 5:
             orig_x = body_cache_x[i]  # Original local X to detect rear
             rear_thresh = -body_length + 4
             if orig_x < rear_thresh:
                 depth = float(rear_thresh - orig_x) / 4.0
                 depth = ti.min(depth, 1.0)
-                phase = ti.sin(butt_wiggle * 50.0)
-                amt = depth * phase * (butt_wiggle / 0.15)
-                # Push backward along beetle facing direction
-                grid_x = grid_x - int(ti.round(cos_yaw * amt * 2.0))
-                grid_z = grid_z - int(ti.round(sin_yaw * amt * 2.0))
+                # Smooth pucker - contract forward then relax (no jittery oscillation)
+                t = butt_wiggle / 0.15  # 1.0 at start, fades to 0.0
+                amt = depth * t * 2.0  # Pull forward by up to 2 voxels at tips
+                # Pull FORWARD (squeeze toward body center)
+                grid_x = grid_x + int(ti.round(cos_yaw * amt))
+                grid_z = grid_z + int(ti.round(sin_yaw * amt))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
             # Don't overwrite floor (CONCRETE), shadow, slippery bowl, or goal voxels
@@ -4400,18 +4401,19 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         grid_y = base_y + int(ti.round(final_y))
         grid_z = center_z + int(ti.round(final_z))
 
-        # BUTT WIGGLE: Apply to final grid position for rear voxels (bombardier only)
+        # BUTT PUCKER: Contract rear voxels forward when spray fires (bombardier only)
         if butt_wiggle > 0.0 and horn_type_id == 5:
             orig_x = red_body_cache_x[i]  # Original local X to detect rear
             rear_thresh = -body_length + 4
             if orig_x < rear_thresh:
                 depth = float(rear_thresh - orig_x) / 4.0
                 depth = ti.min(depth, 1.0)
-                phase = ti.sin(butt_wiggle * 50.0)
-                amt = depth * phase * (butt_wiggle / 0.15)
-                # Push backward along beetle facing direction
-                grid_x = grid_x - int(ti.round(cos_yaw * amt * 2.0))
-                grid_z = grid_z - int(ti.round(sin_yaw * amt * 2.0))
+                # Smooth pucker - contract forward then relax (no jittery oscillation)
+                t = butt_wiggle / 0.15  # 1.0 at start, fades to 0.0
+                amt = depth * t * 2.0  # Pull forward by up to 2 voxels at tips
+                # Pull FORWARD (squeeze toward body center)
+                grid_x = grid_x + int(ti.round(cos_yaw * amt))
+                grid_z = grid_z + int(ti.round(sin_yaw * amt))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
             # Don't overwrite floor (CONCRETE), shadow, slippery bowl, or goal voxels
