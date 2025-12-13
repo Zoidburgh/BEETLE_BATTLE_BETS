@@ -681,34 +681,63 @@ def process_spray_collisions(target_beetle, target_color, skip_owner):
     return hits
 
 def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
-    """Push beetle back and spawn explosion when spray hits. Uses hit position for accurate effects."""
+    """Push beetle back and spawn explosion when spray hits. Uses hit position for torque/flip physics."""
     spray_vx = simulation.spray_vel[spray_idx][0]
+    spray_vy = simulation.spray_vel[spray_idx][1]
     spray_vz = simulation.spray_vel[spray_idx][2]
 
     # Calculate push direction (spray velocity direction)
     speed = math.sqrt(spray_vx*spray_vx + spray_vz*spray_vz)
     if speed > 0.1:
-        push_x = spray_vx / speed
-        push_z = spray_vz / speed
+        push_dir_x = spray_vx / speed
+        push_dir_z = spray_vz / speed
     else:
-        # Fallback: push away from hit position
+        # Fallback: push away from beetle center
         dx = target_beetle.x - hit_x
         dz = target_beetle.z - hit_z
         dist = math.sqrt(dx*dx + dz*dz)
         if dist > 0.1:
-            push_x = dx / dist
-            push_z = dz / dist
+            push_dir_x = -dx / dist
+            push_dir_z = -dz / dist
         else:
-            push_x = 0.0
-            push_z = 0.0
+            push_dir_x = 0.0
+            push_dir_z = 0.0
 
-    # Apply impulse to target beetle
-    target_beetle.vx += push_x * SPRAY_PUSH_FORCE
-    target_beetle.vz += push_z * SPRAY_PUSH_FORCE
-    target_beetle.vy += 5.0  # Small upward pop
+    # Calculate lever arm from beetle center to hit position
+    lever_x = hit_x - target_beetle.x
+    lever_y = hit_y - (RENDER_Y_OFFSET + target_beetle.y)  # Y relative to beetle center
+    lever_z = hit_z - target_beetle.z
 
-    # TODO: Apply torque based on hit position offset from beetle center
-    # torque = cross(hit_pos - beetle_center, push_force)
+    # Lever distance affects torque magnitude (hits further from center = more spin)
+    lever_dist = math.sqrt(lever_x*lever_x + lever_z*lever_z)
+    leverage_mult = 1.0 + (lever_dist / 10.0)  # Bonus for off-center hits
+
+    # === HORIZONTAL PUSH ===
+    push_force = SPRAY_PUSH_FORCE * leverage_mult
+    target_beetle.vx += push_dir_x * push_force
+    target_beetle.vz += push_dir_z * push_force
+
+    # === YAW TORQUE (horizontal spin) ===
+    # Cross product: lever × push_dir gives spin direction
+    # (lever_x, lever_z) × (push_x, push_z) = lever_x * push_z - lever_z * push_x
+    yaw_torque = (lever_x * push_dir_z - lever_z * push_dir_x) * push_force * 0.15
+    target_beetle.angular_velocity += yaw_torque / target_beetle.moment_of_inertia
+
+    # === VERTICAL LIFT (based on spray's vertical velocity) ===
+    # Spray coming from below (positive vy) lifts the beetle
+    lift_force = max(0.0, spray_vy * 0.3) * leverage_mult
+    target_beetle.vy += lift_force + 3.0  # Base pop + lift from spray angle
+
+    # === PITCH TORQUE (nose up/down from off-center vertical hit) ===
+    # Hit in front (+Z in beetle local) with upward force = nose up
+    # Hit in back (-Z) with upward force = nose down
+    pitch_torque = lever_z * lift_force * 2.0
+    target_beetle.pitch_velocity += pitch_torque / target_beetle.pitch_inertia
+
+    # === ROLL TORQUE (side-to-side tilt from off-center hit) ===
+    # Hit on right (+X) with upward force = roll left
+    roll_torque = lever_x * lift_force * 2.0
+    target_beetle.roll_velocity += roll_torque / target_beetle.roll_inertia
 
     # Spawn mini explosion at hit position
     spawn_spray_explosion(hit_x, hit_y, hit_z)
