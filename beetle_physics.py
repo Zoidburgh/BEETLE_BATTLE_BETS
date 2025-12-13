@@ -6646,7 +6646,7 @@ def cleanup_dead_spray():
 @ti.kernel
 def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32):
     """Explosion when spray hits beetle - small particles that spread out"""
-    for i in range(8):  # 8 small particles
+    for i in range(16):  # 16 small particles
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             angle = ti.random() * 6.28318
