@@ -1793,20 +1793,23 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
 
         body_voxels.extend(neck_voxels)
 
-        # HEAD CAPSULE - Rounded oval shape extending forward
+        # HEAD CAPSULE - Beefy rounded shape extending forward
         head_voxels = []
-        for dx in range(3, 7):  # Head from dx=3 to dx=6
+        for dx in range(3, 8):  # Head from dx=3 to dx=7 (longer)
             # Taper: wider in middle, narrower at front and back
             if dx == 3:  # Back of head (connects to neck)
                 width = 3
-                height = front_body_height
-            elif dx == 4:  # Middle (widest)
+                height = front_body_height + 1
+            elif dx == 4:  # Middle-back (widest)
                 width = 3
-                height = max(2, front_body_height - 1)
-            elif dx == 5:  # Front-middle
+                height = front_body_height + 1
+            elif dx == 5:  # Middle
+                width = 3
+                height = front_body_height
+            elif dx == 6:  # Front-middle
                 width = 2
-                height = 2
-            else:  # dx == 6, front of head (snout)
+                height = max(2, front_body_height - 1)
+            else:  # dx == 7, front of head (snout)
                 width = 1
                 height = 2
 
@@ -1819,22 +1822,24 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
 
         body_voxels.extend(head_voxels)
 
-        # COMPOUND EYES - Bulging slightly on sides of head
+        # COMPOUND EYES - Bulging on sides of head
         eye_y = head_y_base + 1
-        # Left eye - two voxels bulging out
+        # Left eye - slight bulge at edge of narrower head
         body_voxels.append((4, eye_y, -4))
-        body_voxels.append((5, eye_y, -3))
+        body_voxels.append((5, eye_y, -4))
+        body_voxels.append((5, eye_y + 1, -4))
         # Right eye
         body_voxels.append((4, eye_y, 4))
-        body_voxels.append((5, eye_y, 3))
+        body_voxels.append((5, eye_y, 4))
+        body_voxels.append((5, eye_y + 1, 4))
 
-        # MANDIBLES - Small but powerful jaws at front
+        # MANDIBLES - Powerful jaws at front of beefy head
         mandible_y = head_y_base  # At bottom of head
 
         # Left mandible - curves inward
         for i in range(3):
-            dx = 7 + i
-            dz = -1 + (i // 2)  # Curves inward toward center
+            dx = 8 + i  # Moved forward to match longer head
+            dz = -2 + (i // 2)  # Curves inward toward center
             body_voxels.append((dx, mandible_y, dz))
             if i == 0:  # Thicker at base
                 body_voxels.append((dx, mandible_y, dz - 1))
@@ -1842,30 +1847,28 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
 
         # Right mandible - curves inward (mirror)
         for i in range(3):
-            dx = 7 + i
-            dz = 1 - (i // 2)  # Curves inward toward center
+            dx = 8 + i  # Moved forward to match longer head
+            dz = 2 - (i // 2)  # Curves inward toward center
             body_voxels.append((dx, mandible_y, dz))
             if i == 0:  # Thicker at base
                 body_voxels.append((dx, mandible_y, dz + 1))
                 body_voxels.append((dx, mandible_y + 1, dz))
 
-        # ANTENNAE - Long, segmented, extend forward and outward
+        # ANTENNAE - Short, stubby antennae
         antenna_y = head_y_base + 2  # Top of head
-        antenna_start_x = 5
+        antenna_start_x = 6
 
-        # Left antenna - extends forward-left and slightly up
-        for i in range(5):
+        # Left antenna - short, extends forward-left
+        for i in range(3):  # Shortened from 5 to 3
             dx = antenna_start_x + i
-            dz = -3 - i  # Extends outward
-            dy_offset = i // 3  # Slight rise
-            body_voxels.append((dx, antenna_y + dy_offset, dz))
+            dz = -4 - i  # Extends outward
+            body_voxels.append((dx, antenna_y, dz))
 
-        # Right antenna - extends forward-right and slightly up (mirror)
-        for i in range(5):
+        # Right antenna - short, extends forward-right (mirror)
+        for i in range(3):  # Shortened from 5 to 3
             dx = antenna_start_x + i
-            dz = 3 + i  # Extends outward
-            dy_offset = i // 3  # Slight rise
-            body_voxels.append((dx, antenna_y + dy_offset, dz))
+            dz = 4 + i  # Extends outward
+            body_voxels.append((dx, antenna_y, dz))
     else:
         # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
         # Main shaft with overlapping layers
