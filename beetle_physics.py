@@ -211,7 +211,7 @@ HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to 
 
 # OPTIMIZATION: Horn type ID mapping and pitch/yaw limit lookup tables
 # Eliminates string comparisons in the physics loop (120 checks/sec -> integer lookup)
-HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5}
+HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "cockchafer": 6}
 # Pitch limits: (max_pitch, min_pitch) indexed by horn_type_id
 HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_RHINO, HORN_MIN_PITCH_RHINO),       # 0: rhino
@@ -351,7 +351,7 @@ class Beetle:
 
         # Scorpion stinger control (VB/NM keys)
         self.stinger_curvature = 0.0  # Stinger curvature offset (-1.0 to +1.0): negative=dart forward, positive=pull back, 0=neutral
-        self.tail_rotation_angle = 0.0  # Tail rotation angle in degrees (VB=down, NM=up)
+        self.tail_rotation_angle = 25.0  # Tail rotation angle in degrees (rests at max up, V/N push down)
 
         # Center of gravity tracking (for edge tipping physics)
         self.cog_x = x  # Center of gravity X
@@ -389,6 +389,7 @@ class Beetle:
         self.prev_roll = 0.0
         self.prev_horn_pitch = HORN_DEFAULT_PITCH
         self.prev_horn_yaw = 0.0
+        self.prev_tail_rotation_angle = 25.0
 
     def save_previous_state(self):
         """Save current state as previous for interpolation"""
@@ -400,6 +401,7 @@ class Beetle:
         self.prev_roll = self.roll
         self.prev_horn_pitch = self.horn_pitch
         self.prev_horn_yaw = self.horn_yaw
+        self.prev_tail_rotation_angle = self.tail_rotation_angle
 
     def apply_force(self, fx, fz, dt):
         """Add force to velocity"""
@@ -621,7 +623,7 @@ def reset_match():
 
     # Reset scorpion tracking variables to prevent geometry cache desync
     previous_stinger_curvature = 0.0
-    previous_tail_rotation = 0.0
+    previous_tail_rotation = 25.0  # Tail rests at max up position
 
     # Preserve each beetle's horn_type on reset so control mapping stays correct
     beetle_blue.horn_type = blue_horn_type
@@ -8005,16 +8007,22 @@ while window.running:
             # For scorpion type, V/B control tail rotation angle instead of horn yaw
             # OPTIMIZATION: Use horn_type_id == 3 instead of string comparison
             if beetle_blue.horn_type_id == 3:  # scorpion
-                # SCORPION: V/B control blue beetle's tail rotation
-                TAIL_ROTATION_SPEED = 30.0  # Degrees per second
+                # SCORPION: V pushes tail down, release returns to max up (B reserved for venom)
+                TAIL_ROTATION_SPEED = 50.0  # Degrees per second (push down)
+                TAIL_RETURN_SPEED = 35.0    # Degrees per second (passive return)
+                TAIL_MAX_UP = 25.0          # Resting position (max up)
+                TAIL_MAX_DOWN = -25.0       # Fully pushed down
+
                 if window.is_pressed('v'):
-                    # V = Rotate tail up
-                    beetle_blue.tail_rotation_angle += TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.tail_rotation_angle = min(25.0, beetle_blue.tail_rotation_angle)
-                elif window.is_pressed('b'):
-                    # B = Rotate tail down
+                    # V = Push tail down (for striking)
                     beetle_blue.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.tail_rotation_angle = max(-25.0, beetle_blue.tail_rotation_angle)
+                    beetle_blue.tail_rotation_angle = max(TAIL_MAX_DOWN, beetle_blue.tail_rotation_angle)
+                else:
+                    # No key = passively return to max up position
+                    if beetle_blue.tail_rotation_angle < TAIL_MAX_UP:
+                        beetle_blue.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
+                        beetle_blue.tail_rotation_angle = min(TAIL_MAX_UP, beetle_blue.tail_rotation_angle)
+                # B key reserved for future venom attack
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -8214,16 +8222,22 @@ while window.running:
             # For scorpion type, N/M control tail rotation angle instead of horn yaw
             # OPTIMIZATION: Use horn_type_id == 3 instead of string comparison
             if beetle_red.horn_type_id == 3:  # scorpion
-                # SCORPION: N/M control red beetle's tail rotation
-                TAIL_ROTATION_SPEED = 30.0  # Degrees per second
+                # SCORPION: N pushes tail down, release returns to max up (M reserved for venom)
+                TAIL_ROTATION_SPEED = 50.0  # Degrees per second (push down)
+                TAIL_RETURN_SPEED = 35.0    # Degrees per second (passive return)
+                TAIL_MAX_UP = 25.0          # Resting position (max up)
+                TAIL_MAX_DOWN = -25.0       # Fully pushed down
+
                 if window.is_pressed('n'):
-                    # N = Rotate tail up
-                    beetle_red.tail_rotation_angle += TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.tail_rotation_angle = min(25.0, beetle_red.tail_rotation_angle)
-                elif window.is_pressed('m'):
-                    # M = Rotate tail down
+                    # N = Push tail down (for striking)
                     beetle_red.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.tail_rotation_angle = max(-25.0, beetle_red.tail_rotation_angle)
+                    beetle_red.tail_rotation_angle = max(TAIL_MAX_DOWN, beetle_red.tail_rotation_angle)
+                else:
+                    # No key = passively return to max up position
+                    if beetle_red.tail_rotation_angle < TAIL_MAX_UP:
+                        beetle_red.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
+                        beetle_red.tail_rotation_angle = min(TAIL_MAX_UP, beetle_red.tail_rotation_angle)
+                # M key reserved for future venom attack
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -8971,7 +8985,7 @@ while window.running:
     blue_render_roll = lerp_angle(beetle_blue.prev_roll, beetle_blue.roll, alpha)
     blue_render_horn_pitch = lerp_angle(beetle_blue.prev_horn_pitch, beetle_blue.horn_pitch, alpha)
     blue_render_horn_yaw = lerp_angle(beetle_blue.prev_horn_yaw, beetle_blue.horn_yaw, alpha)
-    blue_render_tail_pitch = math.radians(15.0 + beetle_blue.tail_rotation_angle)  # Convert degrees to radians (base 15 + dynamic)
+    blue_render_tail_pitch = math.radians(15.0 + lerp_angle(beetle_blue.prev_tail_rotation_angle, beetle_blue.tail_rotation_angle, alpha))  # Smoothed tail rotation
 
     # Interpolate red beetle state for rendering
     red_render_x = beetle_red.prev_x + (beetle_red.x - beetle_red.prev_x) * alpha
@@ -8980,7 +8994,7 @@ while window.running:
     red_render_rotation = lerp_angle(beetle_red.prev_rotation, beetle_red.rotation, alpha)
     red_render_pitch = lerp_angle(beetle_red.prev_pitch, beetle_red.pitch, alpha)
     red_render_roll = lerp_angle(beetle_red.prev_roll, beetle_red.roll, alpha)
-    red_render_tail_pitch = math.radians(15.0 + beetle_red.tail_rotation_angle)  # Convert degrees to radians (base 15 + dynamic)
+    red_render_tail_pitch = math.radians(15.0 + lerp_angle(beetle_red.prev_tail_rotation_angle, beetle_red.tail_rotation_angle, alpha))  # Smoothed tail rotation
     red_render_horn_pitch = lerp_angle(beetle_red.prev_horn_pitch, beetle_red.horn_pitch, alpha)
     red_render_horn_yaw = lerp_angle(beetle_red.prev_horn_yaw, beetle_red.horn_yaw, alpha)
 
@@ -9570,17 +9584,19 @@ while window.running:
         stripe_color_blue[1] += (target_g - stripe_color_blue[1]) * lerp_factor
         stripe_color_blue[2] += (target_b - stripe_color_blue[2]) * lerp_factor
 
-        simulation.blue_stripe_color[None] = ti.Vector([stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2]])
+        # Only update colors if not in victory pulse (victory pulse controls colors)
+        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+            simulation.blue_stripe_color[None] = ti.Vector([stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2]])
+            b = window.blue_body_color
+            simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
         blue_charge_glow = spray_charges_blue / float(SPRAY_MAX_CHARGES)
-        # Keep body color normal
-        b = window.blue_body_color
-        simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
     else:
-        # Non-bombardier: use normal colors
-        b = window.blue_body_color
-        simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
-        s = window.blue_stripe_color
-        simulation.blue_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
+        # Non-bombardier: use normal colors (skip during victory pulse)
+        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+            b = window.blue_body_color
+            simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+            s = window.blue_stripe_color
+            simulation.blue_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
 
     if red_horn_type_id == 5:  # Red is bombardier
         # Determine target stripe color based on charge level
@@ -9603,17 +9619,19 @@ while window.running:
         stripe_color_red[1] += (target_g - stripe_color_red[1]) * lerp_factor
         stripe_color_red[2] += (target_b - stripe_color_red[2]) * lerp_factor
 
-        simulation.red_stripe_color[None] = ti.Vector([stripe_color_red[0], stripe_color_red[1], stripe_color_red[2]])
+        # Only update colors if not in victory pulse (victory pulse controls colors)
+        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+            simulation.red_stripe_color[None] = ti.Vector([stripe_color_red[0], stripe_color_red[1], stripe_color_red[2]])
+            r = window.red_body_color
+            simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
         red_charge_glow = spray_charges_red / float(SPRAY_MAX_CHARGES)
-        # Keep body color normal
-        r = window.red_body_color
-        simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
     else:
-        # Non-bombardier: use normal colors
-        r = window.red_body_color
-        simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
-        s = window.red_stripe_color
-        simulation.red_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
+        # Non-bombardier: use normal colors (skip during victory pulse)
+        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+            r = window.red_body_color
+            simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+            s = window.red_stripe_color
+            simulation.red_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
 
     # === BEETLE RENDER TIMING ===
     perf_monitor.start('beetle_render')

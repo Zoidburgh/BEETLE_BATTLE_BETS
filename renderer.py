@@ -126,6 +126,12 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 17:  # BALL_STRIPE
         color = simulation.ball_stripe_color[None]
 
+    # Stag beetle hook interior - use body color (inner curve of pincers)
+    elif voxel_type == 18:  # STAG_HOOK_INTERIOR_BLUE
+        color = simulation.blue_body_color[None]
+    elif voxel_type == 19:  # STAG_HOOK_INTERIOR_RED
+        color = simulation.red_body_color[None]
+
     # Shadow blob beneath airborne beetles (darker than arena floor)
     elif voxel_type == 20:  # SHADOW
         color = ti.math.vec3(0.25, 0.23, 0.21)  # ~60% of arena floor color
@@ -163,7 +169,7 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
         color = simulation.red_horn_tip_color[None]
 
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
-    if voxel_type >= 5 and voxel_type <= 15:  # All beetle parts
+    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19:  # All beetle parts
         shimmer = get_shimmer_from_lut(world_x, world_z)
         color *= shimmer
 
