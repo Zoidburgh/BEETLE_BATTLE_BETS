@@ -7961,7 +7961,7 @@ while window.running:
 
                 # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
                 # Direct adjustment - holds position when keys released
-                aim_adjust_speed = 1.5 * frame_dt  # Smooth adjustment rate
+                aim_adjust_speed = 1.8 * frame_dt  # Smooth adjustment rate
                 if window.is_pressed('v'):
                     spray_aim_blue = min(1.0, spray_aim_blue + aim_adjust_speed)
                 elif window.is_pressed('b'):
@@ -8170,7 +8170,7 @@ while window.running:
 
                 # N/M aim controls - adjust spray angle (tilts beetle from butt pivot)
                 # Direct adjustment - holds position when keys released
-                aim_adjust_speed = 1.5 * frame_dt  # Smooth adjustment rate
+                aim_adjust_speed = 1.8 * frame_dt  # Smooth adjustment rate
                 if window.is_pressed('n'):
                     spray_aim_red = min(1.0, spray_aim_red + aim_adjust_speed)
                 elif window.is_pressed('m'):
