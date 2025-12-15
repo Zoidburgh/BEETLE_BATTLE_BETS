@@ -4035,6 +4035,18 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
             local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
 
+            # BUTT TIP COUNTER-ROTATION: Rear voxels tilt opposite to sell the aiming pose
+            # When front tilts UP, butt tip dips DOWN (and vice versa)
+            orig_x_aim = body_cache_x[i]
+            butt_thresh = -body_length + 3  # Just the tip
+            if orig_x_aim < butt_thresh:
+                # How far into the butt region (0 to 1)
+                butt_depth = float(butt_thresh - orig_x_aim) / 3.0
+                butt_depth = ti.min(butt_depth, 1.0)
+                # Counter-rotate: negative aim when front goes up, positive when front goes down
+                butt_offset = -spray_aim_pitch * butt_depth * 25.0
+                local_y = local_y + int(ti.round(butt_offset))
+
         # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
         # Convert local_y to float for rotation
         ly = float(local_y)
@@ -4526,6 +4538,18 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             ly_aim = float(local_y)
             local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
             local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
+
+            # BUTT TIP COUNTER-ROTATION: Rear voxels tilt opposite to sell the aiming pose
+            # When front tilts UP, butt tip dips DOWN (and vice versa)
+            orig_x_aim = red_body_cache_x[i]
+            butt_thresh = -body_length + 3  # Just the tip
+            if orig_x_aim < butt_thresh:
+                # How far into the butt region (0 to 1)
+                butt_depth = float(butt_thresh - orig_x_aim) / 3.0
+                butt_depth = ti.min(butt_depth, 1.0)
+                # Counter-rotate: negative aim when front goes up, positive when front goes down
+                butt_offset = -spray_aim_pitch * butt_depth * 25.0
+                local_y = local_y + int(ti.round(butt_offset))
 
         # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
         # Convert local_y to float for rotation
