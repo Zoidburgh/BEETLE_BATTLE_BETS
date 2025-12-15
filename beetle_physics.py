@@ -569,6 +569,9 @@ VICTORY_CONFETTI_PARTICLES = 30  # Particles per spawn wave
 def reset_match():
     """Reset beetles to starting positions for new match"""
     global beetle_blue, beetle_red, match_winner, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
+    global spray_charges_blue, spray_charges_red, spray_recharge_timer_blue, spray_recharge_timer_red
+    global stripe_color_blue, stripe_color_red
+    global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -578,6 +581,20 @@ def reset_match():
     match_winner = None
     victory_pulse_timer = 0.0
     victory_confetti_timer = 0.0
+
+    # Reset spray charges for bombardier beetles
+    spray_charges_blue = SPRAY_MAX_CHARGES
+    spray_charges_red = SPRAY_MAX_CHARGES
+    spray_recharge_timer_blue = 0.0
+    spray_recharge_timer_red = 0.0
+    # Reset stripe colors to full charge (neon green)
+    stripe_color_blue = [0.5, 1.0, 0.3]
+    stripe_color_red = [0.5, 1.0, 0.3]
+    # Reset spray aim angles and Y velocity
+    spray_aim_blue = 0.0
+    spray_aim_red = 0.0
+    spray_aim_y_blue = 0.0
+    spray_aim_y_red = 0.0
 
     # Restore beetle colors from saved window values (in case restart during victory pulse)
     b = window.blue_body_color
@@ -664,6 +681,27 @@ SPRAY_BURST_PARTICLES = 30  # Total particles per burst (2/frame * 15 frames = 0
 SPRAY_PARTICLES_PER_FRAME = 2  # Particles spawned per frame
 SPRAY_SPEED = 80.0  # Spray particle velocity
 SPRAY_PUSH_FORCE = 25.0  # Force applied to beetle when hit by spray
+
+# Bombardier charge system
+SPRAY_MAX_CHARGES = 3  # Maximum charges that can be stored
+SPRAY_RECHARGE_TIME = 8.0  # Seconds to recharge 1 charge
+spray_charges_blue = 3  # Current charges for blue (start full)
+spray_charges_red = 3   # Current charges for red (start full)
+spray_recharge_timer_blue = 0.0  # Time until next charge
+spray_recharge_timer_red = 0.0   # Time until next charge
+
+# Stripe color interpolation for smooth transitions
+STRIPE_LERP_SPEED = 8.0  # How fast stripe color transitions (higher = faster)
+stripe_color_blue = [0.5, 1.0, 0.3]  # Current displayed stripe color (starts at full charge)
+stripe_color_red = [0.5, 1.0, 0.3]   # Current displayed stripe color (starts at full charge)
+
+# Bombardier spray aim angle (vertical tilt)
+SPRAY_AIM_MAX = 0.175  # ~10 degrees in radians
+SPRAY_AIM_SPEED = 2.0  # How fast aim adjusts (higher = snappier)
+spray_aim_blue = 0.0   # Current aim angle (-1 to +1, 0 = level)
+spray_aim_red = 0.0    # Current aim angle (-1 to +1, 0 = level)
+spray_aim_y_blue = 0.0  # Y velocity component for current spray burst (set when spray triggered)
+spray_aim_y_red = 0.0   # Y velocity component for current spray burst (set when spray triggered)
 
 def get_bombardier_rear_position(beetle):
     """Get world position of bombardier's butt (spray origin)"""
@@ -3769,15 +3807,16 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     return lowest_y
 
 @ti.kernel
-def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32):
+def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
         horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
         tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion
+        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier
         body_pitch_offset: Static body tilt angle for scorpion (radians)
         butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
+        spray_aim_pitch: Bombardier aim angle (radians) - tilts beetle from rear pivot
     """
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
@@ -3815,6 +3854,11 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
     sin_default = ti.sin(default_horn_pitch)
     cos_deviation = ti.cos(pitch_deviation)
     sin_deviation = ti.sin(pitch_deviation)
+
+    # Bombardier aim trig (butt-pivot rotation for spray aiming)
+    cos_aim = ti.cos(spray_aim_pitch)
+    sin_aim = ti.sin(spray_aim_pitch)
+    rear_pivot_x = float(-body_length)  # Rear of beetle in local X coordinates
 
     # 1. Place body with horn pitch applied
     for i in range(body_cache_size[None]):
@@ -3982,6 +4026,15 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                 local_y = int(ti.round(rotated_tail_y + tail_pivot_y))
                 # local_z unchanged (rotation around Z-axis)
 
+        # BOMBARDIER AIM: Rotate around rear pivot BEFORE yaw/pitch/roll transforms
+        # This tilts the beetle from its butt pivot point to visually indicate spray aim
+        if horn_type_id == 5 and spray_aim_pitch != 0.0:
+            # Translate to rear pivot, rotate in X-Y plane (pitch), translate back
+            rel_x = local_x - rear_pivot_x
+            ly_aim = float(local_y)
+            local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+            local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
+
         # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
         # Convert local_y to float for rotation
         ly = float(local_y)
@@ -4146,6 +4199,18 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             local_y = leg_cache_y[i] + int(lift)  # Apply vertical lift
             local_z = float(leg_cache_z[i])
 
+            # BOMBARDIER AIM: Rotate legs around rear pivot BUT compensate Y to stay grounded
+            if horn_type_id == 5 and spray_aim_pitch != 0.0:
+                orig_x = local_x  # Save original X for compensation calc
+                rel_x = local_x - rear_pivot_x
+                ly_aim = float(local_y)
+                local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+                rotated_y = rel_x * sin_aim + ly_aim * cos_aim
+                # Compensate Y to keep legs planted - counteract the vertical lift from rotation
+                # Front legs (positive rel_x) get pushed down when tilting up, lifted when tilting down
+                y_compensation = rel_x * sin_aim
+                local_y = int(ti.round(rotated_y - y_compensation))
+
             # 3D rotation (same as body)
             ly = float(local_y)
 
@@ -4189,6 +4254,15 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             local_y = leg_tip_cache_y[i] + int(lift)
             local_z = float(leg_tip_cache_z[i])
 
+            # BOMBARDIER AIM: Rotate leg tips around rear pivot BUT compensate Y to stay grounded
+            if horn_type_id == 5 and spray_aim_pitch != 0.0:
+                rel_x = local_x - rear_pivot_x
+                ly_aim = float(local_y)
+                local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+                rotated_y = rel_x * sin_aim + ly_aim * cos_aim
+                y_compensation = rel_x * sin_aim
+                local_y = int(ti.round(rotated_y - y_compensation))
+
             # 3D rotation (same as legs)
             ly = float(local_y)
 
@@ -4224,15 +4298,17 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                         dirty_voxel_z[idx] = grid_z
 
 @ti.kernel
-def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32):
+def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
         horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
         tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion
+        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier
         body_pitch_offset: Static body tilt angle for scorpion (radians)
         butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
+        charge_glow: 0.0-1.0, glow intensity for bombardier beetle charges
+        spray_aim_pitch: Bombardier aim angle (radians) - tilts beetle from rear pivot
     """
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
@@ -4270,6 +4346,11 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
     sin_default = ti.sin(default_horn_pitch)
     cos_deviation = ti.cos(pitch_deviation)
     sin_deviation = ti.sin(pitch_deviation)
+
+    # Bombardier aim trig (butt-pivot rotation for spray aiming)
+    cos_aim = ti.cos(spray_aim_pitch)
+    sin_aim = ti.sin(spray_aim_pitch)
+    rear_pivot_x = float(-body_length)  # Rear of beetle in local X coordinates
 
     # 1. Place body with horn pitch applied
     for i in range(red_body_cache_size[None]):
@@ -4437,6 +4518,15 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 local_y = int(ti.round(rotated_tail_y + tail_pivot_y))
                 # local_z unchanged (rotation around Z-axis)
 
+        # BOMBARDIER AIM: Rotate around rear pivot BEFORE yaw/pitch/roll transforms
+        # This tilts the beetle from its butt pivot point to visually indicate spray aim
+        if horn_type_id == 5 and spray_aim_pitch != 0.0:
+            # Translate to rear pivot, rotate in X-Y plane (pitch), translate back
+            rel_x = local_x - rear_pivot_x
+            ly_aim = float(local_y)
+            local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+            local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
+
         # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
         # Convert local_y to float for rotation
         ly = float(local_y)
@@ -4601,6 +4691,15 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             local_y = red_leg_cache_y[i] + int(lift)  # Apply vertical lift
             local_z = float(red_leg_cache_z[i])
 
+            # BOMBARDIER AIM: Rotate legs around rear pivot BUT compensate Y to stay grounded
+            if horn_type_id == 5 and spray_aim_pitch != 0.0:
+                rel_x = local_x - rear_pivot_x
+                ly_aim = float(local_y)
+                local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+                rotated_y = rel_x * sin_aim + ly_aim * cos_aim
+                y_compensation = rel_x * sin_aim
+                local_y = int(ti.round(rotated_y - y_compensation))
+
             # 3D rotation (same as body)
             ly = float(local_y)
 
@@ -4643,6 +4742,15 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             local_x = float(red_leg_tip_cache_x[i]) + sweep  # Apply same animation
             local_y = red_leg_tip_cache_y[i] + int(lift)
             local_z = float(red_leg_tip_cache_z[i])
+
+            # BOMBARDIER AIM: Rotate leg tips around rear pivot BUT compensate Y to stay grounded
+            if horn_type_id == 5 and spray_aim_pitch != 0.0:
+                rel_x = local_x - rear_pivot_x
+                ly_aim = float(local_y)
+                local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+                rotated_y = rel_x * sin_aim + ly_aim * cos_aim
+                y_compensation = rel_x * sin_aim
+                local_y = int(ti.round(rotated_y - y_compensation))
 
             # 3D rotation (same as legs)
             ly = float(local_y)
@@ -6635,8 +6743,13 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
                       angle_offset: ti.f32,
                       speed: ti.f32,
                       owner: ti.i32,
-                      num_particles: ti.i32):
-    """Spawn spray particles in cone from bombardier rear"""
+                      num_particles: ti.i32,
+                      aim_y: ti.f32):
+    """Spawn spray particles in cone from bombardier rear
+
+    Args:
+        aim_y: Vertical velocity component based on aim angle (positive = up, negative = down)
+    """
     for i in range(num_particles):
         idx = ti.atomic_add(simulation.num_spray[None], 1)
         if idx < simulation.MAX_SPRAY:
@@ -6663,7 +6776,7 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
                                                       origin_y + ti.random() * 1.0,
                                                       origin_z + spawn_offset_z)
             simulation.spray_vel[idx] = ti.math.vec3(final_x * particle_speed,
-                                                      12.0 + ti.random() * 5.0,  # Upward arc
+                                                      12.0 + aim_y + ti.random() * 5.0,  # Upward arc + aim adjustment
                                                       final_z * particle_speed)
             # Bright toxic green color with slight variation
             green_var = 0.9 + ti.random() * 0.2
@@ -7799,7 +7912,8 @@ while window.running:
                 forward_x = math.cos(beetle_blue.rotation)
                 forward_z = math.sin(beetle_blue.rotation)
 
-                if spray_cooldown_blue <= 0:
+                # Only fire if cooldown ready AND have charges
+                if spray_cooldown_blue <= 0 and spray_charges_blue > 0:
                     if window.is_pressed('r'):  # Forward spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (forward_x, forward_z)
@@ -7807,6 +7921,9 @@ while window.running:
                         spray_cooldown_blue = SPRAY_COOLDOWN
                         butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
                         butt_wiggle_dir_blue = 1.0  # Forward = contract
+                        spray_charges_blue -= 1  # Consume charge
+                        # Forward spray: positive aim = spray goes UP (matches tilt direction)
+                        spray_aim_y_blue = spray_aim_blue * 14.0
                     elif window.is_pressed('y'):  # Backward spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (-forward_x, -forward_z)
@@ -7814,7 +7931,18 @@ while window.running:
                         spray_cooldown_blue = SPRAY_COOLDOWN
                         butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
                         butt_wiggle_dir_blue = -1.0  # Backward = extend
-                    # V and B reserved for future use
+                        spray_charges_blue -= 1  # Consume charge
+                        # Backward spray: positive aim = spray goes DOWN (inverted)
+                        spray_aim_y_blue = -spray_aim_blue * 14.0
+
+                # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
+                if window.is_pressed('v'):
+                    spray_aim_blue = min(1.0, spray_aim_blue + SPRAY_AIM_SPEED * frame_dt)
+                elif window.is_pressed('b'):
+                    spray_aim_blue = max(-1.0, spray_aim_blue - SPRAY_AIM_SPEED * frame_dt)
+                else:
+                    # Decay toward neutral when not pressing
+                    spray_aim_blue *= 0.92
 
                 # Skip horn controls for bombardier
                 pitch_pressed = False
@@ -7993,7 +8121,8 @@ while window.running:
                 forward_x = math.cos(beetle_red.rotation)
                 forward_z = math.sin(beetle_red.rotation)
 
-                if spray_cooldown_red <= 0:
+                # Only fire if cooldown ready AND have charges
+                if spray_cooldown_red <= 0 and spray_charges_red > 0:
                     if window.is_pressed('u'):  # Forward spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (forward_x, forward_z)
@@ -8001,6 +8130,9 @@ while window.running:
                         spray_cooldown_red = SPRAY_COOLDOWN
                         butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
                         butt_wiggle_dir_red = 1.0  # Forward = contract
+                        spray_charges_red -= 1  # Consume charge
+                        # Forward spray: positive aim = spray goes UP (matches tilt direction)
+                        spray_aim_y_red = spray_aim_red * 14.0
                     elif window.is_pressed('o'):  # Backward spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (-forward_x, -forward_z)
@@ -8008,7 +8140,18 @@ while window.running:
                         spray_cooldown_red = SPRAY_COOLDOWN
                         butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
                         butt_wiggle_dir_red = -1.0  # Backward = extend
-                    # N and M reserved for future use
+                        spray_charges_red -= 1  # Consume charge
+                        # Backward spray: positive aim = spray goes DOWN (inverted)
+                        spray_aim_y_red = -spray_aim_red * 14.0
+
+                # N/M aim controls - adjust spray angle (tilts beetle from butt pivot)
+                if window.is_pressed('n'):
+                    spray_aim_red = min(1.0, spray_aim_red + SPRAY_AIM_SPEED * frame_dt)
+                elif window.is_pressed('m'):
+                    spray_aim_red = max(-1.0, spray_aim_red - SPRAY_AIM_SPEED * frame_dt)
+                else:
+                    # Decay toward neutral when not pressing
+                    spray_aim_red *= 0.92
 
                 # Skip horn controls for bombardier
                 pitch_pressed = False
@@ -8279,6 +8422,23 @@ while window.running:
         butt_wiggle_blue = max(0.0, butt_wiggle_blue - PHYSICS_TIMESTEP)
         butt_wiggle_red = max(0.0, butt_wiggle_red - PHYSICS_TIMESTEP)
 
+        # Recharge spray charges over time (1 charge every SPRAY_RECHARGE_TIME seconds)
+        if spray_charges_blue < SPRAY_MAX_CHARGES:
+            spray_recharge_timer_blue += PHYSICS_TIMESTEP
+            if spray_recharge_timer_blue >= SPRAY_RECHARGE_TIME:
+                spray_charges_blue += 1
+                spray_recharge_timer_blue = 0.0
+        else:
+            spray_recharge_timer_blue = 0.0  # Reset timer when full
+
+        if spray_charges_red < SPRAY_MAX_CHARGES:
+            spray_recharge_timer_red += PHYSICS_TIMESTEP
+            if spray_recharge_timer_red >= SPRAY_RECHARGE_TIME:
+                spray_charges_red += 1
+                spray_recharge_timer_red = 0.0
+        else:
+            spray_recharge_timer_red = 0.0  # Reset timer when full
+
         # Spawn spray burst particles for blue beetle
         if spray_burst_remaining_blue > 0 and beetle_blue.active and beetle_blue.horn_type_id == 5:
             particles_this_frame = min(SPRAY_PARTICLES_PER_FRAME, spray_burst_remaining_blue)
@@ -8286,7 +8446,7 @@ while window.running:
             spawn_spray_burst(rear_x, rear_y, rear_z,
                               spray_burst_dir_blue[0], spray_burst_dir_blue[1],
                               spray_burst_angle_blue,
-                              SPRAY_SPEED, 0, particles_this_frame)
+                              SPRAY_SPEED, 0, particles_this_frame, spray_aim_y_blue)
             spray_burst_remaining_blue -= particles_this_frame
 
         # Spawn spray burst particles for red beetle
@@ -8296,7 +8456,7 @@ while window.running:
             spawn_spray_burst(rear_x, rear_y, rear_z,
                               spray_burst_dir_red[0], spray_burst_dir_red[1],
                               spray_burst_angle_red,
-                              SPRAY_SPEED, 1, particles_this_frame)
+                              SPRAY_SPEED, 1, particles_this_frame, spray_aim_y_red)
             spray_burst_remaining_red -= particles_this_frame
 
         # Update spray particles (physics, aging)
@@ -9360,16 +9520,87 @@ while window.running:
         window.red_stripe_color = (0.85, 0.65, 0.2)
         window.red_horn_tip_color = (0.4, 0.1, 0.1)
 
+    # === BOMBARDIER CHARGE GLOW EFFECT ===
+    # Calculate glow intensity for each bombardier beetle based on charges
+    blue_charge_glow = 0.0
+    red_charge_glow = 0.0
+
+    if blue_horn_type_id == 5:  # Blue is bombardier
+        # Determine target stripe color based on charge level
+        if spray_charges_blue == 0:
+            target_r, target_g, target_b = 0.4, 0.4, 0.4  # Gray - depleted
+        elif spray_charges_blue == 1:
+            target_r, target_g, target_b = 0.2, 0.5, 0.2  # Dark green
+        elif spray_charges_blue == 2:
+            target_r, target_g, target_b = 0.3, 0.8, 0.2  # Bright green
+        else:
+            # Full charge: pulse effect (no lerp, direct pulse)
+            pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
+            target_r = 0.2 + pulse * 0.5
+            target_g = 0.7 + pulse * 0.3
+            target_b = 0.1 + pulse * 0.3
+
+        # Smooth lerp toward target color
+        lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
+        stripe_color_blue[0] += (target_r - stripe_color_blue[0]) * lerp_factor
+        stripe_color_blue[1] += (target_g - stripe_color_blue[1]) * lerp_factor
+        stripe_color_blue[2] += (target_b - stripe_color_blue[2]) * lerp_factor
+
+        simulation.blue_stripe_color[None] = ti.Vector([stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2]])
+        blue_charge_glow = spray_charges_blue / float(SPRAY_MAX_CHARGES)
+        # Keep body color normal
+        b = window.blue_body_color
+        simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+    else:
+        # Non-bombardier: use normal colors
+        b = window.blue_body_color
+        simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+        s = window.blue_stripe_color
+        simulation.blue_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
+
+    if red_horn_type_id == 5:  # Red is bombardier
+        # Determine target stripe color based on charge level
+        if spray_charges_red == 0:
+            target_r, target_g, target_b = 0.4, 0.4, 0.4  # Gray - depleted
+        elif spray_charges_red == 1:
+            target_r, target_g, target_b = 0.2, 0.5, 0.2  # Dark green
+        elif spray_charges_red == 2:
+            target_r, target_g, target_b = 0.3, 0.8, 0.2  # Bright green
+        else:
+            # Full charge: pulse effect (no lerp, direct pulse)
+            pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
+            target_r = 0.2 + pulse * 0.5
+            target_g = 0.7 + pulse * 0.3
+            target_b = 0.1 + pulse * 0.3
+
+        # Smooth lerp toward target color
+        lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
+        stripe_color_red[0] += (target_r - stripe_color_red[0]) * lerp_factor
+        stripe_color_red[1] += (target_g - stripe_color_red[1]) * lerp_factor
+        stripe_color_red[2] += (target_b - stripe_color_red[2]) * lerp_factor
+
+        simulation.red_stripe_color[None] = ti.Vector([stripe_color_red[0], stripe_color_red[1], stripe_color_red[2]])
+        red_charge_glow = spray_charges_red / float(SPRAY_MAX_CHARGES)
+        # Keep body color normal
+        r = window.red_body_color
+        simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+    else:
+        # Non-bombardier: use normal colors
+        r = window.red_body_color
+        simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+        s = window.red_stripe_color
+        simulation.red_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
+
     # === BEETLE RENDER TIMING ===
     perf_monitor.start('beetle_render')
 
     if beetle_blue.active:
         # Render blue beetle using its own cache
-        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue, butt_wiggle_dir_blue)
+        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue, butt_wiggle_dir_blue, blue_charge_glow, spray_aim_blue * SPRAY_AIM_MAX)
 
     if beetle_red.active:
         # Render red beetle using its own cache
-        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red, butt_wiggle_dir_red)
+        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red, butt_wiggle_dir_red, red_charge_glow, spray_aim_red * SPRAY_AIM_MAX)
 
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
@@ -9720,6 +9951,10 @@ while window.running:
         window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
         window.GUI.text(f"  Horn pitch: {math.degrees(beetle_blue.horn_pitch):.1f}°")
         window.GUI.text(f"  Horn yaw: {math.degrees(beetle_blue.horn_yaw):.1f}°")
+        # Show spray charges for bombardier beetles
+        if blue_horn_type_id == 5:
+            charge_bar = "█" * spray_charges_blue + "░" * (SPRAY_MAX_CHARGES - spray_charges_blue)
+            window.GUI.text(f"  Spray: [{charge_bar}] {spray_charges_blue}/{SPRAY_MAX_CHARGES}")
     else:
         window.GUI.text("BLUE BEETLE: FALLEN")
 
@@ -9733,6 +9968,10 @@ while window.running:
         window.GUI.text(f"  Facing: {math.degrees(beetle_red.rotation):.0f}°")
         window.GUI.text(f"  Horn pitch: {math.degrees(beetle_red.horn_pitch):.1f}°")
         window.GUI.text(f"  Horn yaw: {math.degrees(beetle_red.horn_yaw):.1f}°")
+        # Show spray charges for bombardier beetles
+        if red_horn_type_id == 5:
+            charge_bar = "█" * spray_charges_red + "░" * (SPRAY_MAX_CHARGES - spray_charges_red)
+            window.GUI.text(f"  Spray: [{charge_bar}] {spray_charges_red}/{SPRAY_MAX_CHARGES}")
     else:
         window.GUI.text("RED BEETLE: FALLEN")
     window.GUI.text("")
