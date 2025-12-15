@@ -351,7 +351,7 @@ class Beetle:
 
         # Scorpion stinger control (VB/NM keys)
         self.stinger_curvature = 0.0  # Stinger curvature offset (-1.0 to +1.0): negative=dart forward, positive=pull back, 0=neutral
-        self.tail_rotation_angle = 25.0  # Tail rotation angle in degrees (rests at max up, V/N push down)
+        self.tail_rotation_angle = 20.0  # Tail rotation angle in degrees (rests at max up, V/N push down)
 
         # Center of gravity tracking (for edge tipping physics)
         self.cog_x = x  # Center of gravity X
@@ -389,7 +389,7 @@ class Beetle:
         self.prev_roll = 0.0
         self.prev_horn_pitch = HORN_DEFAULT_PITCH
         self.prev_horn_yaw = 0.0
-        self.prev_tail_rotation_angle = 25.0
+        self.prev_tail_rotation_angle = 20.0
 
     def save_previous_state(self):
         """Save current state as previous for interpolation"""
@@ -623,7 +623,7 @@ def reset_match():
 
     # Reset scorpion tracking variables to prevent geometry cache desync
     previous_stinger_curvature = 0.0
-    previous_tail_rotation = 25.0  # Tail rests at max up position
+    previous_tail_rotation = 20.0  # Tail rests at max up position
 
     # Preserve each beetle's horn_type on reset so control mapping stays correct
     beetle_blue.horn_type = blue_horn_type
@@ -3251,15 +3251,14 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
 
 def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_body_height=5, stinger_curvature=0.0, tail_rotation_angle=0.0):
     """
-    Generate scorpion tail/stinger - Simple version for debugging
+    Generate scorpion tail/stinger - FIXED DESIGN (sliders ignored)
+
+    Hand-crafted tail with clean aesthetics and guaranteed sharp tip for venom attack.
 
     Args:
-        shaft_len: Total tail arc length (6-18) - controls reach
-        prong_len: Curvature amount (2-10) - controls curl tightness
         body_length: Body length for parametric attachment
         back_body_height: Rear body height for parametric attachment
-        stinger_curvature: Dynamic curvature offset (-1.0 to +1.0) controlled by VB/NM keys
-        tail_rotation_angle: Dynamic tail rotation angle in degrees (-20 to +20) controlled by VB/NM keys
+        (shaft_len, prong_len, stinger_curvature ignored - fixed design)
 
     Returns:
         List of (dx, dy, dz) voxel positions for stinger
@@ -3268,189 +3267,104 @@ def generate_scorpion_stinger(shaft_len=12, prong_len=5, body_length=12, back_bo
 
     stinger_voxels = []
 
-    # ===== SCORPION TAIL SHAFT (CLEAN REBUILD) =====
-    # Attach to top of butt, smooth curve, 3 voxels thick
-    # shaft_len slider controls length
-
     # ATTACHMENT POINT - Top of abdomen (butt)
     start_x = -body_length + 1
     start_y = back_body_height
     start_z = 0
 
-    # SHAFT LENGTH - Scale slider value to reasonable tail size
-    # Slider range 8-15 maps to effective length 8-12 (slower scaling)
-    # Each tick of slider adds 0.57 effective length
-    effective_len = 8 + (shaft_len - 8) * 0.57
+    # ===== FIXED TAIL DESIGN =====
+    # Hand-crafted segment by segment for clean aesthetics
+    # Format: (x_offset, y_offset, width, height) from start position
+    # Width is Z spread (-w to +w), Height is Y spread
 
-    # More samples = smoother curve
-    num_samples = int(effective_len * 8)  # 8 samples per voxel length = smooth curve
-
-    # CURVE SHAPE - Simple 4-point smooth arc (fewer points = smoother curve)
-    # Scale EVERYTHING proportionally with effective_len for smooth curves at all sizes
-    height = int(effective_len * 0.8)  # How high the tail arcs (reduced from 1.0)
-    forward = int(effective_len * 1.5)  # How far forward it reaches (reduced from 2.0)
-
-    # Curvature adjustment (VB/NM keys)
-    curl = int(stinger_curvature * effective_len * 0.4)
-
-    # Simple 4-point arc - NO SHARP CORNERS, gentle curve
-    control_points = [
-        (start_x, start_y),  # Base attachment
-        (start_x + int(effective_len * 0.4) - curl, start_y + int(effective_len * 0.8)),  # Rising
-        (start_x + int(effective_len * 1.0) - curl, start_y + height),  # Peak
-        (start_x + forward - curl, start_y + height - int(effective_len * 0.15)),  # End slightly lower
+    # Tail segments: curves up and forward, bulb, then stinger tapers to point
+    # Each tuple: (x, y, z_width, y_height)
+    # z_width: 0=1 voxel, 1=3 wide, 2=5 wide
+    # y_height: 0=1 tall, 1=2-3 tall, 2=4-5 tall, -1=single point
+    tail_shape = [
+        # Base - thick, rising from body (smooth Y increments)
+        (0, 0, 1, 1),    # Attachment
+        (1, 1, 1, 1),    # Rise
+        (2, 2, 1, 1),    # Rise
+        (3, 3, 1, 1),    # Rise
+        (4, 4, 1, 1),    # Rise
+        (5, 5, 1, 1),    # Rise
+        (6, 6, 1, 1),    # Approaching peak
+        (7, 7, 1, 1),    # Peak
+        (8, 7, 1, 1),    # Peak plateau
+        (9, 7, 1, 1),    # Peak plateau
+        (10, 6, 1, 1),   # Starting descent
+        (11, 6, 1, 1),   # Descent
+        # VENOM BULB (telson) - wider, rounder section
+        (12, 5, 2, 2),   # Bulb start - 5 wide, tall
+        (13, 5, 2, 2),   # Bulb middle - widest part
+        (14, 5, 2, 2),   # Bulb middle
+        (15, 5, 1, 1),   # Bulb narrowing back to 3 wide
+        # Stinger (aculeus) - tapers from bulb to sharp point
+        (16, 4, 1, 1),   # Stinger base (3 wide)
+        (17, 4, 0, 1),   # Narrowing (1 wide, 2 tall)
+        (18, 3, 0, 0),   # Near tip (1 wide, 1 tall)
+        (19, 3, 0, -1),  # TIP - single voxel
     ]
 
-    num_control = len(control_points)
-    prev_x, prev_y = None, None
+    for seg in tail_shape:
+        x_off, y_off, z_width, y_height = seg
 
-    # Generate smooth curve using Catmull-Rom spline
-    for i in range(num_samples):
-        # Progress along curve (0.0 to 1.0)
-        t = i / float(max(num_samples - 1, 1))
+        x = start_x + x_off
+        y = start_y + y_off
 
-        # Find which segment we're interpolating
-        segment_t = t * (num_control - 1)
-        segment_idx = int(segment_t)
-        if segment_idx >= num_control - 1:
-            segment_idx = num_control - 2
+        # Special case: single point tip (y_height = -1)
+        if y_height == -1:
+            stinger_voxels.append((x, y, start_z))
+            tip_end_x, tip_end_y = x, y
+            continue
 
-        # Local t within segment
-        local_t = segment_t - segment_idx
+        # Place voxels with given width and height
+        # y_height: 0=1 tall, 1=3 tall, 2=5 tall (bulb)
+        if y_height == 0:
+            y_range = [0]
+        elif y_height == 1:
+            y_range = [-1, 0, 1]
+        else:  # y_height >= 2 (bulb)
+            y_range = [-2, -1, 0, 1, 2]
 
-        # Get 4 control points for Catmull-Rom spline
-        if segment_idx == 0:
-            p0 = control_points[0]
-        else:
-            p0 = control_points[segment_idx - 1]
+        for dz in range(-z_width, z_width + 1):
+            for dy in y_range:
+                stinger_voxels.append((x, y + dy, start_z + dz))
 
-        p1 = control_points[segment_idx]
-        p2 = control_points[segment_idx + 1]
+    # Fill gaps between segments for solid tail
+    filled_voxels = set(stinger_voxels)
+    final_voxels = list(stinger_voxels)
 
-        if segment_idx + 2 < num_control:
-            p3 = control_points[segment_idx + 2]
-        else:
-            p3 = control_points[-1]
+    # Simple gap fill: for each segment, ensure connection to next
+    for i in range(len(tail_shape) - 1):
+        x1 = start_x + tail_shape[i][0]
+        y1 = start_y + tail_shape[i][1]
+        x2 = start_x + tail_shape[i + 1][0]
+        y2 = start_y + tail_shape[i + 1][1]
+        w1 = tail_shape[i][2]
+        w2 = tail_shape[i + 1][2]
 
-        # Catmull-Rom interpolation formula
-        t2 = local_t * local_t
-        t3 = t2 * local_t
+        # Interpolate between segments
+        dx = x2 - x1
+        dy = y2 - y1
+        steps = max(abs(dx), abs(dy))
 
-        x = int(0.5 * ((2 * p1[0]) +
-                       (-p0[0] + p2[0]) * local_t +
-                       (2*p0[0] - 5*p1[0] + 4*p2[0] - p3[0]) * t2 +
-                       (-p0[0] + 3*p1[0] - 3*p2[0] + p3[0]) * t3))
+        if steps > 0:
+            for step in range(steps + 1):
+                t = step / float(steps)
+                ix = int(x1 + dx * t)
+                iy = int(y1 + dy * t)
+                iw = int(w1 + (w2 - w1) * t)
 
-        y = int(0.5 * ((2 * p1[1]) +
-                       (-p0[1] + p2[1]) * local_t +
-                       (2*p0[1] - 5*p1[1] + 4*p2[1] - p3[1]) * t2 +
-                       (-p0[1] + 3*p1[1] - 3*p2[1] + p3[1]) * t3))
+                for dz in range(-iw, iw + 1):
+                    for dy_off in range(-1, 2):
+                        pos = (ix, iy + dy_off, start_z + dz)
+                        if pos not in filled_voxels:
+                            final_voxels.append(pos)
+                            filled_voxels.add(pos)
 
-        z = start_z
-
-        # Fill gaps between consecutive voxels for solid shaft
-        if prev_x is not None:
-            dx = x - prev_x
-            dy = y - prev_y
-            steps = max(abs(dx), abs(dy)) + 1
-
-            for step in range(steps):
-                inter_t = step / float(steps)
-                inter_x = int(prev_x + dx * inter_t)
-                inter_y = int(prev_y + dy * inter_t)
-
-                # 3 VOXELS THICK (in Z direction) + Y-overlap for continuity at all angles
-                for dz in range(-1, 2):  # -1, 0, 1 = 3 layers in Z
-                    for dy_overlap in range(-1, 2):  # -1, 0, 1 = 3 layers in Y for overlap
-                        stinger_voxels.append((inter_x, inter_y + dy_overlap, z + dz))
-        else:
-            # First iteration - place starting voxels
-            for dz in range(-1, 2):
-                for dy_overlap in range(-1, 2):
-                    stinger_voxels.append((x, y + dy_overlap, z + dz))
-
-        prev_x, prev_y = x, y
-
-    # ===== SCORPION STINGER TIP (PRONG) =====
-    # Pointy tip that curves down and forward like real scorpion stingers
-    # prong_len slider controls length (2-10)
-
-    if prong_len > 0 and prev_x is not None:
-        # Tip starts from the end of the shaft (prev_x, prev_y)
-        tip_start_x = prev_x
-        tip_start_y = prev_y
-        tip_start_z = start_z
-
-        # Tip length controlled by prong_len
-        tip_segments = int(prong_len) * 5  # 5x segments for smooth, gap-free stinger at all lengths
-
-        # Track previous position for interpolation
-        last_tip_x = tip_start_x
-        last_tip_y = tip_start_y
-
-        # Create pointy tip - tapers from 3 voxels thick to 1 voxel (point)
-        # AND curves downward and forward
-        for i in range(tip_segments):
-            progress = i / float(max(tip_segments - 1, 1))  # 0.0 at base, 1.0 at tip
-
-            # Curve down and forward (like scorpion stinger)
-            # Forward: progress-based so angle stays consistent regardless of segment density
-            tip_x = tip_start_x + int(progress * prong_len * 1.2)
-
-            # Downward: drops down smoothly (parabolic curve)
-            drop = int(progress * progress * prong_len * 0.8)  # Use prong_len, not tip_segments
-            tip_y = tip_start_y - drop
-
-            # === INTERPOLATION: Fill gaps ONLY when needed ===
-            # Calculate the distance we need to travel
-            dx_step = tip_x - last_tip_x
-            dy_step = tip_y - last_tip_y
-            steps = max(abs(dx_step), abs(dy_step))
-
-            # Only interpolate if there's an actual gap (steps > 1)
-            # If positions are adjacent (steps <= 1), just use the current position
-            if steps > 1:
-                # Fill intermediate positions to close the gap
-                for step in range(1, steps):  # Skip 0 (already done) and steps (will be done next iter)
-                    t = step / float(steps)
-                    inter_x = last_tip_x + int(dx_step * t)
-                    inter_y = last_tip_y + int(dy_step * t)
-
-                    # Taper: starts at 5 voxels thick, narrows to 1 voxel at the tip
-                    if progress < 0.5:
-                        # Base section: 5 voxels thick (fuller stinger) + Y-overlap
-                        for dz in range(-2, 3):  # -2, -1, 0, 1, 2
-                            for dy_overlap in range(-1, 2):  # Y-overlap for continuity
-                                stinger_voxels.append((inter_x, inter_y + dy_overlap, tip_start_z + dz))
-                    elif progress < 0.8:
-                        # Middle section: 3 voxels thick + Y-overlap
-                        for dz in range(-1, 2):  # -1, 0, 1
-                            for dy_overlap in range(-1, 2):  # Y-overlap for continuity
-                                stinger_voxels.append((inter_x, inter_y + dy_overlap, tip_start_z + dz))
-                    else:
-                        # Tip section: 1 voxel thick (point) + minimal Y-overlap
-                        for dy_overlap in range(-1, 2):
-                            stinger_voxels.append((inter_x, inter_y + dy_overlap, tip_start_z))
-
-            # Always add the current position voxels
-            if progress < 0.5:
-                # Base section: 5 voxels thick (fuller stinger) + Y-overlap
-                for dz in range(-2, 3):  # -2, -1, 0, 1, 2
-                    for dy_overlap in range(-1, 2):  # Y-overlap for continuity
-                        stinger_voxels.append((tip_x, tip_y + dy_overlap, tip_start_z + dz))
-            elif progress < 0.8:
-                # Middle section: 3 voxels thick + Y-overlap
-                for dz in range(-1, 2):  # -1, 0, 1
-                    for dy_overlap in range(-1, 2):  # Y-overlap for continuity
-                        stinger_voxels.append((tip_x, tip_y + dy_overlap, tip_start_z + dz))
-            else:
-                # Tip section: 1 voxel thick (point) + minimal Y-overlap
-                for dy_overlap in range(-1, 2):
-                    stinger_voxels.append((tip_x, tip_y + dy_overlap, tip_start_z))
-
-            # Update last position for next iteration
-            last_tip_x = tip_x
-            last_tip_y = tip_y
+    stinger_voxels = final_voxels
 
     # Rotate entire tail upward by 15 degrees (base) + dynamic tail_rotation_angle around attachment point
     # Rotation in X-Y plane (around Z-axis)
@@ -8010,7 +7924,7 @@ while window.running:
                 # SCORPION: V pushes tail down, release returns to max up (B reserved for venom)
                 TAIL_ROTATION_SPEED = 50.0  # Degrees per second (push down)
                 TAIL_RETURN_SPEED = 35.0    # Degrees per second (passive return)
-                TAIL_MAX_UP = 25.0          # Resting position (max up)
+                TAIL_MAX_UP = 20.0          # Resting position (max up)
                 TAIL_MAX_DOWN = -25.0       # Fully pushed down
 
                 if window.is_pressed('v'):
@@ -8225,7 +8139,7 @@ while window.running:
                 # SCORPION: N pushes tail down, release returns to max up (M reserved for venom)
                 TAIL_ROTATION_SPEED = 50.0  # Degrees per second (push down)
                 TAIL_RETURN_SPEED = 35.0    # Degrees per second (passive return)
-                TAIL_MAX_UP = 25.0          # Resting position (max up)
+                TAIL_MAX_UP = 20.0          # Resting position (max up)
                 TAIL_MAX_DOWN = -25.0       # Fully pushed down
 
                 if window.is_pressed('n'):
