@@ -6800,7 +6800,7 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
                                                       origin_y + ti.random() * 1.0,
                                                       origin_z + spawn_offset_z)
             simulation.spray_vel[idx] = ti.math.vec3(final_x * particle_speed,
-                                                      12.0 + aim_y + ti.random() * 5.0,  # Upward arc + aim adjustment
+                                                      15.0 + aim_y + ti.random() * 5.0,  # Upward arc + 2deg base offset + aim adjustment
                                                       final_z * particle_speed)
             # Bright toxic green color with slight variation
             green_var = 0.9 + ti.random() * 0.2
@@ -7960,13 +7960,13 @@ while window.running:
                         spray_aim_y_blue = -spray_aim_blue * 14.0
 
                 # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
+                # Direct adjustment - holds position when keys released
+                aim_adjust_speed = 1.5 * frame_dt  # Smooth adjustment rate
                 if window.is_pressed('v'):
-                    spray_aim_blue = min(1.0, spray_aim_blue + SPRAY_AIM_SPEED * frame_dt)
+                    spray_aim_blue = min(1.0, spray_aim_blue + aim_adjust_speed)
                 elif window.is_pressed('b'):
-                    spray_aim_blue = max(-1.0, spray_aim_blue - SPRAY_AIM_SPEED * frame_dt)
-                else:
-                    # Decay toward neutral when not pressing
-                    spray_aim_blue *= 0.92
+                    spray_aim_blue = max(-1.0, spray_aim_blue - aim_adjust_speed)
+                # No else - holds current position when no keys pressed
 
                 # Skip horn controls for bombardier
                 pitch_pressed = False
@@ -8169,13 +8169,13 @@ while window.running:
                         spray_aim_y_red = -spray_aim_red * 14.0
 
                 # N/M aim controls - adjust spray angle (tilts beetle from butt pivot)
+                # Direct adjustment - holds position when keys released
+                aim_adjust_speed = 1.5 * frame_dt  # Smooth adjustment rate
                 if window.is_pressed('n'):
-                    spray_aim_red = min(1.0, spray_aim_red + SPRAY_AIM_SPEED * frame_dt)
+                    spray_aim_red = min(1.0, spray_aim_red + aim_adjust_speed)
                 elif window.is_pressed('m'):
-                    spray_aim_red = max(-1.0, spray_aim_red - SPRAY_AIM_SPEED * frame_dt)
-                else:
-                    # Decay toward neutral when not pressing
-                    spray_aim_red *= 0.92
+                    spray_aim_red = max(-1.0, spray_aim_red - aim_adjust_speed)
+                # No else - holds current position when no keys pressed
 
                 # Skip horn controls for bombardier
                 pitch_pressed = False
