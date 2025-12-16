@@ -196,6 +196,9 @@ HORN_MIN_PITCH_HERCULES = math.radians(2)   # +2 degrees (jaws fully closed)
 # Atlas-specific limits (optimized for scoop-and-lift combat mechanics)
 HORN_MAX_PITCH_ATLAS = math.radians(20)  # +20 degrees (full upward lift)
 HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward ground)
+# Scorpion-specific limits (symmetric ±17° around 20° default for equal claw range)
+HORN_MAX_PITCH_SCORPION = math.radians(37)  # +37 degrees (20 + 17)
+HORN_MIN_PITCH_SCORPION = math.radians(3)   # +3 degrees (20 - 17)
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
 HORN_YAW_SPEED = 1.0  # Radians per second (50% slower for less clipping)
@@ -217,7 +220,7 @@ HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_RHINO, HORN_MIN_PITCH_RHINO),       # 0: rhino
     (HORN_MAX_PITCH, HORN_MIN_PITCH),                   # 1: stag
     (HORN_MAX_PITCH_HERCULES, HORN_MIN_PITCH_HERCULES), # 2: hercules
-    (HORN_MAX_PITCH, HORN_MIN_PITCH),                   # 3: scorpion (uses default)
+    (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 3: scorpion (symmetric ±17° around 20° default)
     (HORN_MAX_PITCH_ATLAS, HORN_MIN_PITCH_ATLAS),       # 4: atlas
     (0.0, 0.0),                                         # 5: bombardier (no horn - uses firing controls)
 ]
@@ -2683,11 +2686,11 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             if dx >= 10:
                 is_horn_tip = 1
         elif horn_type_id == 3:  # Scorpion
-            if abs(dz) > 2:  # Claws
-                if dx >= 1:
+            if abs(dz) > 2:  # Claws (shortened: max dx ~9)
+                if dx >= 7:  # Outer part of claws get tip color
                     is_horn_tip = 1
-            else:  # Tail/stinger
-                if dx >= 1:
+            else:  # Tail/stinger - must be elevated (dy >= 6) to exclude face voxels
+                if dx >= -2 and dy >= 6:
                     is_horn_tip = 1
         elif horn_type_id == 4:  # Atlas
             if dx >= 11:
@@ -2705,11 +2708,11 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         # Very tip detection: for scorpion dual-layer tip coloring only
         is_very_tip = 0
         if horn_type_id == 3:  # Scorpion
-            if abs(dz) > 2:  # Claws
-                if dx >= 12:
+            if abs(dz) > 2:  # Claws (shortened: max dx ~9)
+                if dx >= 8:  # Very tips of claws
                     is_very_tip = 1
-            else:  # Stinger
-                if dx >= 3:
+            else:  # Stinger - must be elevated (dy >= 8) to exclude face voxels
+                if dx >= 0 and dy >= 8:  # Venom bulb and stinger tip only
                     is_very_tip = 1
         # Note: Bombardier antennae/mandibles use horn_tip (not very_tip) for horn prong color
         very_tip_flags.append(is_very_tip)
@@ -8099,7 +8102,7 @@ while window.running:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.43 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.52 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
 
             if window.is_pressed('r'):
                 effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
@@ -8328,7 +8331,7 @@ while window.running:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.43 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.52 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
 
             if window.is_pressed('u'):
                 effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
