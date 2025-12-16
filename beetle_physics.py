@@ -576,6 +576,7 @@ def reset_match():
     global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red
     global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
+    global venom_tip_color_blue, venom_tip_color_red
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -609,6 +610,9 @@ def reset_match():
     venom_cooldown_red = 0.0
     venom_burst_remaining_blue = 0
     venom_burst_remaining_red = 0
+    # Reset venom tip colors to full charge (bright yellow)
+    venom_tip_color_blue = [1.0, 0.9, 0.2]
+    venom_tip_color_red = [1.0, 0.9, 0.2]
 
     # Restore beetle colors from saved window values (in case restart during victory pulse)
     b = window.blue_body_color
@@ -708,6 +712,10 @@ spray_recharge_timer_red = 0.0   # Time until next charge
 STRIPE_LERP_SPEED = 8.0  # How fast stripe color transitions (higher = faster)
 stripe_color_blue = [0.5, 1.0, 0.3]  # Current displayed stripe color (starts at full charge)
 stripe_color_red = [0.5, 1.0, 0.3]   # Current displayed stripe color (starts at full charge)
+
+# Venom tip color interpolation for smooth transitions (scorpion)
+venom_tip_color_blue = [1.0, 0.9, 0.2]  # Current displayed venom tip color (starts at full charge - bright yellow)
+venom_tip_color_red = [1.0, 0.9, 0.2]   # Current displayed venom tip color (starts at full charge - bright yellow)
 
 # Bombardier spray aim angle (vertical tilt)
 SPRAY_AIM_MAX = 0.175  # ~10 degrees in radians
@@ -907,7 +915,7 @@ def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
         target_beetle.vy += 0.05 * leverage_mult
 
         # Strong flip strength (independent of lift)
-        flip_strength = 70.0 * leverage_mult
+        flip_strength = 40.0 * leverage_mult
 
         # Strong pitch torque (flip forward/backward)
         pitch_torque = lever_z * flip_strength
@@ -4177,8 +4185,10 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                     voxel_color = simulation.STAG_HOOK_INTERIOR_BLUE
                 elif is_horn_tip == 1:
                     # Apply color based on tip type
-                    if is_very_tip == 1:  # VERY tips: dark leg tip color
-                        if body_color == simulation.BEETLE_BLUE:
+                    if is_very_tip == 1:  # VERY tips: scorpion uses venom tip, others use leg tip
+                        if horn_type_id == 3:  # Scorpion - use venom tip color (glows with charges)
+                            voxel_color = simulation.VENOM_TIP_BLUE
+                        elif body_color == simulation.BEETLE_BLUE:
                             voxel_color = simulation.LEG_TIP_BLUE
                         elif body_color == simulation.BEETLE_RED:
                             voxel_color = simulation.LEG_TIP_RED
@@ -4681,8 +4691,10 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                     voxel_color = simulation.STAG_HOOK_INTERIOR_RED
                 elif is_horn_tip == 1:
                     # Apply color based on tip type
-                    if is_very_tip == 1:  # VERY tips: dark leg tip color
-                        if body_color == simulation.BEETLE_BLUE:
+                    if is_very_tip == 1:  # VERY tips: scorpion uses venom tip, others use leg tip
+                        if horn_type_id == 3:  # Scorpion - use venom tip color (glows with charges)
+                            voxel_color = simulation.VENOM_TIP_RED
+                        elif body_color == simulation.BEETLE_BLUE:
                             voxel_color = simulation.LEG_TIP_BLUE
                         elif body_color == simulation.BEETLE_RED:
                             voxel_color = simulation.LEG_TIP_RED
@@ -4962,6 +4974,7 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                    vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
                    vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
                    vtype == simulation.STINGER_TIP_BLACK or \
+                   vtype == simulation.VENOM_TIP_BLUE or vtype == simulation.VENOM_TIP_RED or \
                    vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
@@ -4988,6 +5001,7 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                    vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
                    vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
                    vtype == simulation.STINGER_TIP_BLACK or \
+                   vtype == simulation.VENOM_TIP_BLUE or vtype == simulation.VENOM_TIP_RED or \
                    vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
@@ -5019,10 +5033,10 @@ def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_co
                 vtype = simulation.voxel_type[i, j, k]
                 # Check if voxel belongs to target beetle/ball
                 if beetle_color == simulation.BEETLE_BLUE:
-                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_BLUE:
                         found_in_column = 1
                 elif beetle_color == simulation.BEETLE_RED:
-                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_RED:
                         found_in_column = 1
                 elif beetle_color == simulation.BALL:  # Ball
                     if vtype == simulation.BALL:
@@ -5072,7 +5086,8 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                 if vtype != 0:  # Non-empty voxel
                     # Check if this is a horn tip voxel
                     if vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
-                       vtype == simulation.STINGER_TIP_BLACK:
+                       vtype == simulation.STINGER_TIP_BLACK or \
+                       vtype == simulation.VENOM_TIP_BLUE or vtype == simulation.VENOM_TIP_RED:
                         collision_has_horn_tips[None] = 1
 
                     # Check if this is a hook interior voxel
@@ -6433,10 +6448,10 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                 is_beetle = 0
 
                 if beetle_color == simulation.BEETLE_BLUE:
-                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_BLUE:
                         is_beetle = 1
                 else:
-                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_RED:
                         is_beetle = 1
 
                 if is_beetle == 1:
@@ -6468,10 +6483,10 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                     is_beetle = 0
 
                     if beetle_color == simulation.BEETLE_BLUE:
-                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_BLUE:
                             is_beetle = 1
                     else:
-                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_RED:
                             is_beetle = 1
 
                     if is_beetle == 1:
@@ -6503,10 +6518,10 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                         is_beetle = 0
 
                         if beetle_color == simulation.BEETLE_BLUE:
-                            if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                            if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_BLUE:
                                 is_beetle = 1
                         else:
-                            if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK:
+                            if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_RED:
                                 is_beetle = 1
 
                         if is_beetle == 1:
@@ -6982,12 +6997,14 @@ def check_spray_voxel_collision_kernel(target_color: ti.i32, skip_owner: ti.i32)
                         if target_color == 0:  # Target is BLUE
                             if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
                                vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
-                               vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE:
+                               vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE or \
+                               vtype == simulation.VENOM_TIP_BLUE:
                                 hit = 1
                         else:  # Target is RED
                             if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
                                vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
-                               vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                               vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
+                               vtype == simulation.VENOM_TIP_RED:
                                 hit = 1
 
         if hit == 1:
@@ -9575,6 +9592,9 @@ while window.running:
             simulation.blue_stripe_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
             b = window.blue_horn_tip_color
             simulation.blue_horn_tip_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
+            # Scorpion venom tip pulsing
+            if blue_horn_type_id == 3:
+                simulation.blue_venom_tip_color[None] = ti.Vector([min(1.0 * pulse, 1.0), min(0.9 * pulse, 1.0), min(0.2 * pulse, 1.0)])
         else:  # RED winner
             # Pulse all red beetle colors
             r = window.red_body_color
@@ -9587,6 +9607,9 @@ while window.running:
             simulation.red_stripe_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
             r = window.red_horn_tip_color
             simulation.red_horn_tip_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
+            # Scorpion venom tip pulsing
+            if red_horn_type_id == 3:
+                simulation.red_venom_tip_color[None] = ti.Vector([min(1.0 * pulse, 1.0), min(0.9 * pulse, 1.0), min(0.2 * pulse, 1.0)])
     elif match_winner is not None and victory_pulse_timer >= VICTORY_PULSE_DURATION:
         # Reset to normal colors after pulse ends
         if match_winner == "BLUE":
@@ -9796,6 +9819,58 @@ while window.running:
             simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
             s = window.red_stripe_color
             simulation.red_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
+
+    # === SCORPION VENOM TIP GLOW EFFECT ===
+    # Update venom tip color based on charges (smooth lerp like bombardier stripes)
+    if blue_horn_type_id == 3:  # Blue is scorpion
+        # Determine target venom tip color based on charge level
+        if venom_charges_blue == 0:
+            target_r, target_g, target_b = 0.3, 0.3, 0.3  # Gray - depleted
+        elif venom_charges_blue == 1:
+            target_r, target_g, target_b = 0.6, 0.5, 0.1  # Dim yellow
+        elif venom_charges_blue == 2:
+            target_r, target_g, target_b = 0.9, 0.8, 0.15  # Bright yellow
+        else:
+            # Full charge: pulse effect (no lerp, direct pulse)
+            pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
+            target_r = 0.8 + pulse * 0.2
+            target_g = 0.7 + pulse * 0.2
+            target_b = 0.1 + pulse * 0.15
+
+        # Smooth lerp toward target color
+        lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
+        venom_tip_color_blue[0] += (target_r - venom_tip_color_blue[0]) * lerp_factor
+        venom_tip_color_blue[1] += (target_g - venom_tip_color_blue[1]) * lerp_factor
+        venom_tip_color_blue[2] += (target_b - venom_tip_color_blue[2]) * lerp_factor
+
+        # Only update colors if not in victory pulse (victory pulse controls colors)
+        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+            simulation.blue_venom_tip_color[None] = ti.Vector([venom_tip_color_blue[0], venom_tip_color_blue[1], venom_tip_color_blue[2]])
+
+    if red_horn_type_id == 3:  # Red is scorpion
+        # Determine target venom tip color based on charge level
+        if venom_charges_red == 0:
+            target_r, target_g, target_b = 0.3, 0.3, 0.3  # Gray - depleted
+        elif venom_charges_red == 1:
+            target_r, target_g, target_b = 0.6, 0.5, 0.1  # Dim yellow
+        elif venom_charges_red == 2:
+            target_r, target_g, target_b = 0.9, 0.8, 0.15  # Bright yellow
+        else:
+            # Full charge: pulse effect (no lerp, direct pulse)
+            pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
+            target_r = 0.8 + pulse * 0.2
+            target_g = 0.7 + pulse * 0.2
+            target_b = 0.1 + pulse * 0.15
+
+        # Smooth lerp toward target color
+        lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
+        venom_tip_color_red[0] += (target_r - venom_tip_color_red[0]) * lerp_factor
+        venom_tip_color_red[1] += (target_g - venom_tip_color_red[1]) * lerp_factor
+        venom_tip_color_red[2] += (target_b - venom_tip_color_red[2]) * lerp_factor
+
+        # Only update colors if not in victory pulse (victory pulse controls colors)
+        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+            simulation.red_venom_tip_color[None] = ti.Vector([venom_tip_color_red[0], venom_tip_color_red[1], venom_tip_color_red[2]])
 
     # === BEETLE RENDER TIMING ===
     perf_monitor.start('beetle_render')

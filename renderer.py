@@ -167,9 +167,14 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
         color = simulation.blue_horn_tip_color[None]
     elif voxel_type == 32:  # ASSEMBLY_VOXEL_RED_HORN_TIP
         color = simulation.red_horn_tip_color[None]
+    # Scorpion venom tip - glows based on venom charges
+    elif voxel_type == 33:  # VENOM_TIP_BLUE
+        color = simulation.blue_venom_tip_color[None]
+    elif voxel_type == 34:  # VENOM_TIP_RED
+        color = simulation.red_venom_tip_color[None]
 
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
-    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19:  # All beetle parts
+    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34:  # All beetle parts
         shimmer = get_shimmer_from_lut(world_x, world_z)
         color *= shimmer
 

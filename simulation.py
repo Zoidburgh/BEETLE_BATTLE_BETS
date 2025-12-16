@@ -71,6 +71,8 @@ GOAL = 22  # Goal doorway walls (ball mode only)
 SCORE_DIGIT_BLUE = 23  # Blue team floating score digit
 SCORE_DIGIT_RED = 24  # Red team floating score digit
 ASSEMBLY_VOXEL_BALL = 27  # Ball assembly animation voxel
+VENOM_TIP_BLUE = 33  # Blue scorpion venom bulb/stinger tip (glows with charges)
+VENOM_TIP_RED = 34  # Red scorpion venom bulb/stinger tip (glows with charges)
 
 # Score digit flash brightness (1.0 = normal, >1.0 = bright flash)
 blue_score_flash = ti.field(dtype=ti.f32, shape=())
@@ -83,6 +85,7 @@ blue_leg_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 blue_leg_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 blue_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 blue_horn_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_venom_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 
 # Red beetle colors
 red_body_color = ti.Vector.field(3, dtype=ti.f32, shape=())
@@ -90,6 +93,7 @@ red_leg_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 red_leg_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 red_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 red_horn_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_venom_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 
 # Initialize default colors
 blue_body_color[None] = ti.Vector([0.25, 0.55, 0.95])  # Desaturated blue
@@ -97,6 +101,7 @@ blue_leg_color[None] = ti.Vector([0.4, 0.7, 1.0])  # Lighter cyan/blue
 blue_leg_tip_color[None] = ti.Vector([0.0, 0.0, 0.3])  # Very dark blue
 blue_stripe_color[None] = ti.Vector([0.6, 0.9, 1.0])  # Bright cyan
 blue_horn_tip_color[None] = ti.Vector([0.4, 0.75, 1.0])  # Bright electric blue
+blue_venom_tip_color[None] = ti.Vector([1.0, 0.9, 0.2])  # Bright yellow (full venom)
 
 # Initialize score flash to normal brightness
 blue_score_flash[None] = 1.0
@@ -107,6 +112,7 @@ red_leg_color[None] = ti.Vector([1.0, 0.5, 0.3])  # Lighter orange/red
 red_leg_tip_color[None] = ti.Vector([0.3, 0.0, 0.0])  # Very dark red
 red_stripe_color[None] = ti.Vector([0.85, 0.65, 0.2])  # Rich gold/bronze
 red_horn_tip_color[None] = ti.Vector([0.4, 0.1, 0.1])  # Deep crimson
+red_venom_tip_color[None] = ti.Vector([1.0, 0.9, 0.2])  # Bright yellow (full venom)
 
 # Ball colors (for future customization)
 ball_color = ti.Vector.field(3, dtype=ti.f32, shape=())
