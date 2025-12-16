@@ -610,9 +610,9 @@ def reset_match():
     venom_cooldown_red = 0.0
     venom_burst_remaining_blue = 0
     venom_burst_remaining_red = 0
-    # Reset venom tip colors to full charge (bright yellow)
-    venom_tip_color_blue = [1.0, 0.9, 0.2]
-    venom_tip_color_red = [1.0, 0.9, 0.2]
+    # Reset venom tip colors to full charge (bright purple)
+    venom_tip_color_blue = [0.6, 0.2, 0.8]
+    venom_tip_color_red = [0.6, 0.2, 0.8]
 
     # Restore beetle colors from saved window values (in case restart during victory pulse)
     b = window.blue_body_color
@@ -714,8 +714,8 @@ stripe_color_blue = [0.5, 1.0, 0.3]  # Current displayed stripe color (starts at
 stripe_color_red = [0.5, 1.0, 0.3]   # Current displayed stripe color (starts at full charge)
 
 # Venom tip color interpolation for smooth transitions (scorpion)
-venom_tip_color_blue = [1.0, 0.9, 0.2]  # Current displayed venom tip color (starts at full charge - bright yellow)
-venom_tip_color_red = [1.0, 0.9, 0.2]   # Current displayed venom tip color (starts at full charge - bright yellow)
+venom_tip_color_blue = [0.6, 0.2, 0.8]  # Current displayed venom tip color (starts at full charge - bright purple)
+venom_tip_color_red = [0.6, 0.2, 0.8]   # Current displayed venom tip color (starts at full charge - bright purple)
 
 # Bombardier spray aim angle (vertical tilt)
 SPRAY_AIM_MAX = 0.175  # ~10 degrees in radians
@@ -6902,12 +6902,25 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
 
 @ti.kernel
 def update_spray_particles(dt: ti.f32):
-    """Update spray positions and apply gravity"""
+    """Update spray positions and apply gravity, with ground collision inside arena"""
     for idx in range(simulation.num_spray[None]):
         if simulation.spray_lifetime[idx] > 0:
             simulation.spray_vel[idx].y -= 15.0 * dt  # Light gravity
             simulation.spray_pos[idx] += simulation.spray_vel[idx] * dt
             simulation.spray_lifetime[idx] -= dt
+
+            # Ground collision - only inside arena, particles can fall off edge
+            pos = simulation.spray_pos[idx]
+            dist_from_center = ti.sqrt(pos.x * pos.x + pos.z * pos.z)
+            ground_y = RENDER_Y_OFFSET  # 33.0 - ground level in grid space
+
+            if pos.y < ground_y and dist_from_center < ARENA_RADIUS:
+                # Inside arena - stop at ground level
+                simulation.spray_pos[idx].y = ground_y
+                simulation.spray_vel[idx].y = 0.0
+                # Reduce horizontal velocity (friction/splat)
+                simulation.spray_vel[idx].x *= 0.3
+                simulation.spray_vel[idx].z *= 0.3
 
 @ti.kernel
 def cleanup_dead_spray():
@@ -9592,9 +9605,9 @@ while window.running:
             simulation.blue_stripe_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
             b = window.blue_horn_tip_color
             simulation.blue_horn_tip_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
-            # Scorpion venom tip pulsing
+            # Scorpion venom tip pulsing (purple)
             if blue_horn_type_id == 3:
-                simulation.blue_venom_tip_color[None] = ti.Vector([min(1.0 * pulse, 1.0), min(0.9 * pulse, 1.0), min(0.2 * pulse, 1.0)])
+                simulation.blue_venom_tip_color[None] = ti.Vector([min(0.6 * pulse, 1.0), min(0.2 * pulse, 1.0), min(0.8 * pulse, 1.0)])
         else:  # RED winner
             # Pulse all red beetle colors
             r = window.red_body_color
@@ -9607,9 +9620,9 @@ while window.running:
             simulation.red_stripe_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
             r = window.red_horn_tip_color
             simulation.red_horn_tip_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
-            # Scorpion venom tip pulsing
+            # Scorpion venom tip pulsing (purple)
             if red_horn_type_id == 3:
-                simulation.red_venom_tip_color[None] = ti.Vector([min(1.0 * pulse, 1.0), min(0.9 * pulse, 1.0), min(0.2 * pulse, 1.0)])
+                simulation.red_venom_tip_color[None] = ti.Vector([min(0.6 * pulse, 1.0), min(0.2 * pulse, 1.0), min(0.8 * pulse, 1.0)])
     elif match_winner is not None and victory_pulse_timer >= VICTORY_PULSE_DURATION:
         # Reset to normal colors after pulse ends
         if match_winner == "BLUE":
@@ -9823,19 +9836,19 @@ while window.running:
     # === SCORPION VENOM TIP GLOW EFFECT ===
     # Update venom tip color based on charges (smooth lerp like bombardier stripes)
     if blue_horn_type_id == 3:  # Blue is scorpion
-        # Determine target venom tip color based on charge level
+        # Determine target venom tip color based on charge level (dark purple shades)
         if venom_charges_blue == 0:
-            target_r, target_g, target_b = 0.3, 0.3, 0.3  # Gray - depleted
+            target_r, target_g, target_b = 0.2, 0.15, 0.2  # Dark gray-purple - depleted
         elif venom_charges_blue == 1:
-            target_r, target_g, target_b = 0.6, 0.5, 0.1  # Dim yellow
+            target_r, target_g, target_b = 0.3, 0.1, 0.4  # Dark purple
         elif venom_charges_blue == 2:
-            target_r, target_g, target_b = 0.9, 0.8, 0.15  # Bright yellow
+            target_r, target_g, target_b = 0.5, 0.15, 0.65  # Medium purple
         else:
-            # Full charge: pulse effect (no lerp, direct pulse)
+            # Full charge: pulse effect (intense like bombardier)
             pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
-            target_r = 0.8 + pulse * 0.2
-            target_g = 0.7 + pulse * 0.2
-            target_b = 0.1 + pulse * 0.15
+            target_r = 0.35 + pulse * 0.35
+            target_g = 0.1 + pulse * 0.15
+            target_b = 0.45 + pulse * 0.45
 
         # Smooth lerp toward target color
         lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
@@ -9848,19 +9861,19 @@ while window.running:
             simulation.blue_venom_tip_color[None] = ti.Vector([venom_tip_color_blue[0], venom_tip_color_blue[1], venom_tip_color_blue[2]])
 
     if red_horn_type_id == 3:  # Red is scorpion
-        # Determine target venom tip color based on charge level
+        # Determine target venom tip color based on charge level (dark purple shades)
         if venom_charges_red == 0:
-            target_r, target_g, target_b = 0.3, 0.3, 0.3  # Gray - depleted
+            target_r, target_g, target_b = 0.2, 0.15, 0.2  # Dark gray-purple - depleted
         elif venom_charges_red == 1:
-            target_r, target_g, target_b = 0.6, 0.5, 0.1  # Dim yellow
+            target_r, target_g, target_b = 0.3, 0.1, 0.4  # Dark purple
         elif venom_charges_red == 2:
-            target_r, target_g, target_b = 0.9, 0.8, 0.15  # Bright yellow
+            target_r, target_g, target_b = 0.5, 0.15, 0.65  # Medium purple
         else:
-            # Full charge: pulse effect (no lerp, direct pulse)
+            # Full charge: pulse effect (intense like bombardier)
             pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
-            target_r = 0.8 + pulse * 0.2
-            target_g = 0.7 + pulse * 0.2
-            target_b = 0.1 + pulse * 0.15
+            target_r = 0.35 + pulse * 0.35
+            target_g = 0.1 + pulse * 0.15
+            target_b = 0.45 + pulse * 0.45
 
         # Smooth lerp toward target color
         lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)

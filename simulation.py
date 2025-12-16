@@ -101,7 +101,7 @@ blue_leg_color[None] = ti.Vector([0.4, 0.7, 1.0])  # Lighter cyan/blue
 blue_leg_tip_color[None] = ti.Vector([0.0, 0.0, 0.3])  # Very dark blue
 blue_stripe_color[None] = ti.Vector([0.6, 0.9, 1.0])  # Bright cyan
 blue_horn_tip_color[None] = ti.Vector([0.4, 0.75, 1.0])  # Bright electric blue
-blue_venom_tip_color[None] = ti.Vector([1.0, 0.9, 0.2])  # Bright yellow (full venom)
+blue_venom_tip_color[None] = ti.Vector([0.6, 0.2, 0.8])  # Bright purple (full venom)
 
 # Initialize score flash to normal brightness
 blue_score_flash[None] = 1.0
@@ -112,7 +112,7 @@ red_leg_color[None] = ti.Vector([1.0, 0.5, 0.3])  # Lighter orange/red
 red_leg_tip_color[None] = ti.Vector([0.3, 0.0, 0.0])  # Very dark red
 red_stripe_color[None] = ti.Vector([0.85, 0.65, 0.2])  # Rich gold/bronze
 red_horn_tip_color[None] = ti.Vector([0.4, 0.1, 0.1])  # Deep crimson
-red_venom_tip_color[None] = ti.Vector([1.0, 0.9, 0.2])  # Bright yellow (full venom)
+red_venom_tip_color[None] = ti.Vector([0.6, 0.2, 0.8])  # Bright purple (full venom)
 
 # Ball colors (for future customization)
 ball_color = ti.Vector.field(3, dtype=ti.f32, shape=())
