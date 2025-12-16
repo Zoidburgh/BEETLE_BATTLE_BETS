@@ -2020,17 +2020,17 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     if horn_type == "scorpion":
         # SCORPION - Dense, curved claws with thick arms (pedipalps)
         # Arms extend forward and upward from front of body
-        arm_length = 6
+        arm_length = 4  # Shortened from 6 to reduce clipping
 
         # LEFT ARM + CLAW
         # Dense arm that extends forward, upward, and outward
         for i in range(arm_length):
             dx = 2 + i
-            dy_base = 2 + (i // 2)  # Rises from 2 to 4
+            dy_base = 2 + (i // 2)  # Rises from 2 to 3
             dz_base = -(i + 2)  # Extends leftward
 
-            # Thicker 3x3 cross-section near body (first 3 segments), then taper to 2x2
-            if i < 3:
+            # Thicker 3x3 cross-section near body (first 2 segments), then taper to 2x2
+            if i < 2:
                 # 3x3 cross-section for thick base segments attached to body
                 for dy_off in range(-1, 2):
                     for dz_off in range(-1, 2):
@@ -2041,11 +2041,11 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                     for dz_off in range(0, 2):
                         body_voxels.append((dx, dy_base + dy_off, dz_base - dz_off))
 
-        # Left claw - dense curved pincers at end of arm
+        # Left claw - dense curved pincers at end of arm (shortened)
         claw_base_x = 2 + arm_length
         claw_base_z = -(arm_length + 2)
 
-        # Upper pincer - curves down and inward naturally
+        # Upper pincer - curves down and inward naturally (shortened tips)
         upper_pincer = [
             # Base (wide)
             (0, 5, 0), (0, 5, -1), (0, 6, 0), (0, 6, -1),
@@ -2053,16 +2053,13 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             # Mid (curving)
             (1, 5, 0), (1, 5, 1), (1, 4, 0), (1, 4, 1),
             (2, 5, 1), (2, 4, 1), (2, 4, 2),
-            # Curve
-            (3, 4, 2), (3, 4, 3), (3, 3, 2), (3, 3, 3),
-            # Tip (narrower, pointing inward)
-            (4, 4, 3), (4, 3, 3), (4, 3, 4),
-            (5, 3, 4), (5, 3, 5),
+            # Tip (shortened - removed last 2 segments)
+            (3, 4, 2), (3, 3, 2), (3, 3, 3),
         ]
         for offset in upper_pincer:
             body_voxels.append((claw_base_x + offset[0], offset[1], claw_base_z + offset[2]))
 
-        # Lower pincer - curves up and inward naturally
+        # Lower pincer - curves up and inward naturally (shortened tips)
         lower_pincer = [
             # Base (wide) - raised to Y=2 minimum to avoid ground clipping
             (0, 2, 0), (0, 2, -1), (0, 2, 0), (0, 2, -1),
@@ -2070,11 +2067,8 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             # Mid (curving)
             (1, 2, 0), (1, 2, 1), (1, 3, 0), (1, 3, 1),
             (2, 2, 1), (2, 3, 1), (2, 3, 2),
-            # Curve
-            (3, 3, 2), (3, 3, 3), (3, 4, 2), (3, 4, 3),
-            # Tip (narrower, pointing inward)
-            (4, 3, 3), (4, 4, 3), (4, 4, 4),
-            (5, 4, 4), (5, 4, 5),
+            # Tip (shortened - removed last 2 segments)
+            (3, 3, 2), (3, 4, 2), (3, 4, 3),
         ]
         for offset in lower_pincer:
             body_voxels.append((claw_base_x + offset[0], offset[1], claw_base_z + offset[2]))
@@ -2086,8 +2080,8 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             dy_base = 2 + (i // 2)
             dz_base = (i + 2)  # Extends rightward
 
-            # Thicker 3x3 cross-section near body (first 3 segments), then taper to 2x2
-            if i < 3:
+            # Thicker 3x3 cross-section near body (first 2 segments), then taper to 2x2
+            if i < 2:
                 # 3x3 cross-section for thick base segments attached to body
                 for dy_off in range(-1, 2):
                     for dz_off in range(-1, 2):
@@ -8104,15 +8098,18 @@ while window.running:
             # OPTIMIZATION: Use lookup table instead of string comparisons
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
 
+            # Scorpion claws move slower (horn_type_id == 3)
+            base_tilt_speed = HORN_TILT_SPEED * 0.43 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
+
             if window.is_pressed('r'):
-                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_pitch_damping)
+                effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
                 new_pitch = beetle_blue.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                 new_pitch = min(max_pitch_limit, new_pitch)
                 # Only set velocity if horn actually moved (not clamped at max)
                 if abs(new_pitch - beetle_blue.horn_pitch) > 0.001:
                     pitch_speed = effective_speed
             elif window.is_pressed('y'):
-                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_blue.horn_pitch_damping)
+                effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
                 new_pitch = beetle_blue.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                 new_pitch = max(min_pitch_limit, new_pitch)
                 # Only set velocity if horn actually moved (not clamped at min)
@@ -8330,15 +8327,18 @@ while window.running:
             # OPTIMIZATION: Use lookup table instead of string comparisons
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
 
+            # Scorpion claws move slower (horn_type_id == 3)
+            base_tilt_speed = HORN_TILT_SPEED * 0.43 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
+
             if window.is_pressed('u'):
-                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_pitch_damping)
+                effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
                 new_pitch = beetle_red.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                 new_pitch = min(max_pitch_limit, new_pitch)
                 # Only set velocity if horn actually moved (not clamped at max)
                 if abs(new_pitch - beetle_red.horn_pitch) > 0.001:
                     pitch_speed = effective_speed
             elif window.is_pressed('o'):
-                effective_speed = HORN_TILT_SPEED * (1.0 - beetle_red.horn_pitch_damping)
+                effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
                 new_pitch = beetle_red.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                 new_pitch = max(min_pitch_limit, new_pitch)
                 # Only set velocity if horn actually moved (not clamped at min)
