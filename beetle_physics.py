@@ -3344,7 +3344,7 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
     if front_body_height < 8:
         # Body is shorter than horn base - need a substantial bridge
         attach_y_start = front_body_height  # Start at top of thorax
-        attach_y_end = 8  # End at horn base
+        attach_y_end = 7  # End one layer lower to avoid stripe voxels at top
         for attach_y in range(attach_y_start, attach_y_end):
             # Taper the neck: wider at base, narrower at top
             progress = (attach_y - attach_y_start) / float(attach_y_end - attach_y_start) if attach_y_end > attach_y_start else 0
@@ -3408,6 +3408,13 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
             for dy_off in [0, 1]:
                 for dz in [-1, 0]:
                     horn_voxels.append((base_x + dx_off, base_y + dy_off, dz))
+
+    # Fill gap at bottom horn attachment point (right in front of body)
+    # Gap is at x=2-3 where horn meets body
+    for fill_y in [2, 3]:
+        for fill_x in [2, 3]:
+            for dz in [-1, 0]:
+                horn_voxels.append((fill_x, fill_y, dz))
 
     return horn_voxels
 
