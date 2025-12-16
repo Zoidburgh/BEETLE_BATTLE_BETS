@@ -576,7 +576,7 @@ def reset_match():
     global beetle_blue, beetle_red, match_winner, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
     global spray_charges_blue, spray_charges_red, spray_recharge_timer_blue, spray_recharge_timer_red
     global stripe_color_blue, stripe_color_red
-    global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red
+    global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red, prev_spray_aim_blue, prev_spray_aim_red
     global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
     global venom_tip_color_blue, venom_tip_color_red
@@ -603,6 +603,8 @@ def reset_match():
     spray_aim_red = 0.0
     spray_aim_y_blue = 0.0
     spray_aim_y_red = 0.0
+    prev_spray_aim_blue = 0.0
+    prev_spray_aim_red = 0.0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -725,6 +727,8 @@ SPRAY_AIM_MAX = 0.175  # ~10 degrees in radians
 SPRAY_AIM_SPEED = 2.0  # How fast aim adjusts (higher = snappier)
 spray_aim_blue = 0.0   # Current aim angle (-1 to +1, 0 = level)
 spray_aim_red = 0.0    # Current aim angle (-1 to +1, 0 = level)
+prev_spray_aim_blue = 0.0  # Previous frame aim (for interpolation)
+prev_spray_aim_red = 0.0   # Previous frame aim (for interpolation)
 spray_aim_y_blue = 0.0  # Y velocity component for current spray burst (set when spray triggered)
 spray_aim_y_red = 0.0   # Y velocity component for current spray burst (set when spray triggered)
 
@@ -974,8 +978,9 @@ def check_spray_ball_collision():
     for idx in range(num_spray):
         if simulation.spray_lifetime[idx] <= 0:
             continue
-        # Grace period - skip newly spawned spray
-        if simulation.spray_lifetime[idx] > 0.5:
+        # Grace period - skip very fresh particles (first ~0.1 sec)
+        # Works for both spray (starts 0.6-0.9) and venom (starts 1.5-1.8)
+        if simulation.spray_lifetime[idx] > 1.7:
             continue
 
         spray_pos = simulation.spray_pos[idx]
@@ -8023,6 +8028,9 @@ while window.running:
         beetle_red.save_previous_state()
         if beetle_ball.active:
             beetle_ball.save_previous_state()
+        # Save spray aim for interpolation
+        prev_spray_aim_blue = spray_aim_blue
+        prev_spray_aim_red = spray_aim_red
 
         # === INPUT/CONTROLS TIMING START ===
         _t_input_start = time.perf_counter()
@@ -8109,7 +8117,7 @@ while window.running:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.52 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.65 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
 
             if window.is_pressed('r'):
                 effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
@@ -8338,7 +8346,7 @@ while window.running:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.52 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.65 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
 
             if window.is_pressed('u'):
                 effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
@@ -9202,6 +9210,10 @@ while window.running:
     red_render_horn_pitch = lerp_angle(beetle_red.prev_horn_pitch, beetle_red.horn_pitch, alpha)
     red_render_horn_yaw = lerp_angle(beetle_red.prev_horn_yaw, beetle_red.horn_yaw, alpha)
 
+    # Interpolate spray aim for smooth bombardier butt-tilt
+    blue_render_spray_aim = prev_spray_aim_blue + (spray_aim_blue - prev_spray_aim_blue) * alpha
+    red_render_spray_aim = prev_spray_aim_red + (spray_aim_red - prev_spray_aim_red) * alpha
+
     # === ANIMATION TIMING ===
     perf_monitor.start('animation')
 
@@ -9900,11 +9912,11 @@ while window.running:
 
     if beetle_blue.active:
         # Render blue beetle using its own cache
-        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue, butt_wiggle_dir_blue, blue_charge_glow, spray_aim_blue * SPRAY_AIM_MAX)
+        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue, butt_wiggle_dir_blue, blue_charge_glow, blue_render_spray_aim * SPRAY_AIM_MAX)
 
     if beetle_red.active:
         # Render red beetle using its own cache
-        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red, butt_wiggle_dir_red, red_charge_glow, spray_aim_red * SPRAY_AIM_MAX)
+        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red, butt_wiggle_dir_red, red_charge_glow, red_render_spray_aim * SPRAY_AIM_MAX)
 
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
@@ -10083,34 +10095,31 @@ while window.running:
         t = 1.0 - (timer / SCORE_BOUNCE_DURATION)  # t goes 0 -> 1 as animation progresses
 
         # Damped spring parameters - DRAMATIC BUT SMOOTH
-        frequency = 4.0  # Fewer oscillations for smoother feel
-        damping = 2.2    # Moderate damping for smooth settling
+        frequency = 3.5  # Oscillation frequency
+        damping = 2.5    # Damping for smooth settling
 
-        # Initial squash phase (first 12% of animation) - smooth squash
-        if t < 0.12:
-            # Squash down: very wide and flat
-            squash_t = t / 0.12  # 0 -> 1 during squash phase
-            scale_y = 1.0 - 0.88 * math.sin(squash_t * math.pi * 0.5)  # Squash to 0.12
-            scale_x = 1.0 + 1.6 * math.sin(squash_t * math.pi * 0.5)   # Widen to 2.6
-        else:
-            # Spring oscillation phase (remaining 88%)
-            spring_t = (t - 0.12) / 0.88  # Normalize to 0 -> 1
+        # Use a single continuous spring formula with offset to start from squashed
+        # Spring starts from squashed state (scale_y=0.2) and overshoots to tall
+        decay = math.exp(-damping * t)
 
-            # Damped oscillation: exp decay * sin wave
-            decay = math.exp(-damping * spring_t)
-            oscillation = math.sin(frequency * math.pi * spring_t)
+        # Phase-shifted sine so it starts at negative (squashed) and goes positive (tall)
+        # sin(-pi/2) = -1 (squashed), rises through 0 (normal), peaks positive (tall)
+        phase_offset = -math.pi * 0.5
+        oscillation = math.sin(frequency * math.pi * t + phase_offset)
 
-            # Scale Y: starts stretched very tall, oscillates and settles to 1.0
-            # First peak is tall (positive), then oscillates
-            scale_y = 1.0 + 2.5 * decay * oscillation  # Stretch up to 3.5x tall!
+        # Amplitude starts high and decays
+        amplitude_y = 1.8 * decay + 0.8 * (1.0 - t)  # Extra amplitude at start
+        amplitude_x = 0.6 * decay + 0.3 * (1.0 - t)
 
-            # Scale X: inverse of Y for volume preservation (squash & stretch principle)
-            # When tall, get narrower; when short, get wider
-            scale_x = 1.0 - 0.75 * decay * oscillation  # Narrow to 0.25x when tall
+        # Scale Y: oscillates from squashed (-) through normal to tall (+) and settles
+        scale_y = 1.0 + amplitude_y * oscillation
 
-        # Clamp to reasonable values (increased max for more dramatic effect)
-        scale_x = max(0.08, min(3.5, scale_x))
-        scale_y = max(0.08, min(3.5, scale_y))
+        # Scale X: inverse of Y for volume preservation
+        scale_x = 1.0 - amplitude_x * oscillation
+
+        # Clamp to reasonable values
+        scale_x = max(0.15, min(2.5, scale_x))
+        scale_y = max(0.15, min(3.0, scale_y))
 
         return scale_x, scale_y
 
