@@ -737,12 +737,43 @@ venom_recharge_timer_blue = 0.0  # Time until next charge
 venom_recharge_timer_red = 0.0   # Time until next charge
 
 def get_bombardier_rear_position(beetle):
-    """Get world position of bombardier's butt (spray origin)"""
-    # Rear is opposite of facing direction
-    rear_offset = 9.0  # Distance from center to butt tip (further back)
-    rear_x = beetle.x - math.cos(beetle.rotation) * rear_offset
-    rear_z = beetle.z - math.sin(beetle.rotation) * rear_offset
-    rear_y = RENDER_Y_OFFSET + beetle.y - 1.0  # Lower to match butt height
+    """Get world position of bombardier's butt (spray origin)
+
+    Accounts for beetle pitch, roll, and yaw rotations.
+    """
+    # Local position of butt tip (in beetle body coords, facing +X)
+    local_x = -9.0  # Rear of beetle
+    local_y = -1.0  # Lower to match butt height
+    local_z = 0.0   # Centered
+
+    # Apply beetle's full 3D rotation: yaw -> pitch -> roll
+    cos_yaw = math.cos(beetle.rotation)
+    sin_yaw = math.sin(beetle.rotation)
+    cos_pitch = math.cos(beetle.pitch)
+    sin_pitch = math.sin(beetle.pitch)
+    cos_roll = math.cos(beetle.roll)
+    sin_roll = math.sin(beetle.roll)
+
+    # Step 1: Yaw rotation (around Y-axis)
+    temp_x = local_x * cos_yaw - local_z * sin_yaw
+    temp_z = local_x * sin_yaw + local_z * cos_yaw
+    temp_y = local_y
+
+    # Step 2: Pitch rotation (around Z-axis in world space)
+    temp2_x = temp_x * cos_pitch - temp_y * sin_pitch
+    temp2_y = temp_x * sin_pitch + temp_y * cos_pitch
+    temp2_z = temp_z
+
+    # Step 3: Roll rotation (around X-axis in world space)
+    final_x = temp2_x
+    final_y = temp2_y * cos_roll - temp2_z * sin_roll
+    final_z = temp2_y * sin_roll + temp2_z * cos_roll
+
+    # Add beetle world position
+    rear_x = beetle.x + final_x
+    rear_y = RENDER_Y_OFFSET + beetle.y + final_y
+    rear_z = beetle.z + final_z
+
     return rear_x, rear_y, rear_z
 
 def get_scorpion_tail_tip_position(beetle, body_length, back_body_height):
@@ -750,48 +781,56 @@ def get_scorpion_tail_tip_position(beetle, body_length, back_body_height):
 
     The tail pivots at the rear of the body and curves up/over the beetle.
     The stinger tip ends up pointing forward when the tail is raised.
+    Accounts for beetle pitch, roll, and yaw rotations.
     """
     # Tail geometry constants
-    # The tail curves up from pivot, reaches peak around segment 7-9, then descends to tip
-    # Tip is at segment 19, at y_off=3 from pivot base
-    # But the VISUAL tip is higher because the tail curves up first
-    # We model the tip as being at the end of the tail arc
-    tail_length = 19.0  # Distance from pivot to tip along tail
-
-    # The tail's natural curve means the tip sits higher than a straight line would suggest
-    # Peak of tail is at y_off=7, tip descends to y_off=3, but we trace the arc
-    # At rest position, effective tip height accounts for the curved path
     tip_height_at_rest = 11.0  # Height of tip from pivot (tuned to match visual)
+    effective_forward = 15.0  # Horizontal reach of tip from pivot (tuned to match visual)
 
     # Tail pivot in body-local coords (rear of abdomen, at top)
     pivot_local_x = -body_length + 1.0
     pivot_local_y = float(back_body_height)
 
-    # Apply tail rotation to find tip position
-    # tail_rotation_angle: positive = tail up, negative = tail down
+    # Apply tail rotation to find tip position relative to pivot
     tail_angle_rad = math.radians(beetle.tail_rotation_angle)
     cos_tail = math.cos(tail_angle_rad)
     sin_tail = math.sin(tail_angle_rad)
 
-    # The tail extends from pivot and curls over
-    # We calculate tip position as rotating around the pivot
-    effective_forward = 15.0  # Horizontal reach of tip from pivot (tuned to match visual)
-
     rotated_x = effective_forward * cos_tail - tip_height_at_rest * sin_tail
     rotated_y = effective_forward * sin_tail + tip_height_at_rest * cos_tail
 
-    # Tip position in body-local coords
-    tip_local_x = pivot_local_x + rotated_x
-    tip_local_y = pivot_local_y + rotated_y
+    # Tip position in body-local coords (before beetle rotation)
+    local_x = pivot_local_x + rotated_x
+    local_y = pivot_local_y + rotated_y
+    local_z = 0.0  # Tail is centered
 
-    # Transform to world coords using beetle position and rotation
+    # Apply beetle's full 3D rotation: yaw -> pitch -> roll
     cos_yaw = math.cos(beetle.rotation)
     sin_yaw = math.sin(beetle.rotation)
+    cos_pitch = math.cos(beetle.pitch)
+    sin_pitch = math.sin(beetle.pitch)
+    cos_roll = math.cos(beetle.roll)
+    sin_roll = math.sin(beetle.roll)
 
-    # Apply yaw rotation (around Y axis) - beetle faces +X at rotation=0
-    world_x = beetle.x + tip_local_x * cos_yaw
-    world_z = beetle.z + tip_local_x * sin_yaw
-    world_y = RENDER_Y_OFFSET + beetle.y + tip_local_y
+    # Step 1: Yaw rotation (around Y-axis)
+    temp_x = local_x * cos_yaw - local_z * sin_yaw
+    temp_z = local_x * sin_yaw + local_z * cos_yaw
+    temp_y = local_y
+
+    # Step 2: Pitch rotation (around Z-axis in world space)
+    temp2_x = temp_x * cos_pitch - temp_y * sin_pitch
+    temp2_y = temp_x * sin_pitch + temp_y * cos_pitch
+    temp2_z = temp_z
+
+    # Step 3: Roll rotation (around X-axis in world space)
+    final_x = temp2_x
+    final_y = temp2_y * cos_roll - temp2_z * sin_roll
+    final_z = temp2_y * sin_roll + temp2_z * cos_roll
+
+    # Add beetle world position
+    world_x = beetle.x + final_x
+    world_y = RENDER_Y_OFFSET + beetle.y + final_y
+    world_z = beetle.z + final_z
 
     return world_x, world_y, world_z
 
@@ -826,6 +865,10 @@ def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
     spray_vx = simulation.spray_vel[spray_idx][0]
     spray_vy = simulation.spray_vel[spray_idx][1]
     spray_vz = simulation.spray_vel[spray_idx][2]
+    spray_color = simulation.spray_color[spray_idx]
+
+    # Detect venom (yellow: R > G) vs bombardier spray (green: G > R)
+    is_venom = spray_color[0] > spray_color[1]
 
     # Calculate push direction (spray velocity direction)
     speed = math.sqrt(spray_vx*spray_vx + spray_vz*spray_vz)
@@ -853,35 +896,54 @@ def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
     lever_dist = math.sqrt(lever_x*lever_x + lever_z*lever_z)
     leverage_mult = 1.0 + (lever_dist / 10.0)  # Bonus for off-center hits
 
-    # === HORIZONTAL PUSH ===
-    push_force = SPRAY_PUSH_FORCE * leverage_mult
-    target_beetle.vx += push_dir_x * push_force
-    target_beetle.vz += push_dir_z * push_force
+    if is_venom:
+        # === VENOM: Low push, high lift and flip ===
+        # Minimal horizontal push (venom destabilizes, doesn't push)
+        push_force = SPRAY_PUSH_FORCE * 0.15 * leverage_mult
+        target_beetle.vx += push_dir_x * push_force
+        target_beetle.vz += push_dir_z * push_force
 
-    # === YAW TORQUE (horizontal spin) ===
-    # Cross product: lever × push_dir gives spin direction
-    # (lever_x, lever_z) × (push_x, push_z) = lever_x * push_z - lever_z * push_x
-    yaw_torque = (lever_x * push_dir_z - lever_z * push_dir_x) * push_force * 0.15
-    target_beetle.angular_velocity += yaw_torque / target_beetle.moment_of_inertia
+        # Minimal vertical lift
+        target_beetle.vy += 0.05 * leverage_mult
 
-    # === VERTICAL LIFT (based on spray's vertical velocity) ===
-    # Spray coming from below (positive vy) lifts the beetle
-    lift_force = max(0.0, spray_vy * 0.3) * leverage_mult
-    target_beetle.vy += lift_force + 3.0  # Base pop + lift from spray angle
+        # Strong flip strength (independent of lift)
+        flip_strength = 70.0 * leverage_mult
 
-    # === PITCH TORQUE (nose up/down from off-center vertical hit) ===
-    # Hit in front (+Z in beetle local) with upward force = nose up
-    # Hit in back (-Z) with upward force = nose down
-    pitch_torque = lever_z * lift_force * 2.0
-    target_beetle.pitch_velocity += pitch_torque / target_beetle.pitch_inertia
+        # Strong pitch torque (flip forward/backward)
+        pitch_torque = lever_z * flip_strength
+        target_beetle.pitch_velocity += pitch_torque / target_beetle.pitch_inertia
 
-    # === ROLL TORQUE (side-to-side tilt from off-center hit) ===
-    # Hit on right (+X) with upward force = roll left
-    roll_torque = lever_x * lift_force * 2.0
-    target_beetle.roll_velocity += roll_torque / target_beetle.roll_inertia
+        # Strong roll torque (flip side to side)
+        roll_torque = lever_x * flip_strength
+        target_beetle.roll_velocity += roll_torque / target_beetle.roll_inertia
+
+        # Moderate yaw spin
+        yaw_torque = (lever_x * push_dir_z - lever_z * push_dir_x) * flip_strength * 0.02
+        target_beetle.angular_velocity += yaw_torque / target_beetle.moment_of_inertia
+    else:
+        # === BOMBARDIER SPRAY: Strong push, moderate flip ===
+        # Strong horizontal push
+        push_force = SPRAY_PUSH_FORCE * leverage_mult
+        target_beetle.vx += push_dir_x * push_force
+        target_beetle.vz += push_dir_z * push_force
+
+        # Yaw torque (horizontal spin)
+        yaw_torque = (lever_x * push_dir_z - lever_z * push_dir_x) * push_force * 0.15
+        target_beetle.angular_velocity += yaw_torque / target_beetle.moment_of_inertia
+
+        # Vertical lift (based on spray's vertical velocity)
+        lift_force = max(0.0, spray_vy * 0.3) * leverage_mult
+        target_beetle.vy += lift_force + 3.0
+
+        # Pitch torque (nose up/down)
+        pitch_torque = lever_z * lift_force * 2.0
+        target_beetle.pitch_velocity += pitch_torque / target_beetle.pitch_inertia
+
+        # Roll torque (side-to-side tilt)
+        roll_torque = lever_x * lift_force * 2.0
+        target_beetle.roll_velocity += roll_torque / target_beetle.roll_inertia
 
     # Spawn mini explosion at hit position with spray's color
-    spray_color = simulation.spray_color[spray_idx]
     spawn_spray_explosion(hit_x, hit_y, hit_z, spray_color[0], spray_color[1], spray_color[2])
 
     # Kill the spray particle
