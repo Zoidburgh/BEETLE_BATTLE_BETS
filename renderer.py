@@ -272,17 +272,26 @@ def extract_spray_particles():
             spray_pos = simulation.spray_pos[idx]
             voxel_positions[write_idx] = spray_pos
 
-            # Get color directly from spray (bright toxic green)
+            # Get color directly from spray
             base_color = simulation.spray_color[idx]
+            lifetime = simulation.spray_lifetime[idx]
+
+            # Detect venom (yellow: R > G) vs spray (green: G > R)
+            is_venom = base_color[0] > base_color[1]  # Yellow has R > G
 
             # Calculate alpha fade based on remaining lifetime
-            lifetime = simulation.spray_lifetime[idx]
+            alpha = 1.0
             if lifetime < 0.3:
                 # Fade out in last 0.3 seconds
                 alpha = lifetime / 0.3
-                voxel_colors[write_idx] = base_color * alpha
-            else:
-                voxel_colors[write_idx] = base_color
+
+            # Calculate glow multiplier for venom
+            glow = 1.0
+            if is_venom:
+                # Boost brightness for glow (values > 1.0 create bloom)
+                glow = 1.3 + 0.4 * ti.sin(lifetime * 20.0)  # Pulsing glow
+
+            voxel_colors[write_idx] = base_color * alpha * glow
 
             # Set slightly smaller radius for spray particles (same as debris)
             voxel_radii[write_idx] = DEBRIS_RADIUS

@@ -574,6 +574,8 @@ def reset_match():
     global spray_charges_blue, spray_charges_red, spray_recharge_timer_blue, spray_recharge_timer_red
     global stripe_color_blue, stripe_color_red
     global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red
+    global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
+    global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -597,6 +599,16 @@ def reset_match():
     spray_aim_red = 0.0
     spray_aim_y_blue = 0.0
     spray_aim_y_red = 0.0
+
+    # Reset venom charges for scorpion beetles
+    venom_charges_blue = VENOM_MAX_CHARGES
+    venom_charges_red = VENOM_MAX_CHARGES
+    venom_recharge_timer_blue = 0.0
+    venom_recharge_timer_red = 0.0
+    venom_cooldown_blue = 0.0
+    venom_cooldown_red = 0.0
+    venom_burst_remaining_blue = 0
+    venom_burst_remaining_red = 0
 
     # Restore beetle colors from saved window values (in case restart during victory pulse)
     b = window.blue_body_color
@@ -705,6 +717,25 @@ spray_aim_red = 0.0    # Current aim angle (-1 to +1, 0 = level)
 spray_aim_y_blue = 0.0  # Y velocity component for current spray burst (set when spray triggered)
 spray_aim_y_red = 0.0   # Y velocity component for current spray burst (set when spray triggered)
 
+# Scorpion venom attack state (uses same spray particle system)
+VENOM_COOLDOWN = 0.4  # Seconds between venom shots
+VENOM_BURST_PARTICLES = 20  # Particles per venom burst
+VENOM_PARTICLES_PER_FRAME = 3  # Particles spawned per frame (faster drip burst)
+VENOM_SPEED = 28.0  # Venom particle velocity (slow drip, not a spray)
+VENOM_MAX_CHARGES = 3  # Maximum venom charges
+VENOM_RECHARGE_TIME = 5.0  # Seconds to recharge 1 charge
+
+venom_cooldown_blue = 0.0  # Time until blue scorpion can shoot again
+venom_cooldown_red = 0.0   # Time until red scorpion can shoot again
+venom_burst_remaining_blue = 0  # Particles left in blue's current burst
+venom_burst_remaining_red = 0   # Particles left in red's current burst
+venom_burst_dir_blue = (0.0, 0.0)  # Blue's venom direction (x, z)
+venom_burst_dir_red = (0.0, 0.0)   # Red's venom direction (x, z)
+venom_charges_blue = 3  # Current venom charges for blue
+venom_charges_red = 3   # Current venom charges for red
+venom_recharge_timer_blue = 0.0  # Time until next charge
+venom_recharge_timer_red = 0.0   # Time until next charge
+
 def get_bombardier_rear_position(beetle):
     """Get world position of bombardier's butt (spray origin)"""
     # Rear is opposite of facing direction
@@ -713,6 +744,68 @@ def get_bombardier_rear_position(beetle):
     rear_z = beetle.z - math.sin(beetle.rotation) * rear_offset
     rear_y = RENDER_Y_OFFSET + beetle.y - 1.0  # Lower to match butt height
     return rear_x, rear_y, rear_z
+
+def get_scorpion_tail_tip_position(beetle, body_length, back_body_height):
+    """Get world position of scorpion's tail stinger tip (venom origin)
+
+    The tail pivots at the rear of the body and curves up/over the beetle.
+    The stinger tip ends up pointing forward when the tail is raised.
+    """
+    # Tail geometry constants
+    # The tail curves up from pivot, reaches peak around segment 7-9, then descends to tip
+    # Tip is at segment 19, at y_off=3 from pivot base
+    # But the VISUAL tip is higher because the tail curves up first
+    # We model the tip as being at the end of the tail arc
+    tail_length = 19.0  # Distance from pivot to tip along tail
+
+    # The tail's natural curve means the tip sits higher than a straight line would suggest
+    # Peak of tail is at y_off=7, tip descends to y_off=3, but we trace the arc
+    # At rest position, effective tip height accounts for the curved path
+    tip_height_at_rest = 11.0  # Height of tip from pivot (tuned to match visual)
+
+    # Tail pivot in body-local coords (rear of abdomen, at top)
+    pivot_local_x = -body_length + 1.0
+    pivot_local_y = float(back_body_height)
+
+    # Apply tail rotation to find tip position
+    # tail_rotation_angle: positive = tail up, negative = tail down
+    tail_angle_rad = math.radians(beetle.tail_rotation_angle)
+    cos_tail = math.cos(tail_angle_rad)
+    sin_tail = math.sin(tail_angle_rad)
+
+    # The tail extends from pivot and curls over
+    # We calculate tip position as rotating around the pivot
+    effective_forward = 15.0  # Horizontal reach of tip from pivot (tuned to match visual)
+
+    rotated_x = effective_forward * cos_tail - tip_height_at_rest * sin_tail
+    rotated_y = effective_forward * sin_tail + tip_height_at_rest * cos_tail
+
+    # Tip position in body-local coords
+    tip_local_x = pivot_local_x + rotated_x
+    tip_local_y = pivot_local_y + rotated_y
+
+    # Transform to world coords using beetle position and rotation
+    cos_yaw = math.cos(beetle.rotation)
+    sin_yaw = math.sin(beetle.rotation)
+
+    # Apply yaw rotation (around Y axis) - beetle faces +X at rotation=0
+    world_x = beetle.x + tip_local_x * cos_yaw
+    world_z = beetle.z + tip_local_x * sin_yaw
+    world_y = RENDER_Y_OFFSET + beetle.y + tip_local_y
+
+    return world_x, world_y, world_z
+
+def get_scorpion_venom_direction(beetle):
+    """Get direction vector for venom shot from scorpion tail tip.
+
+    The venom shoots forward (toward where the stinger points), which is
+    approximately forward from the beetle but angled based on tail position.
+    """
+    # Venom shoots in the direction the beetle is facing
+    # (the stinger tip points forward over the head)
+    dir_x = math.cos(beetle.rotation)
+    dir_z = math.sin(beetle.rotation)
+    return dir_x, dir_z
 
 def process_spray_collisions(target_beetle, target_color, skip_owner):
     """Run GPU kernel to check spray-voxel collisions, then process hits. Returns list of (idx, hit_x, hit_y, hit_z)."""
@@ -787,8 +880,9 @@ def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
     roll_torque = lever_x * lift_force * 2.0
     target_beetle.roll_velocity += roll_torque / target_beetle.roll_inertia
 
-    # Spawn mini explosion at hit position
-    spawn_spray_explosion(hit_x, hit_y, hit_z)
+    # Spawn mini explosion at hit position with spray's color
+    spray_color = simulation.spray_color[spray_idx]
+    spawn_spray_explosion(hit_x, hit_y, hit_z, spray_color[0], spray_color[1], spray_color[2])
 
     # Kill the spray particle
     simulation.spray_lifetime[spray_idx] = 0
@@ -845,8 +939,9 @@ def check_spray_ball_collision():
             beetle_ball.pitch_velocity += push_x * spin_strength    # Pitch from x-push
             beetle_ball.roll_velocity += push_y * spin_strength     # Roll from y-push
 
-            # Spawn explosion and kill spray
-            spawn_spray_explosion(spray_pos[0], spray_pos[1], spray_pos[2])
+            # Spawn explosion and kill spray (use spray's color)
+            spray_color = simulation.spray_color[idx]
+            spawn_spray_explosion(spray_pos[0], spray_pos[1], spray_pos[2], spray_color[0], spray_color[1], spray_color[2])
             simulation.spray_lifetime[idx] = 0
 
 # Goal celebration state (scored-on beetle explodes, then winner confetti/flash)
@@ -6684,11 +6779,15 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
                       speed: ti.f32,
                       owner: ti.i32,
                       num_particles: ti.i32,
-                      aim_y: ti.f32):
-    """Spawn spray particles in cone from bombardier rear
+                      aim_y: ti.f32,
+                      lifetime: ti.f32,
+                      color_r: ti.f32, color_g: ti.f32, color_b: ti.f32):
+    """Spawn spray particles in cone from origin point
 
     Args:
         aim_y: Vertical velocity component based on aim angle (positive = up, negative = down)
+        lifetime: Base lifetime for particles (actual = lifetime + random * 0.3)
+        color_r, color_g, color_b: Base RGB color for particles
     """
     for i in range(num_particles):
         idx = ti.atomic_add(simulation.num_spray[None], 1)
@@ -6718,10 +6817,10 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
             simulation.spray_vel[idx] = ti.math.vec3(final_x * particle_speed,
                                                       15.0 + aim_y + ti.random() * 5.0,  # Upward arc + 2deg base offset + aim adjustment
                                                       final_z * particle_speed)
-            # Bright toxic green color with slight variation
-            green_var = 0.9 + ti.random() * 0.2
-            simulation.spray_color[idx] = ti.math.vec3(0.2 * green_var, 1.0 * green_var, 0.3 * green_var)
-            simulation.spray_lifetime[idx] = 0.6 + ti.random() * 0.3  # 0.6-0.9 sec
+            # Apply color with slight variation
+            color_var = 0.9 + ti.random() * 0.2
+            simulation.spray_color[idx] = ti.math.vec3(color_r * color_var, color_g * color_var, color_b * color_var)
+            simulation.spray_lifetime[idx] = lifetime + ti.random() * 0.3
             simulation.spray_owner[idx] = owner
 
 @ti.kernel
@@ -6753,7 +6852,8 @@ def cleanup_dead_spray():
     simulation.num_spray[None] = write_idx
 
 @ti.kernel
-def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32):
+def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
+                          color_r: ti.f32, color_g: ti.f32, color_b: ti.f32):
     """Explosion when spray hits beetle - small particles that spread out"""
     for i in range(16):  # 16 small particles
         idx = ti.atomic_add(simulation.num_debris[None], 1)
@@ -6767,9 +6867,9 @@ def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32):
                 17.0 + ti.random() * 34.0,  # 70% higher pop
                 ti.sin(angle) * speed
             )
-            # Dark green color (toxic acid look)
-            green_var = 0.7 + ti.random() * 0.3
-            simulation.debris_material[idx] = ti.math.vec3(0.1 * green_var, 0.5 * green_var, 0.08 * green_var)
+            # Use passed color darkened slightly for explosion
+            color_var = 0.7 + ti.random() * 0.3
+            simulation.debris_material[idx] = ti.math.vec3(color_r * color_var * 0.6, color_g * color_var * 0.6, color_b * color_var * 0.6)
             simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.2  # 0.2-0.4s
 
 @ti.kernel
@@ -6788,8 +6888,11 @@ def check_spray_voxel_collision_kernel(target_color: ti.i32, skip_owner: ti.i32)
         # Skip dead particles
         if simulation.spray_lifetime[idx] <= 0.0:
             continue
-        # Grace period - particles need 0.1+ sec to travel (lifetime starts at 0.6-0.9)
-        if simulation.spray_lifetime[idx] > 0.5:
+        # Grace period - skip very fresh particles (first ~0.05 sec)
+        # Works for both spray (starts 0.6-0.9) and venom (starts 1.5-1.8)
+        # Fresh spray: lifetime > 0.55, Fresh venom: lifetime > 1.45
+        # We skip if lifetime is within 0.1 of max possible (1.8)
+        if simulation.spray_lifetime[idx] > 1.7:
             continue
 
         # Get spray position
@@ -7627,6 +7730,13 @@ clear_shadow_layer(int(RENDER_Y_OFFSET), 0)  # Clear the warm-up shadow so it do
 # Victory confetti kernel (triggered on match win)
 spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
 
+# Spray/venom kernels (bombardier and scorpion attacks)
+spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 50.0, 0, 1, 0.0, 0.6, 0.2, 1.0, 0.3)
+update_spray_particles(0.016)
+check_spray_voxel_collision_kernel(0, 0)
+cleanup_dead_spray()
+spawn_spray_explosion(0.0, 0.0, -100.0, 0.2, 1.0, 0.3)
+
 # Sync GPU to ensure all warm-up compilations complete
 ti.sync()
 
@@ -7936,7 +8046,18 @@ while window.running:
                     if beetle_blue.tail_rotation_angle < TAIL_MAX_UP:
                         beetle_blue.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
                         beetle_blue.tail_rotation_angle = min(TAIL_MAX_UP, beetle_blue.tail_rotation_angle)
-                # B key reserved for future venom attack
+
+                # B = Venom shot from tail tip
+                if window.is_pressed('b') and venom_cooldown_blue <= 0 and venom_charges_blue > 0:
+                    # Get direction for venom shot
+                    dir_x, dir_z = get_scorpion_venom_direction(beetle_blue)
+
+                    # Start venom burst (position calculated when spawning particles)
+                    venom_burst_remaining_blue = VENOM_BURST_PARTICLES
+                    venom_burst_dir_blue = (dir_x, dir_z)
+                    venom_cooldown_blue = VENOM_COOLDOWN
+                    venom_charges_blue -= 1
+
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -8151,7 +8272,18 @@ while window.running:
                     if beetle_red.tail_rotation_angle < TAIL_MAX_UP:
                         beetle_red.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
                         beetle_red.tail_rotation_angle = min(TAIL_MAX_UP, beetle_red.tail_rotation_angle)
-                # M key reserved for future venom attack
+
+                # M = Venom shot from tail tip
+                if window.is_pressed('m') and venom_cooldown_red <= 0 and venom_charges_red > 0:
+                    # Get direction for venom shot
+                    dir_x, dir_z = get_scorpion_venom_direction(beetle_red)
+
+                    # Start venom burst (position calculated when spawning particles)
+                    venom_burst_remaining_red = VENOM_BURST_PARTICLES
+                    venom_burst_dir_red = (dir_x, dir_z)
+                    venom_cooldown_red = VENOM_COOLDOWN
+                    venom_charges_red -= 1
+
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
             else:
@@ -8398,7 +8530,8 @@ while window.running:
             spawn_spray_burst(rear_x, rear_y, rear_z,
                               spray_burst_dir_blue[0], spray_burst_dir_blue[1],
                               spray_burst_angle_blue,
-                              SPRAY_SPEED, 0, particles_this_frame, spray_aim_y_blue)
+                              SPRAY_SPEED, 0, particles_this_frame, spray_aim_y_blue, 0.6,
+                              0.2, 1.0, 0.3)  # Green
             spray_burst_remaining_blue -= particles_this_frame
 
         # Spawn spray burst particles for red beetle
@@ -8408,8 +8541,63 @@ while window.running:
             spawn_spray_burst(rear_x, rear_y, rear_z,
                               spray_burst_dir_red[0], spray_burst_dir_red[1],
                               spray_burst_angle_red,
-                              SPRAY_SPEED, 1, particles_this_frame, spray_aim_y_red)
+                              SPRAY_SPEED, 1, particles_this_frame, spray_aim_y_red, 0.6,
+                              0.2, 1.0, 0.3)  # Green
             spray_burst_remaining_red -= particles_this_frame
+
+        # === VENOM PARTICLE SYSTEM (SCORPION) ===
+        # Decrement venom cooldowns
+        venom_cooldown_blue = max(0.0, venom_cooldown_blue - PHYSICS_TIMESTEP)
+        venom_cooldown_red = max(0.0, venom_cooldown_red - PHYSICS_TIMESTEP)
+
+        # Recharge venom charges over time
+        if venom_charges_blue < VENOM_MAX_CHARGES:
+            venom_recharge_timer_blue += PHYSICS_TIMESTEP
+            if venom_recharge_timer_blue >= VENOM_RECHARGE_TIME:
+                venom_charges_blue += 1
+                venom_recharge_timer_blue = 0.0
+        else:
+            venom_recharge_timer_blue = 0.0
+
+        if venom_charges_red < VENOM_MAX_CHARGES:
+            venom_recharge_timer_red += PHYSICS_TIMESTEP
+            if venom_recharge_timer_red >= VENOM_RECHARGE_TIME:
+                venom_charges_red += 1
+                venom_recharge_timer_red = 0.0
+        else:
+            venom_recharge_timer_red = 0.0
+
+        # Spawn venom burst particles for blue scorpion
+        if venom_burst_remaining_blue > 0 and beetle_blue.active and beetle_blue.horn_type_id == 3:
+            particles_this_frame = min(VENOM_PARTICLES_PER_FRAME, venom_burst_remaining_blue)
+            tip_x, tip_y, tip_z = get_scorpion_tail_tip_position(
+                beetle_blue,
+                window.blue_body_length_value,
+                window.blue_back_body_height_value
+            )
+            # Venom drips forward and falls (aim_y = -28 for steep downward drip)
+            spawn_spray_burst(tip_x, tip_y, tip_z,
+                              venom_burst_dir_blue[0], venom_burst_dir_blue[1],
+                              0.0,  # No angle offset
+                              VENOM_SPEED, 0, particles_this_frame, -28.0, 1.5,
+                              1.0, 0.9, 0.1)  # Bright yellow
+            venom_burst_remaining_blue -= particles_this_frame
+
+        # Spawn venom burst particles for red scorpion
+        if venom_burst_remaining_red > 0 and beetle_red.active and beetle_red.horn_type_id == 3:
+            particles_this_frame = min(VENOM_PARTICLES_PER_FRAME, venom_burst_remaining_red)
+            tip_x, tip_y, tip_z = get_scorpion_tail_tip_position(
+                beetle_red,
+                window.red_body_length_value,
+                window.red_back_body_height_value
+            )
+            # Venom drips forward and falls (aim_y = -28 for steep downward drip)
+            spawn_spray_burst(tip_x, tip_y, tip_z,
+                              venom_burst_dir_red[0], venom_burst_dir_red[1],
+                              0.0,  # No angle offset
+                              VENOM_SPEED, 1, particles_this_frame, -28.0, 1.5,
+                              1.0, 0.9, 0.1)  # Bright yellow
+            venom_burst_remaining_red -= particles_this_frame
 
         # Update spray particles (physics, aging)
         if simulation.num_spray[None] > 0:
