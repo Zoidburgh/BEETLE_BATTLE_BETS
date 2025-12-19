@@ -9,7 +9,31 @@ import renderer
 import time
 import math
 import random
+import os
 from collections import deque
+
+# Add DLL directory for Steam networking (must be before network import)
+os.add_dll_directory(os.getcwd())
+
+# Import network module (Steam P2P via py_steam_net)
+try:
+    from network import NetworkManager, STEAM_AVAILABLE
+    NETWORK_AVAILABLE = STEAM_AVAILABLE
+except ImportError:
+    NETWORK_AVAILABLE = False
+    print("[Game] Network module not available - online play disabled")
+
+# ============================================================================
+# GAME STATES (for menu, lobby, and online play)
+# ============================================================================
+GAME_STATE_MENU = "menu"                    # Main menu
+GAME_STATE_LOCAL_PLAY = "local_play"        # Local 2-player (current default)
+GAME_STATE_LOBBY_HOST = "lobby_host"        # Hosting, waiting for opponent
+GAME_STATE_LOBBY_JOIN = "lobby_join"        # Entering lobby ID to join
+GAME_STATE_LOBBY_CONNECTING = "lobby_conn"  # Connecting to lobby
+GAME_STATE_LOBBY_WAITING = "lobby_wait"     # In lobby, selecting beetles
+GAME_STATE_ONLINE_PLAY = "online_play"      # Playing online match
+GAME_STATE_VICTORY = "victory"              # Match ended, showing winner
 
 # ============================================================================
 # PERFORMANCE MONITORING SYSTEM
@@ -392,6 +416,15 @@ class InputBuffer:
 
 # Global input buffer instance (used by main loop)
 input_buffer = InputBuffer(delay_frames=0)  # 0 delay for local play
+
+# ============================================================================
+# NETWORK STATE (for online play)
+# ============================================================================
+network_manager = None          # NetworkManager instance (created when hosting/joining)
+game_state = GAME_STATE_LOCAL_PLAY  # Start in local play mode (preserves current behavior)
+local_player_id = 0             # 0 = blue/host, 1 = red/guest
+lobby_id_input = ""             # Text input for joining lobby by ID
+network_error_msg = ""          # Error message to display
 
 # Edge tipping constants
 EDGE_TIPPING_STRENGTH = 0.45  # Force multiplier per over-edge voxel
@@ -8030,6 +8063,11 @@ while window.running:
     MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 3  # ~50ms worth of simulation
     accumulator = min(accumulator, MAX_ACCUMULATOR)
 
+    # === NETWORK LOBBY POLLING (check for opponent join/leave) ===
+    # Must poll even in lobby states to receive callbacks
+    if network_manager and game_state in [GAME_STATE_LOBBY_HOST, GAME_STATE_LOBBY_CONNECTING, GAME_STATE_LOBBY_WAITING]:
+        network_manager.poll_messages(None)  # No input buffer during lobby
+
     # === CAMERA TIMING ===
     perf_monitor.start('camera')
 
@@ -8186,14 +8224,37 @@ while window.running:
     for key in _physics_timing:
         _physics_timing[key] = 0.0
 
+    # === NETWORK POLLING (must happen every frame) ===
+    if network_manager and game_state == GAME_STATE_ONLINE_PLAY:
+        network_manager.poll_messages(input_buffer)
+        # Send ping periodically for latency measurement
+        if physics_frame % 60 == 0:  # Once per second
+            network_manager.send_ping()
+
     # Read inputs ONCE per frame using abstraction layer (enables networking + controller support later)
     # Store in input buffer for potential network sync
-    frame_blue_inputs = get_local_inputs(window, 'blue')
-    frame_red_inputs = get_local_inputs(window, 'red')
-
-    # Store inputs in buffer (for network mode, these get sent/received)
-    input_buffer.add_local(frame_blue_inputs)
-    input_buffer.add_remote(input_buffer.current_frame, frame_red_inputs)  # In local mode, red is also "local"
+    if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
+        # ONLINE MODE: Only read inputs for our local beetle
+        if local_player_id == 0:
+            # We are host (blue) - read blue inputs locally
+            frame_blue_inputs = get_local_inputs(window, 'blue')
+            frame_red_inputs = 0  # Will come from network
+            input_buffer.add_local(frame_blue_inputs)
+            # Send our inputs to opponent
+            network_manager.send_input(input_buffer.current_frame, frame_blue_inputs)
+        else:
+            # We are guest (red) - read red inputs locally
+            frame_blue_inputs = 0  # Will come from network
+            frame_red_inputs = get_local_inputs(window, 'red')
+            input_buffer.add_local(frame_red_inputs)  # Local stores OUR inputs
+            # Send our inputs to opponent
+            network_manager.send_input(input_buffer.current_frame, frame_red_inputs)
+    else:
+        # LOCAL MODE: Read both players from keyboard
+        frame_blue_inputs = get_local_inputs(window, 'blue')
+        frame_red_inputs = get_local_inputs(window, 'red')
+        input_buffer.add_local(frame_blue_inputs)
+        input_buffer.add_remote(input_buffer.current_frame, frame_red_inputs)
 
     # Get delayed inputs for physics (delay=0 for local play, delay=4 for network)
     blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
@@ -10359,6 +10420,161 @@ while window.running:
     # HUD
     window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.95)
     window.GUI.text(f"FPS: {actual_fps:.0f}")
+
+    # === NETWORK / ONLINE PLAY SECTION ===
+    if NETWORK_AVAILABLE:
+        window.GUI.text("")
+
+        # Show different UI based on game state
+        if game_state == GAME_STATE_LOCAL_PLAY:
+            # Local play mode - show option to go online
+            window.GUI.text("=== MULTIPLAYER ===")
+            if window.GUI.button("Host Online Game"):
+                game_state = GAME_STATE_LOBBY_HOST
+                network_manager = NetworkManager()
+                if network_manager.init():
+                    network_manager.create_lobby("public", 2)
+                    network_error_msg = ""
+                else:
+                    network_error_msg = "Failed to init Steam"
+                    game_state = GAME_STATE_LOCAL_PLAY
+                    network_manager = None
+
+            if window.GUI.button("Join Online Game"):
+                game_state = GAME_STATE_LOBBY_JOIN
+                lobby_id_input = ""
+                network_error_msg = ""
+
+        elif game_state == GAME_STATE_LOBBY_HOST:
+            # Hosting - show lobby ID and wait for opponent
+            window.GUI.text("=== HOSTING GAME ===")
+            if network_manager and network_manager.lobby_id:
+                window.GUI.text(f"Lobby ID: {network_manager.lobby_id}")
+                window.GUI.text("(Share this with your friend)")
+            else:
+                window.GUI.text("Creating lobby...")
+
+            window.GUI.text(f"Status: {network_manager.get_status() if network_manager else 'Error'}")
+
+            # Check if opponent joined
+            if network_manager and network_manager.connected:
+                window.GUI.text("Opponent connected!")
+                if window.GUI.button("START MATCH"):
+                    # Switch to online play mode
+                    game_state = GAME_STATE_ONLINE_PLAY
+                    input_buffer.is_network_mode = True
+                    input_buffer.delay = 4  # 4 frame delay for network
+                    input_buffer.reset()
+                    local_player_id = 0  # Host is blue
+                    network_manager.send_ready()
+                    reset_match()
+
+            if window.GUI.button("Cancel"):
+                if network_manager:
+                    network_manager.shutdown()
+                    network_manager = None
+                game_state = GAME_STATE_LOCAL_PLAY
+
+        elif game_state == GAME_STATE_LOBBY_JOIN:
+            # Joining - show input for lobby ID
+            window.GUI.text("=== JOIN GAME ===")
+            window.GUI.text("Enter Lobby ID:")
+            window.GUI.text(f"> {lobby_id_input}_")
+
+            # Handle number key input for lobby ID
+            for digit in "0123456789":
+                if window.is_pressed(digit):
+                    if not hasattr(window, f'key_{digit}_pressed'):
+                        setattr(window, f'key_{digit}_pressed', False)
+                    if not getattr(window, f'key_{digit}_pressed'):
+                        lobby_id_input += digit
+                        setattr(window, f'key_{digit}_pressed', True)
+                else:
+                    setattr(window, f'key_{digit}_pressed', False)
+
+            # Backspace to delete
+            if window.is_pressed(ti.GUI.BACKSPACE):
+                if not hasattr(window, 'backspace_pressed'):
+                    window.backspace_pressed = False
+                if not window.backspace_pressed and len(lobby_id_input) > 0:
+                    lobby_id_input = lobby_id_input[:-1]
+                    window.backspace_pressed = True
+            else:
+                window.backspace_pressed = False
+
+            if len(lobby_id_input) > 0 and window.GUI.button("Connect"):
+                try:
+                    lobby_id = int(lobby_id_input)
+                    network_manager = NetworkManager()
+                    if network_manager.init():
+                        network_manager.join_lobby(lobby_id)
+                        game_state = GAME_STATE_LOBBY_CONNECTING
+                        network_error_msg = ""
+                    else:
+                        network_error_msg = "Failed to init Steam"
+                except ValueError:
+                    network_error_msg = "Invalid lobby ID"
+
+            if network_error_msg:
+                window.GUI.text(f"Error: {network_error_msg}")
+
+            if window.GUI.button("Cancel"):
+                game_state = GAME_STATE_LOCAL_PLAY
+                lobby_id_input = ""
+
+        elif game_state == GAME_STATE_LOBBY_CONNECTING:
+            # Connecting to lobby
+            window.GUI.text("=== CONNECTING ===")
+            window.GUI.text(f"Status: {network_manager.get_status() if network_manager else 'Error'}")
+
+            # Check if connected
+            if network_manager and network_manager.in_lobby:
+                game_state = GAME_STATE_LOBBY_WAITING
+
+            if window.GUI.button("Cancel"):
+                if network_manager:
+                    network_manager.shutdown()
+                    network_manager = None
+                game_state = GAME_STATE_LOCAL_PLAY
+
+        elif game_state == GAME_STATE_LOBBY_WAITING:
+            # In lobby, waiting for host to start
+            window.GUI.text("=== IN LOBBY ===")
+            window.GUI.text(f"Status: {network_manager.get_status() if network_manager else 'Error'}")
+            window.GUI.text("Waiting for host to start...")
+
+            # Check if match started (host sent start signal)
+            if network_manager and network_manager.match_started:
+                game_state = GAME_STATE_ONLINE_PLAY
+                input_buffer.is_network_mode = True
+                input_buffer.delay = 4
+                input_buffer.reset()
+                local_player_id = 1  # Guest is red
+                reset_match()
+
+            if window.GUI.button("Leave"):
+                if network_manager:
+                    network_manager.shutdown()
+                    network_manager = None
+                game_state = GAME_STATE_LOCAL_PLAY
+
+        elif game_state == GAME_STATE_ONLINE_PLAY:
+            # Playing online
+            window.GUI.text("=== ONLINE MATCH ===")
+            player_color = "BLUE" if local_player_id == 0 else "RED"
+            window.GUI.text(f"You are: {player_color}")
+            window.GUI.text(f"Ping: {network_manager.ping_ms}ms" if network_manager else "")
+
+            if window.GUI.button("Disconnect"):
+                if network_manager:
+                    network_manager.shutdown()
+                    network_manager = None
+                game_state = GAME_STATE_LOCAL_PLAY
+                input_buffer.is_network_mode = False
+                input_buffer.delay = 0
+                input_buffer.reset()
+
+        window.GUI.text("")
 
     # === PERFORMANCE MONITORING DISPLAY ===
     if perf_monitor.show_stats:
