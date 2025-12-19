@@ -1,0 +1,3 @@
+taichi
+# py_steam_net - Install from GitHub releases (requires Python 3.12)
+# https://github.com/HeatXD/py_steam_net/releases
