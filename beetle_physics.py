@@ -234,6 +234,165 @@ HORN_YAW_LIMITS = [
     (0.0, 0.0),                             # 5: bombardier (no horn - uses firing controls)
 ]
 
+# ============================================================================
+# INPUT ABSTRACTION SYSTEM (for networking and controller support)
+# ============================================================================
+# Input bit flags - each player's input is packed into a single byte
+INPUT_FORWARD     = 0x01  # Move forward
+INPUT_BACKWARD    = 0x02  # Move backward
+INPUT_LEFT        = 0x04  # Rotate left
+INPUT_RIGHT       = 0x08  # Rotate right
+INPUT_HORN_UP     = 0x10  # Horn pitch up / spray forward / claw up
+INPUT_HORN_DOWN   = 0x20  # Horn pitch down / spray backward / claw down
+INPUT_HORN_LEFT   = 0x40  # Horn yaw close / spray aim up / tail down
+INPUT_HORN_RIGHT  = 0x80  # Horn yaw open / spray aim down / venom shot
+
+# Key bindings for each player (can be remapped later)
+BLUE_KEYS = {
+    'forward': 't',
+    'backward': 'g',
+    'left': 'f',
+    'right': 'h',
+    'horn_up': 'r',
+    'horn_down': 'y',
+    'horn_left': 'v',
+    'horn_right': 'b',
+}
+
+RED_KEYS = {
+    'forward': 'i',
+    'backward': 'k',
+    'left': 'j',
+    'right': 'l',
+    'horn_up': 'u',
+    'horn_down': 'o',
+    'horn_left': 'n',
+    'horn_right': 'm',
+}
+
+def get_local_inputs(window, player='blue'):
+    """
+    Read keyboard inputs and return 8-bit input state.
+
+    This abstraction allows:
+    - Easy addition of controller support later
+    - Network sync (just send the 8-bit value)
+    - Input replay/recording
+    - Key remapping
+
+    Args:
+        window: The game window to read key presses from
+        player: 'blue' or 'red' to select key bindings
+
+    Returns:
+        int: 8-bit input state (0-255)
+    """
+    keys = BLUE_KEYS if player == 'blue' else RED_KEYS
+    inputs = 0
+
+    if window.is_pressed(keys['forward']):
+        inputs |= INPUT_FORWARD
+    if window.is_pressed(keys['backward']):
+        inputs |= INPUT_BACKWARD
+    if window.is_pressed(keys['left']):
+        inputs |= INPUT_LEFT
+    if window.is_pressed(keys['right']):
+        inputs |= INPUT_RIGHT
+    if window.is_pressed(keys['horn_up']):
+        inputs |= INPUT_HORN_UP
+    if window.is_pressed(keys['horn_down']):
+        inputs |= INPUT_HORN_DOWN
+    if window.is_pressed(keys['horn_left']):
+        inputs |= INPUT_HORN_LEFT
+    if window.is_pressed(keys['horn_right']):
+        inputs |= INPUT_HORN_RIGHT
+
+    return inputs
+
+
+class InputBuffer:
+    """
+    Buffer for storing inputs by frame number with configurable delay.
+
+    This enables:
+    - Network play: Wait for remote inputs before processing
+    - Input delay: Give network time to deliver packets
+    - Deterministic sync: Both clients process same inputs on same frame
+
+    For local play, delay can be set to 0.
+    For network play, typical delay is 4 frames (~67ms at 60Hz).
+    """
+
+    def __init__(self, delay_frames=0):
+        self.delay = delay_frames
+        self.local_inputs = {}    # frame_num -> input_bits (blue player)
+        self.remote_inputs = {}   # frame_num -> input_bits (red player / network opponent)
+        self.current_frame = 0
+        self.is_network_mode = False  # Set True when connected to opponent
+
+    def add_local(self, inputs):
+        """Store local player's inputs for current frame."""
+        self.local_inputs[self.current_frame] = inputs
+
+    def add_remote(self, frame, inputs):
+        """Store remote player's inputs (received from network)."""
+        self.remote_inputs[frame] = inputs
+
+    def get_frame_inputs(self, frame):
+        """
+        Get inputs for a physics frame (delayed by self.delay).
+
+        Returns: (blue_inputs, red_inputs)
+        """
+        target = frame - self.delay
+
+        # In local mode, both inputs come from local buffer
+        if not self.is_network_mode:
+            blue = self.local_inputs.get(target, 0)
+            red = self.remote_inputs.get(target, 0)
+        else:
+            # In network mode, local is always blue (host perspective)
+            # Guest swaps these when applying
+            blue = self.local_inputs.get(target, 0)
+            red = self.remote_inputs.get(target, 0)
+
+        return blue, red
+
+    def has_inputs_for_frame(self, frame):
+        """Check if we have all inputs needed to process a frame."""
+        target = frame - self.delay
+        if target < 0:
+            return True  # Early frames before delay kicks in
+
+        has_local = target in self.local_inputs
+
+        if not self.is_network_mode:
+            has_remote = target in self.remote_inputs
+        else:
+            # In network mode, we need remote inputs to proceed
+            has_remote = target in self.remote_inputs
+
+        return has_local and has_remote
+
+    def advance_frame(self):
+        """Move to next frame."""
+        self.current_frame += 1
+
+        # Cleanup old inputs (keep last 120 frames = 2 seconds)
+        cleanup_threshold = self.current_frame - 120
+        self.local_inputs = {k: v for k, v in self.local_inputs.items() if k > cleanup_threshold}
+        self.remote_inputs = {k: v for k, v in self.remote_inputs.items() if k > cleanup_threshold}
+
+    def reset(self):
+        """Reset buffer for new match."""
+        self.local_inputs.clear()
+        self.remote_inputs.clear()
+        self.current_frame = 0
+
+
+# Global input buffer instance (used by main loop)
+input_buffer = InputBuffer(delay_frames=0)  # 0 delay for local play
+
 # Edge tipping constants
 EDGE_TIPPING_STRENGTH = 0.45  # Force multiplier per over-edge voxel
 ARENA_CENTER_X = 64.0  # Arena center X coordinate
@@ -580,9 +739,14 @@ def reset_match():
     global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
     global venom_tip_color_blue, venom_tip_color_red
+    global physics_frame
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
+
+    # Reset input buffer and physics frame for new match (important for network sync)
+    input_buffer.reset()
+    physics_frame = 0
 
     beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
     beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
@@ -8022,6 +8186,18 @@ while window.running:
     for key in _physics_timing:
         _physics_timing[key] = 0.0
 
+    # Read inputs ONCE per frame using abstraction layer (enables networking + controller support later)
+    # Store in input buffer for potential network sync
+    frame_blue_inputs = get_local_inputs(window, 'blue')
+    frame_red_inputs = get_local_inputs(window, 'red')
+
+    # Store inputs in buffer (for network mode, these get sent/received)
+    input_buffer.add_local(frame_blue_inputs)
+    input_buffer.add_remote(input_buffer.current_frame, frame_red_inputs)  # In local mode, red is also "local"
+
+    # Get delayed inputs for physics (delay=0 for local play, delay=4 for network)
+    blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
+
     while accumulator >= PHYSICS_TIMESTEP:
         # Save previous state for interpolation
         beetle_blue.save_previous_state()
@@ -8041,21 +8217,21 @@ while window.running:
             # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_blue.in_horn_collision:
                 # Check if rotating without moving (skill-based faster turning)
-                is_moving = window.is_pressed('t') or window.is_pressed('g')
+                is_moving = (blue_inputs & INPUT_FORWARD) or (blue_inputs & INPUT_BACKWARD)
                 rotation_multiplier = 1.0 if is_moving else 1.3  # 30% faster when stationary
 
-                if window.is_pressed('f'):
+                if blue_inputs & INPUT_LEFT:
                     beetle_blue.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
-                if window.is_pressed('h'):
+                if blue_inputs & INPUT_RIGHT:
                     beetle_blue.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
 
             # Movement controls (T/G) - move in facing direction
-            if window.is_pressed('t'):
+            if blue_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
                 move_x = math.cos(beetle_blue.rotation)
                 move_z = math.sin(beetle_blue.rotation)
                 beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
-            if window.is_pressed('g'):
+            if blue_inputs & INPUT_BACKWARD:
                 # Move backward in facing direction
                 move_x = -math.cos(beetle_blue.rotation)
                 move_z = -math.sin(beetle_blue.rotation)
@@ -8068,7 +8244,7 @@ while window.running:
 
                 # Only fire if cooldown ready AND have charges
                 if spray_cooldown_blue <= 0 and spray_charges_blue > 0:
-                    if window.is_pressed('r'):  # Forward spray
+                    if blue_inputs & INPUT_HORN_UP:  # Forward spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (forward_x, forward_z)
                         spray_burst_angle_blue = 0.0  # Straight ahead
@@ -8078,7 +8254,7 @@ while window.running:
                         spray_charges_blue -= 1  # Consume charge
                         # Forward spray: positive aim = spray goes UP (matches tilt direction)
                         spray_aim_y_blue = spray_aim_blue * 14.0
-                    elif window.is_pressed('y'):  # Backward spray
+                    elif blue_inputs & INPUT_HORN_DOWN:  # Backward spray
                         spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
                         spray_burst_dir_blue = (-forward_x, -forward_z)
                         spray_burst_angle_blue = 0.0  # Straight back
@@ -8092,9 +8268,9 @@ while window.running:
                 # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
                 # Direct adjustment - holds position when keys released
                 aim_adjust_speed = 1.8 * frame_dt  # Smooth adjustment rate
-                if window.is_pressed('v'):
+                if blue_inputs & INPUT_HORN_LEFT:
                     spray_aim_blue = min(1.0, spray_aim_blue + aim_adjust_speed)
-                elif window.is_pressed('b'):
+                elif blue_inputs & INPUT_HORN_RIGHT:
                     spray_aim_blue = max(-1.0, spray_aim_blue - aim_adjust_speed)
                 # No else - holds current position when no keys pressed
 
@@ -8104,8 +8280,8 @@ while window.running:
             else:
                 # Horn controls - OPTIMIZED for combined pitch+yaw movements
                 # Calculate proposed pitch and yaw changes
-                pitch_pressed = window.is_pressed('r') or window.is_pressed('y')
-                yaw_pressed = window.is_pressed('v') or window.is_pressed('b')
+                pitch_pressed = (blue_inputs & INPUT_HORN_UP) or (blue_inputs & INPUT_HORN_DOWN)
+                yaw_pressed = (blue_inputs & INPUT_HORN_LEFT) or (blue_inputs & INPUT_HORN_RIGHT)
 
             new_pitch = beetle_blue.horn_pitch
             new_yaw = beetle_blue.horn_yaw
@@ -8119,14 +8295,14 @@ while window.running:
             # Scorpion claws move slower (horn_type_id == 3)
             base_tilt_speed = HORN_TILT_SPEED * 0.65 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
 
-            if window.is_pressed('r'):
+            if blue_inputs & INPUT_HORN_UP:
                 effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
                 new_pitch = beetle_blue.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                 new_pitch = min(max_pitch_limit, new_pitch)
                 # Only set velocity if horn actually moved (not clamped at max)
                 if abs(new_pitch - beetle_blue.horn_pitch) > 0.001:
                     pitch_speed = effective_speed
-            elif window.is_pressed('y'):
+            elif blue_inputs & INPUT_HORN_DOWN:
                 effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
                 new_pitch = beetle_blue.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                 new_pitch = max(min_pitch_limit, new_pitch)
@@ -8144,7 +8320,7 @@ while window.running:
                 TAIL_MAX_UP = 20.0          # Resting position (max up)
                 TAIL_MAX_DOWN = -25.0       # Fully pushed down
 
-                if window.is_pressed('v'):
+                if blue_inputs & INPUT_HORN_LEFT:
                     # V = Push tail down (for striking)
                     beetle_blue.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
                     beetle_blue.tail_rotation_angle = max(TAIL_MAX_DOWN, beetle_blue.tail_rotation_angle)
@@ -8155,7 +8331,7 @@ while window.running:
                         beetle_blue.tail_rotation_angle = min(TAIL_MAX_UP, beetle_blue.tail_rotation_angle)
 
                 # B = Venom shot from tail tip
-                if window.is_pressed('b') and venom_cooldown_blue <= 0 and venom_charges_blue > 0:
+                if (blue_inputs & INPUT_HORN_RIGHT) and venom_cooldown_blue <= 0 and venom_charges_blue > 0:
                     # Get direction for venom shot
                     dir_x, dir_z = get_scorpion_venom_direction(beetle_blue)
 
@@ -8172,7 +8348,7 @@ while window.running:
                 # OPTIMIZATION: Use lookup table instead of string comparisons
                 max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_blue.horn_type_id]
 
-                if window.is_pressed('v'):
+                if blue_inputs & INPUT_HORN_LEFT:
                     # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_yaw_damping)
 
@@ -8199,7 +8375,7 @@ while window.running:
                                 beetle_red.vz += forward_z * push_force
                                 beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
                                 beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-                elif window.is_pressed('b'):
+                elif blue_inputs & INPUT_HORN_RIGHT:
                     # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_yaw_damping)
 
@@ -8270,21 +8446,21 @@ while window.running:
             # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_red.in_horn_collision:
                 # Check if rotating without moving (skill-based faster turning)
-                is_moving = window.is_pressed('i') or window.is_pressed('k')
+                is_moving = (red_inputs & INPUT_FORWARD) or (red_inputs & INPUT_BACKWARD)
                 rotation_multiplier = 1.0 if is_moving else 1.3  # 30% faster when stationary
 
-                if window.is_pressed('j'):
+                if red_inputs & INPUT_LEFT:
                     beetle_red.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
-                if window.is_pressed('l'):
+                if red_inputs & INPUT_RIGHT:
                     beetle_red.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
 
             # Movement controls (I/K) - move in facing direction
-            if window.is_pressed('i'):
+            if red_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
                 move_x = math.cos(beetle_red.rotation)
                 move_z = math.sin(beetle_red.rotation)
                 beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
-            if window.is_pressed('k'):
+            if red_inputs & INPUT_BACKWARD:
                 # Move backward in facing direction
                 move_x = -math.cos(beetle_red.rotation)
                 move_z = -math.sin(beetle_red.rotation)
@@ -8297,7 +8473,7 @@ while window.running:
 
                 # Only fire if cooldown ready AND have charges
                 if spray_cooldown_red <= 0 and spray_charges_red > 0:
-                    if window.is_pressed('u'):  # Forward spray
+                    if red_inputs & INPUT_HORN_UP:  # Forward spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (forward_x, forward_z)
                         spray_burst_angle_red = 0.0  # Straight ahead
@@ -8307,7 +8483,7 @@ while window.running:
                         spray_charges_red -= 1  # Consume charge
                         # Forward spray: positive aim = spray goes UP (matches tilt direction)
                         spray_aim_y_red = spray_aim_red * 14.0
-                    elif window.is_pressed('o'):  # Backward spray
+                    elif red_inputs & INPUT_HORN_DOWN:  # Backward spray
                         spray_burst_remaining_red = SPRAY_BURST_PARTICLES
                         spray_burst_dir_red = (-forward_x, -forward_z)
                         spray_burst_angle_red = 0.0  # Straight back
@@ -8321,9 +8497,9 @@ while window.running:
                 # N/M aim controls - adjust spray angle (tilts beetle from butt pivot)
                 # Direct adjustment - holds position when keys released
                 aim_adjust_speed = 1.8 * frame_dt  # Smooth adjustment rate
-                if window.is_pressed('n'):
+                if red_inputs & INPUT_HORN_LEFT:
                     spray_aim_red = min(1.0, spray_aim_red + aim_adjust_speed)
-                elif window.is_pressed('m'):
+                elif red_inputs & INPUT_HORN_RIGHT:
                     spray_aim_red = max(-1.0, spray_aim_red - aim_adjust_speed)
                 # No else - holds current position when no keys pressed
 
@@ -8333,8 +8509,8 @@ while window.running:
             else:
                 # Horn controls - OPTIMIZED for combined pitch+yaw movements
                 # Calculate proposed pitch and yaw changes
-                pitch_pressed = window.is_pressed('u') or window.is_pressed('o')
-                yaw_pressed = window.is_pressed('n') or window.is_pressed('m')
+                pitch_pressed = (red_inputs & INPUT_HORN_UP) or (red_inputs & INPUT_HORN_DOWN)
+                yaw_pressed = (red_inputs & INPUT_HORN_LEFT) or (red_inputs & INPUT_HORN_RIGHT)
 
             new_pitch = beetle_red.horn_pitch
             new_yaw = beetle_red.horn_yaw
@@ -8348,14 +8524,14 @@ while window.running:
             # Scorpion claws move slower (horn_type_id == 3)
             base_tilt_speed = HORN_TILT_SPEED * 0.65 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
 
-            if window.is_pressed('u'):
+            if red_inputs & INPUT_HORN_UP:
                 effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
                 new_pitch = beetle_red.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                 new_pitch = min(max_pitch_limit, new_pitch)
                 # Only set velocity if horn actually moved (not clamped at max)
                 if abs(new_pitch - beetle_red.horn_pitch) > 0.001:
                     pitch_speed = effective_speed
-            elif window.is_pressed('o'):
+            elif red_inputs & INPUT_HORN_DOWN:
                 effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
                 new_pitch = beetle_red.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                 new_pitch = max(min_pitch_limit, new_pitch)
@@ -8373,7 +8549,7 @@ while window.running:
                 TAIL_MAX_UP = 20.0          # Resting position (max up)
                 TAIL_MAX_DOWN = -25.0       # Fully pushed down
 
-                if window.is_pressed('n'):
+                if red_inputs & INPUT_HORN_LEFT:
                     # N = Push tail down (for striking)
                     beetle_red.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
                     beetle_red.tail_rotation_angle = max(TAIL_MAX_DOWN, beetle_red.tail_rotation_angle)
@@ -8384,7 +8560,7 @@ while window.running:
                         beetle_red.tail_rotation_angle = min(TAIL_MAX_UP, beetle_red.tail_rotation_angle)
 
                 # M = Venom shot from tail tip
-                if window.is_pressed('m') and venom_cooldown_red <= 0 and venom_charges_red > 0:
+                if (red_inputs & INPUT_HORN_RIGHT) and venom_cooldown_red <= 0 and venom_charges_red > 0:
                     # Get direction for venom shot
                     dir_x, dir_z = get_scorpion_venom_direction(beetle_red)
 
@@ -8401,7 +8577,7 @@ while window.running:
                 # OPTIMIZATION: Use lookup table instead of string comparisons
                 max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_red.horn_type_id]
 
-                if window.is_pressed('n'):
+                if red_inputs & INPUT_HORN_LEFT:
                     # N key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_yaw_damping)
 
@@ -8428,7 +8604,7 @@ while window.running:
                                 beetle_blue.vz += forward_z * push_force
                                 beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
                                 beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-                elif window.is_pressed('m'):
+                elif red_inputs & INPUT_HORN_RIGHT:
                     # M key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                     effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_yaw_damping)
 
@@ -9172,6 +9348,7 @@ while window.running:
         # Subtract fixed timestep from accumulator
         accumulator -= PHYSICS_TIMESTEP
         physics_frame += 1  # Increment frame counter
+        input_buffer.advance_frame()  # Keep input buffer in sync
         physics_iterations_this_frame += 1
 
     # ===== END FIXED TIMESTEP PHYSICS LOOP =====
@@ -9218,9 +9395,9 @@ while window.running:
     perf_monitor.start('animation')
 
     # Update walk animation based on velocity and rotation (uses real-time frame_dt)
-    # Detect blue beetle rotation-only input
-    blue_rotating = window.is_pressed('f') or window.is_pressed('h')
-    blue_moving = window.is_pressed('t') or window.is_pressed('g')
+    # Detect blue beetle rotation-only input (using input flags from earlier in frame)
+    blue_rotating = (blue_inputs & INPUT_LEFT) or (blue_inputs & INPUT_RIGHT)
+    blue_moving = (blue_inputs & INPUT_FORWARD) or (blue_inputs & INPUT_BACKWARD)
     blue_speed = math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2)
 
     # Check if rotating without moving forward/backward
@@ -9238,7 +9415,7 @@ while window.running:
         beetle_blue.is_moving = True
         beetle_blue.is_rotating_only = True
         # Detect rotation direction
-        if window.is_pressed('f'):
+        if blue_inputs & INPUT_LEFT:
             beetle_blue.rotation_direction = -1  # Turning left
         else:
             beetle_blue.rotation_direction = 1   # Turning right
@@ -9297,9 +9474,9 @@ while window.running:
         beetle_blue.is_rotating_only = False
         beetle_blue.rotation_direction = 0
 
-    # Detect red beetle rotation-only input
-    red_rotating = window.is_pressed('j') or window.is_pressed('l')
-    red_moving = window.is_pressed('i') or window.is_pressed('k')
+    # Detect red beetle rotation-only input (using input flags from earlier in frame)
+    red_rotating = (red_inputs & INPUT_LEFT) or (red_inputs & INPUT_RIGHT)
+    red_moving = (red_inputs & INPUT_FORWARD) or (red_inputs & INPUT_BACKWARD)
     red_speed = math.sqrt(beetle_red.vx**2 + beetle_red.vz**2)
 
     # Check if rotating without moving forward/backward
@@ -9317,7 +9494,7 @@ while window.running:
         beetle_red.is_moving = True
         beetle_red.is_rotating_only = True
         # Detect rotation direction
-        if window.is_pressed('j'):
+        if red_inputs & INPUT_LEFT:
             beetle_red.rotation_direction = -1  # Turning left
         else:
             beetle_red.rotation_direction = 1   # Turning right
