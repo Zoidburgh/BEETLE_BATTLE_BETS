@@ -395,7 +395,8 @@ class NetworkManager:
 
     def send_ping(self):
         """Send ping to measure latency."""
-        self.ping_sent_time = int(time.time() * 1000)
+        # Use lower 32 bits of milliseconds to fit in uint32
+        self.ping_sent_time = int(time.time() * 1000) & 0xFFFFFFFF
         self._send_packet(struct.pack('>BI', MSG_PING, self.ping_sent_time), reliable=False)
 
     def _send_start(self):
@@ -527,7 +528,12 @@ class NetworkManager:
             # Calculate ping from pong response
             if len(data) >= 5:
                 sent_time = struct.unpack('>I', data[1:5])[0]
-                self.ping_ms = int(time.time() * 1000) - sent_time
+                now = int(time.time() * 1000) & 0xFFFFFFFF
+                # Handle wraparound
+                if now >= sent_time:
+                    self.ping_ms = now - sent_time
+                else:
+                    self.ping_ms = (0xFFFFFFFF - sent_time) + now
 
     # =========================================================================
     # CONNECTION STATE
