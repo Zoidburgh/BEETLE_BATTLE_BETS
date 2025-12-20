@@ -10450,6 +10450,14 @@ while window.running:
             window.GUI.text("=== HOSTING GAME ===")
             if network_manager and network_manager.lobby_id:
                 window.GUI.text(f"Lobby ID: {network_manager.lobby_id}")
+                if window.GUI.button("Copy Lobby ID"):
+                    try:
+                        import subprocess
+                        subprocess.run(['powershell', '-command',
+                                      f'Set-Clipboard -Value "{network_manager.lobby_id}"'],
+                                      capture_output=True)
+                    except:
+                        pass
                 window.GUI.text("(Share this with your friend)")
             else:
                 window.GUI.text("Creating lobby...")
@@ -10481,26 +10489,23 @@ while window.running:
             window.GUI.text("Enter Lobby ID:")
             window.GUI.text(f"> {lobby_id_input}_")
 
-            # Handle number key input for lobby ID
-            for digit in "0123456789":
-                if window.is_pressed(digit):
-                    if not hasattr(window, f'key_{digit}_pressed'):
-                        setattr(window, f'key_{digit}_pressed', False)
-                    if not getattr(window, f'key_{digit}_pressed'):
-                        lobby_id_input += digit
-                        setattr(window, f'key_{digit}_pressed', True)
-                else:
-                    setattr(window, f'key_{digit}_pressed', False)
+            # Paste from clipboard button (most reliable method)
+            if window.GUI.button("Paste from Clipboard"):
+                try:
+                    import subprocess
+                    result = subprocess.run(['powershell', '-command', 'Get-Clipboard'],
+                                          capture_output=True, text=True)
+                    clipboard_text = result.stdout.strip()
+                    # Only keep digits
+                    digits_only = ''.join(c for c in clipboard_text if c.isdigit())
+                    if digits_only:
+                        lobby_id_input = digits_only
+                except:
+                    pass
 
-            # Backspace to delete
-            if window.is_pressed(ti.GUI.BACKSPACE):
-                if not hasattr(window, 'backspace_pressed'):
-                    window.backspace_pressed = False
-                if not window.backspace_pressed and len(lobby_id_input) > 0:
-                    lobby_id_input = lobby_id_input[:-1]
-                    window.backspace_pressed = True
-            else:
-                window.backspace_pressed = False
+            # Clear button
+            if len(lobby_id_input) > 0 and window.GUI.button("Clear"):
+                lobby_id_input = ""
 
             if len(lobby_id_input) > 0 and window.GUI.button("Connect"):
                 try:
