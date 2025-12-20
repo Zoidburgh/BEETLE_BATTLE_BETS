@@ -463,7 +463,24 @@ class NetworkManager:
             except:
                 pass
 
-        # Process queued messages
+        # Explicitly receive messages from Steam (callback may not auto-fire)
+        try:
+            received = self.client.receive_messages(GAME_CHANNEL, 100)
+            if received:
+                for msg in received:
+                    # msg format depends on py_steam_net - try to extract sender and data
+                    if isinstance(msg, tuple) and len(msg) >= 2:
+                        sender_id, data = msg[0], msg[1]
+                        self._handle_packet(bytes(data), sender_id, input_buffer)
+                    elif isinstance(msg, bytes):
+                        # If just bytes, use peer_steam_id as sender
+                        if self.peer_steam_id:
+                            self._handle_packet(msg, self.peer_steam_id, input_buffer)
+        except Exception as e:
+            # receive_messages might not exist or have different signature
+            pass
+
+        # Process queued messages (from callback, if it works)
         messages = []
         with self.message_lock:
             messages = self.message_queue[:]
