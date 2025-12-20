@@ -373,6 +373,11 @@ class NetworkManager:
         if self.is_host and self.local_ready and self.remote_ready:
             self._send_start()
 
+    def start_match_now(self):
+        """Host immediately starts the match (skip ready handshake for now)."""
+        if self.is_host and self.connected:
+            self._send_start()
+
     def send_horn_select(self, horn_type):
         """Send horn type selection to opponent."""
         self.local_horn = horn_type

@@ -10474,8 +10474,9 @@ while window.running:
                     input_buffer.delay = 4  # 4 frame delay for network
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
-                    network_manager.send_ready()
+                    network_manager.start_match_now()  # Send start signal to guest
                     reset_match()
+                    print("[Game] Host started match!")
 
             if window.GUI.button("Cancel"):
                 if network_manager:
