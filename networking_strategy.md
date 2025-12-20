@@ -6,12 +6,11 @@
 
 ## Steam App ID
 
-| App ID | Cost | Use Case |
-|--------|------|----------|
-| **480 (Spacewar)** | Free | Development & testing with friends |
-| **Real App ID** | $100 | Official Steam release |
+| App ID | Description |
+|--------|-------------|
+| **3998620** | Beetle Battle (our registered app) |
 
-**For development:** App ID 480 works for ALL networking features. Friends can test via Steam Overlay invites or lobby ID sharing. Only pay $100 when ready to release.
+**Note:** Using our real App ID. Friends need developer access or beta key from Steamworks to test.
 
 ---
 
@@ -42,7 +41,7 @@ All modes use the same networking code - just different player counts.
 
 **Steam features that work anyway (no code needed):**
 - ✓ Steam Overlay invites (Shift+Tab → right-click friend → Invite)
-- ✓ `steam://joinlobby/480/LOBBY_ID` clickable links
+- ✓ `steam://joinlobby/3998620/LOBBY_ID` clickable links
 - ✓ NAT traversal handled automatically
 
 ---
@@ -152,7 +151,7 @@ Make it easy for friends to join.
 | Feature | Difficulty | How |
 |---------|------------|-----|
 | Steam Overlay invites | ✅ FREE | Already works! Shift+Tab → Invite |
-| Copy invite link button | Easy | `steam://joinlobby/480/{lobby_id}` |
+| Copy invite link button | Easy | `steam://joinlobby/3998620/{lobby_id}` |
 | Handle join-from-invite | Medium | Detect launch args from Steam |
 | Rematch button | Easy | Reset match, stay in lobby |
 
@@ -216,7 +215,7 @@ These features require either:
 |------|---------|
 | `network.py` | NetworkManager - Steam lobbies, P2P messaging |
 | `beetle_physics.py` | InputBuffer, input flags, get_local_inputs() |
-| `steam_appid.txt` | Steam App ID (480 for testing) |
+| `steam_appid.txt` | Steam App ID (3998620) |
 | `steam_api64.dll` | Valve's Steam API (specific version for py_steam_net) |
 
 **Requirements:**
@@ -302,9 +301,9 @@ For comparison: Voice chat uses 30+ KB/s
 **What's Next:**
 1. ✅ Verify P2P fix with two computers
 2. Complete gameplay sync (inputs flowing both ways)
-3. Add invite link button (`steam://joinlobby/480/{id}`)
+3. Add invite link button (`steam://joinlobby/3998620/{id}`)
 4. Expand to 3-4 players (1v1v1, 2v2)
 
-**Friend Invites:** Steam Overlay (Shift+Tab) already works! No $100 fee needed for testing.
+**Friend Invites:** Steam Overlay (Shift+Tab) works! Add friend as developer in Steamworks or send beta key.
 
 The code is designed so all modes (1v1, 1v1v1, 2v2) use the same networking - just different player counts.

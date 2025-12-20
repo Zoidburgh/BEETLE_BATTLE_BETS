@@ -11,7 +11,7 @@ Requires:
 - py_steam_net (pip install from GitHub releases)
 - steam_api64.dll in game folder
 - Steam client running
-- steam_appid.txt with app ID (480 for testing)
+- steam_appid.txt with app ID (3998620)
 """
 
 import os
@@ -127,12 +127,12 @@ class NetworkManager:
         self.on_match_start = None
         self.on_horn_selected = None
 
-    def init(self, app_id=480):
+    def init(self, app_id=3998620):
         """
         Initialize Steam networking.
 
         Args:
-            app_id: Steam App ID (480 = Spacewar for testing)
+            app_id: Steam App ID (3998620 = Beetle Battle)
 
         Returns:
             True if successful
