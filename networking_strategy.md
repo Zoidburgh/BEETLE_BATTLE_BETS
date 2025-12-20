@@ -4,6 +4,17 @@
 
 ---
 
+## Steam App ID
+
+| App ID | Cost | Use Case |
+|--------|------|----------|
+| **480 (Spacewar)** | Free | Development & testing with friends |
+| **Real App ID** | $100 | Official Steam release |
+
+**For development:** App ID 480 works for ALL networking features. Friends can test via Steam Overlay invites or lobby ID sharing. Only pay $100 when ready to release.
+
+---
+
 ## Game Modes
 
 | Mode | Players | Beetles | Description |
@@ -16,18 +27,41 @@ All modes use the same networking code - just different player counts.
 
 ---
 
+## py_steam_net API Reality Check
+
+**What py_steam_net provides:**
+- `create_lobby()` / `join_lobby()` / `leave_lobby()` ✓
+- `get_lobby_members()` ✓
+- `send_message_to()` / `receive_messages()` ✓
+- Callbacks for lobby changes, messages, connection failures ✓
+
+**What py_steam_net does NOT provide:**
+- ❌ `get_public_lobbies()` - No lobby browser
+- ❌ `invite_friend()` - No in-game friend invites
+- ❌ `get_friends_list()` - No friend list access
+
+**Steam features that work anyway (no code needed):**
+- ✓ Steam Overlay invites (Shift+Tab → right-click friend → Invite)
+- ✓ `steam://joinlobby/480/LOBBY_ID` clickable links
+- ✓ NAT traversal handled automatically
+
+---
+
 ## Current Status
 
 | Component | Status | Notes |
 |-----------|--------|-------|
 | py_steam_net library | **DONE** | Python 3.12 required |
 | Steam lobby create/join | **DONE** | No IP addresses needed |
-| Steam P2P messaging | **DONE** | NAT traversal automatic |
+| Steam P2P messaging | **TESTING** | Bidirectional handshake fix applied |
 | Input abstraction (8-bit) | **DONE** | In beetle_physics.py |
 | Input buffer (frame sync) | **DONE** | In beetle_physics.py |
-| Game integration | **TODO** | Hook network into game loop |
+| Game state integration | **DONE** | Host/Join/Waiting/Playing states |
+| P2P bidirectional fix | **DONE** | Guest sends MSG_READY on join |
+| Basic 1v1 online | **TESTING** | Need to verify P2P fix works |
 | Multi-player (3-4) | **TODO** | Expand for 1v1v1 and 2v2 |
-| Matchmaking UI | **TODO** | Lobby browser, invites |
+| Steam Overlay invites | **READY** | Works automatically! |
+| Copy invite link button | **TODO** | Easy addition |
 
 ---
 
@@ -94,182 +128,85 @@ All game modes use the same pattern - one player is host, others are guests.
 
 ## Implementation Plan
 
-### Phase 1: 2-Player Online (1v1) - NEXT
+### Phase 1: 2-Player Online (1v1) - CURRENT
 
-Get basic online 1v1 working through Steam.
+Get basic online 1v1 working through Steam. **Almost complete!**
 
-**1.1 Menu Integration**
-```python
-# Game states
-LOBBY_HOST = "lobby_host"      # Created lobby, waiting for opponent
-LOBBY_JOIN = "lobby_join"      # Entering lobby ID
-LOBBY_WAITING = "lobby_wait"   # In lobby, waiting for ready
+| Step | Status | Notes |
+|------|--------|-------|
+| 1.1 Menu Integration | ✅ DONE | Host/Join buttons, game states |
+| 1.2 Lobby Screen | ✅ DONE | Shows lobby ID, copy/paste buttons |
+| 1.3 Game Loop Integration | ✅ DONE | Network polling in main loop |
+| 1.4 Input Buffer | ✅ DONE | Frame-synced with delay |
+| 1.5 P2P Messaging | 🔄 TESTING | Bidirectional fix applied |
+| 1.6 Match Start Flow | 🔄 TESTING | Host starts, guest receives |
 
-# Menu flow
-"Host Game" → create_lobby() → show lobby ID → wait for guest
-"Join Game" → enter lobby ID → join_lobby() → wait for host
-```
-
-**1.2 Lobby Screen**
-- Show lobby ID (for sharing with friends)
-- Show connected players and their Steam names
-- Beetle/horn selection for each player
-- "Ready" button
-- Match starts when all players ready
-
-**1.3 Game Loop Integration**
-```python
-# In main game loop
-if online_mode:
-    # Send our inputs
-    network.send_input(frame, local_inputs)
-
-    # Receive inputs from network
-    network.poll_messages(input_buffer)
-
-    # Wait for all inputs before running physics
-    if input_buffer.has_all_inputs(frame):
-        run_physics_frame(input_buffer.get_all_inputs(frame))
-```
-
-**1.4 Input Buffer Upgrade**
-```python
-class InputBuffer:
-    def __init__(self, num_players, delay_frames=4):
-        self.inputs = {pid: {} for pid in range(num_players)}
-        self.delay = delay_frames
-
-    def add_input(self, player_id, frame, inputs):
-        self.inputs[player_id][frame] = inputs
-
-    def has_all_inputs(self, frame):
-        target = frame - self.delay
-        return all(target in self.inputs[pid] for pid in self.inputs)
-
-    def get_all_inputs(self, frame):
-        target = frame - self.delay
-        return [self.inputs[pid].get(target, 0) for pid in sorted(self.inputs)]
-```
-
-**1.5 Match Flow**
-```
-LOBBY_HOST/JOIN
-    ↓ (opponent joins)
-BEETLE_SELECT
-    ↓ (both ready)
-COUNTDOWN (3-2-1)
-    ↓
-PLAYING
-    ↓ (beetle dies)
-VICTORY
-    ↓ (rematch or leave)
-LOBBY or MENU
-```
+**What's left:** Verify P2P fix works with two computers, then gameplay sync.
 
 ---
 
-### Phase 2: Multi-Player (1v1v1 and 2v2)
+### Phase 2: Polish & Friend Invites
 
-Expand to support 3-4 players. Same architecture, just more players.
+Make it easy for friends to join.
 
-**2.1 Lobby Changes**
+| Feature | Difficulty | How |
+|---------|------------|-----|
+| Steam Overlay invites | ✅ FREE | Already works! Shift+Tab → Invite |
+| Copy invite link button | Easy | `steam://joinlobby/480/{lobby_id}` |
+| Handle join-from-invite | Medium | Detect launch args from Steam |
+| Rematch button | Easy | Reset match, stay in lobby |
+
+---
+
+### Phase 3: Multi-Player (1v1v1 and 2v2)
+
+Same architecture, just more players.
+
+**3.1 Lobby Changes**
 ```python
-# When creating lobby
 network.create_lobby("public", max_players=4)  # For 2v2
 network.create_lobby("public", max_players=3)  # For 1v1v1
-
-# Lobby tracks all connected players
-network.players = {
-    steam_id: {
-        "player_id": 0,  # 0-3
-        "name": "PlayerName",
-        "beetle": "rhino",
-        "horn": "rhino",
-        "ready": False,
-        "team": 0  # For 2v2: 0 or 1
-    }
-}
 ```
 
-**2.2 Host Broadcasts All Inputs**
+**3.2 Host Broadcasts All Inputs**
 ```python
-# Host collects inputs from all guests
+# Host collects inputs from all guests, broadcasts to everyone
 def on_input_received(player_id, frame, inputs):
     input_buffer.add_input(player_id, frame, inputs)
-
-    # When we have all inputs for this frame, broadcast to everyone
     if input_buffer.has_all_inputs(frame):
-        all_inputs = input_buffer.get_all_inputs(frame)
         broadcast_all_inputs(frame, all_inputs)
 ```
 
-**2.3 Team Assignment (2v2)**
+**3.3 Team Assignment (2v2)**
 ```python
-# Teams assigned by join order or player choice
-TEAMS = {
-    0: [0, 1],  # Team A: players 0 and 1
-    1: [2, 3],  # Team B: players 2 and 3
-}
-
-# Win condition: all beetles on one team dead
-def check_victory():
-    team_alive = {0: False, 1: False}
-    for pid, beetle in enumerate(beetles):
-        if beetle.health > 0:
-            team = 0 if pid in TEAMS[0] else 1
-            team_alive[team] = True
-
-    if not team_alive[0]: return 1  # Team B wins
-    if not team_alive[1]: return 0  # Team A wins
-    return None  # No winner yet
+TEAMS = {0: [0, 1], 1: [2, 3]}  # Team A and Team B
 ```
 
-**2.4 Arena Spawns**
+**3.4 Arena Spawns**
 ```python
-# Spawn positions by player count
 SPAWNS = {
-    2: [(x1, y1), (x2, y2)],                          # 1v1: opposite sides
-    3: [(x1, y1), (x2, y2), (x3, y3)],                # 1v1v1: triangle
-    4: [(x1, y1), (x2, y2), (x3, y3), (x4, y4)],      # 2v2: corners
+    2: [(x1, y1), (x2, y2)],                    # 1v1: opposite sides
+    3: [(x1, y1), (x2, y2), (x3, y3)],          # 1v1v1: triangle
+    4: [(x1, y1), (x2, y2), (x3, y3), (x4, y4)] # 2v2: corners
 }
 ```
 
 ---
 
-### Phase 3: Matchmaking UI
+### Phase 4: Advanced Matchmaking (OPTIONAL)
 
-Make finding games easy.
+These features require either:
+- Contributing lobby browser/friend list to py_steam_net
+- Switching to a more complete Steam library
+- Using external matchmaking (Discord, etc.)
 
-**3.1 Lobby Browser**
-```python
-# List public lobbies
-lobbies = network.get_public_lobbies()
-for lobby in lobbies:
-    print(f"{lobby.host_name}'s game - {lobby.player_count}/{lobby.max_players}")
-```
+| Feature | Blocked By |
+|---------|------------|
+| Lobby browser | py_steam_net missing `get_public_lobbies()` |
+| In-game friend list | py_steam_net missing `get_friends_list()` |
+| In-game friend invite | py_steam_net missing `invite_friend()` |
 
-**3.2 Steam Friend Invites**
-```python
-# Invite Steam friend to lobby
-network.invite_friend(friend_steam_id)
-
-# Handle incoming invite
-def on_invite_received(lobby_id, inviter_name):
-    show_invite_popup(f"{inviter_name} invited you to play!")
-```
-
-**3.3 Quick Match**
-```python
-# Auto-join first available lobby or create new one
-def quick_match(mode="1v1"):
-    lobbies = network.get_public_lobbies(mode=mode)
-    available = [l for l in lobbies if not l.is_full]
-
-    if available:
-        network.join_lobby(available[0].id)
-    else:
-        network.create_lobby("public", max_players_for_mode(mode))
-```
+**Workaround:** Steam Overlay handles all of this! Not critical for release.
 
 ---
 
@@ -351,14 +288,23 @@ For comparison: Voice chat uses 30+ KB/s
 ## Summary
 
 **What's Done:**
-- Steam P2P networking via py_steam_net
-- Lobby create/join (no IP addresses!)
-- Input abstraction and buffering
+- ✅ Steam P2P networking via py_steam_net
+- ✅ Lobby create/join (no IP addresses!)
+- ✅ Input abstraction and buffering
+- ✅ Game state system (menu → lobby → playing)
+- ✅ Host/Join UI with copy/paste lobby ID
+- ✅ Bidirectional P2P handshake (guest sends MSG_READY)
+
+**Currently Testing:**
+- 🔄 P2P message reception (MSG_START from host to guest)
+- 🔄 Match start flow
 
 **What's Next:**
-1. Hook network into game loop (1v1 first)
-2. Add lobby UI and beetle selection
-3. Expand to 3-4 players (1v1v1, 2v2)
-4. Add lobby browser and friend invites
+1. ✅ Verify P2P fix with two computers
+2. Complete gameplay sync (inputs flowing both ways)
+3. Add invite link button (`steam://joinlobby/480/{id}`)
+4. Expand to 3-4 players (1v1v1, 2v2)
+
+**Friend Invites:** Steam Overlay (Shift+Tab) already works! No $100 fee needed for testing.
 
 The code is designed so all modes (1v1, 1v1v1, 2v2) use the same networking - just different player counts.
