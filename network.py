@@ -267,6 +267,10 @@ class NetworkManager:
                     print(f"[Network] Found opponent: {member}")
                     if self.on_peer_joined:
                         self.on_peer_joined()
+                    # Guest sends MSG_READY immediately to establish bidirectional P2P channel
+                    if not self.is_host:
+                        self._send_packet(struct.pack('>B', MSG_READY), reliable=True)
+                        print(f"[Network] Sent MSG_READY to establish P2P channel with host")
         else:
             print(f"[Network] Failed to join lobby - no lobby_id returned")
 
@@ -337,6 +341,7 @@ class NetworkManager:
 
     def _on_message_received(self, sender_id, channel, data):
         """Called when a P2P message is received."""
+        print(f"[Network] CALLBACK: Received {len(data)} bytes from {sender_id} on channel {channel}")
         with self.message_lock:
             self.message_queue.append((sender_id, channel, bytes(data)))
 
@@ -463,22 +468,13 @@ class NetworkManager:
             except:
                 pass
 
-        # Explicitly receive messages from Steam (callback may not auto-fire)
+        # Explicitly receive messages from Steam
+        # NOTE: receive_messages() triggers the _on_message_received callback,
+        # it does NOT return messages directly. Messages go to self.message_queue.
         try:
-            received = self.client.receive_messages(GAME_CHANNEL, 100)
-            if received:
-                for msg in received:
-                    # msg format depends on py_steam_net - try to extract sender and data
-                    if isinstance(msg, tuple) and len(msg) >= 2:
-                        sender_id, data = msg[0], msg[1]
-                        self._handle_packet(bytes(data), sender_id, input_buffer)
-                    elif isinstance(msg, bytes):
-                        # If just bytes, use peer_steam_id as sender
-                        if self.peer_steam_id:
-                            self._handle_packet(msg, self.peer_steam_id, input_buffer)
+            self.client.receive_messages(GAME_CHANNEL, 100)
         except Exception as e:
-            # receive_messages might not exist or have different signature
-            pass
+            print(f"[Network] receive_messages error: {e}")
 
         # Process queued messages (from callback, if it works)
         messages = []
