@@ -231,23 +231,35 @@ class NetworkManager:
             return False
 
         try:
+            print(f"[Network] Attempting to join lobby {lobby_id} (type: {type(lobby_id)})")
             self.client.join_lobby(lobby_id, self._on_lobby_joined)
             self.is_host = False
-            print(f"[Network] Joining lobby {lobby_id}...")
+            print(f"[Network] join_lobby called, waiting for callback...")
             return True
 
         except Exception as e:
             print(f"[Network] Failed to join lobby: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
-    def _on_lobby_joined(self, lobby_id):
+    def _on_lobby_joined(self, *args):
         """Callback when joined a lobby."""
+        print(f"[Network] _on_lobby_joined callback fired with args: {args}")
+
+        # Handle different possible callback signatures
+        if len(args) >= 1:
+            lobby_id = args[0]
+        else:
+            lobby_id = None
+
         if lobby_id:
             self.lobby_id = lobby_id
             self.in_lobby = True
             print(f"[Network] Joined lobby! ID: {lobby_id}")
             # Check for existing members
             members = self.get_lobby_members()
+            print(f"[Network] Lobby members: {members}")
             for member in members:
                 if member != self.my_steam_id:
                     self.peer_steam_id = member
@@ -256,7 +268,7 @@ class NetworkManager:
                     if self.on_peer_joined:
                         self.on_peer_joined()
         else:
-            print(f"[Network] Failed to join lobby")
+            print(f"[Network] Failed to join lobby - no lobby_id returned")
 
     def leave_lobby(self):
         """Leave current lobby."""
