@@ -127,12 +127,12 @@ class NetworkManager:
         self.on_match_start = None
         self.on_horn_selected = None
 
-    def init(self, app_id=3998620):
+    def init(self, app_id=480):
         """
         Initialize Steam networking.
 
         Args:
-            app_id: Steam App ID (3998620 = Beetle Battle)
+            app_id: Steam App ID (480 for testing, 3998620 for release)
 
         Returns:
             True if successful
