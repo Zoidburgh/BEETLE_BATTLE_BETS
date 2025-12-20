@@ -304,24 +304,30 @@ class NetworkManager:
     # STEAM CALLBACKS
     # =========================================================================
 
-    def _on_lobby_changed(self, lobby_id, member_id, change_type):
+    def _on_lobby_changed(self, *args):
         """
         Called when lobby membership changes.
-
-        change_type: "joined", "left", "disconnected", etc.
         """
+        print(f"[Network] _on_lobby_changed callback fired with args: {args}")
+
+        # Try to parse args - format may vary
+        lobby_id = args[0] if len(args) > 0 else None
+        member_id = args[1] if len(args) > 1 else None
+        change_type = args[2] if len(args) > 2 else "unknown"
+
         print(f"[Network] Lobby changed: {change_type} - member {member_id}")
 
-        if change_type == "joined" or change_type == "entered":
-            if member_id != self.my_steam_id:
+        if change_type in ["joined", "entered", 1]:  # 1 might be enum for joined
+            if member_id and member_id != self.my_steam_id:
                 self.peer_steam_id = member_id
                 self.connected = True
-                self.lobby_id = lobby_id
+                if lobby_id:
+                    self.lobby_id = lobby_id
                 print(f"[Network] Opponent joined: {member_id}")
                 if self.on_peer_joined:
                     self.on_peer_joined()
 
-        elif change_type in ["left", "disconnected", "kicked", "banned"]:
+        elif change_type in ["left", "disconnected", "kicked", "banned", 2, 3, 4]:
             if member_id == self.peer_steam_id:
                 self.peer_steam_id = None
                 self.connected = False
@@ -434,6 +440,22 @@ class NetworkManager:
             self.client.run_callbacks()
         except:
             pass
+
+        # FALLBACK: If we're in a lobby but haven't detected opponent, check member list directly
+        # This handles cases where the lobby_changed callback doesn't fire
+        if self.in_lobby and not self.connected and self.lobby_id:
+            try:
+                members = self.client.get_lobby_members(self.lobby_id)
+                for member in members:
+                    if member != self.my_steam_id:
+                        self.peer_steam_id = member
+                        self.connected = True
+                        print(f"[Network] Found opponent via polling: {member}")
+                        if self.on_peer_joined:
+                            self.on_peer_joined()
+                        break
+            except:
+                pass
 
         # Process queued messages
         messages = []
