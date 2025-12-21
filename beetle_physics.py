@@ -221,8 +221,8 @@ HORN_MIN_PITCH_HERCULES = math.radians(2)   # +2 degrees (jaws fully closed)
 HORN_MAX_PITCH_ATLAS = math.radians(20)  # +20 degrees (full upward lift)
 HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward ground)
 # Scorpion-specific limits (symmetric ±17° around 20° default for equal claw range)
-HORN_MAX_PITCH_SCORPION = math.radians(37)  # +37 degrees (20 + 17)
-HORN_MIN_PITCH_SCORPION = math.radians(3)   # +3 degrees (20 - 17)
+HORN_MAX_PITCH_SCORPION = math.radians(42)  # +42 degrees (20 + 22)
+HORN_MIN_PITCH_SCORPION = math.radians(-2)  # -2 degrees (20 - 22)
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
 HORN_YAW_SPEED = 1.0  # Radians per second (50% slower for less clipping)
@@ -7508,7 +7508,50 @@ def beetle_collision(b1, b2, params):
                     # Positive velocity = tilting horn UP = you lift opponent
                     # Blue pressing R: b1.horn_pitch_velocity = +2.0
                     # Red pressing U: b2.horn_pitch_velocity = +2.0
-                    lift_advantage = b1.horn_pitch_velocity - b2.horn_pitch_velocity
+
+                    # FIX: Some beetles have horn parts that don't move - detect which part is colliding
+                    # and set velocity to 0 for fixed parts, or invert for opposite-moving parts
+                    b1_effective_vel = b1.horn_pitch_velocity
+                    b2_effective_vel = b2.horn_pitch_velocity
+
+                    # Helper to get collision point in beetle's local space
+                    def get_local_collision(beetle, col_x, col_y, col_z):
+                        cos_r = math.cos(beetle.rotation)
+                        sin_r = math.sin(beetle.rotation)
+                        local_x = (col_x - beetle.x) * cos_r + (col_z - beetle.z) * sin_r
+                        local_y = col_y - beetle.y
+                        local_z = (col_z - beetle.z) * cos_r - (col_x - beetle.x) * sin_r
+                        return local_x, local_y, local_z
+
+                    if b1.horn_type_id == 3:  # Scorpion - left claw moves opposite
+                        _, _, rel_z = get_local_collision(b1, collision_x, collision_y, collision_z)
+                        if rel_z < -1.0:  # Left claw - inverted motion
+                            b1_effective_vel = -b1.horn_pitch_velocity
+                    elif b1.horn_type_id == 2:  # Hercules - top horn is fixed
+                        rel_x, rel_y, _ = get_local_collision(b1, collision_x, collision_y, collision_z)
+                        is_bottom_horn = rel_y < 5 or (rel_y < 8 and rel_x >= 10.0)
+                        if not is_bottom_horn:  # Top horn - no velocity
+                            b1_effective_vel = 0.0
+                    elif b1.horn_type_id == 4:  # Atlas - side horns are fixed
+                        _, _, rel_z = get_local_collision(b1, collision_x, collision_y, collision_z)
+                        if abs(rel_z) > 1.5:  # Side pronotum horns - no velocity
+                            b1_effective_vel = 0.0
+
+                    if b2.horn_type_id == 3:  # Scorpion - left claw moves opposite
+                        _, _, rel_z = get_local_collision(b2, collision_x, collision_y, collision_z)
+                        if rel_z < -1.0:  # Left claw - inverted motion
+                            b2_effective_vel = -b2.horn_pitch_velocity
+                    elif b2.horn_type_id == 2:  # Hercules - top horn is fixed
+                        rel_x, rel_y, _ = get_local_collision(b2, collision_x, collision_y, collision_z)
+                        is_bottom_horn = rel_y < 5 or (rel_y < 8 and rel_x >= 10.0)
+                        if not is_bottom_horn:  # Top horn - no velocity
+                            b2_effective_vel = 0.0
+                    elif b2.horn_type_id == 4:  # Atlas - side horns are fixed
+                        _, _, rel_z = get_local_collision(b2, collision_x, collision_y, collision_z)
+                        if abs(rel_z) > 1.5:  # Side pronotum horns - no velocity
+                            b2_effective_vel = 0.0
+
+                    lift_advantage = b1_effective_vel - b2_effective_vel
 
                     # DEBUG: Print collision info
                     # print(f"HORN COLLISION:")
@@ -7535,7 +7578,7 @@ def beetle_collision(b1, b2, params):
                         if lift_advantage > ADVANTAGE_THRESHOLD:
                             # Blue has advantage - lifts red
                             # print(f"  -> BLUE lifts RED!")
-                            lift_force = lift_impulse * 0.195 * height_penalty
+                            lift_force = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
                             b2.vy += lift_force  # Red gets lifted HIGHER
                             b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
 
@@ -7560,7 +7603,7 @@ def beetle_collision(b1, b2, params):
                         elif lift_advantage < -ADVANTAGE_THRESHOLD:
                             # Red has advantage - lifts blue
                             # print(f"  -> RED lifts BLUE!")
-                            lift_force = lift_impulse * 0.195 * height_penalty
+                            lift_force = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
                             b1.vy += lift_force  # Blue gets lifted HIGHER
                             b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
 
@@ -7933,7 +7976,7 @@ physics_params = {
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
-    "GRAVITY": 31.0,  # Adjustable gravity
+    "GRAVITY": 50.0,  # Adjustable gravity
     "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
 
     # Airborne tumbling physics parameters
@@ -7941,6 +7984,7 @@ physics_params = {
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
     "TUMBLE_MULTIPLIER": 5.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
+    "HORN_LIFT_STRENGTH": 0.45,  # Multiplier for horn combat lift force (higher = more intense lifts)
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
@@ -8354,7 +8398,7 @@ while window.running:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.65 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.78 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
 
             if blue_inputs & INPUT_HORN_UP:
                 effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
@@ -8583,7 +8627,7 @@ while window.running:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.65 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.78 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
 
             if red_inputs & INPUT_HORN_UP:
                 effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
@@ -11014,6 +11058,15 @@ while window.running:
         window.red_horn_tip_color = new_red_horn_tip_color
         simulation.red_horn_tip_color[None] = ti.Vector([new_red_horn_tip_color[0], new_red_horn_tip_color[1], new_red_horn_tip_color[2]])
 
+    # Horn combat physics tuning
+    window.GUI.text("")
+    window.GUI.text("=== HORN COMBAT PHYSICS ===")
+
+    # Horn Lift Strength (how intense lifts are during horn combat)
+    new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 0.5)
+    if new_horn_lift != physics_params["HORN_LIFT_STRENGTH"]:
+        physics_params["HORN_LIFT_STRENGTH"] = new_horn_lift
+
     # Ball controls (beetle soccer)
     window.GUI.text("")
     window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
@@ -11179,7 +11232,7 @@ while window.running:
     # Physics parameter sliders (commented out - can re-enable later if needed)
     # window.GUI.text("")
     window.GUI.text("=== PHYSICS TUNING ===")
-    physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 40.0)
+    physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 60.0)
     physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 4.0)
     physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
     physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
