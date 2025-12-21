@@ -1790,6 +1790,51 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                     if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
                         collision = 1
 
+                # XZ NEIGHBOR CHECK: Catch edge-to-edge clipping in adjacent columns
+                # Only check 4 cardinal neighbors (not diagonals) with tight Y tolerance
+                # This prevents thin horn edges from slipping through gaps between spherical voxels
+                elif beetle1_y_max >= 0 and beetle2_y_max < 0:  # Only beetle1 in this column
+                    # Check 4 cardinal neighboring columns for beetle2 voxels
+                    for neighbor_dir in range(4):
+                        if collision == 0:
+                            # Cardinal directions: +X, -X, +Z, -Z
+                            neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
+                            neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
+                            if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
+                                # Check for beetle2 voxels in neighbor column at exact Y (±0 tolerance)
+                                for neighbor_gy in range(beetle1_y_min, beetle1_y_max + 1):
+                                    if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
+                                        neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
+                                        neighbor_is_2 = 0
+                                        if color2 == simulation.BEETLE_BLUE:
+                                            if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
+                                                neighbor_is_2 = 1
+                                        elif color2 == simulation.BEETLE_RED:
+                                            if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
+                                                neighbor_is_2 = 1
+                                        if neighbor_is_2 == 1:
+                                            collision = 1
+                elif beetle2_y_max >= 0 and beetle1_y_max < 0:  # Only beetle2 in this column
+                    # Check 4 cardinal neighboring columns for beetle1 voxels
+                    for neighbor_dir in range(4):
+                        if collision == 0:
+                            neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
+                            neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
+                            if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
+                                # Check for beetle1 voxels in neighbor column at exact Y (±0 tolerance)
+                                for neighbor_gy in range(beetle2_y_min, beetle2_y_max + 1):
+                                    if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
+                                        neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
+                                        neighbor_is_1 = 0
+                                        if color1 == simulation.BEETLE_BLUE:
+                                            if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
+                                                neighbor_is_1 = 1
+                                        elif color1 == simulation.BEETLE_RED:
+                                            if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
+                                                neighbor_is_1 = 1
+                                        if neighbor_is_1 == 1:
+                                            collision = 1
+
     return collision
 
 @ti.kernel
