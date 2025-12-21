@@ -695,15 +695,17 @@ class Beetle:
             forward_z = math.sin(self.rotation)
             dot_product = self.vx * forward_x + self.vz * forward_z
 
-            # Apply different speed caps based on direction
+            # Apply different speed caps based on direction (use tunable params)
+            forward_max = physics_params.get("FORWARD_SPEED", 7.0)
+            backward_max = physics_params.get("BACKWARD_SPEED", 5.0)
             if dot_product >= 0:  # Moving forward
-                if speed > MAX_SPEED:
-                    self.vx = (self.vx / speed) * MAX_SPEED
-                    self.vz = (self.vz / speed) * MAX_SPEED
+                if speed > forward_max:
+                    self.vx = (self.vx / speed) * forward_max
+                    self.vz = (self.vz / speed) * forward_max
             else:  # Moving backward
-                if speed > BACKWARD_MAX_SPEED:
-                    self.vx = (self.vx / speed) * BACKWARD_MAX_SPEED
-                    self.vz = (self.vz / speed) * BACKWARD_MAX_SPEED
+                if speed > backward_max:
+                    self.vx = (self.vx / speed) * backward_max
+                    self.vz = (self.vz / speed) * backward_max
 
         # Clamp angular speeds (yaw, pitch, roll)
         if abs(self.angular_velocity) > MAX_ANGULAR_SPEED:
@@ -3097,7 +3099,7 @@ dirty_voxel_z = ti.field(ti.i32, shape=MAX_DIRTY_VOXELS)
 dirty_voxel_count = ti.field(ti.i32, shape=())
 
 # Animation parameters
-WALK_CYCLE_SPEED = 1.0  # Radians per second at normal walk speed
+WALK_CYCLE_SPEED = 0.7  # Radians per second at normal walk speed (slowed 30%)
 
 # Copy blue beetle body geometry to GPU
 for i, (dx, dy, dz) in enumerate(BLUE_BODY):
@@ -4522,7 +4524,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         if is_lifted_high == 1:
             # High-frequency wiggle with per-leg variation for chaos
             # Slower wiggle when rotating only (to prevent excessive speed appearance)
-            wiggle_freq = 1.5 if is_rotating_only == 1 else 5.0
+            wiggle_freq = 1.05 if is_rotating_only == 1 else 3.5  # Slowed 30%
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
             # OPTIMIZATION: Pre-calculate wiggle trig
@@ -5028,7 +5030,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         if is_lifted_high == 1:
             # High-frequency wiggle with per-leg variation for chaos
             # Slower wiggle when rotating only (to prevent excessive speed appearance)
-            wiggle_freq = 1.5 if is_rotating_only == 1 else 5.0
+            wiggle_freq = 1.05 if is_rotating_only == 1 else 3.5  # Slowed 30%
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
             # OPTIMIZATION: Pre-calculate wiggle trig
@@ -8023,6 +8025,8 @@ physics_params = {
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
     "GRAVITY": 50.0,  # Adjustable gravity
     "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
+    "FORWARD_SPEED": 12.0,  # Forward top speed
+    "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
 
     # Airborne tumbling physics parameters
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
@@ -11282,6 +11286,8 @@ while window.running:
     physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
     physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
     physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
+    physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
+    physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
     new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
 
     window.GUI.text("--- Airborne Tumbling ---")
