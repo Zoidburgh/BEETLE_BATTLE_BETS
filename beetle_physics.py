@@ -556,6 +556,7 @@ class Beetle:
         # Collision cooldown timers
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
         self.tip_cooldown = 0.0   # Time remaining before next tipping torque (separate from lift)
+        self.yaw_cooldown = 0.0   # Time remaining before next yaw torque from horn collision
 
         # Body rotation damping state (Phase 3: Directional Rotation Prevention)
         self.body_rotation_damping = 0.0  # Rotation resistance after collision (0.0-1.0)
@@ -614,6 +615,9 @@ class Beetle:
         # Decrement tip cooldown timer (separate from lift - for horn tipping torque)
         if self.tip_cooldown > 0.0:
             self.tip_cooldown = max(0.0, self.tip_cooldown - dt)
+        # Decrement yaw cooldown timer (for horn collision yaw torque)
+        if self.yaw_cooldown > 0.0:
+            self.yaw_cooldown = max(0.0, self.yaw_cooldown - dt)
 
         # Decay horn pitch/yaw damping when not in contact (Phase 2: Horn Clipping Prevention)
         if self.horn_pitch_damping > 0.0:
@@ -3189,6 +3193,9 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         # Is horn detection: ALL horn voxels (including shaft, not just tips)
         # Based on whether voxel index is >= horn_start_index (set before horn generation)
         is_horn = 1 if i >= horn_start_index else 0
+        # Bombardier: Mark whole head (dx >= 2) as horn for ±2 collision detection
+        if horn_type_id == 5 and dx >= 2:
+            is_horn = 1
         is_horn_flags.append(is_horn)
 
     return body_voxels, leg_voxels, leg_tips, hook_interior_flags, stripe_flags, horn_tip_flags, very_tip_flags, is_horn_flags
@@ -3305,6 +3312,7 @@ collision_point_z = ti.field(ti.f32, shape=())
 collision_contact_count = ti.field(ti.i32, shape=())
 collision_has_horn_tips = ti.field(ti.i32, shape=())  # 1 if horn tip voxels involved, 0 otherwise
 collision_has_hook_interiors = ti.field(ti.i32, shape=())  # 1 if stag hook interior voxels involved, 0 otherwise
+collision_is_leg_only = ti.field(ti.i32, shape=())  # 1 if collision only involves leg voxels (softer response)
 
 # OPTIMIZATION: Spatial hash for O(N+M) collision point calculation instead of O(N×M)
 # Hash grid covers the arena (128x128 should be sufficient for 256-grid world)
@@ -5565,6 +5573,7 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
     collision_contact_count[None] = 0
     collision_has_horn_tips[None] = 0  # Reset horn tip detection
     collision_has_hook_interiors[None] = 0  # Reset hook interior detection
+    collision_is_leg_only[None] = 1  # Assume leg-only until we find body/horn voxels
 
     # Scan through overlapping voxel columns
     y_scan_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
@@ -5599,6 +5608,11 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                     # Check if this is a hook interior voxel
                     if vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
                         collision_has_hook_interiors[None] = 1
+
+                    # Check if this is a body/horn voxel (not leg) - if so, not leg-only collision
+                    # Leg types: 9, 10 (legs), 11, 12 (leg tips) - everything else is body/horn
+                    if vtype == 5 or vtype == 6 or vtype == 7 or vtype == 8 or vtype == 13 or vtype == 14 or vtype == 18 or vtype == 19 or vtype == 35 or vtype == 36:
+                        collision_is_leg_only[None] = 0
 
                     # Accumulate collision position
                     ti.atomic_add(collision_point_x[None], float(vx2) - simulation.n_grid / 2.0)
@@ -8029,22 +8043,28 @@ def beetle_collision(b1, b2, params):
                     torque_b1 = base_torque_b1 * velocity_factor
                     torque_b2 = base_torque_b2 * velocity_factor
 
-                    # Apply angular impulses with horn leverage
-                    # Reduce yaw spin when airborne to prevent excessive spinning
-                    airborne_factor = 1.0
-                    if b1.y > 2.0 or b2.y > 2.0:  # Either beetle is airborne
-                        airborne_factor = 0.1  # Reduce to 10% when in air
+                    # Apply angular impulses with horn leverage (with cooldown to prevent jerky rapid hits)
+                    # Only apply if both beetles' yaw cooldowns are expired
+                    if b1.yaw_cooldown <= 0.0 and b2.yaw_cooldown <= 0.0:
+                        # Reduce yaw spin when airborne to prevent excessive spinning
+                        airborne_factor = 1.0
+                        if b1.y > 2.0 or b2.y > 2.0:  # Either beetle is airborne
+                            airborne_factor = 0.1  # Reduce to 10% when in air
 
-                    angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 1.1 * airborne_factor
-                    angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 1.1 * airborne_factor
+                        angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 1.1 * airborne_factor
+                        angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 1.1 * airborne_factor
 
-                    # Cap angular impulse to prevent spikes
-                    max_impulse = 0.2
-                    angular_impulse_b1 = max(-max_impulse, min(max_impulse, angular_impulse_b1))
-                    angular_impulse_b2 = max(-max_impulse, min(max_impulse, angular_impulse_b2))
+                        # Cap angular impulse to prevent spikes
+                        max_impulse = 0.2
+                        angular_impulse_b1 = max(-max_impulse, min(max_impulse, angular_impulse_b1))
+                        angular_impulse_b2 = max(-max_impulse, min(max_impulse, angular_impulse_b2))
 
-                    b1.angular_velocity += angular_impulse_b1
-                    b2.angular_velocity -= angular_impulse_b2
+                        b1.angular_velocity += angular_impulse_b1
+                        b2.angular_velocity -= angular_impulse_b2
+
+                        # Set yaw cooldown
+                        b1.yaw_cooldown = 0.11
+                        b2.yaw_cooldown = 0.11
 
             # Separation/tipping to prevent stuck collisions
             separation_force = params["SEPARATION_FORCE"]
@@ -8406,19 +8426,22 @@ def beetle_collision(b1, b2, params):
             # === PHASE 3: BODY ROTATION DAMPING ===
             # Track collision-induced spin direction and set damping
             # This prevents immediate rotation into collision direction, preventing horn clipping
+            # Skip damping for leg-only collisions so legs don't block turning
+            # Skip damping for bombardier beetles (no horn to clip through things)
 
-            # For beetle 1: if angular_velocity is significant, apply damping
-            if abs(b1.angular_velocity) > 0.3:  # Lower threshold for more responsiveness
-                # Store spin direction: 1 = clockwise (positive), -1 = counterclockwise (negative)
-                b1.collision_spin_direction = 1 if b1.angular_velocity > 0 else -1
-                # Apply full damping strength on any significant collision
-                b1.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
+            if collision_is_leg_only[None] == 0:
+                # For beetle 1: if angular_velocity is significant, apply damping (skip bombardier)
+                if abs(b1.angular_velocity) > 0.3 and b1.horn_type != "bombardier":
+                    # Store spin direction: 1 = clockwise (positive), -1 = counterclockwise (negative)
+                    b1.collision_spin_direction = 1 if b1.angular_velocity > 0 else -1
+                    # Apply full damping strength on any significant collision
+                    b1.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
 
-            # For beetle 2: same logic
-            if abs(b2.angular_velocity) > 0.3:
-                b2.collision_spin_direction = 1 if b2.angular_velocity > 0 else -1
-                # Apply full damping strength on any significant collision
-                b2.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
+                # For beetle 2: same logic (skip bombardier)
+                if abs(b2.angular_velocity) > 0.3 and b2.horn_type != "bombardier":
+                    b2.collision_spin_direction = 1 if b2.angular_velocity > 0 else -1
+                    # Apply full damping strength on any significant collision
+                    b2.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
     else:
         # No collision - reset smoothed collision normals
         b1.contact_normal_x = 0.0
@@ -8505,7 +8528,7 @@ physics_params = {
     "GRAVITY": 100.0,  # Adjustable gravity
     "SEPARATION_FORCE": 0.25,  # Gradual position separation on collision
     "FORWARD_SPEED": 12.0,  # Forward top speed
-    "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
+    "BACKWARD_SPEED": 9.0,  # Backward top speed (slower)
 
     # Airborne tumbling physics parameters
     "AIRBORNE_DAMPING": 0.85,  # Angular damping when airborne (0.85 = 15% loss per frame, less crazy spinning)
