@@ -1,10 +1,17 @@
 import taichi as ti
 
-# Initialize Taichi with Vulkan (skip CUDA attempt for faster startup)
-ti.init(arch=ti.vulkan, debug=False)
+# Initialize Taichi - try CUDA first, then CPU (often faster than Vulkan on laptops)
+# Vulkan can be slow on integrated GPUs and laptops without dedicated graphics
+try:
+    ti.init(arch=ti.cuda, debug=False)
+    print("Using CUDA backend")
+except:
+    # CPU is often faster than Vulkan on systems without dedicated NVIDIA GPUs
+    ti.init(arch=ti.cpu, debug=False)
+    print("Using CPU backend")
 
-# 192x192x192 grid (50% larger than 128 - GPU workgroup limit at 256)
-n_grid = 192
+# 128x128x128 grid - optimal power-of-2 size for beetle battle (GPU cache friendly)
+n_grid = 128
 voxel_type = ti.field(dtype=ti.i32, shape=(n_grid, n_grid, n_grid))
 
 # Debris particle system (flying particles from destroyed voxels)
@@ -12,8 +19,19 @@ MAX_DEBRIS = 20000  # Pre-allocated pool for performance
 num_debris = ti.field(dtype=ti.i32, shape=())  # Active particle count
 debris_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
-debris_material = ti.field(dtype=ti.i32, shape=MAX_DEBRIS)  # Original voxel type
+debris_material = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)  # RGB color (0.0-1.0)
 debris_lifetime = ti.field(dtype=ti.f32, shape=MAX_DEBRIS)  # Time alive (seconds)
+
+# Spray particle system (bombardier beetle acid spray)
+MAX_SPRAY = 500  # Pre-allocated pool for spray particles
+num_spray = ti.field(dtype=ti.i32, shape=())  # Active spray particle count
+spray_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)
+spray_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)
+spray_color = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)  # RGB color (0.0-1.0)
+spray_lifetime = ti.field(dtype=ti.f32, shape=MAX_SPRAY)  # Time alive (seconds)
+spray_owner = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 0=blue, 1=red (don't hit own beetle)
+spray_hit = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 1=hit beetle this frame, 0=no hit
+spray_hit_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)  # Position where hit occurred
 
 # Projectile system (cannonballs)
 MAX_PROJECTILES = 10  # Maximum active projectiles
@@ -22,6 +40,9 @@ projectile_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_PROJECTILES)
 projectile_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_PROJECTILES)
 projectile_active = ti.field(dtype=ti.i32, shape=MAX_PROJECTILES)  # 1 = active, 0 = inactive
 projectile_radius = ti.field(dtype=ti.f32, shape=MAX_PROJECTILES)  # Collision radius
+
+# Ball system (beetle soccer ball) - now handled by beetle_ball Beetle object in beetle_physics.py
+# (No longer using Taichi fields; ball is a Beetle with horn_type="ball")
 
 # Voxel types
 EMPTY = 0
@@ -35,6 +56,71 @@ BEETLE_BLUE_LEGS = 7  # Blue beetle legs (lighter blue)
 BEETLE_RED_LEGS = 8  # Red beetle legs (lighter red)
 LEG_TIP_BLUE = 9  # Blue beetle leg tips (dark blue for tracking)
 LEG_TIP_RED = 10  # Red beetle leg tips (dark red for tracking)
+BEETLE_BLUE_STRIPE = 11  # Blue beetle racing stripe (bright cyan/white)
+BEETLE_RED_STRIPE = 12  # Red beetle racing stripe (bright yellow/orange)
+BEETLE_BLUE_HORN_TIP = 13  # Blue beetle horn prong tips (bright white/cyan)
+BEETLE_RED_HORN_TIP = 14  # Red beetle horn prong tips (dark metallic)
+STINGER_TIP_BLACK = 15  # Scorpion stinger tips (black/dark)
+BALL = 16  # Soccer ball (bright orange/yellow)
+BALL_STRIPE = 17  # Soccer ball stripe pattern (darker for contrast)
+STAG_HOOK_INTERIOR_BLUE = 18  # Blue beetle stag hook interior (curved inward section)
+STAG_HOOK_INTERIOR_RED = 19  # Red beetle stag hook interior (curved inward section)
+SHADOW = 20  # Shadow blob beneath airborne beetles
+SLIPPERY = 21  # Slippery bowl perimeter (ball mode only)
+GOAL = 22  # Goal doorway walls (ball mode only)
+SCORE_DIGIT_BLUE = 23  # Blue team floating score digit
+SCORE_DIGIT_RED = 24  # Red team floating score digit
+ASSEMBLY_VOXEL_BALL = 27  # Ball assembly animation voxel
+VENOM_TIP_BLUE = 33  # Blue scorpion venom bulb/stinger tip (glows with charges)
+VENOM_TIP_RED = 34  # Red scorpion venom bulb/stinger tip (glows with charges)
+BEETLE_BLUE_HORN = 35  # Blue beetle horn shaft (non-tip, for collision detection)
+BEETLE_RED_HORN = 36  # Red beetle horn shaft (non-tip, for collision detection)
+
+# Score digit flash brightness (1.0 = normal, >1.0 = bright flash)
+blue_score_flash = ti.field(dtype=ti.f32, shape=())
+red_score_flash = ti.field(dtype=ti.f32, shape=())
+
+# Customizable beetle colors (RGB values in range 0.0-1.0)
+# Blue beetle colors
+blue_body_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_leg_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_leg_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_horn_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+blue_venom_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+# Red beetle colors
+red_body_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_leg_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_leg_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_horn_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+red_venom_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+# Initialize default colors
+blue_body_color[None] = ti.Vector([0.25, 0.55, 0.95])  # Desaturated blue
+blue_leg_color[None] = ti.Vector([0.4, 0.7, 1.0])  # Lighter cyan/blue
+blue_leg_tip_color[None] = ti.Vector([0.0, 0.0, 0.3])  # Very dark blue
+blue_stripe_color[None] = ti.Vector([0.6, 0.9, 1.0])  # Bright cyan
+blue_horn_tip_color[None] = ti.Vector([0.4, 0.75, 1.0])  # Bright electric blue
+blue_venom_tip_color[None] = ti.Vector([0.6, 0.2, 0.8])  # Bright purple (full venom)
+
+# Initialize score flash to normal brightness
+blue_score_flash[None] = 1.0
+red_score_flash[None] = 1.0
+
+red_body_color[None] = ti.Vector([0.95, 0.25, 0.15])  # Desaturated red
+red_leg_color[None] = ti.Vector([1.0, 0.5, 0.3])  # Lighter orange/red
+red_leg_tip_color[None] = ti.Vector([0.3, 0.0, 0.0])  # Very dark red
+red_stripe_color[None] = ti.Vector([0.85, 0.65, 0.2])  # Rich gold/bronze
+red_horn_tip_color[None] = ti.Vector([0.4, 0.1, 0.1])  # Deep crimson
+red_venom_tip_color[None] = ti.Vector([0.6, 0.2, 0.8])  # Bright purple (full venom)
+
+# Ball colors (for future customization)
+ball_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+ball_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+ball_color[None] = ti.Vector([0.65, 0.45, 0.25])  # Light brown dung color
+ball_stripe_color[None] = ti.Vector([0.35, 0.22, 0.1])  # Darker brown stripe
 
 # Material property functions (for physics calculations)
 @ti.func
@@ -273,15 +359,15 @@ def init_beetle_arena():
     for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
         voxel_type[i, j, k] = EMPTY
 
-    # Arena center (updated for 192 grid)
-    center_x = 96
+    # Arena center (updated for 128 grid)
+    center_x = 64
     center_y = -2  # Lower floor so beetle legs touch properly
-    center_z = 96
+    center_z = 64
 
     # Arena dimensions (25% smaller for closer combat)
     arena_radius = 32
     floor_thickness = 2
-    floor_y_offset = 50  # Offset to match RENDER_Y_OFFSET in beetle_physics.py
+    floor_y_offset = 33  # Offset to match RENDER_Y_OFFSET in beetle_physics.py
 
     # Build circular floor - RAISED to allow beetles to fall below and be visible
     for i in range(center_x - arena_radius - 5, center_x + arena_radius + 5):
@@ -300,6 +386,75 @@ def init_beetle_arena():
 
     print(f"BEETLE BATTLE ARENA constructed - {arena_radius}m radius circular pit")
     print(f"Two beetles placed: blue (center-west) and red (center-east)")
+
+@ti.kernel
+def render_bowl_perimeter():
+    """
+    Render slippery bowl perimeter around arena (for ball mode)
+    Creates shallow upward slope extending 8 voxels from arena edge
+    Skips goal pit areas so ball can fall through
+    """
+    center_x = 64
+    center_z = 64
+    arena_radius = 32
+    bowl_width = 12
+    floor_y_offset = 33
+    bowl_slope = 0.15  # Height increase per voxel outward (0.15 = rises 1 voxel every ~7 voxels)
+
+    # Goal pit parameters - wide enough for ball (max radius 10 = diameter 20)
+    goal_pit_half_width = 12  # Half width of pit opening (24 total, fits ball easily)
+
+    # Iterate through the bowl ring area
+    for i in range(center_x - arena_radius - bowl_width - 1, center_x + arena_radius + bowl_width + 2):
+        for k in range(center_z - arena_radius - bowl_width - 1, center_z + arena_radius + bowl_width + 2):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+            dist = ti.sqrt(dx * dx + dz * dz)
+
+            # Only place voxels in the bowl ring (outside arena, within bowl width)
+            if dist > arena_radius and dist <= arena_radius + bowl_width:
+                # Skip goal pit areas (blue goal at x<32, red goal at x>96, both at z~64)
+                in_goal_pit = False
+                if abs(k - center_z) < goal_pit_half_width:
+                    if i <= 32 or i >= 96:  # Goal pit zones
+                        in_goal_pit = True
+
+                if not in_goal_pit:
+                    # Calculate height based on distance from arena edge
+                    dist_from_edge = dist - arena_radius
+                    bowl_height = int(dist_from_edge * bowl_slope)
+                    bowl_y = floor_y_offset + bowl_height
+
+                    # Place slippery voxel
+                    if 0 <= i < n_grid and 0 <= bowl_y < n_grid and 0 <= k < n_grid:
+                        voxel_type[i, bowl_y, k] = SLIPPERY
+
+@ti.kernel
+def clear_bowl_perimeter():
+    """
+    Clear the bowl perimeter voxels (when disabling ball mode)
+    """
+    center_x = 64
+    center_z = 64
+    arena_radius = 32
+    bowl_width = 12
+    floor_y_offset = 33
+    bowl_slope = 0.15
+    max_bowl_height = int(bowl_width * bowl_slope) + 2
+
+    # Clear the bowl ring area
+    for i in range(center_x - arena_radius - bowl_width - 1, center_x + arena_radius + bowl_width + 2):
+        for k in range(center_z - arena_radius - bowl_width - 1, center_z + arena_radius + bowl_width + 2):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+            dist = ti.sqrt(dx * dx + dz * dz)
+
+            # Only clear voxels in the bowl ring area
+            if dist > arena_radius and dist <= arena_radius + bowl_width + 1:
+                for j in range(floor_y_offset, floor_y_offset + max_bowl_height + 1):
+                    if 0 <= i < n_grid and 0 <= j < n_grid and 0 <= k < n_grid:
+                        if voxel_type[i, j, k] == SLIPPERY:
+                            voxel_type[i, j, k] = EMPTY
 
 @ti.kernel
 def init_mega_fortress():
