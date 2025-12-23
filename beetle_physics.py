@@ -557,6 +557,10 @@ class Beetle:
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
         self.tip_cooldown = 0.0   # Time remaining before next tipping torque (separate from lift)
 
+        # Predictive collision smoothing (prevents horn clipping during fast spins)
+        self.predictive_push_x = 0.0
+        self.predictive_push_z = 0.0
+
         # Body rotation damping state (Phase 3: Directional Rotation Prevention)
         self.body_rotation_damping = 0.0  # Rotation resistance after collision (0.0-1.0)
         self.collision_spin_direction = 0  # Which way collision made us spin (-1=CCW, 0=none, 1=CW)
@@ -761,17 +765,24 @@ class Beetle:
             self.vz -= 2 * dot * normal_z * 0.5
 
 # Game state
-match_winner = None  # "BLUE" or "RED" when a beetle dies
-victory_pulse_timer = 0.0  # Timer for winner glow effect
+match_winner = None  # Legacy variable, no longer used (kept for compatibility with reset_match)
+blue_celebrating = False  # True when blue scores (red died)
+red_celebrating = False   # True when red scores (blue died)
+victory_pulse_timer = 0.0  # Legacy timer (kept for compatibility)
+blue_pulse_timer = 0.0  # Independent timer for blue's celebration
+red_pulse_timer = 0.0   # Independent timer for red's celebration
+blue_confetti_timer = 0.0  # Independent confetti timer for blue
+red_confetti_timer = 0.0   # Independent confetti timer for red
 VICTORY_PULSE_DURATION = 5.0  # Pulse for 5 seconds after victory
-victory_confetti_timer = 0.0  # Timer for spawning confetti waves
+victory_confetti_timer = 0.0  # Legacy timer (kept for compatibility)
 VICTORY_CONFETTI_DELAY = 0.6  # Wait 600ms before starting confetti
 VICTORY_CONFETTI_INTERVAL = 0.15  # Spawn confetti every 0.15 seconds during victory
 VICTORY_CONFETTI_PARTICLES = 30  # Particles per spawn wave
 
 def reset_match():
     """Reset beetles to starting positions for new match"""
-    global beetle_blue, beetle_red, match_winner, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
+    global beetle_blue, beetle_red, match_winner, blue_celebrating, red_celebrating, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
+    global blue_pulse_timer, red_pulse_timer, blue_confetti_timer, red_confetti_timer
     global spray_charges_blue, spray_charges_red, spray_recharge_timer_blue, spray_recharge_timer_red
     global stripe_color_blue, stripe_color_red
     global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red, prev_spray_aim_blue, prev_spray_aim_red
@@ -790,8 +801,14 @@ def reset_match():
     beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
     beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
     match_winner = None
+    blue_celebrating = False
+    red_celebrating = False
     victory_pulse_timer = 0.0
     victory_confetti_timer = 0.0
+    blue_pulse_timer = 0.0
+    red_pulse_timer = 0.0
+    blue_confetti_timer = 0.0
+    red_confetti_timer = 0.0
 
     # Reset spray charges for bombardier beetles
     spray_charges_blue = SPRAY_MAX_CHARGES
@@ -1712,6 +1729,9 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                 beetle1_y_max = -1
                 beetle2_y_min = 999
                 beetle2_y_max = -1
+                # Track if column has non-leg-tip voxels (for less sensitive leg collision)
+                has_non_leg_tip_1 = 0
+                has_non_leg_tip_2 = 0
 
                 # Find Y-ranges for both beetles/ball in this column (includes legs and tips!)
                 # OPTIMIZED: Adaptive Y-range based on beetle height (grounded vs airborne)
@@ -1743,24 +1763,38 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
 
                     # Check if voxel belongs to entity 1 (based on color1)
                     belongs_to_1 = 0
+                    is_leg_tip_1 = 0
                     if color1 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
-                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
+                        if voxel == 5 or voxel == 7 or voxel == 11 or voxel == 13 or voxel == 18:
                             belongs_to_1 = 1
+                        elif voxel == 9:  # Leg tip - track separately
+                            belongs_to_1 = 1
+                            is_leg_tip_1 = 1
                     elif color1 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
-                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
+                        if voxel == 6 or voxel == 8 or voxel == 12 or voxel == 14 or voxel == 19:
                             belongs_to_1 = 1
+                        elif voxel == 10:  # Leg tip - track separately
+                            belongs_to_1 = 1
+                            is_leg_tip_1 = 1
                     elif color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
                             belongs_to_1 = 1
 
                     # Check if voxel belongs to entity 2 (based on color2)
                     belongs_to_2 = 0
+                    is_leg_tip_2 = 0
                     if color2 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
-                        if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18:
+                        if voxel == 5 or voxel == 7 or voxel == 11 or voxel == 13 or voxel == 18:
                             belongs_to_2 = 1
+                        elif voxel == 9:  # Leg tip - track separately
+                            belongs_to_2 = 1
+                            is_leg_tip_2 = 1
                     elif color2 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
-                        if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19:
+                        if voxel == 6 or voxel == 8 or voxel == 12 or voxel == 14 or voxel == 19:
                             belongs_to_2 = 1
+                        elif voxel == 10:  # Leg tip - track separately
+                            belongs_to_2 = 1
+                            is_leg_tip_2 = 1
                     elif color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
                             belongs_to_2 = 1
@@ -1771,12 +1805,18 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                             beetle1_y_min = gy
                         if gy > beetle1_y_max:
                             beetle1_y_max = gy
+                        # Track if this column has only leg tips for beetle1
+                        if is_leg_tip_1 == 0:
+                            has_non_leg_tip_1 = 1
 
                     if belongs_to_2 == 1:
                         if gy < beetle2_y_min:
                             beetle2_y_min = gy
                         if gy > beetle2_y_max:
                             beetle2_y_max = gy
+                        # Track if this column has only leg tips for beetle2
+                        if is_leg_tip_2 == 0:
+                            has_non_leg_tip_2 = 1
 
                 # Check if Y-ranges overlap or are adjacent (variable tolerance based on voxel types)
                 if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
@@ -1786,12 +1826,19 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                     if color1 == simulation.BALL or color2 == simulation.BALL:
                         is_ball_involved = 1
 
+                    # Check if collision involves only leg tips (less sensitive)
+                    is_leg_tip_only = 0
+                    if has_non_leg_tip_1 == 0 or has_non_leg_tip_2 == 0:
+                        is_leg_tip_only = 1
+
                     # Initialize tolerance (required by Taichi)
                     tolerance = 3  # Default: beetle-beetle (±3 voxels for earlier detection)
                     if has_hook_interior == 1:
                         tolerance = 5
                     elif is_ball_involved == 1:
                         tolerance = 0  # Ball needs tight collision - no early detection
+                    elif is_leg_tip_only == 1:
+                        tolerance = -2  # Leg tips need actual overlap (stricter)
 
                     if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
                         collision = 1
@@ -5754,6 +5801,113 @@ def calculate_horn_tip_position(beetle):
 
     return world_x, world_y, world_z
 
+def calculate_horn_shaft_base_position(beetle):
+    """Calculate world position of horn shaft base (attachment point) for cylinder collision"""
+    # Shaft base in local coordinates - where horn attaches to body
+    # Moved closer to body to cover more of the attachment area
+    # For rhino: geometry starts at x=2, so base at x=2 covers full shaft
+    if beetle.horn_type == "rhino":
+        base_local_x = 2.0  # Start of meaty base (covers full attachment)
+        base_local_y = 1.0  # Bottom of base
+        base_local_z = 0.0
+    elif beetle.horn_type == "stag":
+        base_local_x = 2.0  # Closer to body
+        base_local_y = 1.0
+        base_local_z = 0.0
+    elif beetle.horn_type == "hercules":
+        base_local_x = 3.0  # Closer to body
+        base_local_y = 6.0  # Top horn attachment
+        base_local_z = 0.0
+    elif beetle.horn_type == "atlas":
+        base_local_x = 3.0  # Closer to body
+        base_local_y = 1.0
+        base_local_z = 0.0
+    else:
+        # Scorpion/bombardier - no shaft to check
+        return beetle.x, beetle.y, beetle.z
+
+    # Step 1: Translate to horn pivot (3.0, 1, 0)
+    rel_x = base_local_x - 3.0
+    rel_y = base_local_y - 1.0
+    rel_z = base_local_z
+
+    # Step 2: Apply horn pitch rotation (around Z-axis)
+    cos_horn_pitch = math.cos(beetle.horn_pitch)
+    sin_horn_pitch = math.sin(beetle.horn_pitch)
+    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+    pitched_z = rel_z
+
+    # Step 3: Apply horn yaw rotation
+    cos_horn_yaw = math.cos(beetle.horn_yaw)
+    sin_horn_yaw = math.sin(beetle.horn_yaw)
+
+    if beetle.horn_type == "stag":
+        yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        yawed_y = pitched_y
+    elif beetle.horn_type == "hercules":
+        yawed_x = pitched_x
+        yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
+        yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
+    else:
+        yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+        yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        yawed_y = pitched_y
+
+    # Step 4: Translate back from pivot
+    local_x = yawed_x + 3.0
+    local_y = yawed_y + 1.0
+    local_z = yawed_z
+
+    # Step 5: Apply beetle body yaw rotation (around Y-axis)
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    rotated_x = local_x * cos_rotation - local_z * sin_rotation
+    rotated_z = local_x * sin_rotation + local_z * cos_rotation
+    rotated_y = local_y
+
+    # Step 6: Translate to world position
+    world_x = beetle.x + rotated_x
+    world_y = beetle.y + rotated_y
+    world_z = beetle.z + rotated_z
+
+    return world_x, world_y, world_z
+
+
+def point_to_line_segment_distance(px, py, pz, ax, ay, az, bx, by, bz):
+    """Calculate shortest distance from point P to line segment AB"""
+    # Vector from A to B
+    abx = bx - ax
+    aby = by - ay
+    abz = bz - az
+
+    # Vector from A to P
+    apx = px - ax
+    apy = py - ay
+    apz = pz - az
+
+    # Project AP onto AB, clamped to [0, 1]
+    ab_len_sq = abx*abx + aby*aby + abz*abz
+    if ab_len_sq < 0.001:
+        # Degenerate segment (A == B), return distance to A
+        return math.sqrt(apx*apx + apy*apy + apz*apz)
+
+    t = (apx*abx + apy*aby + apz*abz) / ab_len_sq
+    t = max(0.0, min(1.0, t))  # Clamp to segment
+
+    # Closest point on segment
+    closest_x = ax + t * abx
+    closest_y = ay + t * aby
+    closest_z = az + t * abz
+
+    # Distance from P to closest point
+    dx = px - closest_x
+    dy = py - closest_y
+    dz = pz - closest_z
+    return math.sqrt(dx*dx + dy*dy + dz*dz)
+
+
 def calculate_horn_tip_position_with_yaw(beetle, yaw_angle):
     """Calculate horn tip position with a specific yaw angle (for predictive collision checking)"""
     # Horn tip in local coordinates (same as base function)
@@ -7428,6 +7582,153 @@ def beetle_collision(b1, b2, params):
     # Detect if this is a ball collision (ball uses different, gentler physics)
     is_ball_collision = (b1.horn_type == "ball" or b2.horn_type == "ball")
 
+    # PREDICTIVE COLLISION CHECK: Prevent horn clipping during fast spins
+    # Check if horn tips WILL BE close next frame, apply gentle preventive push
+    if not is_ball_collision:
+        dt = PHYSICS_TIMESTEP
+        predictive_threshold = params.get("PREDICTIVE_COLLISION_DIST", 8.0)
+        predictive_push = params.get("PREDICTIVE_COLLISION_PUSH", 0.3)
+
+        # Calculate predicted angles for both beetles (current + velocity * dt)
+        pred_pitch1 = b1.horn_pitch + b1.horn_pitch_velocity * dt
+        pred_yaw1 = b1.horn_yaw + b1.horn_yaw_velocity * dt
+        pred_rotation1 = b1.rotation + b1.angular_velocity * dt
+
+        pred_pitch2 = b2.horn_pitch + b2.horn_pitch_velocity * dt
+        pred_yaw2 = b2.horn_yaw + b2.horn_yaw_velocity * dt
+        pred_rotation2 = b2.rotation + b2.angular_velocity * dt
+
+        # Get predicted tip positions (use function then apply predicted body rotation)
+        # For b1: calculate tip with predicted pitch/yaw
+        tip1_x, tip1_y, tip1_z = calculate_horn_tip_position_with_both(b1, pred_pitch1, pred_yaw1)
+        # Adjust for predicted body rotation (undo current rotation, apply predicted)
+        rel1_x = tip1_x - b1.x
+        rel1_z = tip1_z - b1.z
+        cos_curr1 = math.cos(b1.rotation)
+        sin_curr1 = math.sin(b1.rotation)
+        # Undo current rotation
+        local1_x = rel1_x * cos_curr1 + rel1_z * sin_curr1
+        local1_z = -rel1_x * sin_curr1 + rel1_z * cos_curr1
+        # Apply predicted rotation
+        cos_pred1 = math.cos(pred_rotation1)
+        sin_pred1 = math.sin(pred_rotation1)
+        pred_tip1_x = b1.x + local1_x * cos_pred1 - local1_z * sin_pred1
+        pred_tip1_z = b1.z + local1_x * sin_pred1 + local1_z * cos_pred1
+        pred_tip1_y = tip1_y
+
+        # For b2: same process
+        tip2_x, tip2_y, tip2_z = calculate_horn_tip_position_with_both(b2, pred_pitch2, pred_yaw2)
+        rel2_x = tip2_x - b2.x
+        rel2_z = tip2_z - b2.z
+        cos_curr2 = math.cos(b2.rotation)
+        sin_curr2 = math.sin(b2.rotation)
+        local2_x = rel2_x * cos_curr2 + rel2_z * sin_curr2
+        local2_z = -rel2_x * sin_curr2 + rel2_z * cos_curr2
+        cos_pred2 = math.cos(pred_rotation2)
+        sin_pred2 = math.sin(pred_rotation2)
+        pred_tip2_x = b2.x + local2_x * cos_pred2 - local2_z * sin_pred2
+        pred_tip2_z = b2.z + local2_x * sin_pred2 + local2_z * cos_pred2
+        pred_tip2_y = tip2_y
+
+        # Check 3D distance between predicted tips
+        dx = pred_tip1_x - pred_tip2_x
+        dy = pred_tip1_y - pred_tip2_y
+        dz = pred_tip1_z - pred_tip2_z
+        tip_dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+
+        # If tips will be close, apply gentle preventive separation
+        if tip_dist < predictive_threshold and tip_dist > 0.1:
+            # Normalize direction
+            nx = dx / tip_dist
+            ny = dy / tip_dist
+            nz = dz / tip_dist
+
+            # Gentle push - scale by how close they'll be (closer = stronger push)
+            target_push = predictive_push * (1.0 - tip_dist / predictive_threshold)
+
+            # Smooth the push (ramp up gradually instead of instant)
+            smoothing = params.get("PREDICTIVE_COLLISION_SMOOTHING", 0.3)
+            b1.predictive_push_x = b1.predictive_push_x * (1.0 - smoothing) + (nx * target_push) * smoothing
+            b1.predictive_push_z = b1.predictive_push_z * (1.0 - smoothing) + (nz * target_push) * smoothing
+            b2.predictive_push_x = b2.predictive_push_x * (1.0 - smoothing) + (-nx * target_push) * smoothing
+            b2.predictive_push_z = b2.predictive_push_z * (1.0 - smoothing) + (-nz * target_push) * smoothing
+
+            # Apply smoothed push
+            b1.x += b1.predictive_push_x
+            b1.z += b1.predictive_push_z
+            b2.x += b2.predictive_push_x
+            b2.z += b2.predictive_push_z
+        else:
+            # Decay push when not needed (smooth ramp down)
+            decay = 0.8
+            b1.predictive_push_x *= decay
+            b1.predictive_push_z *= decay
+            b2.predictive_push_x *= decay
+            b2.predictive_push_z *= decay
+
+    # SHAFT CYLINDER COLLISION CHECK: Catch shaft/attachment collisions that voxels miss
+    # Check if opponent's body center is within a cylinder around each beetle's horn shaft
+    if not is_ball_collision:
+        shaft_cylinder_radius = params.get("SHAFT_CYLINDER_RADIUS", 6.0)
+        shaft_cylinder_push = params.get("SHAFT_CYLINDER_PUSH", 0.25)
+
+        # Skip for scorpion/bombardier (no forward shaft)
+        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas")
+        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas")
+
+        if b1_has_shaft or b2_has_shaft:
+            # Get shaft endpoints for beetles with horns
+            if b1_has_shaft:
+                b1_base_x, b1_base_y, b1_base_z = calculate_horn_shaft_base_position(b1)
+                b1_tip_x, b1_tip_y, b1_tip_z = calculate_horn_tip_position(b1)
+            if b2_has_shaft:
+                b2_base_x, b2_base_y, b2_base_z = calculate_horn_shaft_base_position(b2)
+                b2_tip_x, b2_tip_y, b2_tip_z = calculate_horn_tip_position(b2)
+
+            # Check b2's body against b1's shaft cylinder
+            if b1_has_shaft:
+                dist_to_b1_shaft = point_to_line_segment_distance(
+                    b2.x, b2.y, b2.z,
+                    b1_base_x, b1_base_y, b1_base_z,
+                    b1_tip_x, b1_tip_y, b1_tip_z
+                )
+                if dist_to_b1_shaft < shaft_cylinder_radius:
+                    # Push b2 away from b1's shaft
+                    # Direction: from closest point on shaft toward b2
+                    push_strength = shaft_cylinder_push * (1.0 - dist_to_b1_shaft / shaft_cylinder_radius)
+                    # Use direction from b1 center to b2 center as approximation
+                    dx = b2.x - b1.x
+                    dz = b2.z - b1.z
+                    dist = math.sqrt(dx*dx + dz*dz)
+                    if dist > 0.1:
+                        nx = dx / dist
+                        nz = dz / dist
+                        b2.x += nx * push_strength
+                        b2.z += nz * push_strength
+                        b1.x -= nx * push_strength * 0.3  # Slight counter-push
+                        b1.z -= nz * push_strength * 0.3
+
+            # Check b1's body against b2's shaft cylinder
+            if b2_has_shaft:
+                dist_to_b2_shaft = point_to_line_segment_distance(
+                    b1.x, b1.y, b1.z,
+                    b2_base_x, b2_base_y, b2_base_z,
+                    b2_tip_x, b2_tip_y, b2_tip_z
+                )
+                if dist_to_b2_shaft < shaft_cylinder_radius:
+                    # Push b1 away from b2's shaft
+                    push_strength = shaft_cylinder_push * (1.0 - dist_to_b2_shaft / shaft_cylinder_radius)
+                    dx = b1.x - b2.x
+                    dz = b1.z - b2.z
+                    dist = math.sqrt(dx*dx + dz*dz)
+                    if dist > 0.1:
+                        nx = dx / dist
+                        nz = dz / dist
+                        b1.x += nx * push_strength
+                        b1.z += nz * push_strength
+                        b2.x -= nx * push_strength * 0.3  # Slight counter-push
+                        b2.z -= nz * push_strength * 0.3
+
     # Fast GPU-based collision check
     has_collision = check_collision_kernel(b1.x, b1.z, b1.y, b2.x, b2.z, b2.y, b1.color, b2.color)
 
@@ -7557,6 +7858,12 @@ def beetle_collision(b1, b2, params):
                     # Clamp to 0 minimum to prevent math.log domain error for low collisions
                     raw_leverage = max(contact_height_above_center / 3.0, 0.0)
                     horn_leverage = min(math.log(raw_leverage + 1.0) * 2.0, 2.5)
+
+                    # TIP vs SHAFT: Tips have full leverage, shaft hits have reduced leverage
+                    # Shaft hits (no tip voxels) have less mechanical advantage
+                    if has_horn_tips == 0:
+                        shaft_leverage_mult = params.get("SHAFT_LEVERAGE_MULT", 0.4)
+                        horn_leverage *= shaft_leverage_mult
 
                     # Add MASSIVE upward bias to the collision normal
                     normal_y += horn_leverage * 2.5  # 5x stronger than before!
@@ -7780,6 +8087,52 @@ def beetle_collision(b1, b2, params):
                     b1.angular_velocity += angular_impulse_b1
                     b2.angular_velocity -= angular_impulse_b2
 
+                    # AWAY-FROM-ATTACKER BIAS: Ensure hit beetle spins away from attacker
+                    # This fixes counterintuitive behavior where shaft hits cause turning INTO attacker
+                    b1_toward_bias = b1.vx * (-normal_x) + b1.vz * (-normal_z)
+                    b2_toward_bias = b2.vx * normal_x + b2.vz * normal_z
+                    b1_toward_bias = max(b1_toward_bias, 0.0)
+                    b2_toward_bias = max(b2_toward_bias, 0.0)
+
+                    bias_strength = params.get("COLLISION_SPIN_BIAS", 0.8)
+
+                    # TIP vs SHAFT: Shaft hits need MORE spin bias to counteract wrong-direction torque
+                    if has_horn_tips == 0:
+                        shaft_spin_mult = params.get("SHAFT_SPIN_BIAS_MULT", 2.0)
+                        bias_strength *= shaft_spin_mult
+
+                    # b1 is attacking b2 - make b2 spin away from b1
+                    if b1_toward_bias > b2_toward_bias + 0.5:
+                        # Calculate angle from b2 to b1 (attack direction)
+                        attack_angle = math.atan2(-normal_z, -normal_x)
+                        victim_facing = b2.rotation
+                        angle_diff = attack_angle - victim_facing
+                        # Normalize to [-pi, pi]
+                        while angle_diff > math.pi: angle_diff -= TWO_PI
+                        while angle_diff < -math.pi: angle_diff += TWO_PI
+
+                        # Spin direction to turn nose away from attacker
+                        away_spin = -1.0 if angle_diff > 0 else 1.0
+
+                        # Scale by momentum difference
+                        momentum_factor = (b1_toward_bias - b2_toward_bias) / (b1_toward_bias + b2_toward_bias + 0.01)
+                        bias_torque = away_spin * bias_strength * momentum_factor * horn_leverage
+                        b2.angular_velocity += bias_torque / b2.moment_of_inertia
+
+                    # b2 is attacking b1 - make b1 spin away from b2
+                    elif b2_toward_bias > b1_toward_bias + 0.5:
+                        attack_angle = math.atan2(normal_z, normal_x)
+                        victim_facing = b1.rotation
+                        angle_diff = attack_angle - victim_facing
+                        while angle_diff > math.pi: angle_diff -= TWO_PI
+                        while angle_diff < -math.pi: angle_diff += TWO_PI
+
+                        away_spin = -1.0 if angle_diff > 0 else 1.0
+
+                        momentum_factor = (b2_toward_bias - b1_toward_bias) / (b1_toward_bias + b2_toward_bias + 0.01)
+                        bias_torque = away_spin * bias_strength * momentum_factor * horn_leverage
+                        b1.angular_velocity += bias_torque / b1.moment_of_inertia
+
             # Separation/tipping to prevent stuck collisions
             separation_force = params["SEPARATION_FORCE"]
 
@@ -7837,7 +8190,12 @@ def beetle_collision(b1, b2, params):
 
                 # Reduced separation for horns (20% of normal to prevent complete overlap)
                 # Applied every frame regardless of cooldown
-                mini_sep = separation_force * 0.2
+                # TIP vs SHAFT: Shaft hits need MORE separation to prevent clipping
+                if has_horn_tips == 1:
+                    mini_sep = separation_force * 0.2  # Tips: 20% separation (they lock well)
+                else:
+                    shaft_sep_mult = params.get("SHAFT_SEPARATION_MULT", 0.5)
+                    mini_sep = separation_force * shaft_sep_mult  # Shaft: more separation to prevent clip
 
                 # MOMENTUM-BASED SEPARATION: Moving beetle pushes stationary one more
                 # Calculate each beetle's velocity toward the other (dot product with collision normal)
@@ -7872,13 +8230,46 @@ def beetle_collision(b1, b2, params):
                 b1_push_ratio = b1_toward / total_momentum
                 b2_push_ratio = b2_toward / total_momentum
 
-                b1_sep = separation_force * (1.7 - b1_push_ratio * 1.4)
-                b2_sep = separation_force * (1.7 - b2_push_ratio * 1.4)
+                # Body-to-body: 70% weaker separation (0.3x), ball keeps full separation
+                body_sep_mult = 0.3 if not is_ball_collision else 1.0
+                b1_sep = separation_force * body_sep_mult * (1.7 - b1_push_ratio * 1.4)
+                b2_sep = separation_force * body_sep_mult * (1.7 - b2_push_ratio * 1.4)
 
                 b1.x += normal_x * b1_sep
                 b1.z += normal_z * b1_sep
                 b2.x -= normal_x * b2_sep
                 b2.z -= normal_z * b2_sep
+
+                # BODY COLLISION TILT: Bodies tilt in opposite directions on impact
+                if not is_ball_collision:
+                    body_tilt_strength = params.get("BODY_TILT_STRENGTH", 1.2)
+
+                    # Calculate lever arms in each beetle's local space
+                    world_lever1_x = collision_x - b1.x
+                    world_lever1_z = collision_z - b1.z
+                    cos_r1 = math.cos(b1.rotation)
+                    sin_r1 = math.sin(b1.rotation)
+                    local1_x = world_lever1_x * cos_r1 + world_lever1_z * sin_r1  # left/right
+                    local1_z = world_lever1_z * cos_r1 - world_lever1_x * sin_r1  # front/back
+
+                    world_lever2_x = collision_x - b2.x
+                    world_lever2_z = collision_z - b2.z
+                    cos_r2 = math.cos(b2.rotation)
+                    sin_r2 = math.sin(b2.rotation)
+                    local2_x = world_lever2_x * cos_r2 + world_lever2_z * sin_r2
+                    local2_z = world_lever2_z * cos_r2 - world_lever2_x * sin_r2
+
+                    # Scale tilt by momentum (pusher tips less, pushed tips more)
+                    b1_tilt = body_tilt_strength * (1.5 - b1_push_ratio)
+                    b2_tilt = body_tilt_strength * (1.5 - b2_push_ratio)
+
+                    # Pitch: opposite directions (one tips forward, other tips back)
+                    b1.pitch_velocity += local1_z * b1_tilt / b1.pitch_inertia
+                    b2.pitch_velocity -= local2_z * b2_tilt / b2.pitch_inertia  # Opposite sign
+
+                    # Roll: both tilt away from collision point
+                    b1.roll_velocity -= local1_x * b1_tilt / b1.roll_inertia
+                    b2.roll_velocity += local2_x * b2_tilt / b2.roll_inertia  # Opposite sign
 
             # VERTICAL SEPARATION - only when both beetles are airborne
             # This prevents floor voxel destruction and maintains symmetry
@@ -8167,8 +8558,21 @@ physics_params = {
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
     "TUMBLE_MULTIPLIER": 5.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
-    "HORN_LIFT_STRENGTH": 0.45,  # Multiplier for horn combat lift force (higher = more intense lifts)
+    "HORN_LIFT_STRENGTH": 0.7,  # Multiplier for horn combat lift force (higher = more intense lifts)
     "HORN_TIP_STRENGTH": 1.5,  # Tipping torque strength for horn collisions (replaces separation)
+    "COLLISION_SPIN_BIAS": 0.8,  # Strength of away-from-attacker spin bias (prevents turning into collisions)
+    "BODY_TILT_STRENGTH": 1.8,  # How much bodies tilt on body-to-body collisions (opposite directions)
+    # TIP vs SHAFT collision parameters
+    "SHAFT_LEVERAGE_MULT": 0.4,  # Shaft hits have 40% of tip leverage (less mechanical advantage)
+    "SHAFT_SPIN_BIAS_MULT": 2.0,  # Shaft hits get 2x spin bias (counteract wrong-direction torque)
+    "SHAFT_SEPARATION_MULT": 0.5,  # Shaft hits get 50% separation vs 20% for tips (prevent clipping)
+    # Predictive collision (prevents horn clipping during fast spins)
+    "PREDICTIVE_COLLISION_DIST": 5.0,  # Check if tips will be within this distance next frame
+    "PREDICTIVE_COLLISION_PUSH": 0.18,  # Gentle preventive push strength
+    "PREDICTIVE_COLLISION_SMOOTHING": 0.3,  # How fast push ramps up (0.3 = 30% per frame)
+    # Shaft cylinder collision (catches shaft/attachment area that voxels miss)
+    "SHAFT_CYLINDER_RADIUS": 7.0,  # Collision cylinder radius around horn shaft
+    "SHAFT_CYLINDER_PUSH": 0.25,  # Push strength when inside shaft cylinder
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
@@ -9054,10 +9458,10 @@ while window.running:
             if blue_close_to_ball or red_close_to_ball:
                 if not g['ball_has_exploded']:
                     clear_and_render_ball_fast(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
-                # Run ball collision only for close beetles
-                if blue_close_to_ball:
+                # Run ball collision only for close beetles (skip if beetle is falling)
+                if blue_close_to_ball and not beetle_blue.is_falling:
                     beetle_collision(beetle_blue, beetle_ball, physics_params)
-                if red_close_to_ball:
+                if red_close_to_ball and not beetle_red.is_falling:
                     beetle_collision(beetle_red, beetle_ball, physics_params)
 
         # === BALL PHYSICS TIMING END ===
@@ -9353,12 +9757,18 @@ while window.running:
 
             # After ball explosion completes, trigger winner celebration (confetti + flash)
             CELEBRATION_DELAY = 0.7  # After ball explosion
-            if g['goal_celebration_timer'] >= CELEBRATION_DELAY and victory_pulse_timer == 0.0:
-                # Trigger victory pulse for the scorer
-                victory_pulse_timer = 0.001  # Start the pulse (non-zero triggers it)
-                # Set temporary winner for confetti colors
-                match_winner = g['goal_scored_by']
-                print(f"{g['goal_scored_by']} SCORES!")
+            scorer = g['goal_scored_by']
+            blue_not_started = (scorer == "BLUE" and blue_pulse_timer == 0.0)
+            red_not_started = (scorer == "RED" and red_pulse_timer == 0.0)
+            if g['goal_celebration_timer'] >= CELEBRATION_DELAY and (blue_not_started or red_not_started):
+                # Set celebration flag and start pulse for the scorer
+                if scorer == "BLUE":
+                    blue_celebrating = True
+                    blue_pulse_timer = 0.001
+                elif scorer == "RED":
+                    red_celebrating = True
+                    red_pulse_timer = 0.001
+                print(f"{scorer} SCORES!")
 
             # Reset celebration after it's done
             CELEBRATION_DURATION = 4.0  # Total celebration time
@@ -9379,9 +9789,13 @@ while window.running:
             if g['goal_celebration_timer'] >= CELEBRATION_DURATION:
                 g['goal_scored_by'] = None
                 g['goal_celebration_timer'] = 0.0
-                # Reset match_winner so it doesn't permanently affect the game
-                match_winner = None
-                victory_pulse_timer = 0.0
+                # Reset celebration flags so next goal can trigger celebration
+                blue_celebrating = False
+                red_celebrating = False
+                blue_pulse_timer = 0.0
+                red_pulse_timer = 0.0
+                blue_confetti_timer = 0.0
+                red_confetti_timer = 0.0
                 # Reset ball for next round - respawn at center
                 g['ball_has_exploded'] = False
                 g['ball_explosion_delay'] = 0.0
@@ -9402,28 +9816,28 @@ while window.running:
                 print("Ball respawned!")
 
         # Stage 2: Full removal - deactivate completely
-        if beetle_blue.active and beetle_blue.y < FALL_DEATH_Y:
+        blue_dying = beetle_blue.active and beetle_blue.y < FALL_DEATH_Y
+        red_dying = beetle_red.active and beetle_red.y < FALL_DEATH_Y
+
+        if blue_dying:
             beetle_blue.active = False
             print("BLUE BEETLE FELL INTO THE ABYSS!")
-            if match_winner is None:
-                match_winner = "RED"
-                # Start victory celebration (flash + confetti) in normal mode
+            # Red scores when blue dies
+            if not red_celebrating:
+                red_celebrating = True
                 if not beetle_ball.active:
-                    victory_pulse_timer = 0.001  # Trigger victory pulse
-                print("\n" + "="*50)
-                print("RED BEETLE WINS!")
-                print("="*50 + "\n")
-        if beetle_red.active and beetle_red.y < FALL_DEATH_Y:
+                    red_pulse_timer = 0.001  # Start red's independent celebration
+                print("RED SCORES!")
+
+        if red_dying:
             beetle_red.active = False
             print("RED BEETLE FELL INTO THE ABYSS!")
-            if match_winner is None:
-                match_winner = "BLUE"
-                # Start victory celebration (flash + confetti) in normal mode
+            # Blue scores when red dies
+            if not blue_celebrating:
+                blue_celebrating = True
                 if not beetle_ball.active:
-                    victory_pulse_timer = 0.001  # Trigger victory pulse
-                print("\n" + "="*50)
-                print("BLUE BEETLE WINS!")
-                print("="*50 + "\n")
+                    blue_pulse_timer = 0.001  # Start blue's independent celebration
+                print("BLUE SCORES!")
 
         # Beetle respawn timers (works in both normal and ball mode)
         # Blue beetle respawn with assembly animation
@@ -9460,9 +9874,10 @@ while window.running:
                 beetle_blue.has_exploded = False
                 beetle_blue.is_falling = False
                 beetle_blue.on_ground = False  # Will fall to ground
-                # Reset match winner so next death can trigger celebration
-                match_winner = None
-                victory_pulse_timer = 0.0
+                # Only reset red's celebration (they scored on blue)
+                red_celebrating = False
+                red_pulse_timer = 0.0
+                red_confetti_timer = 0.0
                 print("Blue beetle respawned!")
 
         # Red beetle respawn with assembly animation
@@ -9499,9 +9914,10 @@ while window.running:
                 beetle_red.has_exploded = False
                 beetle_red.is_falling = False
                 beetle_red.on_ground = False  # Will fall to ground
-                # Reset match winner so next death can trigger celebration
-                match_winner = None
-                victory_pulse_timer = 0.0
+                # Only reset blue's celebration (they scored on red)
+                blue_celebrating = False
+                blue_pulse_timer = 0.0
+                blue_confetti_timer = 0.0
                 print("Red beetle respawned!")
 
         # === RESPAWN TIMERS TIMING END ===
@@ -9626,8 +10042,8 @@ while window.running:
         _t_floor_end = time.perf_counter()
         _physics_timing['floor_collision'] += (_t_floor_end - _t_respawn_end) * 1000
 
-        # Beetle collision (voxel-perfect) - only if both beetles are active
-        if beetle_blue.active and beetle_red.active:
+        # Beetle collision (voxel-perfect) - only if both beetles are active and neither is falling
+        if beetle_blue.active and beetle_red.active and not beetle_blue.is_falling and not beetle_red.is_falling:
             beetle_collision(beetle_blue, beetle_red, physics_params)
 
         # === BEETLE COLLISION TIMING END ===
@@ -10043,98 +10459,109 @@ while window.running:
     beetle_blue.is_lifted_high = (beetle_blue.y > LIFT_THRESHOLD)
     beetle_red.is_lifted_high = (beetle_red.y > LIFT_THRESHOLD)
 
-    # Victory pulse effect - winner beetle glows after a KO
-    if match_winner is not None and victory_pulse_timer < VICTORY_PULSE_DURATION:
-        victory_pulse_timer += frame_dt
+    # Victory pulse effect - each beetle has independent celebration timer
+    confetti_height = 50.0  # High above the arena
+
+    # BLUE's independent celebration
+    if blue_celebrating and blue_pulse_timer < VICTORY_PULSE_DURATION:
+        blue_pulse_timer += frame_dt
         # Fade out intensity over duration (1.0 at start, 0.0 at end)
-        fade = 1.0 - (victory_pulse_timer / VICTORY_PULSE_DURATION)
+        blue_fade = 1.0 - (blue_pulse_timer / VICTORY_PULSE_DURATION)
         # Pulsing brightness: oscillates between 1.0 and 1.6, fading to 1.0 over time
-        pulse = 1.0 + 0.6 * fade * math.sin(victory_pulse_timer * 10.0)  # Fast pulse that fades
+        blue_pulse = 1.0 + 0.6 * blue_fade * math.sin(blue_pulse_timer * 10.0)
 
-        # Victory confetti - rain down colored particles during victory (after initial delay)
-        if victory_pulse_timer >= VICTORY_CONFETTI_DELAY:
-            victory_confetti_timer += frame_dt
-            if victory_confetti_timer >= VICTORY_CONFETTI_INTERVAL:
-                victory_confetti_timer = 0.0
-                # Spawn confetti above the arena center at a high position
-                confetti_height = 50.0  # High above the arena
-                if match_winner == "BLUE":
-                    b_body = window.blue_body_color
-                    b_leg = window.blue_leg_color
-                    b_stripe = window.blue_stripe_color
-                    b_tip = window.blue_horn_tip_color
-                    spawn_victory_confetti(0.0, 0.0, confetti_height,
-                                           b_body[0], b_body[1], b_body[2],
-                                           b_leg[0], b_leg[1], b_leg[2],
-                                           b_stripe[0], b_stripe[1], b_stripe[2],
-                                           b_tip[0], b_tip[1], b_tip[2],
-                                           VICTORY_CONFETTI_PARTICLES)
-                else:  # RED winner
-                    r_body = window.red_body_color
-                    r_leg = window.red_leg_color
-                    r_stripe = window.red_stripe_color
-                    r_tip = window.red_horn_tip_color
-                    spawn_victory_confetti(0.0, 0.0, confetti_height,
-                                           r_body[0], r_body[1], r_body[2],
-                                           r_leg[0], r_leg[1], r_leg[2],
-                                           r_stripe[0], r_stripe[1], r_stripe[2],
-                                           r_tip[0], r_tip[1], r_tip[2],
-                                           VICTORY_CONFETTI_PARTICLES)
+        # Blue confetti - independent timer
+        if blue_pulse_timer >= VICTORY_CONFETTI_DELAY:
+            blue_confetti_timer += frame_dt
+            if blue_confetti_timer >= VICTORY_CONFETTI_INTERVAL:
+                blue_confetti_timer = 0.0
+                b_body = window.blue_body_color
+                b_leg = window.blue_leg_color
+                b_stripe = window.blue_stripe_color
+                b_tip = window.blue_horn_tip_color
+                spawn_victory_confetti(0.0, 0.0, confetti_height,
+                                       b_body[0], b_body[1], b_body[2],
+                                       b_leg[0], b_leg[1], b_leg[2],
+                                       b_stripe[0], b_stripe[1], b_stripe[2],
+                                       b_tip[0], b_tip[1], b_tip[2],
+                                       VICTORY_CONFETTI_PARTICLES)
 
-        if match_winner == "BLUE":
-            # Pulse all blue beetle colors
-            b = window.blue_body_color
-            simulation.blue_body_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
-            b = window.blue_leg_color
-            simulation.blue_leg_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
-            b = window.blue_leg_tip_color
-            simulation.blue_leg_tip_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
-            b = window.blue_stripe_color
-            simulation.blue_stripe_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
-            b = window.blue_horn_tip_color
-            simulation.blue_horn_tip_color[None] = ti.Vector([min(b[0] * pulse, 1.0), min(b[1] * pulse, 1.0), min(b[2] * pulse, 1.0)])
-            # Scorpion venom tip pulsing (purple)
-            if blue_horn_type_id == 3:
-                simulation.blue_venom_tip_color[None] = ti.Vector([min(0.6 * pulse, 1.0), min(0.2 * pulse, 1.0), min(0.8 * pulse, 1.0)])
-        else:  # RED winner
-            # Pulse all red beetle colors
-            r = window.red_body_color
-            simulation.red_body_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
-            r = window.red_leg_color
-            simulation.red_leg_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
-            r = window.red_leg_tip_color
-            simulation.red_leg_tip_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
-            r = window.red_stripe_color
-            simulation.red_stripe_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
-            r = window.red_horn_tip_color
-            simulation.red_horn_tip_color[None] = ti.Vector([min(r[0] * pulse, 1.0), min(r[1] * pulse, 1.0), min(r[2] * pulse, 1.0)])
-            # Scorpion venom tip pulsing (purple)
-            if red_horn_type_id == 3:
-                simulation.red_venom_tip_color[None] = ti.Vector([min(0.6 * pulse, 1.0), min(0.2 * pulse, 1.0), min(0.8 * pulse, 1.0)])
-    elif match_winner is not None and victory_pulse_timer >= VICTORY_PULSE_DURATION:
-        # Reset to normal colors after pulse ends
-        if match_winner == "BLUE":
-            b = window.blue_body_color
-            simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
-            b = window.blue_leg_color
-            simulation.blue_leg_color[None] = ti.Vector([b[0], b[1], b[2]])
-            b = window.blue_leg_tip_color
-            simulation.blue_leg_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
-            b = window.blue_stripe_color
-            simulation.blue_stripe_color[None] = ti.Vector([b[0], b[1], b[2]])
-            b = window.blue_horn_tip_color
-            simulation.blue_horn_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
-        else:
-            r = window.red_body_color
-            simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
-            r = window.red_leg_color
-            simulation.red_leg_color[None] = ti.Vector([r[0], r[1], r[2]])
-            r = window.red_leg_tip_color
-            simulation.red_leg_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
-            r = window.red_stripe_color
-            simulation.red_stripe_color[None] = ti.Vector([r[0], r[1], r[2]])
-            r = window.red_horn_tip_color
-            simulation.red_horn_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
+        # Pulse all blue beetle colors
+        b = window.blue_body_color
+        simulation.blue_body_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        b = window.blue_leg_color
+        simulation.blue_leg_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        b = window.blue_leg_tip_color
+        simulation.blue_leg_tip_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        b = window.blue_stripe_color
+        simulation.blue_stripe_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        b = window.blue_horn_tip_color
+        simulation.blue_horn_tip_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        if blue_horn_type_id == 3:
+            simulation.blue_venom_tip_color[None] = ti.Vector([min(0.6 * blue_pulse, 1.0), min(0.2 * blue_pulse, 1.0), min(0.8 * blue_pulse, 1.0)])
+
+    # RED's independent celebration
+    if red_celebrating and red_pulse_timer < VICTORY_PULSE_DURATION:
+        red_pulse_timer += frame_dt
+        # Fade out intensity over duration (1.0 at start, 0.0 at end)
+        red_fade = 1.0 - (red_pulse_timer / VICTORY_PULSE_DURATION)
+        # Pulsing brightness: oscillates between 1.0 and 1.6, fading to 1.0 over time
+        red_pulse = 1.0 + 0.6 * red_fade * math.sin(red_pulse_timer * 10.0)
+
+        # Red confetti - independent timer
+        if red_pulse_timer >= VICTORY_CONFETTI_DELAY:
+            red_confetti_timer += frame_dt
+            if red_confetti_timer >= VICTORY_CONFETTI_INTERVAL:
+                red_confetti_timer = 0.0
+                r_body = window.red_body_color
+                r_leg = window.red_leg_color
+                r_stripe = window.red_stripe_color
+                r_tip = window.red_horn_tip_color
+                spawn_victory_confetti(0.0, 0.0, confetti_height,
+                                       r_body[0], r_body[1], r_body[2],
+                                       r_leg[0], r_leg[1], r_leg[2],
+                                       r_stripe[0], r_stripe[1], r_stripe[2],
+                                       r_tip[0], r_tip[1], r_tip[2],
+                                       VICTORY_CONFETTI_PARTICLES)
+
+        # Pulse all red beetle colors
+        r = window.red_body_color
+        simulation.red_body_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        r = window.red_leg_color
+        simulation.red_leg_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        r = window.red_leg_tip_color
+        simulation.red_leg_tip_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        r = window.red_stripe_color
+        simulation.red_stripe_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        r = window.red_horn_tip_color
+        simulation.red_horn_tip_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        if red_horn_type_id == 3:
+            simulation.red_venom_tip_color[None] = ti.Vector([min(0.6 * red_pulse, 1.0), min(0.2 * red_pulse, 1.0), min(0.8 * red_pulse, 1.0)])
+
+    # Reset colors after pulse ends - each independently
+    if blue_celebrating and blue_pulse_timer >= VICTORY_PULSE_DURATION:
+        b = window.blue_body_color
+        simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+        b = window.blue_leg_color
+        simulation.blue_leg_color[None] = ti.Vector([b[0], b[1], b[2]])
+        b = window.blue_leg_tip_color
+        simulation.blue_leg_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
+        b = window.blue_stripe_color
+        simulation.blue_stripe_color[None] = ti.Vector([b[0], b[1], b[2]])
+        b = window.blue_horn_tip_color
+        simulation.blue_horn_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
+
+    if red_celebrating and red_pulse_timer >= VICTORY_PULSE_DURATION:
+        r = window.red_body_color
+        simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+        r = window.red_leg_color
+        simulation.red_leg_color[None] = ti.Vector([r[0], r[1], r[2]])
+        r = window.red_leg_tip_color
+        simulation.red_leg_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
+        r = window.red_stripe_color
+        simulation.red_stripe_color[None] = ti.Vector([r[0], r[1], r[2]])
+        r = window.red_horn_tip_color
+        simulation.red_horn_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
 
     perf_monitor.stop('animation')
 
@@ -10273,14 +10700,14 @@ while window.running:
         stripe_color_blue[2] += (target_b - stripe_color_blue[2]) * lerp_factor
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
-        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+        if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
             simulation.blue_stripe_color[None] = ti.Vector([stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2]])
             b = window.blue_body_color
             simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
         blue_charge_glow = spray_charges_blue / float(SPRAY_MAX_CHARGES)
     else:
         # Non-bombardier: use normal colors (skip during victory pulse)
-        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+        if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
             b = window.blue_body_color
             simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
             s = window.blue_stripe_color
@@ -10308,14 +10735,14 @@ while window.running:
         stripe_color_red[2] += (target_b - stripe_color_red[2]) * lerp_factor
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
-        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+        if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
             simulation.red_stripe_color[None] = ti.Vector([stripe_color_red[0], stripe_color_red[1], stripe_color_red[2]])
             r = window.red_body_color
             simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
         red_charge_glow = spray_charges_red / float(SPRAY_MAX_CHARGES)
     else:
         # Non-bombardier: use normal colors (skip during victory pulse)
-        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+        if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
             r = window.red_body_color
             simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
             s = window.red_stripe_color
@@ -10345,7 +10772,7 @@ while window.running:
         venom_tip_color_blue[2] += (target_b - venom_tip_color_blue[2]) * lerp_factor
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
-        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+        if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
             simulation.blue_venom_tip_color[None] = ti.Vector([venom_tip_color_blue[0], venom_tip_color_blue[1], venom_tip_color_blue[2]])
 
     if red_horn_type_id == 3:  # Red is scorpion
@@ -10370,7 +10797,7 @@ while window.running:
         venom_tip_color_red[2] += (target_b - venom_tip_color_red[2]) * lerp_factor
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
-        if match_winner is None or victory_pulse_timer >= VICTORY_PULSE_DURATION:
+        if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
             simulation.red_venom_tip_color[None] = ti.Vector([venom_tip_color_red[0], venom_tip_color_red[1], venom_tip_color_red[2]])
 
     # === BEETLE RENDER TIMING ===
@@ -11247,7 +11674,7 @@ while window.running:
     window.GUI.text("=== HORN COMBAT PHYSICS ===")
 
     # Horn Lift Strength (how intense lifts are during horn combat)
-    new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 0.5)
+    new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 2.0)
     if new_horn_lift != physics_params["HORN_LIFT_STRENGTH"]:
         physics_params["HORN_LIFT_STRENGTH"] = new_horn_lift
 
@@ -11406,13 +11833,15 @@ while window.running:
             physics_params["BALL_ANGULAR_FRICTION"] = new_ang_fric
 
     # Winner announcement and restart button
-    if match_winner is not None:
+    if blue_celebrating or red_celebrating:
         window.GUI.text("")
         window.GUI.text("="*30)
-        if match_winner == "BLUE":
-            window.GUI.text("*** BLUE BEETLE WINS! ***")
+        if blue_celebrating and red_celebrating:
+            window.GUI.text("*** DOUBLE KO! ***")
+        elif blue_celebrating:
+            window.GUI.text("*** BLUE SCORES! ***")
         else:
-            window.GUI.text("*** RED BEETLE WINS! ***")
+            window.GUI.text("*** RED SCORES! ***")
         window.GUI.text("="*30)
         window.GUI.text("")
         if window.GUI.button("RESTART MATCH"):
