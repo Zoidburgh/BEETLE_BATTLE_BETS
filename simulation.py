@@ -102,7 +102,7 @@ blue_body_color[None] = ti.Vector([0.25, 0.55, 0.95])  # Desaturated blue
 blue_leg_color[None] = ti.Vector([0.4, 0.7, 1.0])  # Lighter cyan/blue
 blue_leg_tip_color[None] = ti.Vector([0.0, 0.0, 0.3])  # Very dark blue
 blue_stripe_color[None] = ti.Vector([0.6, 0.9, 1.0])  # Bright cyan
-blue_horn_tip_color[None] = ti.Vector([0.4, 0.75, 1.0])  # Bright electric blue
+blue_horn_tip_color[None] = ti.Vector([0.098, 0.231, 0.329])  # Dark teal #193B54
 blue_venom_tip_color[None] = ti.Vector([0.6, 0.2, 0.8])  # Bright purple (full venom)
 
 # Initialize score flash to normal brightness

@@ -556,13 +556,11 @@ class Beetle:
         # Collision cooldown timers
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
         self.tip_cooldown = 0.0   # Time remaining before next tipping torque (separate from lift)
-        self.yaw_cooldown = 0.0   # Time remaining before next yaw torque from horn collision
 
         # Body rotation damping state (Phase 3: Directional Rotation Prevention)
         self.body_rotation_damping = 0.0  # Rotation resistance after collision (0.0-1.0)
         self.collision_spin_direction = 0  # Which way collision made us spin (-1=CCW, 0=none, 1=CW)
         self.in_horn_collision = False  # True when actively in horn-to-horn collision
-        self.turn_intent = 0.0  # Intended turn rate from input (-1 to +1), used for momentum even when blocked
 
         # Beetle active state (for fall death)
         self.active = True  # False when beetle has fallen off arena
@@ -615,9 +613,6 @@ class Beetle:
         # Decrement tip cooldown timer (separate from lift - for horn tipping torque)
         if self.tip_cooldown > 0.0:
             self.tip_cooldown = max(0.0, self.tip_cooldown - dt)
-        # Decrement yaw cooldown timer (for horn collision yaw torque)
-        if self.yaw_cooldown > 0.0:
-            self.yaw_cooldown = max(0.0, self.yaw_cooldown - dt)
 
         # Decay horn pitch/yaw damping when not in contact (Phase 2: Horn Clipping Prevention)
         if self.horn_pitch_damping > 0.0:
@@ -664,17 +659,13 @@ class Beetle:
             self.vx *= FRICTION
             self.vz *= FRICTION
 
-        # Apply angular friction (yaw) - different damping based on ground contact
+        # Apply angular friction (yaw)
         # Ball uses lighter angular friction for better spin retention
         if self.horn_type == "ball":
             ball_angular_friction = physics_params.get("BALL_ANGULAR_FRICTION", 0.98)
             self.angular_velocity *= ball_angular_friction
-        elif self.on_ground:
-            self.angular_velocity *= ANGULAR_FRICTION
         else:
-            # Airborne yaw damping - prevents crazy spinning from horn collisions in air
-            airborne_damping = physics_params.get("AIRBORNE_DAMPING", 0.95)
-            self.angular_velocity *= airborne_damping
+            self.angular_velocity *= ANGULAR_FRICTION
 
         # Apply angular friction (pitch/roll) - different damping based on ground contact
         if self.on_ground:
@@ -1396,8 +1387,6 @@ ASSEMBLY_VOXEL_BLUE_STRIPE = 29
 ASSEMBLY_VOXEL_RED_STRIPE = 30
 ASSEMBLY_VOXEL_BLUE_HORN_TIP = 31
 ASSEMBLY_VOXEL_RED_HORN_TIP = 32
-ASSEMBLY_VOXEL_BLUE_HORN = 37  # Non-tip horn voxels (shaft) for collision detection
-ASSEMBLY_VOXEL_RED_HORN = 38   # Non-tip horn voxels (shaft) for collision detection
 
 # Pre-computed scatter offsets for assembly animation (computed once at startup)
 MAX_ASSEMBLY_VOXELS = 2500  # Same as MAX_BODY_VOXELS
@@ -1432,8 +1421,7 @@ def clear_assembly_voxels():
         if vtype == ASSEMBLY_VOXEL_BLUE or vtype == ASSEMBLY_VOXEL_RED or \
            vtype == ASSEMBLY_VOXEL_BALL or vtype == ASSEMBLY_VOXEL_BALL_STRIPE or \
            vtype == ASSEMBLY_VOXEL_BLUE_STRIPE or vtype == ASSEMBLY_VOXEL_RED_STRIPE or \
-           vtype == ASSEMBLY_VOXEL_BLUE_HORN_TIP or vtype == ASSEMBLY_VOXEL_RED_HORN_TIP or \
-           vtype == 37 or vtype == 38:  # ASSEMBLY_VOXEL_BLUE_HORN, ASSEMBLY_VOXEL_RED_HORN
+           vtype == ASSEMBLY_VOXEL_BLUE_HORN_TIP or vtype == ASSEMBLY_VOXEL_RED_HORN_TIP:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 # Ball voxel cache for assembly animation (pre-computed sphere voxels)
@@ -1528,8 +1516,6 @@ def render_assembly_kernel_blue(center_x: ti.i32, center_y: ti.i32, center_z: ti
                 voxel_type = ASSEMBLY_VOXEL_BLUE  # Default body color
                 if blue_body_horn_tip_flags[i] == 1:
                     voxel_type = ASSEMBLY_VOXEL_BLUE_HORN_TIP
-                elif blue_body_is_horn_flags[i] == 1:
-                    voxel_type = ASSEMBLY_VOXEL_BLUE_HORN  # Horn shaft (non-tip)
                 elif blue_body_stripe_flags[i] == 1:
                     voxel_type = ASSEMBLY_VOXEL_BLUE_STRIPE
                 simulation.voxel_type[current_x, current_y, current_z] = voxel_type
@@ -1567,8 +1553,6 @@ def render_assembly_kernel_red(center_x: ti.i32, center_y: ti.i32, center_z: ti.
                 voxel_type = ASSEMBLY_VOXEL_RED  # Default body color
                 if red_body_horn_tip_flags[i] == 1:
                     voxel_type = ASSEMBLY_VOXEL_RED_HORN_TIP
-                elif red_body_is_horn_flags[i] == 1:
-                    voxel_type = ASSEMBLY_VOXEL_RED_HORN  # Horn shaft (non-tip)
                 elif red_body_stripe_flags[i] == 1:
                     voxel_type = ASSEMBLY_VOXEL_RED_STRIPE
                 simulation.voxel_type[current_x, current_y, current_z] = voxel_type
@@ -1749,9 +1733,6 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
 
                 # Track if hook interior voxels are present in this column
                 has_hook_interior = 0
-                # Track if column has only leg voxels (for softer leg collisions)
-                beetle1_has_body_or_horn = 0
-                beetle2_has_body_or_horn = 0
 
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
@@ -1766,18 +1747,12 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                     if color1 == simulation.BEETLE_BLUE:
                         if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18 or voxel == 35:
                             belongs_to_1 = 1
-                        # Track if this is a non-leg voxel (body, stripe, horn, hook)
-                        if voxel == 5 or voxel == 7 or voxel == 13 or voxel == 18 or voxel == 35:
-                            beetle1_has_body_or_horn = 1
                     elif color1 == simulation.BEETLE_RED:
                         if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19 or voxel == 36:
                             belongs_to_1 = 1
-                        if voxel == 6 or voxel == 8 or voxel == 14 or voxel == 19 or voxel == 36:
-                            beetle1_has_body_or_horn = 1
                     elif color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
                             belongs_to_1 = 1
-                            beetle1_has_body_or_horn = 1  # Ball counts as body
 
                     # Check if voxel belongs to entity 2 (based on color2)
                     # Types: 6=body, 8=stripe, 10=leg, 12=leg_tip, 14=horn_tip, 19=hook_interior, 36=horn_shaft
@@ -1785,17 +1760,12 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                     if color2 == simulation.BEETLE_BLUE:
                         if voxel == 5 or voxel == 7 or voxel == 9 or voxel == 11 or voxel == 13 or voxel == 18 or voxel == 35:
                             belongs_to_2 = 1
-                        if voxel == 5 or voxel == 7 or voxel == 13 or voxel == 18 or voxel == 35:
-                            beetle2_has_body_or_horn = 1
                     elif color2 == simulation.BEETLE_RED:
                         if voxel == 6 or voxel == 8 or voxel == 10 or voxel == 12 or voxel == 14 or voxel == 19 or voxel == 36:
                             belongs_to_2 = 1
-                        if voxel == 6 or voxel == 8 or voxel == 14 or voxel == 19 or voxel == 36:
-                            beetle2_has_body_or_horn = 1
                     elif color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
                             belongs_to_2 = 1
-                            beetle2_has_body_or_horn = 1  # Ball counts as body
 
                     # Update Y-ranges based on ownership
                     if belongs_to_1 == 1:
@@ -1818,244 +1788,65 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                     if color1 == simulation.BALL or color2 == simulation.BALL:
                         is_ball_involved = 1
 
-                    # Check if this is a leg-only collision (both beetles only have legs in this column)
-                    is_leg_only = 0
-                    if beetle1_has_body_or_horn == 0 and beetle2_has_body_or_horn == 0:
-                        is_leg_only = 1
-
                     # Initialize tolerance (required by Taichi)
                     tolerance = 3  # Default: beetle-beetle (±3 voxels for earlier detection)
                     if has_hook_interior == 1:
                         tolerance = 5
                     elif is_ball_involved == 1:
                         tolerance = 0  # Ball needs tight collision - no early detection
-                    elif is_leg_only == 1:
-                        tolerance = 1  # Softer leg-only collisions - detect later
 
-                    # Check if either beetle has horn voxels in this column (expand tolerance for horns)
-                    has_horn_in_column = 0
-                    for check_y in range(min(beetle1_y_min, beetle2_y_min), max(beetle1_y_max, beetle2_y_max) + 1):
-                        if 0 <= check_y < simulation.n_grid:
-                            check_vtype = simulation.voxel_type[gx, check_y, gz]
-                            # Horn types: 13=BLUE_HORN_TIP, 14=RED_HORN_TIP, 35=BLUE_HORN, 36=RED_HORN
-                            if check_vtype == 13 or check_vtype == 14 or check_vtype == 35 or check_vtype == 36:
-                                has_horn_in_column = 1
-
-                    # Expand tolerance by 1 for horn collisions (helps with angled clipping)
-                    effective_tolerance = tolerance + 1 if has_horn_in_column == 1 else tolerance
-
-                    if beetle1_y_min <= beetle2_y_max + effective_tolerance and beetle2_y_min <= beetle1_y_max + effective_tolerance:
+                    if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
                         collision = 1
 
                 # XZ NEIGHBOR CHECK: Catch edge-to-edge clipping in adjacent columns
-                # Distance 1 for all collisions, distance 2 only for horn voxels
+                # Only check 4 cardinal neighbors (not diagonals) with tight Y tolerance
                 # This prevents thin horn edges from slipping through gaps between spherical voxels
                 elif beetle1_y_max >= 0 and beetle2_y_max < 0:  # Only beetle1 in this column
-                    # Check cardinal + diagonal neighboring columns for beetle2 voxels
-                    # Check if beetle1 has any horn voxels in this column (use ±2 for horns, add diagonals)
-                    has_horn_voxel = 0
-                    for check_y in range(beetle1_y_min, beetle1_y_max + 1):
-                        if 0 <= check_y < simulation.n_grid:
-                            check_vtype = simulation.voxel_type[gx, check_y, gz]
-                            # Horn types: 13=BLUE_HORN_TIP, 14=RED_HORN_TIP, 35=BLUE_HORN, 36=RED_HORN
-                            if check_vtype == 13 or check_vtype == 14 or check_vtype == 35 or check_vtype == 36:
-                                has_horn_voxel = 1
-                    max_dist = 2 if has_horn_voxel == 1 else 1
-                    # Cardinal directions: 4 at dist 1, 4 at dist 2 (if horn)
-                    for neighbor_dir in range(4 * max_dist):
+                    # Check 4 cardinal neighboring columns for beetle2 voxels
+                    for neighbor_dir in range(4):
                         if collision == 0:
-                            dist = 1 if neighbor_dir < 4 else 2
-                            dir_idx = neighbor_dir % 4
-                            neighbor_gx = gx + (dist if dir_idx == 0 else (-dist if dir_idx == 1 else 0))
-                            neighbor_gz = gz + (dist if dir_idx == 2 else (-dist if dir_idx == 3 else 0))
+                            # Cardinal directions: +X, -X, +Z, -Z
+                            neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
+                            neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
                             if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
-                                # Check for beetle2 voxels in neighbor column at exact Y (±0 tolerance)
-                                for neighbor_gy in range(beetle1_y_min, beetle1_y_max + 1):
-                                    if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
+                                # Check for beetle2 voxels in neighbor column with Y tolerance
+                                # Need tolerance because beetles at different heights can still collide
+                                scan_y_min = ti.max(0, beetle1_y_min - 2)
+                                scan_y_max = ti.min(simulation.n_grid, beetle1_y_max + 3)
+                                for neighbor_gy in range(scan_y_min, scan_y_max):
+                                    if collision == 0:
                                         neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
                                         neighbor_is_2 = 0
                                         if color2 == simulation.BEETLE_BLUE:
-                                            if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18 or neighbor_voxel == 35:
+                                            if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
                                                 neighbor_is_2 = 1
                                         elif color2 == simulation.BEETLE_RED:
-                                            if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19 or neighbor_voxel == 36:
+                                            if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
                                                 neighbor_is_2 = 1
                                         if neighbor_is_2 == 1:
                                             collision = 1
-                    # Diagonal directions (for horns only - helps with angled clipping)
-                    if has_horn_voxel == 1 and collision == 0:
-                        for diag_dir in range(4 * max_dist):  # 4 diagonals at dist 1, 4 at dist 2
-                            if collision == 0:
-                                dist = 1 if diag_dir < 4 else 2
-                                dir_idx = diag_dir % 4
-                                # Diagonals: (+X+Z), (+X-Z), (-X+Z), (-X-Z)
-                                dx_off = dist if dir_idx < 2 else -dist
-                                dz_off = dist if dir_idx % 2 == 0 else -dist
-                                neighbor_gx = gx + dx_off
-                                neighbor_gz = gz + dz_off
-                                if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
-                                    for neighbor_gy in range(beetle1_y_min, beetle1_y_max + 1):
-                                        if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
-                                            neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
-                                            neighbor_is_2 = 0
-                                            if color2 == simulation.BEETLE_BLUE:
-                                                if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18 or neighbor_voxel == 35:
-                                                    neighbor_is_2 = 1
-                                            elif color2 == simulation.BEETLE_RED:
-                                                if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19 or neighbor_voxel == 36:
-                                                    neighbor_is_2 = 1
-                                            if neighbor_is_2 == 1:
-                                                collision = 1
-                    # Knight-move directions (for horns only - fills gaps at ~26°/63° angles)
-                    # Offsets: (±1,±2) and (±2,±1)
-                    if has_horn_voxel == 1 and collision == 0:
-                        for knight_dir in range(8):
-                            if collision == 0:
-                                # 8 knight moves: (1,2), (2,1), (-1,2), (-2,1), (1,-2), (2,-1), (-1,-2), (-2,-1)
-                                dx_off = 0
-                                dz_off = 0
-                                if knight_dir == 0:
-                                    dx_off = 1
-                                    dz_off = 2
-                                elif knight_dir == 1:
-                                    dx_off = 2
-                                    dz_off = 1
-                                elif knight_dir == 2:
-                                    dx_off = -1
-                                    dz_off = 2
-                                elif knight_dir == 3:
-                                    dx_off = -2
-                                    dz_off = 1
-                                elif knight_dir == 4:
-                                    dx_off = 1
-                                    dz_off = -2
-                                elif knight_dir == 5:
-                                    dx_off = 2
-                                    dz_off = -1
-                                elif knight_dir == 6:
-                                    dx_off = -1
-                                    dz_off = -2
-                                else:
-                                    dx_off = -2
-                                    dz_off = -1
-                                neighbor_gx = gx + dx_off
-                                neighbor_gz = gz + dz_off
-                                if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
-                                    for neighbor_gy in range(beetle1_y_min, beetle1_y_max + 1):
-                                        if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
-                                            neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
-                                            neighbor_is_2 = 0
-                                            if color2 == simulation.BEETLE_BLUE:
-                                                if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18 or neighbor_voxel == 35:
-                                                    neighbor_is_2 = 1
-                                            elif color2 == simulation.BEETLE_RED:
-                                                if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19 or neighbor_voxel == 36:
-                                                    neighbor_is_2 = 1
-                                            if neighbor_is_2 == 1:
-                                                collision = 1
                 elif beetle2_y_max >= 0 and beetle1_y_max < 0:  # Only beetle2 in this column
-                    # Check cardinal + diagonal neighboring columns for beetle1 voxels
-                    # Check if beetle2 has any horn voxels in this column (use ±2 for horns, add diagonals)
-                    has_horn_voxel = 0
-                    for check_y in range(beetle2_y_min, beetle2_y_max + 1):
-                        if 0 <= check_y < simulation.n_grid:
-                            check_vtype = simulation.voxel_type[gx, check_y, gz]
-                            # Horn types: 13=BLUE_HORN_TIP, 14=RED_HORN_TIP, 35=BLUE_HORN, 36=RED_HORN
-                            if check_vtype == 13 or check_vtype == 14 or check_vtype == 35 or check_vtype == 36:
-                                has_horn_voxel = 1
-                    max_dist = 2 if has_horn_voxel == 1 else 1
-                    # Cardinal directions: 4 at dist 1, 4 at dist 2 (if horn)
-                    for neighbor_dir in range(4 * max_dist):
+                    # Check 4 cardinal neighboring columns for beetle1 voxels
+                    for neighbor_dir in range(4):
                         if collision == 0:
-                            dist = 1 if neighbor_dir < 4 else 2
-                            dir_idx = neighbor_dir % 4
-                            neighbor_gx = gx + (dist if dir_idx == 0 else (-dist if dir_idx == 1 else 0))
-                            neighbor_gz = gz + (dist if dir_idx == 2 else (-dist if dir_idx == 3 else 0))
+                            neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
+                            neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
                             if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
-                                # Check for beetle1 voxels in neighbor column at exact Y (±0 tolerance)
-                                for neighbor_gy in range(beetle2_y_min, beetle2_y_max + 1):
-                                    if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
+                                # Check for beetle1 voxels in neighbor column with Y tolerance
+                                scan_y_min = ti.max(0, beetle2_y_min - 2)
+                                scan_y_max = ti.min(simulation.n_grid, beetle2_y_max + 3)
+                                for neighbor_gy in range(scan_y_min, scan_y_max):
+                                    if collision == 0:
                                         neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
                                         neighbor_is_1 = 0
                                         if color1 == simulation.BEETLE_BLUE:
-                                            if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18 or neighbor_voxel == 35:
+                                            if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
                                                 neighbor_is_1 = 1
                                         elif color1 == simulation.BEETLE_RED:
-                                            if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19 or neighbor_voxel == 36:
+                                            if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
                                                 neighbor_is_1 = 1
                                         if neighbor_is_1 == 1:
                                             collision = 1
-                    # Diagonal directions (for horns only - helps with angled clipping)
-                    if has_horn_voxel == 1 and collision == 0:
-                        for diag_dir in range(4 * max_dist):  # 4 diagonals at dist 1, 4 at dist 2
-                            if collision == 0:
-                                dist = 1 if diag_dir < 4 else 2
-                                dir_idx = diag_dir % 4
-                                # Diagonals: (+X+Z), (+X-Z), (-X+Z), (-X-Z)
-                                dx_off = dist if dir_idx < 2 else -dist
-                                dz_off = dist if dir_idx % 2 == 0 else -dist
-                                neighbor_gx = gx + dx_off
-                                neighbor_gz = gz + dz_off
-                                if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
-                                    for neighbor_gy in range(beetle2_y_min, beetle2_y_max + 1):
-                                        if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
-                                            neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
-                                            neighbor_is_1 = 0
-                                            if color1 == simulation.BEETLE_BLUE:
-                                                if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18 or neighbor_voxel == 35:
-                                                    neighbor_is_1 = 1
-                                            elif color1 == simulation.BEETLE_RED:
-                                                if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19 or neighbor_voxel == 36:
-                                                    neighbor_is_1 = 1
-                                            if neighbor_is_1 == 1:
-                                                collision = 1
-                    # Knight-move directions (for horns only - fills gaps at ~26°/63° angles)
-                    # Offsets: (±1,±2) and (±2,±1)
-                    if has_horn_voxel == 1 and collision == 0:
-                        for knight_dir in range(8):
-                            if collision == 0:
-                                # 8 knight moves: (1,2), (2,1), (-1,2), (-2,1), (1,-2), (2,-1), (-1,-2), (-2,-1)
-                                dx_off = 0
-                                dz_off = 0
-                                if knight_dir == 0:
-                                    dx_off = 1
-                                    dz_off = 2
-                                elif knight_dir == 1:
-                                    dx_off = 2
-                                    dz_off = 1
-                                elif knight_dir == 2:
-                                    dx_off = -1
-                                    dz_off = 2
-                                elif knight_dir == 3:
-                                    dx_off = -2
-                                    dz_off = 1
-                                elif knight_dir == 4:
-                                    dx_off = 1
-                                    dz_off = -2
-                                elif knight_dir == 5:
-                                    dx_off = 2
-                                    dz_off = -1
-                                elif knight_dir == 6:
-                                    dx_off = -1
-                                    dz_off = -2
-                                else:
-                                    dx_off = -2
-                                    dz_off = -1
-                                neighbor_gx = gx + dx_off
-                                neighbor_gz = gz + dz_off
-                                if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
-                                    for neighbor_gy in range(beetle2_y_min, beetle2_y_max + 1):
-                                        if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
-                                            neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
-                                            neighbor_is_1 = 0
-                                            if color1 == simulation.BEETLE_BLUE:
-                                                if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18 or neighbor_voxel == 35:
-                                                    neighbor_is_1 = 1
-                                            elif color1 == simulation.BEETLE_RED:
-                                                if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19 or neighbor_voxel == 36:
-                                                    neighbor_is_1 = 1
-                                            if neighbor_is_1 == 1:
-                                                collision = 1
 
     return collision
 
@@ -2489,9 +2280,6 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                         body_voxels.append((dx, dy, dz))
 
     # HORN GENERATION - Choose between rhino, stag, hercules, or scorpion (claws)
-    # Track where horn voxels start (for collision detection)
-    horn_start_index = len(body_voxels)
-
     if horn_type == "scorpion":
         # SCORPION - Dense, curved claws with thick arms (pedipalps)
         # Arms extend forward and upward from front of body
@@ -3133,11 +2921,10 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         hook_interior_flags.append(0)
 
     # OPTIMIZATION: Pre-compute voxel metadata flags to eliminate per-frame conditional logic
-    # Compute stripe, horn_tip, very_tip, and is_horn flags for each voxel based on horn type
+    # Compute stripe, horn_tip, and very_tip flags for each voxel based on horn type
     stripe_flags = []
     horn_tip_flags = []
     very_tip_flags = []
-    is_horn_flags = []  # Marks ALL horn voxels (not just tips) for collision detection
 
     # Map horn_type string to horn_type_id for consistency with placement logic
     horn_type_id_map = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5}
@@ -3190,19 +2977,11 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         # Note: Bombardier antennae/mandibles use horn_tip (not very_tip) for horn prong color
         very_tip_flags.append(is_very_tip)
 
-        # Is horn detection: ALL horn voxels (including shaft, not just tips)
-        # Based on whether voxel index is >= horn_start_index (set before horn generation)
-        is_horn = 1 if i >= horn_start_index else 0
-        # Bombardier: Mark whole head (dx >= 2) as horn for ±2 collision detection
-        if horn_type_id == 5 and dx >= 2:
-            is_horn = 1
-        is_horn_flags.append(is_horn)
-
-    return body_voxels, leg_voxels, leg_tips, hook_interior_flags, stripe_flags, horn_tip_flags, very_tip_flags, is_horn_flags
+    return body_voxels, leg_voxels, leg_tips, hook_interior_flags, stripe_flags, horn_tip_flags, very_tip_flags
 
 # Generate separate geometry for blue and red beetles (start with same default params)
-BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS, BLUE_IS_HORN_FLAGS = generate_beetle_geometry()
-RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS, RED_IS_HORN_FLAGS = generate_beetle_geometry()
+BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS = generate_beetle_geometry()
+RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS = generate_beetle_geometry()
 print(f"Blue beetle geometry cached: {len(BLUE_BODY)} body voxels + {sum(len(leg) for leg in BLUE_LEGS)} leg voxels + {sum(len(tips) for tips in BLUE_LEG_TIPS)} tip voxels")
 print(f"Red beetle geometry cached: {len(RED_BODY)} body voxels + {sum(len(leg) for leg in RED_LEGS)} leg voxels + {sum(len(tips) for tips in RED_LEG_TIPS)} tip voxels")
 
@@ -3222,7 +3001,6 @@ blue_body_hook_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # Hook interior 
 blue_body_stripe_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is racing stripe
 blue_body_horn_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is horn tip
 blue_body_very_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is very tip (scorpion)
-blue_body_is_horn_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is ANY horn voxel (for collision)
 
 # Separate body cache fields for red beetle
 red_body_cache_size = ti.field(ti.i32, shape=())
@@ -3235,7 +3013,6 @@ red_body_hook_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # Hook interior f
 red_body_stripe_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is racing stripe
 red_body_horn_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is horn tip
 red_body_very_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is very tip (scorpion)
-red_body_is_horn_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is ANY horn voxel (for collision)
 
 # Create OVERSIZED Taichi fields for leg geometry cache (6 legs)
 # Store all leg voxels flattened with offsets to know where each leg starts
@@ -3312,7 +3089,6 @@ collision_point_z = ti.field(ti.f32, shape=())
 collision_contact_count = ti.field(ti.i32, shape=())
 collision_has_horn_tips = ti.field(ti.i32, shape=())  # 1 if horn tip voxels involved, 0 otherwise
 collision_has_hook_interiors = ti.field(ti.i32, shape=())  # 1 if stag hook interior voxels involved, 0 otherwise
-collision_is_leg_only = ti.field(ti.i32, shape=())  # 1 if collision only involves leg voxels (softer response)
 
 # OPTIMIZATION: Spatial hash for O(N+M) collision point calculation instead of O(N×M)
 # Hash grid covers the arena (128x128 should be sufficient for 256-grid world)
@@ -3351,12 +3127,10 @@ for i, (dx, dy, dz) in enumerate(BLUE_BODY):
         blue_body_stripe_flags[i] = BLUE_STRIPE_FLAGS[i]
         blue_body_horn_tip_flags[i] = BLUE_HORN_TIP_FLAGS[i]
         blue_body_very_tip_flags[i] = BLUE_VERY_TIP_FLAGS[i]
-        blue_body_is_horn_flags[i] = BLUE_IS_HORN_FLAGS[i]
     else:
         blue_body_stripe_flags[i] = 0
         blue_body_horn_tip_flags[i] = 0
         blue_body_very_tip_flags[i] = 0
-        blue_body_is_horn_flags[i] = 0
 
 # Copy blue beetle leg geometry to GPU
 offset = 0
@@ -3395,12 +3169,10 @@ for i, (dx, dy, dz) in enumerate(RED_BODY):
         red_body_stripe_flags[i] = RED_STRIPE_FLAGS[i]
         red_body_horn_tip_flags[i] = RED_HORN_TIP_FLAGS[i]
         red_body_very_tip_flags[i] = RED_VERY_TIP_FLAGS[i]
-        red_body_is_horn_flags[i] = RED_IS_HORN_FLAGS[i]
     else:
         red_body_stripe_flags[i] = 0
         red_body_horn_tip_flags[i] = 0
         red_body_very_tip_flags[i] = 0
-        red_body_is_horn_flags[i] = 0
 
 # Copy red beetle leg geometry to GPU
 offset = 0
@@ -3427,10 +3199,10 @@ for leg_id, leg_tip_voxels in enumerate(RED_LEG_TIPS):
 # Function to rebuild blue beetle geometry with new parameters
 def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild blue beetle geometry cache with new horn, body, and leg parameters"""
-    global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS, BLUE_IS_HORN_FLAGS
+    global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS
 
     # Generate new geometry
-    BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS, BLUE_IS_HORN_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+    BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
 
     # Update beetle's hook interior flags
     beetle_blue.body_hook_interior_flags = list(BLUE_HOOK_FLAGS)
@@ -3455,13 +3227,11 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
             blue_body_horn_tip_flags[i] = BLUE_HORN_TIP_FLAGS[i]
             blue_body_very_tip_flags[i] = BLUE_VERY_TIP_FLAGS[i]
             blue_body_hook_flags[i] = BLUE_HOOK_FLAGS[i]
-            blue_body_is_horn_flags[i] = BLUE_IS_HORN_FLAGS[i]
         else:
             blue_body_stripe_flags[i] = 0
             blue_body_horn_tip_flags[i] = 0
             blue_body_very_tip_flags[i] = 0
             blue_body_hook_flags[i] = 0
-            blue_body_is_horn_flags[i] = 0
 
     # Zero out any leftover voxels from previous geometry
     for i in range(new_size, old_size):
@@ -3472,7 +3242,6 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
         blue_body_horn_tip_flags[i] = 0
         blue_body_very_tip_flags[i] = 0
         blue_body_hook_flags[i] = 0
-        blue_body_is_horn_flags[i] = 0
 
     # Update size LAST to prevent race conditions
     blue_body_cache_size[None] = new_size
@@ -3539,10 +3308,10 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
 # Function to rebuild red beetle geometry with new parameters
 def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild red beetle geometry cache with new horn, body, and leg parameters"""
-    global RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS, RED_IS_HORN_FLAGS
+    global RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS
 
     # Generate new geometry
-    RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS, RED_IS_HORN_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+    RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
 
     # Update beetle's hook interior flags
     beetle_red.body_hook_interior_flags = list(RED_HOOK_FLAGS)
@@ -3567,13 +3336,11 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
             red_body_horn_tip_flags[i] = RED_HORN_TIP_FLAGS[i]
             red_body_very_tip_flags[i] = RED_VERY_TIP_FLAGS[i]
             red_body_hook_flags[i] = RED_HOOK_FLAGS[i]
-            red_body_is_horn_flags[i] = RED_IS_HORN_FLAGS[i]
         else:
             red_body_stripe_flags[i] = 0
             red_body_horn_tip_flags[i] = 0
             red_body_very_tip_flags[i] = 0
             red_body_hook_flags[i] = 0
-            red_body_is_horn_flags[i] = 0
 
     # Zero out any leftover voxels from previous geometry
     for i in range(new_size, old_size):
@@ -3584,7 +3351,6 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
         red_body_horn_tip_flags[i] = 0
         red_body_very_tip_flags[i] = 0
         red_body_hook_flags[i] = 0
-        red_body_is_horn_flags[i] = 0
 
     # Update size LAST to prevent race conditions
     red_body_cache_size[None] = new_size
@@ -4674,9 +4440,8 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                 is_stripe = blue_body_stripe_flags[i]
                 is_horn_tip = blue_body_horn_tip_flags[i]
                 is_very_tip = blue_body_very_tip_flags[i]
-                is_horn = blue_body_is_horn_flags[i]
 
-                # Use appropriate color: hook interior > horn tip > horn shaft > stripe > body color
+                # Use appropriate color: hook interior > horn tip > stripe > body color
                 voxel_color = body_color
 
                 if is_hook_interior == 1:
@@ -4696,13 +4461,6 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                             voxel_color = simulation.BEETLE_BLUE_HORN_TIP
                         elif body_color == simulation.BEETLE_RED:
                             voxel_color = simulation.BEETLE_RED_HORN_TIP
-                elif is_horn == 1:
-                    # Horn shaft (non-tip) - uses special type for collision detection
-                    # Visual appearance same as body color
-                    if body_color == simulation.BEETLE_BLUE:
-                        voxel_color = simulation.BEETLE_BLUE_HORN
-                    elif body_color == simulation.BEETLE_RED:
-                        voxel_color = simulation.BEETLE_RED_HORN
                 elif is_stripe == 1:
                     if body_color == simulation.BEETLE_BLUE:
                         voxel_color = simulation.BEETLE_BLUE_STRIPE
@@ -5188,9 +4946,8 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 is_stripe = red_body_stripe_flags[i]
                 is_horn_tip = red_body_horn_tip_flags[i]
                 is_very_tip = red_body_very_tip_flags[i]
-                is_horn = red_body_is_horn_flags[i]
 
-                # Use appropriate color: hook interior > horn tip > horn shaft > stripe > body color
+                # Use appropriate color: hook interior > horn tip > stripe > body color
                 voxel_color = body_color
 
                 if is_hook_interior == 1:
@@ -5210,13 +4967,6 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                             voxel_color = simulation.BEETLE_BLUE_HORN_TIP
                         elif body_color == simulation.BEETLE_RED:
                             voxel_color = simulation.BEETLE_RED_HORN_TIP
-                elif is_horn == 1:
-                    # Horn shaft (non-tip) - uses special type for collision detection
-                    # Visual appearance same as body color
-                    if body_color == simulation.BEETLE_BLUE:
-                        voxel_color = simulation.BEETLE_BLUE_HORN
-                    elif body_color == simulation.BEETLE_RED:
-                        voxel_color = simulation.BEETLE_RED_HORN
                 elif is_stripe == 1:
                     if body_color == simulation.BEETLE_BLUE:
                         voxel_color = simulation.BEETLE_BLUE_STRIPE
@@ -5573,7 +5323,6 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
     collision_contact_count[None] = 0
     collision_has_horn_tips[None] = 0  # Reset horn tip detection
     collision_has_hook_interiors[None] = 0  # Reset hook interior detection
-    collision_is_leg_only[None] = 1  # Assume leg-only until we find body/horn voxels
 
     # Scan through overlapping voxel columns
     y_scan_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
@@ -5608,11 +5357,6 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                     # Check if this is a hook interior voxel
                     if vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
                         collision_has_hook_interiors[None] = 1
-
-                    # Check if this is a body/horn voxel (not leg) - if so, not leg-only collision
-                    # Leg types: 9, 10 (legs), 11, 12 (leg tips) - everything else is body/horn
-                    if vtype == 5 or vtype == 6 or vtype == 7 or vtype == 8 or vtype == 13 or vtype == 14 or vtype == 18 or vtype == 19 or vtype == 35 or vtype == 36:
-                        collision_is_leg_only[None] = 0
 
                     # Accumulate collision position
                     ti.atomic_add(collision_point_x[None], float(vx2) - simulation.n_grid / 2.0)
@@ -7820,8 +7564,6 @@ def beetle_collision(b1, b2, params):
                     # Clamp to 0 minimum to prevent math.log domain error for low collisions
                     raw_leverage = max(contact_height_above_center / 3.0, 0.0)
                     horn_leverage = min(math.log(raw_leverage + 1.0) * 2.0, 2.5)
-                    # Baseline leverage for body-side collisions (ensures spin even at ground level)
-                    horn_leverage = max(horn_leverage, 0.5)
 
                     # Add MASSIVE upward bias to the collision normal
                     normal_y += horn_leverage * 2.5  # 5x stronger than before!
@@ -7925,9 +7667,8 @@ def beetle_collision(b1, b2, params):
                             world_lever_z = collision_z - b2.z
                             cos_r = math.cos(b2.rotation)
                             sin_r = math.sin(b2.rotation)
-                            # Forward = (cos, sin), Right = (sin, -cos)
-                            local_z = world_lever_x * cos_r + world_lever_z * sin_r   # front/back
-                            local_x = world_lever_x * sin_r - world_lever_z * cos_r   # right/left
+                            local_x = world_lever_x * cos_r + world_lever_z * sin_r  # left/right relative to beetle
+                            local_z = world_lever_z * cos_r - world_lever_x * sin_r  # front/back relative to beetle
 
                             # Pitch torque: collision in front tips nose up
                             tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
@@ -7955,9 +7696,8 @@ def beetle_collision(b1, b2, params):
                             world_lever_z = collision_z - b1.z
                             cos_r = math.cos(b1.rotation)
                             sin_r = math.sin(b1.rotation)
-                            # Forward = (cos, sin), Right = (sin, -cos)
-                            local_z = world_lever_x * cos_r + world_lever_z * sin_r   # front/back
-                            local_x = world_lever_x * sin_r - world_lever_z * cos_r   # right/left
+                            local_x = world_lever_x * cos_r + world_lever_z * sin_r  # left/right relative to beetle
+                            local_z = world_lever_z * cos_r - world_lever_x * sin_r  # front/back relative to beetle
 
                             # Pitch torque: collision in front tips nose up
                             tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
@@ -7984,9 +7724,8 @@ def beetle_collision(b1, b2, params):
                             world_lever_z1 = collision_z - b1.z
                             cos_r1 = math.cos(b1.rotation)
                             sin_r1 = math.sin(b1.rotation)
-                            # Forward = (cos, sin), Right = (sin, -cos)
-                            local_z1 = world_lever_x1 * cos_r1 + world_lever_z1 * sin_r1   # front/back
-                            local_x1 = world_lever_x1 * sin_r1 - world_lever_z1 * cos_r1   # right/left
+                            local_x1 = world_lever_x1 * cos_r1 + world_lever_z1 * sin_r1
+                            local_z1 = world_lever_z1 * cos_r1 - world_lever_x1 * sin_r1
                             b1.pitch_velocity += (-local_z1 * push_force) / b1.pitch_inertia
                             b1.roll_velocity += (local_x1 * push_force) / b1.roll_inertia
 
@@ -7994,9 +7733,8 @@ def beetle_collision(b1, b2, params):
                             world_lever_z2 = collision_z - b2.z
                             cos_r2 = math.cos(b2.rotation)
                             sin_r2 = math.sin(b2.rotation)
-                            # Forward = (cos, sin), Right = (sin, -cos)
-                            local_z2 = world_lever_x2 * cos_r2 + world_lever_z2 * sin_r2   # front/back
-                            local_x2 = world_lever_x2 * sin_r2 - world_lever_z2 * cos_r2   # right/left
+                            local_x2 = world_lever_x2 * cos_r2 + world_lever_z2 * sin_r2
+                            local_z2 = world_lever_z2 * cos_r2 - world_lever_x2 * sin_r2
                             b2.pitch_velocity += (-local_z2 * push_force) / b2.pitch_inertia
                             b2.roll_velocity += (local_x2 * push_force) / b2.roll_inertia
 
@@ -8038,33 +7776,16 @@ def beetle_collision(b1, b2, params):
 
                     # Modulate by tangential velocity (captures rotation into each other)
                     # Add baseline factor to ensure minimum torque even when stationary
-                    velocity_factor = 1.0 + abs(rel_vel_tangent) * 0.2
+                    velocity_factor = 1.0 + abs(rel_vel_tangent) * 0.5
 
                     torque_b1 = base_torque_b1 * velocity_factor
                     torque_b2 = base_torque_b2 * velocity_factor
 
-                    # Apply angular impulses with horn leverage (with cooldown to prevent jerky rapid hits)
-                    # Only apply if both beetles' yaw cooldowns are expired
-                    if b1.yaw_cooldown <= 0.0 and b2.yaw_cooldown <= 0.0:
-                        # Reduce yaw spin when airborne to prevent excessive spinning
-                        airborne_factor = 1.0
-                        if b1.y > 2.0 or b2.y > 2.0:  # Either beetle is airborne
-                            airborne_factor = 0.1  # Reduce to 10% when in air
-
-                        angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 1.1 * airborne_factor
-                        angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 1.1 * airborne_factor
-
-                        # Cap angular impulse to prevent spikes
-                        max_impulse = 0.2
-                        angular_impulse_b1 = max(-max_impulse, min(max_impulse, angular_impulse_b1))
-                        angular_impulse_b2 = max(-max_impulse, min(max_impulse, angular_impulse_b2))
-
-                        b1.angular_velocity += angular_impulse_b1
-                        b2.angular_velocity -= angular_impulse_b2
-
-                        # Set yaw cooldown
-                        b1.yaw_cooldown = 0.11
-                        b2.yaw_cooldown = 0.11
+                    # Apply angular impulses with horn leverage
+                    angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 1.3
+                    angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 1.3
+                    b1.angular_velocity += angular_impulse_b1
+                    b2.angular_velocity -= angular_impulse_b2
 
             # Separation/tipping to prevent stuck collisions
             separation_force = params["SEPARATION_FORCE"]
@@ -8076,41 +7797,16 @@ def beetle_collision(b1, b2, params):
                     tip_strength = params.get("HORN_TIP_STRENGTH", 2.0)
 
                     # MOMENTUM-BASED TIPPING: Beetle with more momentum tips the other more
-                    # Include tangential velocity from spinning (angular_velocity × radius)
-                    # Use turn_intent with FIXED radius so both beetles get equal benefit from pressing turn
-                    INTENT_RADIUS = 12.0  # Fixed radius for turn intent (typical horn length)
-
-                    # Actual angular velocity uses real lever arm
-                    b1_tangent_vx = -b1.angular_velocity * (collision_z - b1.z)
-                    b1_tangent_vz = b1.angular_velocity * (collision_x - b1.x)
-                    b2_tangent_vx = -b2.angular_velocity * (collision_z - b2.z)
-                    b2_tangent_vz = b2.angular_velocity * (collision_x - b2.x)
-
-                    # Turn intent uses fixed radius (direction based on beetle facing)
-                    b1_intent_speed = b1.turn_intent * ROTATION_SPEED * INTENT_RADIUS
-                    b2_intent_speed = b2.turn_intent * ROTATION_SPEED * INTENT_RADIUS
-                    # Convert to velocity perpendicular to beetle facing
-                    b1_tangent_vx += -math.sin(b1.rotation) * b1_intent_speed
-                    b1_tangent_vz += math.cos(b1.rotation) * b1_intent_speed
-                    b2_tangent_vx += -math.sin(b2.rotation) * b2_intent_speed
-                    b2_tangent_vz += math.cos(b2.rotation) * b2_intent_speed
-
-                    # Total velocity = linear + tangential from rotation
-                    b1_total_vx = b1.vx + b1_tangent_vx
-                    b1_total_vz = b1.vz + b1_tangent_vz
-                    b2_total_vx = b2.vx + b2_tangent_vx
-                    b2_total_vz = b2.vz + b2_tangent_vz
-
-                    b1_toward = b1_total_vx * (-normal_x) + b1_total_vz * (-normal_z)
-                    b2_toward = b2_total_vx * normal_x + b2_total_vz * normal_z
+                    b1_toward = b1.vx * (-normal_x) + b1.vz * (-normal_z)
+                    b2_toward = b2.vx * normal_x + b2.vz * normal_z
                     b1_toward = max(b1_toward, 0.0)
                     b2_toward = max(b2_toward, 0.0)
                     total_momentum = b1_toward + b2_toward + 0.01
 
                     # b1 gets tipped by b2's momentum, b2 gets tipped by b1's momentum
-                    # Range from 0.2x to 1.8x base tip strength (aggressive momentum advantage)
-                    b1_tip_received = tip_strength * (0.2 + (b2_toward / total_momentum) * 1.6)
-                    b2_tip_received = tip_strength * (0.2 + (b1_toward / total_momentum) * 1.6)
+                    # Range from 0.5x to 1.5x base tip strength
+                    b1_tip_received = tip_strength * (0.5 + (b2_toward / total_momentum))
+                    b2_tip_received = tip_strength * (0.5 + (b1_toward / total_momentum))
 
                     # Lever arms in beetle's LOCAL space (not arena coords)
                     # Beetle 1
@@ -8118,30 +7814,20 @@ def beetle_collision(b1, b2, params):
                     world_lever1_z = collision_z - b1.z
                     cos_r1 = math.cos(b1.rotation)
                     sin_r1 = math.sin(b1.rotation)
-                    # Forward = (cos, sin), Right = (sin, -cos)
-                    local1_z = world_lever1_x * cos_r1 + world_lever1_z * sin_r1   # front/back (dot with forward)
-                    local1_x = world_lever1_x * sin_r1 - world_lever1_z * cos_r1   # right/left (dot with right)
+                    local1_x = world_lever1_x * cos_r1 + world_lever1_z * sin_r1  # left/right
+                    local1_z = world_lever1_z * cos_r1 - world_lever1_x * sin_r1  # front/back
 
                     # Beetle 2
                     world_lever2_x = collision_x - b2.x
                     world_lever2_z = collision_z - b2.z
                     cos_r2 = math.cos(b2.rotation)
                     sin_r2 = math.sin(b2.rotation)
-                    local2_z = world_lever2_x * cos_r2 + world_lever2_z * sin_r2   # front/back (dot with forward)
-                    local2_x = world_lever2_x * sin_r2 - world_lever2_z * cos_r2   # right/left (dot with right)
+                    local2_x = world_lever2_x * cos_r2 + world_lever2_z * sin_r2  # left/right
+                    local2_z = world_lever2_z * cos_r2 - world_lever2_x * sin_r2  # front/back
 
-                    # Pitch torque: scale by height difference for smooth transition
-                    # When heights are equal, minimal pitch. When clearly higher/lower, full effect.
-                    y_diff = b1.y - b2.y  # positive if b1 is higher
-                    height_factor = max(-1.0, min(1.0, y_diff / 2.0))  # Smooth -1 to +1 over 2 voxel range
-
-                    pitch_mag1 = abs(local1_z) * b1_tip_received / b1.pitch_inertia
-                    pitch_mag2 = abs(local2_z) * b2_tip_received / b2.pitch_inertia
-
-                    # Higher beetle (positive height_factor) tips nose down (negative pitch)
-                    # Lower beetle (negative height_factor) tips nose up (positive pitch)
-                    b1.pitch_velocity -= pitch_mag1 * height_factor
-                    b2.pitch_velocity += pitch_mag2 * height_factor
+                    # Pitch torque (collision in front tips nose up - both beetles tip back)
+                    b1.pitch_velocity += local1_z * b1_tip_received / b1.pitch_inertia
+                    b2.pitch_velocity += local2_z * b2_tip_received / b2.pitch_inertia
 
                     # Roll torque (collision to the side tips away - both beetles tip away)
                     b1.roll_velocity -= local1_x * b1_tip_received / b1.roll_inertia
@@ -8153,39 +7839,17 @@ def beetle_collision(b1, b2, params):
                     b2.angular_velocity -= (local2_x * normal_z - local2_z * normal_x) * b2_tip_received * yaw_factor
 
                     # Set tip cooldown (separate from lift forces)
-                    b1.tip_cooldown = 0.13
-                    b2.tip_cooldown = 0.13
+                    b1.tip_cooldown = 0.03
+                    b2.tip_cooldown = 0.03
 
                 # Reduced separation for horns (20% of normal to prevent complete overlap)
                 # Applied every frame regardless of cooldown
                 mini_sep = separation_force * 0.2
 
                 # MOMENTUM-BASED SEPARATION: Moving beetle pushes stationary one more
-                # Include tangential velocity from spinning (angular_velocity × radius)
-                # Use turn_intent with FIXED radius so both beetles get equal benefit from pressing turn
-                INTENT_RADIUS = 12.0
-
-                # Actual angular velocity uses real lever arm
-                b1_tangent_vx = -b1.angular_velocity * (collision_z - b1.z)
-                b1_tangent_vz = b1.angular_velocity * (collision_x - b1.x)
-                b2_tangent_vx = -b2.angular_velocity * (collision_z - b2.z)
-                b2_tangent_vz = b2.angular_velocity * (collision_x - b2.x)
-
-                # Turn intent uses fixed radius (direction based on beetle facing)
-                b1_intent_speed = b1.turn_intent * ROTATION_SPEED * INTENT_RADIUS
-                b2_intent_speed = b2.turn_intent * ROTATION_SPEED * INTENT_RADIUS
-                b1_tangent_vx += -math.sin(b1.rotation) * b1_intent_speed
-                b1_tangent_vz += math.cos(b1.rotation) * b1_intent_speed
-                b2_tangent_vx += -math.sin(b2.rotation) * b2_intent_speed
-                b2_tangent_vz += math.cos(b2.rotation) * b2_intent_speed
-
-                b1_total_vx = b1.vx + b1_tangent_vx
-                b1_total_vz = b1.vz + b1_tangent_vz
-                b2_total_vx = b2.vx + b2_tangent_vx
-                b2_total_vz = b2.vz + b2_tangent_vz
-
-                b1_toward = b1_total_vx * (-normal_x) + b1_total_vz * (-normal_z)
-                b2_toward = b2_total_vx * normal_x + b2_total_vz * normal_z
+                # Calculate each beetle's velocity toward the other (dot product with collision normal)
+                b1_toward = b1.vx * (-normal_x) + b1.vz * (-normal_z)  # b1 moving toward b2
+                b2_toward = b2.vx * normal_x + b2.vz * normal_z        # b2 moving toward b1
 
                 # Clamp to positive (only count forward momentum)
                 b1_toward = max(b1_toward, 0.0)
@@ -8197,9 +7861,9 @@ def beetle_collision(b1, b2, params):
                 b2_push_ratio = b2_toward / total_momentum  # 0-1, how much b2 is pushing
 
                 # Distribute separation: pusher gets less pushback, pushed gets more
-                # Range from 0.2x to 2.0x of base separation (aggressive momentum advantage)
-                b1_sep = mini_sep * (2.0 - b1_push_ratio * 1.8)
-                b2_sep = mini_sep * (2.0 - b2_push_ratio * 1.8)
+                # Range from 0.3x to 1.7x of base separation
+                b1_sep = mini_sep * (1.7 - b1_push_ratio * 1.4)
+                b2_sep = mini_sep * (1.7 - b2_push_ratio * 1.4)
 
                 b1.x += normal_x * b1_sep
                 b1.z += normal_z * b1_sep
@@ -8207,38 +7871,16 @@ def beetle_collision(b1, b2, params):
                 b2.z -= normal_z * b2_sep
             else:
                 # BODY COLLISION or BALL: Keep full separation behavior with momentum
-                # Use turn_intent with FIXED radius so both beetles get equal benefit from pressing turn
-                INTENT_RADIUS = 12.0
-
-                # Actual angular velocity uses real lever arm
-                b1_tangent_vx = -b1.angular_velocity * (collision_z - b1.z)
-                b1_tangent_vz = b1.angular_velocity * (collision_x - b1.x)
-                b2_tangent_vx = -b2.angular_velocity * (collision_z - b2.z)
-                b2_tangent_vz = b2.angular_velocity * (collision_x - b2.x)
-
-                # Turn intent uses fixed radius (direction based on beetle facing)
-                b1_intent_speed = b1.turn_intent * ROTATION_SPEED * INTENT_RADIUS
-                b2_intent_speed = b2.turn_intent * ROTATION_SPEED * INTENT_RADIUS
-                b1_tangent_vx += -math.sin(b1.rotation) * b1_intent_speed
-                b1_tangent_vz += math.cos(b1.rotation) * b1_intent_speed
-                b2_tangent_vx += -math.sin(b2.rotation) * b2_intent_speed
-                b2_tangent_vz += math.cos(b2.rotation) * b2_intent_speed
-
-                b1_total_vx = b1.vx + b1_tangent_vx
-                b1_total_vz = b1.vz + b1_tangent_vz
-                b2_total_vx = b2.vx + b2_tangent_vx
-                b2_total_vz = b2.vz + b2_tangent_vz
-
-                b1_toward = b1_total_vx * (-normal_x) + b1_total_vz * (-normal_z)
-                b2_toward = b2_total_vx * normal_x + b2_total_vz * normal_z
+                b1_toward = b1.vx * (-normal_x) + b1.vz * (-normal_z)
+                b2_toward = b2.vx * normal_x + b2.vz * normal_z
                 b1_toward = max(b1_toward, 0.0)
                 b2_toward = max(b2_toward, 0.0)
                 total_momentum = b1_toward + b2_toward + 0.01
                 b1_push_ratio = b1_toward / total_momentum
                 b2_push_ratio = b2_toward / total_momentum
 
-                b1_sep = separation_force * (2.0 - b1_push_ratio * 1.8)
-                b2_sep = separation_force * (2.0 - b2_push_ratio * 1.8)
+                b1_sep = separation_force * (1.7 - b1_push_ratio * 1.4)
+                b2_sep = separation_force * (1.7 - b2_push_ratio * 1.4)
 
                 b1.x += normal_x * b1_sep
                 b1.z += normal_z * b1_sep
@@ -8426,22 +8068,19 @@ def beetle_collision(b1, b2, params):
             # === PHASE 3: BODY ROTATION DAMPING ===
             # Track collision-induced spin direction and set damping
             # This prevents immediate rotation into collision direction, preventing horn clipping
-            # Skip damping for leg-only collisions so legs don't block turning
-            # Skip damping for bombardier beetles (no horn to clip through things)
 
-            if collision_is_leg_only[None] == 0:
-                # For beetle 1: if angular_velocity is significant, apply damping (skip bombardier)
-                if abs(b1.angular_velocity) > 0.3 and b1.horn_type != "bombardier":
-                    # Store spin direction: 1 = clockwise (positive), -1 = counterclockwise (negative)
-                    b1.collision_spin_direction = 1 if b1.angular_velocity > 0 else -1
-                    # Apply full damping strength on any significant collision
-                    b1.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
+            # For beetle 1: if angular_velocity is significant, apply damping
+            if abs(b1.angular_velocity) > 0.3:  # Lower threshold for more responsiveness
+                # Store spin direction: 1 = clockwise (positive), -1 = counterclockwise (negative)
+                b1.collision_spin_direction = 1 if b1.angular_velocity > 0 else -1
+                # Apply full damping strength on any significant collision
+                b1.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
 
-                # For beetle 2: same logic (skip bombardier)
-                if abs(b2.angular_velocity) > 0.3 and b2.horn_type != "bombardier":
-                    b2.collision_spin_direction = 1 if b2.angular_velocity > 0 else -1
-                    # Apply full damping strength on any significant collision
-                    b2.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
+            # For beetle 2: same logic
+            if abs(b2.angular_velocity) > 0.3:
+                b2.collision_spin_direction = 1 if b2.angular_velocity > 0 else -1
+                # Apply full damping strength on any significant collision
+                b2.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
     else:
         # No collision - reset smoothed collision normals
         b1.contact_normal_x = 0.0
@@ -8525,18 +8164,18 @@ physics_params = {
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
-    "GRAVITY": 100.0,  # Adjustable gravity
-    "SEPARATION_FORCE": 0.25,  # Gradual position separation on collision
+    "GRAVITY": 60.0,  # Adjustable gravity
+    "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
     "FORWARD_SPEED": 12.0,  # Forward top speed
-    "BACKWARD_SPEED": 9.0,  # Backward top speed (slower)
+    "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
 
     # Airborne tumbling physics parameters
-    "AIRBORNE_DAMPING": 0.85,  # Angular damping when airborne (0.85 = 15% loss per frame, less crazy spinning)
+    "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
     "TUMBLE_MULTIPLIER": 5.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
-    "HORN_LIFT_STRENGTH": 6.0,  # Multiplier for horn combat lift force (higher = more intense lifts)
-    "HORN_TIP_STRENGTH": 3.3,  # Tipping torque strength for horn collisions (replaces separation)
+    "HORN_LIFT_STRENGTH": 0.45,  # Multiplier for horn combat lift force (higher = more intense lifts)
+    "HORN_TIP_STRENGTH": 2.5,  # Tipping torque strength for horn collisions (replaces separation)
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
@@ -8870,13 +8509,6 @@ while window.running:
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
         if beetle_blue.active and not beetle_blue.is_falling:
-            # Track turn intent (for momentum calculation even when blocked)
-            beetle_blue.turn_intent = 0.0
-            if blue_inputs & INPUT_LEFT:
-                beetle_blue.turn_intent = -1.0
-            if blue_inputs & INPUT_RIGHT:
-                beetle_blue.turn_intent = 1.0
-
             # Rotation controls (F/H) - BLOCKED during horn collision
             # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_blue.in_horn_collision:
@@ -9106,13 +8738,6 @@ while window.running:
 
         # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
         if beetle_red.active and not beetle_red.is_falling:
-            # Track turn intent (for momentum calculation even when blocked)
-            beetle_red.turn_intent = 0.0
-            if red_inputs & INPUT_LEFT:
-                beetle_red.turn_intent = -1.0
-            if red_inputs & INPUT_RIGHT:
-                beetle_red.turn_intent = 1.0
-
             # Rotation controls (J/L) - BLOCKED during horn collision
             # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_red.in_horn_collision:
@@ -10993,28 +10618,15 @@ while window.running:
     # Red score hovers above BLUE goal pit (west, x=32)
     digit_y = 53  # Height above floor (floor is at y=33)
 
-    # Blue score digits above red goal (east) - tens and ones
+    # Blue score digit above red goal (east)
     blue_digit_x = 96.0  # Center over red goal pit
-    digit_spacing = 4.0  # Space between tens and ones digit
-    # Tens digit (only show if score >= 10)
-    if blue_score >= 10:
-        render_score_digit((blue_score // 10) % 10, blue_digit_x - digit_spacing, float(digit_y), 64.0,
-                          simulation.SCORE_DIGIT_BLUE,
-                          blue_scale_x, blue_scale_y, camera.pos_x, camera.pos_z)
-    # Ones digit
-    render_score_digit(blue_score % 10, blue_digit_x + digit_spacing, float(digit_y), 64.0,
+    render_score_digit(blue_score % 10, blue_digit_x, float(digit_y), 64.0,
                       simulation.SCORE_DIGIT_BLUE,
                       blue_scale_x, blue_scale_y, camera.pos_x, camera.pos_z)
 
-    # Red score digits above blue goal (west) - tens and ones
+    # Red score digit above blue goal (west)
     red_digit_x = 32.0  # Center over blue goal pit
-    # Tens digit (only show if score >= 10)
-    if red_score >= 10:
-        render_score_digit((red_score // 10) % 10, red_digit_x - digit_spacing, float(digit_y), 64.0,
-                          simulation.SCORE_DIGIT_RED,
-                          red_scale_x, red_scale_y, camera.pos_x, camera.pos_z)
-    # Ones digit
-    render_score_digit(red_score % 10, red_digit_x + digit_spacing, float(digit_y), 64.0,
+    render_score_digit(red_score % 10, red_digit_x, float(digit_y), 64.0,
                       simulation.SCORE_DIGIT_RED,
                       red_scale_x, red_scale_y, camera.pos_x, camera.pos_z)
 
@@ -11642,7 +11254,7 @@ while window.running:
     window.GUI.text("=== HORN COMBAT PHYSICS ===")
 
     # Horn Lift Strength (how intense lifts are during horn combat)
-    new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 10.0)
+    new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 0.5)
     if new_horn_lift != physics_params["HORN_LIFT_STRENGTH"]:
         physics_params["HORN_LIFT_STRENGTH"] = new_horn_lift
 
