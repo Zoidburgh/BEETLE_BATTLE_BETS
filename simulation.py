@@ -33,6 +33,20 @@ spray_owner = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 0=blue, 1=red (don't hi
 spray_hit = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 1=hit beetle this frame, 0=no hit
 spray_hit_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)  # Position where hit occurred
 
+# Spider silk particle system (separate from spray - persists longer)
+MAX_SILK = 600  # More particles since they persist longer
+num_silk = ti.field(dtype=ti.i32, shape=())  # Active silk particle count
+silk_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)
+silk_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)
+silk_color = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)  # RGB color (cream/white)
+silk_lifetime = ti.field(dtype=ti.f32, shape=MAX_SILK)  # Time remaining (seconds)
+silk_owner = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=blue, 1=red
+silk_stuck = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=flying, 1=stuck to floor, 2=stuck to beetle
+# Beetle-sticking tracking
+silk_stuck_beetle = ti.field(dtype=ti.i32, shape=MAX_SILK)  # -1=none/floor, 0=blue, 1=red
+silk_stuck_voxel_idx = ti.field(dtype=ti.i32, shape=MAX_SILK)  # index into body cache
+silk_stuck_offset = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)  # small random offset for variation
+
 # Projectile system (cannonballs)
 MAX_PROJECTILES = 10  # Maximum active projectiles
 num_projectiles = ti.field(dtype=ti.i32, shape=())  # Active projectile count

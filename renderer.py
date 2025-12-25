@@ -305,6 +305,57 @@ def extract_spray_particles():
     num_voxels[None] = min(voxel_count + spray_count, MAX_VOXELS)
 
 @ti.kernel
+def extract_silk_particles():
+    """Extract spider silk particles and merge into main voxel buffer with alpha fade"""
+    # Get number of active silk particles from simulation
+    silk_count = simulation.num_silk[None]
+
+    # Get current voxel count to append silk after other particles
+    voxel_count = num_voxels[None]
+
+    # Silk fade time constant (last 2 seconds)
+    SILK_FADE_TIME = 2.0
+
+    # Merge silk particles into main voxel buffer
+    for idx in range(silk_count):
+        lifetime = simulation.silk_lifetime[idx]
+        if lifetime <= 0:
+            continue  # Skip dead particles
+
+        write_idx = ti.atomic_add(num_voxels[None], 1)
+        if write_idx < MAX_VOXELS:  # Bounds check
+            # Get position from physics system
+            silk_pos = simulation.silk_pos[idx]
+            voxel_positions[write_idx] = silk_pos
+
+            # Get base color (cream/off-white)
+            base_color = simulation.silk_color[idx]
+
+            # Calculate alpha fade based on remaining lifetime
+            alpha = 1.0
+            if lifetime < SILK_FADE_TIME:
+                # Fade out in last 2 seconds
+                t = lifetime / SILK_FADE_TIME
+                alpha = t * t  # Quadratic ease-out for natural fade
+
+            # Add dramatic pulsing glow for stuck particles (floor or beetle)
+            pulse = 1.0
+            if simulation.silk_stuck[idx] >= 1:  # 1=floor, 2=beetle
+                # Pulse from 80% to 150% brightness
+                pulse = 1.15 + 0.35 * ti.sin(lifetime * 12.0)
+
+            # Apply alpha, pulse, and slight shimmer for silk texture
+            voxel_colors[write_idx] = base_color * alpha * pulse
+
+            # Silk particles 20% bigger than debris for visibility
+            # Shrink as they fade for natural dissipation
+            SILK_RADIUS = DEBRIS_RADIUS * 1.2
+            if lifetime < SILK_FADE_TIME:
+                voxel_radii[write_idx] = SILK_RADIUS * (0.5 + 0.5 * (lifetime / SILK_FADE_TIME))
+            else:
+                voxel_radii[write_idx] = SILK_RADIUS
+
+@ti.kernel
 def extract_projectiles():
     """Extract active projectiles from physics simulation (runs on GPU)"""
     # Count and copy active projectiles to render buffers
@@ -470,6 +521,9 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
 
     # Extract spray particles from physics simulation (bombardier beetle acid)
     extract_spray_particles()
+
+    # Extract spider silk particles from physics simulation
+    extract_silk_particles()
 
     _t3 = time.perf_counter()
 
