@@ -3047,21 +3047,22 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     total_rear_leg_len = coxa_len + femur_len + tibia_len
 
     if is_spider:
-        # SPIDER: Peaked geometry
-        body_attach_y = spider_body_attach_y
+        # SPIDER: Peaked geometry - rear legs (pair 3) attach 1 voxel higher
+        body_attach_y = spider_body_attach_y + 1  # +1 for 2nd-to-back legs
+        rear_peak = spider_peak_height + 1  # Raise peak so legs still reach ground
         for i in range(coxa_len):
             for fill_y in range(2):
                 rear_left.append((rear_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
         for i in range(femur_len):
             progress = i / max(1, femur_len - 1)
-            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            arch_y = int(body_attach_y + progress * (rear_peak - body_attach_y))
             for fill_y in range(2):
                 rear_left.append((rear_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
         # TIBIA - angles BACKWARD
         for i in range(tibia_len):
             tip_x = rear_leg_attach_x - i  # Backward angle
             progress = i / max(1, tibia_len - 1)
-            tip_y = int(spider_peak_height * (1.0 - progress))
+            tip_y = int(rear_peak * (1.0 - progress))
             rear_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
             if tip_y > 0:
                 rear_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
@@ -3103,21 +3104,22 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     side = 1
 
     if is_spider:
-        # SPIDER: Peaked geometry
-        body_attach_y = spider_body_attach_y
+        # SPIDER: Peaked geometry - rear legs (pair 3) attach 1 voxel higher
+        body_attach_y = spider_body_attach_y + 1  # +1 for 2nd-to-back legs
+        rear_peak = spider_peak_height + 1  # Raise peak so legs still reach ground
         for i in range(coxa_len):
             for fill_y in range(2):
                 rear_right.append((rear_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
         for i in range(femur_len):
             progress = i / max(1, femur_len - 1)
-            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            arch_y = int(body_attach_y + progress * (rear_peak - body_attach_y))
             for fill_y in range(2):
                 rear_right.append((rear_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
         # TIBIA - angles BACKWARD
         for i in range(tibia_len):
             tip_x = rear_leg_attach_x - i  # Backward angle
             progress = i / max(1, tibia_len - 1)
-            tip_y = int(spider_peak_height * (1.0 - progress))
+            tip_y = int(rear_peak * (1.0 - progress))
             rear_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
             if tip_y > 0:
                 rear_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
@@ -3210,9 +3212,10 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         femur_start = coxa_start + coxa_len
         tibia_start = femur_start + femur_len
 
-        # rear2_leg_attach_x already defined for spider (= 3, back of prosoma)
-        # SPIDER: Peaked geometry - coxa level, femur UP, tibia DOWN
-        body_attach_y = spider_body_attach_y
+        # rear2_leg_attach_x already defined for spider (= -5, back of prosoma)
+        # SPIDER: Peaked geometry - backmost legs (pair 4) attach 2 voxels higher
+        body_attach_y = spider_body_attach_y + 2  # +2 for backmost legs
+        rear2_peak = spider_peak_height + 2  # Raise peak so legs still reach ground
 
         rear2_left = []
         rear2_left_tips = []
@@ -3224,14 +3227,14 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         # FEMUR - arches UP
         for i in range(femur_len):
             progress = i / max(1, femur_len - 1)
-            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            arch_y = int(body_attach_y + progress * (rear2_peak - body_attach_y))
             for fill_y in range(2):
                 rear2_left.append((rear2_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
         # TIBIA - angles strongly BACKWARD
         for i in range(tibia_len):
             tip_x = rear2_leg_attach_x - i - (i // 2)  # Strong backward angle
             progress = i / max(1, tibia_len - 1)
-            tip_y = int(spider_peak_height * (1.0 - progress))
+            tip_y = int(rear2_peak * (1.0 - progress))
             rear2_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
             if tip_y > 0:
                 rear2_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
@@ -3248,14 +3251,14 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         # FEMUR - arches UP
         for i in range(femur_len):
             progress = i / max(1, femur_len - 1)
-            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            arch_y = int(body_attach_y + progress * (rear2_peak - body_attach_y))
             for fill_y in range(2):
                 rear2_right.append((rear2_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
         # TIBIA - angles strongly BACKWARD
         for i in range(tibia_len):
             tip_x = rear2_leg_attach_x - i - (i // 2)  # Strong backward angle
             progress = i / max(1, tibia_len - 1)
-            tip_y = int(spider_peak_height * (1.0 - progress))
+            tip_y = int(rear2_peak * (1.0 - progress))
             rear2_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
             if tip_y > 0:
                 rear2_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
