@@ -344,12 +344,14 @@ def extract_silk_particles():
                 # Pulse from 80% to 150% brightness
                 pulse = 1.15 + 0.35 * ti.sin(lifetime * 12.0)
 
-            # Apply alpha, pulse, and slight shimmer for silk texture
-            voxel_colors[write_idx] = base_color * alpha * pulse
+            # Make silk emissive (always bright white) by boosting color above 1.0
+            # This overcomes shadow/lighting effects for consistent visibility
+            SILK_EMISSIVE = 1.7
+            voxel_colors[write_idx] = base_color * alpha * pulse * SILK_EMISSIVE
 
             # Silk particles 20% bigger than debris for visibility
             # Shrink as they fade for natural dissipation
-            SILK_RADIUS = DEBRIS_RADIUS * 1.2
+            SILK_RADIUS = DEBRIS_RADIUS * 1.44  # 20% bigger than before (1.2 * 1.2)
             if lifetime < SILK_FADE_TIME:
                 voxel_radii[write_idx] = SILK_RADIUS * (0.5 + 0.5 * (lifetime / SILK_FADE_TIME))
             else:

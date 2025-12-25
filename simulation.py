@@ -44,6 +44,12 @@ silk_owner = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=blue, 1=red
 silk_stuck = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=flying, 1=stuck to floor, 2=stuck to beetle
 # Beetle-sticking tracking
 silk_stuck_beetle = ti.field(dtype=ti.i32, shape=MAX_SILK)  # -1=none/floor, 0=blue, 1=red
+# Silk counters per beetle (for slowdown effects)
+silk_on_blue = ti.field(dtype=ti.i32, shape=())  # Count of silk stuck to blue beetle
+silk_on_red = ti.field(dtype=ti.i32, shape=())   # Count of silk stuck to red beetle
+# Floor silk counters (for speed effects when walking over silk)
+silk_under_blue = ti.field(dtype=ti.i32, shape=())  # Floor silk near blue beetle
+silk_under_red = ti.field(dtype=ti.i32, shape=())   # Floor silk near red beetle
 silk_stuck_voxel_idx = ti.field(dtype=ti.i32, shape=MAX_SILK)  # index into body cache
 silk_stuck_offset = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)  # small random offset for variation
 

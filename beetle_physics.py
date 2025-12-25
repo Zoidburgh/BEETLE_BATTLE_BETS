@@ -546,6 +546,7 @@ class Beetle:
         self.horn_length = 17.0   # Cached total horn reach (updated when geometry changes)
         self.horn_type = "rhino"  # Horn type: "rhino" (single horn), "stag" (dual pincers), "hercules" (dual jaws), or "scorpion"
         self.horn_type_id = HORN_TYPE_IDS["rhino"]  # OPTIMIZATION: Integer ID for fast lookup (avoids string comparisons)
+        self.silk_speed_mult = 1.0  # Silk speed multiplier (set each frame based on body/floor silk)
         self.body_pitch_offset = 0.0  # Static body tilt angle (radians) - calculated from leg geometry for scorpion
 
         # Scorpion stinger control (VB/NM keys)
@@ -708,8 +709,16 @@ class Beetle:
             dot_product = self.vx * forward_x + self.vz * forward_z
 
             # Apply different speed caps based on direction (use tunable params)
-            forward_max = physics_params.get("FORWARD_SPEED", 7.0)
-            backward_max = physics_params.get("BACKWARD_SPEED", 5.0)
+            # Spider has lower base speed (7/4) but can boost with floor silk
+            if self.horn_type_id == 7:  # Spider
+                base_forward = 7.0
+                base_backward = 4.0
+            else:
+                base_forward = physics_params.get("FORWARD_SPEED", 7.0)
+                base_backward = physics_params.get("BACKWARD_SPEED", 5.0)
+            # Silk speed multiplier adjusts max speed (spider boost on floor silk)
+            forward_max = base_forward * self.silk_speed_mult
+            backward_max = base_backward * self.silk_speed_mult
             if dot_product >= 0:  # Moving forward
                 if speed > forward_max:
                     self.vx = (self.vx / speed) * forward_max
@@ -839,6 +848,10 @@ def reset_match():
 
     # Reset spider silk particles
     simulation.num_silk[None] = 0
+    simulation.silk_on_blue[None] = 0
+    simulation.silk_on_red[None] = 0
+    simulation.silk_under_blue[None] = 0
+    simulation.silk_under_red[None] = 0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -8163,11 +8176,28 @@ def update_silk_particles(dt: ti.f32):
             dist_from_center = ti.sqrt(pos.x * pos.x + pos.z * pos.z)
 
             if pos.y < RENDER_Y_OFFSET and dist_from_center < ARENA_RADIUS:
-                # Hit floor inside arena - stick!
-                simulation.silk_pos[idx].y = RENDER_Y_OFFSET
-                simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
-                simulation.silk_stuck[idx] = 1
-                simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK  # Extended lifetime when stuck
+                # Check if there's already floor silk nearby (prevent stacking)
+                MIN_FLOOR_SPACING = 0.5  # Minimum distance between floor silk
+                can_stick = True
+                for other in range(simulation.num_silk[None]):
+                    if other != idx and simulation.silk_stuck[other] == 1:  # Other floor-stuck silk
+                        other_pos = simulation.silk_pos[other]
+                        dx = pos.x - other_pos.x
+                        dz = pos.z - other_pos.z
+                        dist_sq = dx * dx + dz * dz
+                        if dist_sq < MIN_FLOOR_SPACING * MIN_FLOOR_SPACING:
+                            can_stick = False
+                            break
+
+                if can_stick:
+                    # Hit floor inside arena - stick!
+                    simulation.silk_pos[idx].y = RENDER_Y_OFFSET
+                    simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
+                    simulation.silk_stuck[idx] = 1
+                    simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK  # Extended lifetime when stuck
+                else:
+                    # Too close to existing silk - expire quickly
+                    simulation.silk_lifetime[idx] = 0.0
 
         # Decrement lifetime
         simulation.silk_lifetime[idx] -= dt
@@ -8233,18 +8263,33 @@ def check_silk_beetle_collision(
                         best_voxel = vi
 
                 if best_dist < VOXEL_HIT_DIST and best_voxel >= 0:
-                    # Hit! Stick to this voxel (body or horn)
-                    simulation.silk_stuck[idx] = 2  # Stuck to beetle
-                    simulation.silk_stuck_beetle[idx] = 0  # Blue beetle
-                    simulation.silk_stuck_voxel_idx[idx] = best_voxel
-                    simulation.silk_stuck_offset[idx] = ti.math.vec3(
-                        (ti.random() - 0.5) * 0.3,
-                        (ti.random() - 0.5) * 0.3,
-                        (ti.random() - 0.5) * 0.3
-                    )
-                    simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
-                    simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK
-                    continue  # Don't check red if already hit blue
+                    # Check if this voxel already has silk (prevent stacking)
+                    voxel_taken = False
+                    for other in range(simulation.num_silk[None]):
+                        if other != idx and simulation.silk_stuck[other] == 2:  # Beetle-stuck
+                            if simulation.silk_stuck_beetle[other] == 0:  # On blue beetle
+                                if simulation.silk_stuck_voxel_idx[other] == best_voxel:
+                                    voxel_taken = True
+                                    break
+
+                    if not voxel_taken:
+                        # Hit! Stick to this voxel (body or horn)
+                        simulation.silk_stuck[idx] = 2  # Stuck to beetle
+                        simulation.silk_stuck_beetle[idx] = 0  # Blue beetle
+                        simulation.silk_stuck_voxel_idx[idx] = best_voxel
+                        simulation.silk_stuck_offset[idx] = ti.math.vec3(
+                            (ti.random() - 0.5) * 0.3,
+                            (ti.random() - 0.5) * 0.3,
+                            (ti.random() - 0.5) * 0.3
+                        )
+                        simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
+                        simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK
+                        ti.atomic_add(simulation.silk_on_blue[None], 1)  # Increment counter
+                        continue  # Don't check red if already hit blue
+                    else:
+                        # Voxel already has silk - expire this particle
+                        simulation.silk_lifetime[idx] = 0.0
+                        continue
 
         # Check red beetle (if silk not from red)
         if red_active == 1 and owner != 1:
@@ -8278,17 +8323,31 @@ def check_silk_beetle_collision(
                         best_voxel = vi
 
                 if best_dist < VOXEL_HIT_DIST and best_voxel >= 0:
-                    # Hit! Stick to this voxel (body or horn)
-                    simulation.silk_stuck[idx] = 2  # Stuck to beetle
-                    simulation.silk_stuck_beetle[idx] = 1  # Red beetle
-                    simulation.silk_stuck_voxel_idx[idx] = best_voxel
-                    simulation.silk_stuck_offset[idx] = ti.math.vec3(
-                        (ti.random() - 0.5) * 0.3,
-                        (ti.random() - 0.5) * 0.3,
-                        (ti.random() - 0.5) * 0.3
-                    )
-                    simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
-                    simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK
+                    # Check if this voxel already has silk (prevent stacking)
+                    voxel_taken = False
+                    for other in range(simulation.num_silk[None]):
+                        if other != idx and simulation.silk_stuck[other] == 2:  # Beetle-stuck
+                            if simulation.silk_stuck_beetle[other] == 1:  # On red beetle
+                                if simulation.silk_stuck_voxel_idx[other] == best_voxel:
+                                    voxel_taken = True
+                                    break
+
+                    if not voxel_taken:
+                        # Hit! Stick to this voxel (body or horn)
+                        simulation.silk_stuck[idx] = 2  # Stuck to beetle
+                        simulation.silk_stuck_beetle[idx] = 1  # Red beetle
+                        simulation.silk_stuck_voxel_idx[idx] = best_voxel
+                        simulation.silk_stuck_offset[idx] = ti.math.vec3(
+                            (ti.random() - 0.5) * 0.3,
+                            (ti.random() - 0.5) * 0.3,
+                            (ti.random() - 0.5) * 0.3
+                        )
+                        simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
+                        simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK
+                        ti.atomic_add(simulation.silk_on_red[None], 1)  # Increment counter
+                    else:
+                        # Voxel already has silk - expire this particle
+                        simulation.silk_lifetime[idx] = 0.0
 
 
 @ti.kernel
@@ -8357,8 +8416,42 @@ def cleanup_dead_silk():
                 simulation.silk_stuck_voxel_idx[write_idx] = simulation.silk_stuck_voxel_idx[read_idx]
                 simulation.silk_stuck_offset[write_idx] = simulation.silk_stuck_offset[read_idx]
             write_idx += 1
+        else:
+            # Particle is expiring - decrement beetle counter if it was stuck to one
+            if simulation.silk_stuck[read_idx] == 2:  # Was stuck to beetle
+                if simulation.silk_stuck_beetle[read_idx] == 0:
+                    ti.atomic_sub(simulation.silk_on_blue[None], 1)
+                elif simulation.silk_stuck_beetle[read_idx] == 1:
+                    ti.atomic_sub(simulation.silk_on_red[None], 1)
 
     simulation.num_silk[None] = write_idx
+
+
+@ti.kernel
+def count_floor_silk_under_beetles(blue_x: ti.f32, blue_z: ti.f32, red_x: ti.f32, red_z: ti.f32):
+    """Count floor silk particles near each beetle for speed effects"""
+    FLOOR_SILK_RADIUS = 8.0  # How close counts as "under" the beetle
+    RADIUS_SQ = FLOOR_SILK_RADIUS * FLOOR_SILK_RADIUS
+
+    # Reset counters
+    simulation.silk_under_blue[None] = 0
+    simulation.silk_under_red[None] = 0
+
+    for idx in range(simulation.num_silk[None]):
+        if simulation.silk_stuck[idx] == 1:  # Floor silk only
+            pos = simulation.silk_pos[idx]
+
+            # Check distance to blue beetle
+            dx_blue = pos.x - blue_x
+            dz_blue = pos.z - blue_z
+            if dx_blue * dx_blue + dz_blue * dz_blue < RADIUS_SQ:
+                ti.atomic_add(simulation.silk_under_blue[None], 1)
+
+            # Check distance to red beetle
+            dx_red = pos.x - red_x
+            dz_red = pos.z - red_z
+            if dx_red * dx_red + dz_red * dz_red < RADIUS_SQ:
+                ti.atomic_add(simulation.silk_under_red[None], 1)
 
 # ============== END SPIDER SILK SYSTEM ==============
 
@@ -9932,16 +10025,29 @@ while window.running:
                     beetle_blue.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
 
             # Movement controls (T/G) - move in facing direction
+            # Silk slowdown: 1% slower per silk particle attached to body
+            blue_silk_slowdown = max(0.0, 1.0 - 0.01 * simulation.silk_on_blue[None])
+
+            # Floor silk effect: spiders get boost, others get slowed
+            floor_silk_count = simulation.silk_under_blue[None]
+            if beetle_blue.horn_type_id == 7:  # Spider
+                blue_floor_modifier = 1.0 + 0.03 * floor_silk_count  # +3% speed per floor silk
+            else:
+                blue_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
+
+            blue_speed_mult = blue_silk_slowdown * blue_floor_modifier
+            beetle_blue.silk_speed_mult = blue_speed_mult  # Set on beetle for max speed cap
+
             if blue_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
                 move_x = math.cos(beetle_blue.rotation)
                 move_z = math.sin(beetle_blue.rotation)
-                beetle_blue.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
+                beetle_blue.apply_force(move_x * MOVE_FORCE * blue_speed_mult, move_z * MOVE_FORCE * blue_speed_mult, PHYSICS_TIMESTEP)
             if blue_inputs & INPUT_BACKWARD:
                 # Move backward in facing direction
                 move_x = -math.cos(beetle_blue.rotation)
                 move_z = -math.sin(beetle_blue.rotation)
-                beetle_blue.apply_force(move_x * BACKWARD_MOVE_FORCE, move_z * BACKWARD_MOVE_FORCE, PHYSICS_TIMESTEP)
+                beetle_blue.apply_force(move_x * BACKWARD_MOVE_FORCE * blue_speed_mult, move_z * BACKWARD_MOVE_FORCE * blue_speed_mult, PHYSICS_TIMESTEP)
 
             # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
             if beetle_blue.horn_type_id == 5:  # bombardier
@@ -10183,16 +10289,29 @@ while window.running:
                     beetle_red.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
 
             # Movement controls (I/K) - move in facing direction
+            # Silk slowdown: 1% slower per silk particle attached to body
+            red_silk_slowdown = max(0.0, 1.0 - 0.01 * simulation.silk_on_red[None])
+
+            # Floor silk effect: spiders get boost, others get slowed
+            floor_silk_count = simulation.silk_under_red[None]
+            if beetle_red.horn_type_id == 7:  # Spider
+                red_floor_modifier = 1.0 + 0.03 * floor_silk_count  # +3% speed per floor silk
+            else:
+                red_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
+
+            red_speed_mult = red_silk_slowdown * red_floor_modifier
+            beetle_red.silk_speed_mult = red_speed_mult  # Set on beetle for max speed cap
+
             if red_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
                 move_x = math.cos(beetle_red.rotation)
                 move_z = math.sin(beetle_red.rotation)
-                beetle_red.apply_force(move_x * MOVE_FORCE, move_z * MOVE_FORCE, PHYSICS_TIMESTEP)
+                beetle_red.apply_force(move_x * MOVE_FORCE * red_speed_mult, move_z * MOVE_FORCE * red_speed_mult, PHYSICS_TIMESTEP)
             if red_inputs & INPUT_BACKWARD:
                 # Move backward in facing direction
                 move_x = -math.cos(beetle_red.rotation)
                 move_z = -math.sin(beetle_red.rotation)
-                beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE, move_z * BACKWARD_MOVE_FORCE, PHYSICS_TIMESTEP)
+                beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE * red_speed_mult, move_z * BACKWARD_MOVE_FORCE * red_speed_mult, PHYSICS_TIMESTEP)
 
             # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
             if beetle_red.horn_type_id == 5:  # bombardier
@@ -10718,6 +10837,9 @@ while window.running:
             # Cleanup dead silk every 5 frames (less frequent since silk persists longer)
             if physics_frame % 5 == 0:
                 cleanup_dead_silk()
+
+            # Count floor silk under each beetle for speed effects
+            count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z)
 
         # === DEBRIS PARTICLES TIMING END ===
         _t_debris_end = time.perf_counter()
