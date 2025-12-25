@@ -238,7 +238,7 @@ HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to 
 
 # OPTIMIZATION: Horn type ID mapping and pitch/yaw limit lookup tables
 # Eliminates string comparisons in the physics loop (120 checks/sec -> integer lookup)
-HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "cockchafer": 6}
+HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "cockchafer": 6, "spider": 7}
 # Pitch limits: (max_pitch, min_pitch) indexed by horn_type_id
 HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_RHINO, HORN_MIN_PITCH_RHINO),       # 0: rhino
@@ -247,6 +247,8 @@ HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 3: scorpion (symmetric ±17° around 20° default)
     (HORN_MAX_PITCH_ATLAS, HORN_MIN_PITCH_ATLAS),       # 4: atlas
     (0.0, 0.0),                                         # 5: bombardier (no horn - uses firing controls)
+    (HORN_MAX_PITCH, HORN_MIN_PITCH),                   # 6: cockchafer
+    (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 7: spider (fangs)
 ]
 # Yaw limits: (max_yaw, min_yaw) indexed by horn_type_id
 HORN_YAW_LIMITS = [
@@ -256,6 +258,8 @@ HORN_YAW_LIMITS = [
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 3: scorpion
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 4: atlas
     (0.0, 0.0),                             # 5: bombardier (no horn - uses firing controls)
+    (HORN_MAX_YAW, HORN_MIN_YAW),           # 6: cockchafer
+    (HORN_MAX_YAW, HORN_MIN_YAW),           # 7: spider
 ]
 
 # ============================================================================
@@ -786,6 +790,7 @@ def reset_match():
     global spray_charges_blue, spray_charges_red, spray_recharge_timer_blue, spray_recharge_timer_red
     global stripe_color_blue, stripe_color_red
     global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red, prev_spray_aim_blue, prev_spray_aim_red
+    global spider_aim_blue, spider_aim_red, prev_spider_aim_blue, prev_spider_aim_red
     global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
     global venom_tip_color_blue, venom_tip_color_red
@@ -825,6 +830,12 @@ def reset_match():
     spray_aim_y_red = 0.0
     prev_spray_aim_blue = 0.0
     prev_spray_aim_red = 0.0
+
+    # Reset spider aim angles
+    spider_aim_blue = 0.0
+    spider_aim_red = 0.0
+    prev_spider_aim_blue = 0.0
+    prev_spider_aim_red = 0.0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -951,6 +962,14 @@ prev_spray_aim_blue = 0.0  # Previous frame aim (for interpolation)
 prev_spray_aim_red = 0.0   # Previous frame aim (for interpolation)
 spray_aim_y_blue = 0.0  # Y velocity component for current spray burst (set when spray triggered)
 spray_aim_y_red = 0.0   # Y velocity component for current spray burst (set when spray triggered)
+
+# Spider abdomen aim (for web spray targeting - butt tilts up/down)
+SPIDER_AIM_MAX = 0.52  # ~30 degrees in radians
+SPIDER_AIM_SPEED = 1.8  # How fast aim adjusts
+spider_aim_blue = 0.0   # Current aim angle (-1 to +1, 0 = level)
+spider_aim_red = 0.0
+prev_spider_aim_blue = 0.0  # Previous frame aim (for interpolation)
+prev_spider_aim_red = 0.0
 
 # Scorpion venom attack state (uses same spray particle system)
 VENOM_COOLDOWN = 0.4  # Seconds between venom shots
@@ -1258,8 +1277,8 @@ SCORE_BOUNCE_DURATION = 0.8  # Duration of pop & squash animation (slightly long
 # Score burst particle spawning over time
 blue_burst_timer = 0.0        # Timer for spawning blue burst particles over time
 red_burst_timer = 0.0         # Timer for spawning red burst particles over time
-SCORE_BURST_DURATION = 0.2    # Spawn particles over 0.2 seconds
-SCORE_BURST_PARTICLES = 300   # Total particles to spawn
+SCORE_BURST_DURATION = 0.4    # Spawn particles over 0.4 seconds (doubled)
+SCORE_BURST_PARTICLES = 600   # Total particles to spawn (doubled)
 blue_burst_spawned = 0        # Particles spawned so far for blue
 red_burst_spawned = 0         # Particles spawned so far for red
 BASE_DIGIT_SCALE = 2.0  # Base size multiplier for score digits (1.0 = 5x7 voxels)
@@ -2311,8 +2330,8 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     head_dz_max = head_half + 1
     head_base_width = head_width / 1.25  # Scale from constrained head_width to prevent floating voxels
 
-    # Skip default head base for bombardier (bombardier head section handles it)
-    if horn_type != "bombardier":
+    # Skip default head base for bombardier and spider (they have custom head sections)
+    if horn_type not in ("bombardier", "spider"):
         for dx in range(2, 4):
             for dy in range(0, 1):
                 for dz in range(head_dz_min, head_dz_max):
@@ -2549,6 +2568,84 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             if i < 2:
                 body_voxels.append((dx, antenna_y, dz + 1))
                 body_voxels.append((dx, antenna_y + 1, dz + 1))
+    elif horn_type == "spider":
+        # SPIDER - Prosoma (cephalothorax) front segment with pedicel waist
+        # All 8 legs will attach to prosoma, beetle body becomes opisthosoma (abdomen)
+
+        # PEDICEL (thin waist connection) at dx=2
+        # This is the iconic spider "wasp waist" - just 1 voxel thin
+        pedicel_y = 1  # Slightly elevated
+        for dz in range(-1, 2):  # 3 voxels wide (thin)
+            body_voxels.append((2, pedicel_y, dz))
+            body_voxels.append((2, pedicel_y + 1, dz))
+
+        # PROSOMA (cephalothorax) - rounded front segment
+        # Extends from dx=3 to dx=7, oval shape
+        prosoma_width = max(3, int(body_width * 4 / 7))  # ~57% of body width
+
+        for dx in range(3, 8):  # Prosoma from dx=3 to dx=7
+            # Calculate width taper - widest in middle (dx=5), narrower at ends
+            if dx == 3:  # Back (connects to pedicel)
+                width = max(2, prosoma_width - 2)
+                height = front_body_height
+            elif dx == 4:
+                width = max(2, prosoma_width - 1)
+                height = front_body_height + 1
+            elif dx == 5:  # Middle (widest)
+                width = prosoma_width
+                height = front_body_height + 1
+            elif dx == 6:
+                width = max(2, prosoma_width - 1)
+                height = front_body_height
+            else:  # dx == 7, front (where fangs attach)
+                width = max(1, prosoma_width - 2)
+                height = max(2, front_body_height - 1)
+
+            for dy in range(height):
+                for dz in range(-width, width + 1):
+                    # Create rounded/oval shape by excluding corners
+                    corner_dist = abs(dz) + (height - 1 - dy) * 0.5
+                    if corner_dist <= width + 0.5:
+                        body_voxels.append((dx, dy, dz))
+
+        # SPIDER EYES - cluster of 8 small eyes on front of prosoma
+        # Simplified: 2 rows of eyes
+        eye_y = front_body_height  # Top of head
+        # Front row (4 eyes)
+        for dz in [-2, -1, 1, 2]:
+            body_voxels.append((7, eye_y, dz))
+        # Back row (4 eyes) - slightly higher
+        for dz in [-1, 0, 0, 1]:
+            body_voxels.append((6, eye_y + 1, dz))
+
+        # CHELICERAE (fangs) - tarantula-style curved fangs
+        # Chunky at base, curve downward to sharp tip
+        fang_base_y = 2  # Raised 1 voxel higher
+
+        # Left fang - curves down and slightly inward
+        # Base (thick, 2 voxels wide)
+        for dy in range(fang_base_y, fang_base_y + 2):
+            body_voxels.append((8, dy, -2))
+            body_voxels.append((8, dy, -3))
+        # Middle section (curves down)
+        body_voxels.append((9, fang_base_y, -2))
+        body_voxels.append((9, fang_base_y, -3))
+        body_voxels.append((9, fang_base_y - 1, -2))
+        # Tip (thin, points down and slightly inward)
+        body_voxels.append((10, fang_base_y - 1, -2))
+        body_voxels.append((10, fang_base_y - 2, -2))
+        body_voxels.append((11, fang_base_y - 2, -2))
+
+        # Right fang (mirror)
+        for dy in range(fang_base_y, fang_base_y + 2):
+            body_voxels.append((8, dy, 2))
+            body_voxels.append((8, dy, 3))
+        body_voxels.append((9, fang_base_y, 2))
+        body_voxels.append((9, fang_base_y, 3))
+        body_voxels.append((9, fang_base_y - 1, 2))
+        body_voxels.append((10, fang_base_y - 1, 2))
+        body_voxels.append((10, fang_base_y - 2, 2))
+        body_voxels.append((11, fang_base_y - 2, 2))
     else:
         # RHINOCEROS BEETLE HORN - Y-shaped vertical horn
         # Main shaft with overlapping layers
@@ -2642,9 +2739,12 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
 
     # For scorpion: graduated leg lengths (front shortest, rear longest) - rear is UP
     # For bombardier: graduated leg lengths (front longest, rear shortest) - front is UP
+    # For spider: 8 legs, front pair shortest, back pairs progressively longer
     # For other beetles: all legs same length (multiplier = 1.0)
     if horn_type == "scorpion":
         leg_multipliers = [1.0, 1.0, 1.1, 1.1, 1.2, 1.2, 1.3, 1.3]  # Graduated lengths (rear longest)
+    elif horn_type == "spider":
+        leg_multipliers = [0.9, 0.9, 1.0, 1.0, 1.1, 1.1, 1.0, 1.0]  # Front pair shorter, middle longer, back normal
     elif horn_type == "bombardier":
         leg_multipliers = [1.15, 1.15, 1.1, 1.1, 1.0, 1.0]  # Slightly longer front legs for tilted body
     else:
@@ -2670,83 +2770,146 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         middle_tip_y_offset = 0
         rear_tip_y_offset = 0
 
+    # SPIDER: All 8 legs attach to prosoma area, spaced 3 voxels apart
+    # Other beetles: legs spread along body
+    if horn_type == "spider":
+        front_leg_attach_x = 4   # Pair 1: front of prosoma (anchor)
+        middle_leg_attach_x = 1  # Pair 2: mid-prosoma (3 back from front)
+        rear_leg_attach_x = -2   # Pair 3: pedicel area (3 back from middle)
+        rear2_leg_attach_x = -5  # Pair 4: body junction (3 back from rear)
+    else:
+        front_leg_attach_x = 0   # Normal beetle front legs
+        middle_leg_attach_x = -3  # Normal beetle middle legs
+        # rear_leg_attach_x calculated later based on body_length
+
+    # Spider peaked leg geometry - legs arch UP at femur, then DOWN at tibia
+    spider_peak_height = max(3, int(leg_length * 0.625))  # 6->3, 7->4, 8->5, 9->5, 10->6
+    spider_body_attach_y = max(1, int(leg_length * 0.25))  # 6->1, 8->2, 10->2
+    is_spider = (horn_type == "spider")
+
     # Calculate segment lengths for front legs (legs 0, 1) - use multiplier[0]
     coxa_len, femur_len, tibia_len = calc_leg_segments(leg_length, leg_multipliers[0])
     coxa_start = 3
     femur_start = coxa_start + coxa_len
     tibia_start = femur_start + femur_len
 
-    # Front left leg (leg 0) - MOVED BACK 1 VOXEL
+    # Front left leg (leg 0)
     front_left = []
     front_left_tips = []  # Separate tips for black coloring
     side = -1
     # Total leg length for cascade calculation
     total_front_leg_len = coxa_len + femur_len + tibia_len
-    prev_cascade_y = front_leg_y_offset  # Track previous Y to fill gaps
-    # COXA - stays near body attachment level
-    for i in range(coxa_len):
-        # Cascade: Y drops as we go outward (i increases)
-        progress = i / max(1, total_front_leg_len - 1)
-        cascade_y = int(front_leg_y_offset * (1.0 - progress))
-        # Fill from current cascade_y up to previous to avoid gaps
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            front_left.append((0, 1 + fill_y, side * (coxa_start + i)))
-        prev_cascade_y = cascade_y
-    # FEMUR - cascades down toward ground
-    for i in range(femur_len):
-        progress = (coxa_len + i) / max(1, total_front_leg_len - 1)
-        cascade_y = int(front_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            front_left.append((0, fill_y, side * (femur_start + i)))
-        prev_cascade_y = cascade_y
-    # TIBIA (tips - will be rendered black) - cascade from femur down to ground
-    femur_end_y = prev_cascade_y  # Where femur ended
-    for i in range(tibia_len):
-        tip_x = 0 + min(i // 2, 2)  # Extend forward gradually
-        # Cascade from femur_end_y down to front_tip_y_offset (ground)
-        progress = i / max(1, tibia_len - 1)
-        tip_y = int(femur_end_y * (1.0 - progress)) + front_tip_y_offset
-        # Only 1-2 voxels thick at each position (not filling to ground)
-        front_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
-        if tip_y > front_tip_y_offset:  # Add one below if not at ground
-            front_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+
+    if is_spider:
+        # SPIDER: Peaked geometry - coxa level, femur UP, tibia DOWN
+        body_attach_y = spider_body_attach_y  # Where leg attaches to body
+        # COXA - stays at body level
+        for i in range(coxa_len):
+            for fill_y in range(2):  # 2 voxels thick
+                front_left.append((front_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
+        # FEMUR - arches UP from body level to peak
+        for i in range(femur_len):
+            progress = i / max(1, femur_len - 1)
+            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            for fill_y in range(2):
+                front_left.append((front_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
+        # TIBIA - goes DOWN from peak to ground, angles FORWARD strongly
+        for i in range(tibia_len):
+            tip_x = front_leg_attach_x + i  # Strong forward angle
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(spider_peak_height * (1.0 - progress))
+            front_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > 0:
+                front_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+    else:
+        # BEETLE: Cascade down geometry
+        prev_cascade_y = front_leg_y_offset  # Track previous Y to fill gaps
+        # COXA - stays near body attachment level
+        for i in range(coxa_len):
+            # Cascade: Y drops as we go outward (i increases)
+            progress = i / max(1, total_front_leg_len - 1)
+            cascade_y = int(front_leg_y_offset * (1.0 - progress))
+            # Fill from current cascade_y up to previous to avoid gaps
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                front_left.append((front_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
+            prev_cascade_y = cascade_y
+        # FEMUR - cascades down toward ground
+        for i in range(femur_len):
+            progress = (coxa_len + i) / max(1, total_front_leg_len - 1)
+            cascade_y = int(front_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                front_left.append((front_leg_attach_x, fill_y, side * (femur_start + i)))
+            prev_cascade_y = cascade_y
+        # TIBIA (tips - will be rendered black) - cascade from femur down to ground
+        femur_end_y = prev_cascade_y  # Where femur ended
+        for i in range(tibia_len):
+            tip_x = front_leg_attach_x + min(i // 2, 2)  # Extend forward gradually
+            # Cascade from femur_end_y down to front_tip_y_offset (ground)
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(femur_end_y * (1.0 - progress)) + front_tip_y_offset
+            # Only 1-2 voxels thick at each position (not filling to ground)
+            front_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > front_tip_y_offset:  # Add one below if not at ground
+                front_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(front_left)
 
-    # Front right leg (leg 1) - MOVED BACK 1 VOXEL
+    # Front right leg (leg 1)
     front_right = []
     front_right_tips = []
     side = 1
-    prev_cascade_y = front_leg_y_offset
-    for i in range(coxa_len):
-        progress = i / max(1, total_front_leg_len - 1)
-        cascade_y = int(front_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            front_right.append((0, 1 + fill_y, side * (coxa_start + i)))
-        prev_cascade_y = cascade_y
-    for i in range(femur_len):
-        progress = (coxa_len + i) / max(1, total_front_leg_len - 1)
-        cascade_y = int(front_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            front_right.append((0, fill_y, side * (femur_start + i)))
-        prev_cascade_y = cascade_y
-    # TIBIA (tips) - cascade from femur down to ground
-    femur_end_y = prev_cascade_y
-    for i in range(tibia_len):
-        tip_x = 0 + min(i // 2, 2)
-        progress = i / max(1, tibia_len - 1)
-        tip_y = int(femur_end_y * (1.0 - progress)) + front_tip_y_offset
-        # Only 1-2 voxels thick at each position
-        front_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
-        if tip_y > front_tip_y_offset:
-            front_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+
+    if is_spider:
+        # SPIDER: Peaked geometry
+        body_attach_y = spider_body_attach_y
+        for i in range(coxa_len):
+            for fill_y in range(2):
+                front_right.append((front_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
+        for i in range(femur_len):
+            progress = i / max(1, femur_len - 1)
+            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            for fill_y in range(2):
+                front_right.append((front_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
+        # TIBIA - angles FORWARD strongly
+        for i in range(tibia_len):
+            tip_x = front_leg_attach_x + i  # Strong forward angle
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(spider_peak_height * (1.0 - progress))
+            front_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > 0:
+                front_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+    else:
+        # BEETLE: Cascade down geometry
+        prev_cascade_y = front_leg_y_offset
+        for i in range(coxa_len):
+            progress = i / max(1, total_front_leg_len - 1)
+            cascade_y = int(front_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                front_right.append((front_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
+            prev_cascade_y = cascade_y
+        for i in range(femur_len):
+            progress = (coxa_len + i) / max(1, total_front_leg_len - 1)
+            cascade_y = int(front_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                front_right.append((front_leg_attach_x, fill_y, side * (femur_start + i)))
+            prev_cascade_y = cascade_y
+        # TIBIA (tips) - cascade from femur down to ground
+        femur_end_y = prev_cascade_y
+        for i in range(tibia_len):
+            tip_x = front_leg_attach_x + min(i // 2, 2)
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(femur_end_y * (1.0 - progress)) + front_tip_y_offset
+            # Only 1-2 voxels thick at each position
+            front_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > front_tip_y_offset:
+                front_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(front_right)
 
     # Calculate segment lengths for middle legs (legs 2, 3) - use multiplier[2]
@@ -2755,73 +2918,117 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     femur_start = coxa_start + coxa_len
     tibia_start = femur_start + femur_len
 
-    # Middle left leg (leg 2) - MOVED BACK 1 VOXEL
+    # Middle left leg (leg 2)
     middle_left = []
     middle_left_tips = []
     side = -1
     # Total leg length for cascade calculation
     total_middle_leg_len = coxa_len + femur_len + tibia_len
-    prev_cascade_y = middle_leg_y_offset
-    for i in range(coxa_len):
-        # Cascade: Y drops as we go outward
-        progress = i / max(1, total_middle_leg_len - 1)
-        cascade_y = int(middle_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            middle_left.append((-3, 1 + fill_y, side * (coxa_start + i)))
-        prev_cascade_y = cascade_y
-    for i in range(femur_len):
-        progress = (coxa_len + i) / max(1, total_middle_leg_len - 1)
-        cascade_y = int(middle_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            middle_left.append((-3, fill_y, side * (femur_start + i)))
-        prev_cascade_y = cascade_y
-    # TIBIA (tips) - cascade from femur down to ground
-    femur_end_y = prev_cascade_y
-    for i in range(tibia_len):
-        tip_x = -3 - min(i // 2, 2)  # Extend backward gradually
-        progress = i / max(1, tibia_len - 1)
-        tip_y = int(femur_end_y * (1.0 - progress)) + middle_tip_y_offset
-        # Only 1-2 voxels thick at each position
-        middle_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
-        if tip_y > middle_tip_y_offset:
-            middle_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+
+    if is_spider:
+        # SPIDER: Peaked geometry
+        body_attach_y = spider_body_attach_y
+        for i in range(coxa_len):
+            for fill_y in range(2):
+                middle_left.append((middle_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
+        for i in range(femur_len):
+            progress = i / max(1, femur_len - 1)
+            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            for fill_y in range(2):
+                middle_left.append((middle_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
+        # TIBIA - angles slightly FORWARD
+        for i in range(tibia_len):
+            tip_x = middle_leg_attach_x + (i // 2)  # Slight forward angle
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(spider_peak_height * (1.0 - progress))
+            middle_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > 0:
+                middle_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+    else:
+        # BEETLE: Cascade down geometry
+        prev_cascade_y = middle_leg_y_offset
+        for i in range(coxa_len):
+            # Cascade: Y drops as we go outward
+            progress = i / max(1, total_middle_leg_len - 1)
+            cascade_y = int(middle_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                middle_left.append((middle_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
+            prev_cascade_y = cascade_y
+        for i in range(femur_len):
+            progress = (coxa_len + i) / max(1, total_middle_leg_len - 1)
+            cascade_y = int(middle_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                middle_left.append((middle_leg_attach_x, fill_y, side * (femur_start + i)))
+            prev_cascade_y = cascade_y
+        # TIBIA (tips) - cascade from femur down to ground
+        femur_end_y = prev_cascade_y
+        for i in range(tibia_len):
+            tip_x = middle_leg_attach_x - min(i // 2, 2)  # Extend backward gradually
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(femur_end_y * (1.0 - progress)) + middle_tip_y_offset
+            # Only 1-2 voxels thick at each position
+            middle_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > middle_tip_y_offset:
+                middle_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(middle_left)
 
-    # Middle right leg (leg 3) - MOVED BACK 1 VOXEL
+    # Middle right leg (leg 3)
     middle_right = []
     middle_right_tips = []
     side = 1
-    prev_cascade_y = middle_leg_y_offset
-    for i in range(coxa_len):
-        progress = i / max(1, total_middle_leg_len - 1)
-        cascade_y = int(middle_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            middle_right.append((-3, 1 + fill_y, side * (coxa_start + i)))
-        prev_cascade_y = cascade_y
-    for i in range(femur_len):
-        progress = (coxa_len + i) / max(1, total_middle_leg_len - 1)
-        cascade_y = int(middle_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            middle_right.append((-3, fill_y, side * (femur_start + i)))
-        prev_cascade_y = cascade_y
-    # TIBIA (tips) - cascade from femur down to ground
-    femur_end_y = prev_cascade_y
-    for i in range(tibia_len):
-        tip_x = -3 - min(i // 2, 2)
-        progress = i / max(1, tibia_len - 1)
-        tip_y = int(femur_end_y * (1.0 - progress)) + middle_tip_y_offset
-        # Only 1-2 voxels thick at each position
-        middle_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
-        if tip_y > middle_tip_y_offset:
-            middle_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+
+    if is_spider:
+        # SPIDER: Peaked geometry
+        body_attach_y = spider_body_attach_y
+        for i in range(coxa_len):
+            for fill_y in range(2):
+                middle_right.append((middle_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
+        for i in range(femur_len):
+            progress = i / max(1, femur_len - 1)
+            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            for fill_y in range(2):
+                middle_right.append((middle_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
+        # TIBIA - angles slightly FORWARD
+        for i in range(tibia_len):
+            tip_x = middle_leg_attach_x + (i // 2)  # Slight forward angle
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(spider_peak_height * (1.0 - progress))
+            middle_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > 0:
+                middle_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+    else:
+        # BEETLE: Cascade down geometry
+        prev_cascade_y = middle_leg_y_offset
+        for i in range(coxa_len):
+            progress = i / max(1, total_middle_leg_len - 1)
+            cascade_y = int(middle_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                middle_right.append((middle_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
+            prev_cascade_y = cascade_y
+        for i in range(femur_len):
+            progress = (coxa_len + i) / max(1, total_middle_leg_len - 1)
+            cascade_y = int(middle_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                middle_right.append((middle_leg_attach_x, fill_y, side * (femur_start + i)))
+            prev_cascade_y = cascade_y
+        # TIBIA (tips) - cascade from femur down to ground
+        femur_end_y = prev_cascade_y
+        for i in range(tibia_len):
+            tip_x = middle_leg_attach_x - min(i // 2, 2)
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(femur_end_y * (1.0 - progress)) + middle_tip_y_offset
+            # Only 1-2 voxels thick at each position
+            middle_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > middle_tip_y_offset:
+                middle_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(middle_right)
 
     # Calculate segment lengths for rear legs (legs 4, 5) - use multiplier[4]
@@ -2830,77 +3037,122 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     femur_start = coxa_start + coxa_len
     tibia_start = femur_start + femur_len
 
-    # Rear left leg (leg 4) - Position proportional to body length - MOVED BACK 1 VOXEL
-    rear_leg_attach_x = -(body_length // 2) - 1  # Proportional to abdomen length
+    # Rear leg attach position - spider already defined, beetles calculate based on body
+    if horn_type != "spider":
+        rear_leg_attach_x = -(body_length // 2) - 1  # Proportional to abdomen length
     rear_left = []
     rear_left_tips = []
     side = -1
     # Total leg length for cascade calculation
     total_rear_leg_len = coxa_len + femur_len + tibia_len
-    prev_cascade_y = rear_leg_y_offset
-    for i in range(coxa_len):
-        # Cascade: Y drops as we go outward (for consistency, though rear offset is 0 for bombardier)
-        progress = i / max(1, total_rear_leg_len - 1)
-        cascade_y = int(rear_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            rear_left.append((rear_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
-        prev_cascade_y = cascade_y
-    for i in range(femur_len):
-        progress = (coxa_len + i) / max(1, total_rear_leg_len - 1)
-        cascade_y = int(rear_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            rear_left.append((rear_leg_attach_x - i, fill_y, side * (femur_start + i)))
-        prev_cascade_y = cascade_y
-    # TIBIA (tips) - cascade from femur down to ground
-    femur_end_y = prev_cascade_y
-    for i in range(tibia_len):
-        tip_x = rear_leg_attach_x - femur_len - min(i // 2, 2)  # Continue backward
-        progress = i / max(1, tibia_len - 1)
-        tip_y = int(femur_end_y * (1.0 - progress)) + rear_tip_y_offset
-        # Only 1-2 voxels thick at each position
-        rear_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
-        if tip_y > rear_tip_y_offset:
-            rear_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+
+    if is_spider:
+        # SPIDER: Peaked geometry
+        body_attach_y = spider_body_attach_y
+        for i in range(coxa_len):
+            for fill_y in range(2):
+                rear_left.append((rear_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
+        for i in range(femur_len):
+            progress = i / max(1, femur_len - 1)
+            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            for fill_y in range(2):
+                rear_left.append((rear_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
+        # TIBIA - angles BACKWARD
+        for i in range(tibia_len):
+            tip_x = rear_leg_attach_x - i  # Backward angle
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(spider_peak_height * (1.0 - progress))
+            rear_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > 0:
+                rear_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+    else:
+        # BEETLE: Cascade down geometry
+        prev_cascade_y = rear_leg_y_offset
+        for i in range(coxa_len):
+            # Cascade: Y drops as we go outward (for consistency, though rear offset is 0 for bombardier)
+            progress = i / max(1, total_rear_leg_len - 1)
+            cascade_y = int(rear_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                rear_left.append((rear_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
+            prev_cascade_y = cascade_y
+        for i in range(femur_len):
+            progress = (coxa_len + i) / max(1, total_rear_leg_len - 1)
+            cascade_y = int(rear_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                rear_left.append((rear_leg_attach_x - i, fill_y, side * (femur_start + i)))
+            prev_cascade_y = cascade_y
+        # TIBIA (tips) - cascade from femur down to ground
+        femur_end_y = prev_cascade_y
+        for i in range(tibia_len):
+            tip_x = rear_leg_attach_x - femur_len - min(i // 2, 2)  # Continue backward
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(femur_end_y * (1.0 - progress)) + rear_tip_y_offset
+            # Only 1-2 voxels thick at each position
+            rear_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > rear_tip_y_offset:
+                rear_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(rear_left)
 
     # Rear right leg (leg 5) - Position proportional to body length
     rear_right = []
     rear_right_tips = []
     side = 1
-    prev_cascade_y = rear_leg_y_offset
-    for i in range(coxa_len):
-        progress = i / max(1, total_rear_leg_len - 1)
-        cascade_y = int(rear_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            rear_right.append((rear_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
-        prev_cascade_y = cascade_y
-    for i in range(femur_len):
-        progress = (coxa_len + i) / max(1, total_rear_leg_len - 1)
-        cascade_y = int(rear_leg_y_offset * (1.0 - progress))
-        y_min = cascade_y
-        y_max = max(cascade_y + 2, prev_cascade_y + 1)
-        for fill_y in range(y_min, y_max):
-            rear_right.append((rear_leg_attach_x - i, fill_y, side * (femur_start + i)))
-        prev_cascade_y = cascade_y
-    # TIBIA (tips) - cascade from femur down to ground
-    femur_end_y = prev_cascade_y
-    for i in range(tibia_len):
-        tip_x = rear_leg_attach_x - femur_len - min(i // 2, 2)
-        progress = i / max(1, tibia_len - 1)
-        tip_y = int(femur_end_y * (1.0 - progress)) + rear_tip_y_offset
-        # Only 1-2 voxels thick at each position
-        rear_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
-        if tip_y > rear_tip_y_offset:
-            rear_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+
+    if is_spider:
+        # SPIDER: Peaked geometry
+        body_attach_y = spider_body_attach_y
+        for i in range(coxa_len):
+            for fill_y in range(2):
+                rear_right.append((rear_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
+        for i in range(femur_len):
+            progress = i / max(1, femur_len - 1)
+            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            for fill_y in range(2):
+                rear_right.append((rear_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
+        # TIBIA - angles BACKWARD
+        for i in range(tibia_len):
+            tip_x = rear_leg_attach_x - i  # Backward angle
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(spider_peak_height * (1.0 - progress))
+            rear_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > 0:
+                rear_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+    else:
+        # BEETLE: Cascade down geometry
+        prev_cascade_y = rear_leg_y_offset
+        for i in range(coxa_len):
+            progress = i / max(1, total_rear_leg_len - 1)
+            cascade_y = int(rear_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                rear_right.append((rear_leg_attach_x, 1 + fill_y, side * (coxa_start + i)))
+            prev_cascade_y = cascade_y
+        for i in range(femur_len):
+            progress = (coxa_len + i) / max(1, total_rear_leg_len - 1)
+            cascade_y = int(rear_leg_y_offset * (1.0 - progress))
+            y_min = cascade_y
+            y_max = max(cascade_y + 2, prev_cascade_y + 1)
+            for fill_y in range(y_min, y_max):
+                rear_right.append((rear_leg_attach_x - i, fill_y, side * (femur_start + i)))
+            prev_cascade_y = cascade_y
+        # TIBIA (tips) - cascade from femur down to ground
+        femur_end_y = prev_cascade_y
+        for i in range(tibia_len):
+            tip_x = rear_leg_attach_x - femur_len - min(i // 2, 2)
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(femur_end_y * (1.0 - progress)) + rear_tip_y_offset
+            # Only 1-2 voxels thick at each position
+            rear_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > rear_tip_y_offset:
+                rear_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
     leg_voxels.append(rear_right)
 
-    # SCORPION ONLY: Add two extra rear legs (legs 6, 7) - furthest back, longest, raised attachment
+    # SCORPION/SPIDER: Add two extra rear legs (legs 6, 7)
     if horn_type == "scorpion":
         # Calculate segment lengths for extra rear legs (legs 6, 7) - use multiplier[6]
         coxa_len, femur_len, tibia_len = calc_leg_segments(leg_length, leg_multipliers[6])
@@ -2951,6 +3203,68 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         leg_tips = [front_left_tips, front_right_tips, middle_left_tips,
                     middle_right_tips, rear_left_tips, rear_right_tips,
                     rear2_left_tips, rear2_right_tips]
+    elif horn_type == "spider":
+        # SPIDER: Extra leg pair (legs 6, 7) at back of prosoma - peaked geometry
+        coxa_len, femur_len, tibia_len = calc_leg_segments(leg_length, leg_multipliers[6])
+        coxa_start = 3
+        femur_start = coxa_start + coxa_len
+        tibia_start = femur_start + femur_len
+
+        # rear2_leg_attach_x already defined for spider (= 3, back of prosoma)
+        # SPIDER: Peaked geometry - coxa level, femur UP, tibia DOWN
+        body_attach_y = spider_body_attach_y
+
+        rear2_left = []
+        rear2_left_tips = []
+        side = -1
+        # COXA - stays at body level
+        for i in range(coxa_len):
+            for fill_y in range(2):
+                rear2_left.append((rear2_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
+        # FEMUR - arches UP
+        for i in range(femur_len):
+            progress = i / max(1, femur_len - 1)
+            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            for fill_y in range(2):
+                rear2_left.append((rear2_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
+        # TIBIA - angles strongly BACKWARD
+        for i in range(tibia_len):
+            tip_x = rear2_leg_attach_x - i - (i // 2)  # Strong backward angle
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(spider_peak_height * (1.0 - progress))
+            rear2_left_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > 0:
+                rear2_left_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+        leg_voxels.append(rear2_left)
+
+        # Rear-2 right leg (leg 7)
+        rear2_right = []
+        rear2_right_tips = []
+        side = 1
+        # COXA
+        for i in range(coxa_len):
+            for fill_y in range(2):
+                rear2_right.append((rear2_leg_attach_x, body_attach_y + fill_y, side * (coxa_start + i)))
+        # FEMUR - arches UP
+        for i in range(femur_len):
+            progress = i / max(1, femur_len - 1)
+            arch_y = int(body_attach_y + progress * (spider_peak_height - body_attach_y))
+            for fill_y in range(2):
+                rear2_right.append((rear2_leg_attach_x, arch_y + fill_y, side * (femur_start + i)))
+        # TIBIA - angles strongly BACKWARD
+        for i in range(tibia_len):
+            tip_x = rear2_leg_attach_x - i - (i // 2)  # Strong backward angle
+            progress = i / max(1, tibia_len - 1)
+            tip_y = int(spider_peak_height * (1.0 - progress))
+            rear2_right_tips.append((tip_x, tip_y, side * (tibia_start + i)))
+            if tip_y > 0:
+                rear2_right_tips.append((tip_x, tip_y - 1, side * (tibia_start + i)))
+        leg_voxels.append(rear2_right)
+
+        # Collect all leg tips into single list (8 legs for spider)
+        leg_tips = [front_left_tips, front_right_tips, middle_left_tips,
+                    middle_right_tips, rear_left_tips, rear_right_tips,
+                    rear2_left_tips, rear2_right_tips]
     else:
         # Collect all leg tips into single list (6 legs for beetles)
         leg_tips = [front_left_tips, front_right_tips, middle_left_tips,
@@ -2967,13 +3281,13 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     very_tip_flags = []
 
     # Map horn_type string to horn_type_id for consistency with placement logic
-    horn_type_id_map = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5}
+    horn_type_id_map = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "spider": 7}
     horn_type_id = horn_type_id_map.get(horn_type, 0)
 
     for i, (dx, dy, dz) in enumerate(body_voxels):
-        # Stripe detection: top centerline of body (not horn, not scorpion)
+        # Stripe detection: top centerline of body (not horn, not scorpion, not spider)
         is_stripe = 0
-        if horn_type_id != 3 and dx < 3 and dy >= 3 and abs(dz) <= 1.0:
+        if horn_type_id not in (3, 7) and dx < 3 and dy >= 3 and abs(dz) <= 1.0:
             is_stripe = 1
         stripe_flags.append(is_stripe)
 
@@ -2999,6 +3313,9 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
             if dx >= 6 and abs(dz) >= 4:  # Antennae region
                 is_horn_tip = 1
             elif dx >= 8 and abs(dz) <= 3:  # Mandibles region
+                is_horn_tip = 1
+        elif horn_type_id == 7:  # Spider - fangs only (like prongs)
+            if dx >= 8:  # Fangs start at dx=8
                 is_horn_tip = 1
         else:  # Rhino (horn_type_id == 0)
             if dx >= 13:
@@ -3077,8 +3394,8 @@ red_leg_end_idx = ti.field(ti.i32, shape=8)
 
 # Create OVERSIZED Taichi fields for leg tip geometry cache
 # Max leg length=14: tibia tips per leg × 8 legs
-# Increased to 65 to provide headroom for scorpion's 8 legs with thicker tip rendering
-MAX_LEG_TIP_VOXELS = 65
+# Spider at size 9-10 can generate ~80+ tip voxels (8 legs × 10 voxels each)
+MAX_LEG_TIP_VOXELS = 100
 
 # Separate leg tip cache fields for blue beetle
 blue_leg_tip_cache_x = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
@@ -4192,16 +4509,17 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
     return lowest_y
 
 @ti.kernel
-def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32):
+def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32, spider_aim_pitch: ti.f32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
         horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
         tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier
+        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 7=spider
         body_pitch_offset: Static body tilt angle for scorpion (radians)
         butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
         spray_aim_pitch: Bombardier aim angle (radians) - tilts beetle from rear pivot
+        spider_aim_pitch: Spider abdomen aim angle (radians) - tilts abdomen from front pivot
     """
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
@@ -4245,6 +4563,11 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
     sin_aim = ti.sin(spray_aim_pitch)
     rear_pivot_x = float(-body_length)  # Rear of beetle in local X coordinates
 
+    # Spider abdomen aim trig (front-pivot rotation for web aiming)
+    cos_spider = ti.cos(spider_aim_pitch)
+    sin_spider = ti.sin(spider_aim_pitch)
+    spider_pivot_x = 3.0  # Pedicel (front of abdomen) in local X coordinates
+
     # 1. Place body with horn pitch applied
     for i in range(body_cache_size[None]):
         local_x = float(body_cache_x[i])
@@ -4260,6 +4583,8 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
             # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
             should_rotate = body_cache_x[i] >= 3 and abs(local_z) <= 1.5
+        elif horn_type_id == 7:  # Spider - no rotation at all (fangs are fixed)
+            should_rotate = False
         elif body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
             should_rotate = True
 
@@ -4432,6 +4757,19 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                 butt_offset = -spray_aim_pitch * butt_depth * 25.0
                 local_y = local_y + int(ti.round(butt_offset))
 
+        # SPIDER AIM: Rotate abdomen around FRONT pivot (pedicel)
+        # Opposite of bombardier - butt moves up/down, front stays fixed
+        if horn_type_id == 7 and spider_aim_pitch != 0.0:
+            # Only rotate ABDOMEN voxels (dx < spider_pivot_x)
+            # Leave PROSOMA (dx >= 3) and legs untouched
+            orig_x_spider = body_cache_x[i]
+            if orig_x_spider < spider_pivot_x:
+                # Translate to front pivot, rotate in X-Y plane (pitch), translate back
+                rel_x = local_x - spider_pivot_x
+                ly_spider = float(local_y)
+                local_x = spider_pivot_x + rel_x * cos_spider - ly_spider * sin_spider
+                local_y = int(ti.round(rel_x * sin_spider + ly_spider * cos_spider))
+
         # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
         # Convert local_y to float for rotation
         ly = float(local_y)
@@ -4529,7 +4867,26 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         #   Group A (0, 3, 4): phase_offset = 0
         #   Group B (1, 2, 5): phase_offset = π
         phase_offset = 0.0
-        if horn_type_id == 3:  # Scorpion: quadrupod gait (similar to tripod but for 8 legs)
+        if horn_type_id == 7:  # Spider: staggered quadrupod gait (wave-like)
+            # Group A with stagger: 0, 3, 4, 7 have increasing delays
+            # Group B with stagger: 1, 2, 5, 6 have π + increasing delays
+            if leg_id == 0:
+                phase_offset = 0.0
+            elif leg_id == 3:
+                phase_offset = 0.15
+            elif leg_id == 4:
+                phase_offset = 0.30
+            elif leg_id == 7:
+                phase_offset = 0.45
+            elif leg_id == 1:
+                phase_offset = 3.14159265359  # π
+            elif leg_id == 2:
+                phase_offset = 3.14159265359 + 0.15
+            elif leg_id == 5:
+                phase_offset = 3.14159265359 + 0.30
+            elif leg_id == 6:
+                phase_offset = 3.14159265359 + 0.45
+        elif horn_type_id == 3:  # Scorpion: standard quadrupod gait (8 legs)
             # Group A (0, 3, 4, 7): phase_offset = 0
             # Group B (1, 2, 5, 6): phase_offset = π
             if leg_id == 1 or leg_id == 2 or leg_id == 5 or leg_id == 6:
@@ -4543,12 +4900,12 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         if is_rotating_only == 1:
             # Asymmetric timing: inside legs (toward turn direction) lag behind
             if rotation_direction == -1:  # Turning left
-                # Left legs (leg_id 0,1,2) lag, right legs (3,4,5) normal
-                if leg_id == 0 or leg_id == 1 or leg_id == 2:
+                # Left legs (leg_id 0,2,4,6) lag, right legs normal
+                if leg_id == 0 or leg_id == 2 or leg_id == 4 or leg_id == 6:
                     leg_phase_offset += 0.6  # ~35 degree phase lag
             elif rotation_direction == 1:  # Turning right
-                # Right legs lag, left legs normal
-                if leg_id == 3 or leg_id == 4 or leg_id == 5:
+                # Right legs (leg_id 1,3,5,7) lag, left legs normal
+                if leg_id == 1 or leg_id == 3 or leg_id == 5 or leg_id == 7:
                     leg_phase_offset += 0.6  # ~35 degree phase lag
 
         leg_phase = walk_phase + leg_phase_offset
@@ -4697,17 +5054,18 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                         dirty_voxel_z[idx] = grid_z
 
 @ti.kernel
-def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32):
+def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32, spider_aim_pitch: ti.f32):
     """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
     Args:
         horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
         tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier
+        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 7=spider
         body_pitch_offset: Static body tilt angle for scorpion (radians)
         butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
         charge_glow: 0.0-1.0, glow intensity for bombardier beetle charges
         spray_aim_pitch: Bombardier aim angle (radians) - tilts beetle from rear pivot
+        spider_aim_pitch: Spider abdomen aim angle (radians) - tilts abdomen from front pivot
     """
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
@@ -4751,6 +5109,11 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
     sin_aim = ti.sin(spray_aim_pitch)
     rear_pivot_x = float(-body_length)  # Rear of beetle in local X coordinates
 
+    # Spider abdomen aim trig (front-pivot rotation for web aiming)
+    cos_spider = ti.cos(spider_aim_pitch)
+    sin_spider = ti.sin(spider_aim_pitch)
+    spider_pivot_x = 3.0  # Pedicel (front of abdomen) in local X coordinates
+
     # 1. Place body with horn pitch applied
     for i in range(red_body_cache_size[None]):
         local_x = float(red_body_cache_x[i])
@@ -4766,6 +5129,8 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
             # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
             should_rotate = red_body_cache_x[i] >= 3 and abs(local_z) <= 1.5
+        elif horn_type_id == 7:  # Spider - no rotation at all (fangs are fixed)
+            should_rotate = False
         elif red_body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
             should_rotate = True
 
@@ -4938,6 +5303,19 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 butt_offset = -spray_aim_pitch * butt_depth * 25.0
                 local_y = local_y + int(ti.round(butt_offset))
 
+        # SPIDER AIM: Rotate abdomen around FRONT pivot (pedicel)
+        # Opposite of bombardier - butt moves up/down, front stays fixed
+        if horn_type_id == 7 and spider_aim_pitch != 0.0:
+            # Only rotate ABDOMEN voxels (dx < spider_pivot_x)
+            # Leave PROSOMA (dx >= 3) and legs untouched
+            orig_x_spider = red_body_cache_x[i]
+            if orig_x_spider < spider_pivot_x:
+                # Translate to front pivot, rotate in X-Y plane (pitch), translate back
+                rel_x = local_x - spider_pivot_x
+                ly_spider = float(local_y)
+                local_x = spider_pivot_x + rel_x * cos_spider - ly_spider * sin_spider
+                local_y = int(ti.round(rel_x * sin_spider + ly_spider * cos_spider))
+
         # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
         # Convert local_y to float for rotation
         ly = float(local_y)
@@ -5035,7 +5413,26 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         #   Group A (0, 3, 4): phase_offset = 0
         #   Group B (1, 2, 5): phase_offset = π
         phase_offset = 0.0
-        if horn_type_id == 3:  # Scorpion: quadrupod gait (similar to tripod but for 8 legs)
+        if horn_type_id == 7:  # Spider: staggered quadrupod gait (wave-like)
+            # Group A with stagger: 0, 3, 4, 7 have increasing delays
+            # Group B with stagger: 1, 2, 5, 6 have π + increasing delays
+            if leg_id == 0:
+                phase_offset = 0.0
+            elif leg_id == 3:
+                phase_offset = 0.15
+            elif leg_id == 4:
+                phase_offset = 0.30
+            elif leg_id == 7:
+                phase_offset = 0.45
+            elif leg_id == 1:
+                phase_offset = 3.14159265359  # π
+            elif leg_id == 2:
+                phase_offset = 3.14159265359 + 0.15
+            elif leg_id == 5:
+                phase_offset = 3.14159265359 + 0.30
+            elif leg_id == 6:
+                phase_offset = 3.14159265359 + 0.45
+        elif horn_type_id == 3:  # Scorpion: standard quadrupod gait (8 legs)
             # Group A (0, 3, 4, 7): phase_offset = 0
             # Group B (1, 2, 5, 6): phase_offset = π
             if leg_id == 1 or leg_id == 2 or leg_id == 5 or leg_id == 6:
@@ -5049,12 +5446,12 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         if is_rotating_only == 1:
             # Asymmetric timing: inside legs (toward turn direction) lag behind
             if rotation_direction == -1:  # Turning left
-                # Left legs (leg_id 0,1,2) lag, right legs (3,4,5) normal
-                if leg_id == 0 or leg_id == 1 or leg_id == 2:
+                # Left legs (leg_id 0,2,4,6) lag, right legs normal
+                if leg_id == 0 or leg_id == 2 or leg_id == 4 or leg_id == 6:
                     leg_phase_offset += 0.6  # ~35 degree phase lag
             elif rotation_direction == 1:  # Turning right
-                # Right legs lag, left legs normal
-                if leg_id == 3 or leg_id == 4 or leg_id == 5:
+                # Right legs (leg_id 1,3,5,7) lag, left legs normal
+                if leg_id == 1 or leg_id == 3 or leg_id == 5 or leg_id == 7:
                     leg_phase_offset += 0.6  # ~35 degree phase lag
 
         leg_phase = walk_phase + leg_phase_offset
@@ -5734,6 +6131,21 @@ beetle_red.horn_length = initial_horn_length
 
 def calculate_horn_tip_position(beetle):
     """Calculate world position of horn tip using exact voxel placement transform chain"""
+    # Spider has fixed fangs - no rotation, simple calculation
+    if beetle.horn_type == "spider":
+        # Fangs extend from dx=8 to dx=11 (length 4), fixed position
+        tip_local_x = 12.0  # dx=8 + fang_length(4) = 12
+        tip_local_y = 0.0   # Fangs angle down
+        tip_local_z = 0.0   # Center between fangs
+
+        # Apply beetle body rotation only (no horn rotation)
+        cos_rotation = math.cos(beetle.rotation)
+        sin_rotation = math.sin(beetle.rotation)
+        rotated_x = tip_local_x * cos_rotation - tip_local_z * sin_rotation
+        rotated_z = tip_local_x * sin_rotation + tip_local_z * cos_rotation
+
+        return beetle.x + rotated_x, beetle.y + tip_local_y, beetle.z + rotated_z
+
     # Horn tip in local coordinates (furthest voxel + safety margin)
     # For both rhino and stag: max_x = 3 + shaft_len + prong_len (approx)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0  # Actual furthest voxel + margin
@@ -5822,6 +6234,19 @@ def calculate_horn_shaft_base_position(beetle):
         base_local_x = 3.0  # Closer to body
         base_local_y = 1.0
         base_local_z = 0.0
+    elif beetle.horn_type == "spider":
+        # Spider fangs are fixed - no rotation, simple calculation
+        base_local_x = 8.0  # Fangs start at dx=8
+        base_local_y = 1.0
+        base_local_z = 0.0  # Center between the two fangs
+
+        # Apply beetle body rotation only (no horn rotation)
+        cos_rotation = math.cos(beetle.rotation)
+        sin_rotation = math.sin(beetle.rotation)
+        rotated_x = base_local_x * cos_rotation - base_local_z * sin_rotation
+        rotated_z = base_local_x * sin_rotation + base_local_z * cos_rotation
+
+        return beetle.x + rotated_x, beetle.y + base_local_y, beetle.z + rotated_z
     else:
         # Scorpion/bombardier - no shaft to check
         return beetle.x, beetle.y, beetle.z
@@ -7673,8 +8098,8 @@ def beetle_collision(b1, b2, params):
         shaft_cylinder_push = params.get("SHAFT_CYLINDER_PUSH", 0.25)
 
         # Skip for scorpion/bombardier (no forward shaft)
-        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas")
-        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas")
+        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas", "spider")
+        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider")
 
         if b1_has_shaft or b2_has_shaft:
             # Get shaft endpoints for beetles with horns
@@ -8900,6 +9325,9 @@ while window.running:
         # Save spray aim for interpolation
         prev_spray_aim_blue = spray_aim_blue
         prev_spray_aim_red = spray_aim_red
+        # Save spider aim for interpolation
+        prev_spider_aim_blue = spider_aim_blue
+        prev_spider_aim_red = spider_aim_red
 
         # === INPUT/CONTROLS TIMING START ===
         _t_input_start = time.perf_counter()
@@ -8968,6 +9396,17 @@ while window.running:
                 # No else - holds current position when no keys pressed
 
                 # Skip horn controls for bombardier
+                pitch_pressed = False
+                yaw_pressed = False
+            elif beetle_blue.horn_type_id == 7:  # spider
+                # Spider abdomen aim - V tilts butt UP, B returns to level
+                # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
+                aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
+                if blue_inputs & INPUT_HORN_LEFT:
+                    spider_aim_blue = max(-1.0, spider_aim_blue - aim_adjust_speed)
+                elif blue_inputs & INPUT_HORN_RIGHT:
+                    spider_aim_blue = min(0.0, spider_aim_blue + aim_adjust_speed)
+                # Skip normal horn controls for spider
                 pitch_pressed = False
                 yaw_pressed = False
             else:
@@ -9197,6 +9636,17 @@ while window.running:
                 # No else - holds current position when no keys pressed
 
                 # Skip horn controls for bombardier
+                pitch_pressed = False
+                yaw_pressed = False
+            elif beetle_red.horn_type_id == 7:  # spider
+                # Spider abdomen aim - N tilts butt UP, M returns to level
+                # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
+                aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
+                if red_inputs & INPUT_HORN_LEFT:
+                    spider_aim_red = max(-1.0, spider_aim_red - aim_adjust_speed)
+                elif red_inputs & INPUT_HORN_RIGHT:
+                    spider_aim_red = min(0.0, spider_aim_red + aim_adjust_speed)
+                # Skip normal horn controls for spider
                 pitch_pressed = False
                 yaw_pressed = False
             else:
@@ -10096,6 +10546,10 @@ while window.running:
     blue_render_spray_aim = prev_spray_aim_blue + (spray_aim_blue - prev_spray_aim_blue) * alpha
     red_render_spray_aim = prev_spray_aim_red + (spray_aim_red - prev_spray_aim_red) * alpha
 
+    # Interpolate spider aim for smooth abdomen tilt
+    blue_render_spider_aim = prev_spider_aim_blue + (spider_aim_blue - prev_spider_aim_blue) * alpha
+    red_render_spider_aim = prev_spider_aim_red + (spider_aim_red - prev_spider_aim_red) * alpha
+
     # === ANIMATION TIMING ===
     perf_monitor.start('animation')
 
@@ -10283,8 +10737,8 @@ while window.running:
                 kick_dir = 1.0  # Kick forward
             else:
                 dust_legs = [4, 5]  # Back legs
-                if beetle_blue.horn_type == "scorpion":
-                    dust_legs = [4, 5, 6, 7]  # Include extra back legs for scorpion
+                if beetle_blue.horn_type in ("scorpion", "spider"):
+                    dust_legs = [4, 5, 6, 7]  # Include extra back legs for 8-legged types
                 kick_dir = -1.0  # Kick backward
             for leg_id in dust_legs:
                 # Use pre-calculated sin values based on leg group
@@ -10325,8 +10779,8 @@ while window.running:
                     # Left turn -> leg 5 (rear_right), and 7 for scorpion
                     # Right turn -> leg 4 (rear_left), and 6 for scorpion
                     back_legs = [5, 7] if side == 1 else [4, 6]
-                    if beetle_blue.horn_type != "scorpion":
-                        back_legs = back_legs[:1]  # Only first leg for non-scorpion
+                    if beetle_blue.horn_type not in ("scorpion", "spider"):
+                        back_legs = back_legs[:1]  # Only first leg for 6-legged beetles
                     for back_leg_id in back_legs:
                         tip_x, tip_z = get_leg_tip_world_position(beetle_blue, back_leg_id, blue_leg_len)
                         tip_dist = math.sqrt(tip_x**2 + tip_z**2)
@@ -10375,8 +10829,8 @@ while window.running:
                 kick_dir = 1.0  # Kick forward
             else:
                 dust_legs = [4, 5]  # Back legs
-                if beetle_red.horn_type == "scorpion":
-                    dust_legs = [4, 5, 6, 7]  # Include extra back legs for scorpion
+                if beetle_red.horn_type in ("scorpion", "spider"):
+                    dust_legs = [4, 5, 6, 7]  # Include extra back legs for 8-legged types
                 kick_dir = -1.0  # Kick backward
             for leg_id in dust_legs:
                 # Use pre-calculated sin values based on leg group
@@ -10417,8 +10871,8 @@ while window.running:
                     # Left turn -> leg 5 (rear_right), and 7 for scorpion
                     # Right turn -> leg 4 (rear_left), and 6 for scorpion
                     back_legs = [5, 7] if side == 1 else [4, 6]
-                    if beetle_red.horn_type != "scorpion":
-                        back_legs = back_legs[:1]  # Only first leg for non-scorpion
+                    if beetle_red.horn_type not in ("scorpion", "spider"):
+                        back_legs = back_legs[:1]  # Only first leg for 6-legged beetles
                     for back_leg_id in back_legs:
                         tip_x, tip_z = get_leg_tip_world_position(beetle_red, back_leg_id, red_leg_len)
                         tip_dist = math.sqrt(tip_x**2 + tip_z**2)
@@ -10601,9 +11055,9 @@ while window.running:
             shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
             place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
 
-    # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas, 5=bombardier
-    blue_horn_type_id = 1 if blue_horn_type == "stag" else (2 if blue_horn_type == "hercules" else (3 if blue_horn_type == "scorpion" else (4 if blue_horn_type == "atlas" else (5 if blue_horn_type == "bombardier" else 0))))
-    red_horn_type_id = 1 if red_horn_type == "stag" else (2 if red_horn_type == "hercules" else (3 if red_horn_type == "scorpion" else (4 if red_horn_type == "atlas" else (5 if red_horn_type == "bombardier" else 0))))
+    # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas, 5=bombardier, 6=cockchafer, 7=spider
+    blue_horn_type_id = HORN_TYPE_IDS.get(blue_horn_type, 0)
+    red_horn_type_id = HORN_TYPE_IDS.get(red_horn_type, 0)
 
     # Get default horn pitch for blue beetle type
     if blue_horn_type == "scorpion":
@@ -10614,8 +11068,8 @@ while window.running:
         blue_default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
     elif blue_horn_type == "atlas":
         blue_default_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-    elif blue_horn_type == "bombardier":
-        blue_default_horn_pitch = 0.0  # No horn
+    elif blue_horn_type in ("bombardier", "spider"):
+        blue_default_horn_pitch = 0.0  # No rotating horn
     else:
         blue_default_horn_pitch = HORN_DEFAULT_PITCH
 
@@ -10628,8 +11082,8 @@ while window.running:
         red_default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
     elif red_horn_type == "atlas":
         red_default_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-    elif red_horn_type == "bombardier":
-        red_default_horn_pitch = 0.0  # No horn
+    elif red_horn_type in ("bombardier", "spider"):
+        red_default_horn_pitch = 0.0  # No rotating horn
     else:
         red_default_horn_pitch = HORN_DEFAULT_PITCH
 
@@ -10805,11 +11259,11 @@ while window.running:
 
     if beetle_blue.active:
         # Render blue beetle using its own cache
-        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue, butt_wiggle_dir_blue, blue_charge_glow, blue_render_spray_aim * SPRAY_AIM_MAX)
+        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue, butt_wiggle_dir_blue, blue_charge_glow, blue_render_spray_aim * SPRAY_AIM_MAX, blue_render_spider_aim * SPIDER_AIM_MAX)
 
     if beetle_red.active:
         # Render red beetle using its own cache
-        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red, butt_wiggle_dir_red, red_charge_glow, red_render_spray_aim * SPRAY_AIM_MAX)
+        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red, butt_wiggle_dir_red, red_charge_glow, red_render_spray_aim * SPRAY_AIM_MAX, red_render_spider_aim * SPIDER_AIM_MAX)
 
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
@@ -11421,8 +11875,10 @@ while window.running:
         blue_button_text = "Blue: SCORPION (click for ATLAS)"
     elif blue_horn_type == "atlas":
         blue_button_text = "Blue: ATLAS (click for BOMBARDIER)"
-    else:  # bombardier
-        blue_button_text = "Blue: BOMBARDIER (click for RHINO)"
+    elif blue_horn_type == "bombardier":
+        blue_button_text = "Blue: BOMBARDIER (click for SPIDER)"
+    else:  # spider
+        blue_button_text = "Blue: SPIDER (click for RHINO)"
 
     if window.GUI.button(blue_button_text):
         # Cycle blue beetle horn type
@@ -11436,6 +11892,8 @@ while window.running:
             blue_horn_type = "atlas"
         elif blue_horn_type == "atlas":
             blue_horn_type = "bombardier"
+        elif blue_horn_type == "bombardier":
+            blue_horn_type = "spider"
         else:
             blue_horn_type = "rhino"
 
@@ -11461,6 +11919,10 @@ while window.running:
         elif blue_horn_type == "bombardier":
             beetle_blue.horn_pitch = 0.0  # No horn - firing controls instead
             beetle_blue.prev_horn_pitch = 0.0
+            beetle_blue.horn_yaw = 0.0
+        elif blue_horn_type == "spider":
+            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION  # Fangs similar to scorpion
+            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
             beetle_blue.horn_yaw = 0.0
         else:  # rhino
             beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
@@ -11577,8 +12039,10 @@ while window.running:
         red_button_text = "Red: SCORPION (click for ATLAS)"
     elif red_horn_type == "atlas":
         red_button_text = "Red: ATLAS (click for BOMBARDIER)"
-    else:  # bombardier
-        red_button_text = "Red: BOMBARDIER (click for RHINO)"
+    elif red_horn_type == "bombardier":
+        red_button_text = "Red: BOMBARDIER (click for SPIDER)"
+    else:  # spider
+        red_button_text = "Red: SPIDER (click for RHINO)"
 
     if window.GUI.button(red_button_text):
         # Cycle red beetle horn type
@@ -11592,6 +12056,8 @@ while window.running:
             red_horn_type = "atlas"
         elif red_horn_type == "atlas":
             red_horn_type = "bombardier"
+        elif red_horn_type == "bombardier":
+            red_horn_type = "spider"
         else:
             red_horn_type = "rhino"
 
@@ -11617,6 +12083,10 @@ while window.running:
         elif red_horn_type == "bombardier":
             beetle_red.horn_pitch = 0.0  # No horn - firing controls instead
             beetle_red.prev_horn_pitch = 0.0
+            beetle_red.horn_yaw = 0.0
+        elif red_horn_type == "spider":
+            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION  # Fangs similar to scorpion
+            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
             beetle_red.horn_yaw = 0.0
         else:  # rhino
             beetle_red.horn_pitch = HORN_DEFAULT_PITCH
