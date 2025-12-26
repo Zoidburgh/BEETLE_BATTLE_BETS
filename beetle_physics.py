@@ -800,6 +800,7 @@ def reset_match():
     global stripe_color_blue, stripe_color_red
     global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red, prev_spray_aim_blue, prev_spray_aim_red
     global spider_aim_blue, spider_aim_red, prev_spider_aim_blue, prev_spider_aim_red
+    global silk_charge_blue, silk_charge_red
     global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
     global venom_tip_color_blue, venom_tip_color_red
@@ -845,6 +846,10 @@ def reset_match():
     spider_aim_red = 0.0
     prev_spider_aim_blue = 0.0
     prev_spider_aim_red = 0.0
+
+    # Reset spider silk charges
+    silk_charge_blue = SILK_MAX_CHARGE
+    silk_charge_red = SILK_MAX_CHARGE
 
     # Reset spider silk particles
     simulation.num_silk[None] = 0
@@ -1002,6 +1007,13 @@ silk_speed_blue = 0.0
 silk_speed_red = 0.0
 silk_spiral_phase_blue = 0.0  # For spiral pattern
 silk_spiral_phase_red = 0.0
+
+# Spider silk charge/regeneration system
+SILK_MAX_CHARGE = 100.0      # Maximum silk charge
+SILK_REGEN_RATE = 3.25       # Charge regenerated per second
+SILK_COST_PER_SPAWN = 0.2    # Charge cost per silk spawn (0.4 total per frame)
+silk_charge_blue = SILK_MAX_CHARGE
+silk_charge_red = SILK_MAX_CHARGE
 
 # Scorpion venom attack state (uses same spray particle system)
 VENOM_COOLDOWN = 0.4  # Seconds between venom shots
@@ -3377,7 +3389,25 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     for i, (dx, dy, dz) in enumerate(body_voxels):
         # Stripe detection: top centerline of body (not horn, not scorpion, not spider)
         is_stripe = 0
-        if horn_type_id not in (3, 7) and dx < 3 and dy >= 3 and abs(dz) <= 1.0:
+        if horn_type_id == 7:  # Spider - triangle glow on abdomen (wide at back, point at neck)
+            abdomen_back = -body_length  # All the way to butt tip
+            pedicel_x = -2  # Narrow waist/pedicel area
+
+            # Check if we're in the abdomen region
+            if dx >= abdomen_back and dx <= pedicel_x:
+                # Triangle: width decreases linearly from back to front
+                # At back: max_z = 3.5, at pedicel: max_z = 0 (point)
+                abdomen_length = pedicel_x - abdomen_back
+                if abdomen_length > 0:
+                    progress = (dx - abdomen_back) / abdomen_length  # 0 at back, 1 at pedicel
+                else:
+                    progress = 0.0
+                max_z_at_dx = 3.5 * (1.0 - progress)  # Wide at back, point at front
+
+                # Check if this voxel is within the triangle and on top surface
+                if abs(dz) <= max_z_at_dx and dy >= 2 and dy <= 5:
+                    is_stripe = 1
+        elif horn_type_id != 3 and dx < 3 and dy >= 3 and abs(dz) <= 1.0:
             is_stripe = 1
         stripe_flags.append(is_stripe)
 
@@ -9770,6 +9800,19 @@ check_spray_voxel_collision_kernel(0, 0)
 cleanup_dead_spray()
 spawn_spray_explosion(0.0, 0.0, -100.0, 0.2, 1.0, 0.3)
 
+# Spider silk kernels
+spawn_silk(0.0, -100.0, 0.0, 1.0, 0.0, 50.0, 0.0, 0, 0.0)
+update_silk_particles(0.016)
+check_silk_beetle_collision(
+    # Blue beetle state (dummy values)
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1,
+    # Red beetle state (dummy values)
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1
+)
+count_floor_silk_under_beetles(0.0, 0.0, 0.0, 0.0)
+cleanup_dead_silk()
+simulation.num_silk[None] = 0  # Clear warmup silk
+
 # Sync GPU to ensure all warm-up compilations complete
 ti.sync()
 
@@ -10031,7 +10074,7 @@ while window.running:
             # Floor silk effect: spiders get boost, others get slowed
             floor_silk_count = simulation.silk_under_blue[None]
             if beetle_blue.horn_type_id == 7:  # Spider
-                blue_floor_modifier = 1.0 + 0.03 * floor_silk_count  # +3% speed per floor silk
+                blue_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
             else:
                 blue_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
 
@@ -10295,7 +10338,7 @@ while window.running:
             # Floor silk effect: spiders get boost, others get slowed
             floor_silk_count = simulation.silk_under_red[None]
             if beetle_red.horn_type_id == 7:  # Spider
-                red_floor_modifier = 1.0 + 0.03 * floor_silk_count  # +3% speed per floor silk
+                red_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
             else:
                 red_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
 
@@ -10702,7 +10745,9 @@ while window.running:
 
         # === SPIDER SILK EMISSION ===
         # Blue spider silk (continuous while firing) - fires BACKWARDS from spinneret
-        if silk_firing_blue and beetle_blue.active and beetle_blue.horn_type_id == 7:
+        # Fast shot (Y key) costs half as much as slow lob (R key)
+        blue_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed_blue == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
+        if silk_firing_blue and beetle_blue.active and beetle_blue.horn_type_id == 7 and silk_charge_blue >= blue_silk_cost:
             spin_x, spin_y, spin_z = get_spinneret_position(beetle_blue, spider_aim_blue, window.blue_body_length_value)
             # Direction is BACKWARDS (opposite of beetle facing)
             dir_x = -math.cos(beetle_blue.rotation)
@@ -10714,9 +10759,11 @@ while window.running:
                 spawn_silk(spin_x, spin_y, spin_z, dir_x, dir_z,
                            silk_speed_blue, aim_y, 0, silk_spiral_phase_blue)
                 silk_spiral_phase_blue += 0.4  # Tighter spiral rotation
+                silk_charge_blue -= blue_silk_cost
 
         # Red spider silk - fires BACKWARDS
-        if silk_firing_red and beetle_red.active and beetle_red.horn_type_id == 7:
+        red_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed_red == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
+        if silk_firing_red and beetle_red.active and beetle_red.horn_type_id == 7 and silk_charge_red >= red_silk_cost:
             spin_x, spin_y, spin_z = get_spinneret_position(beetle_red, spider_aim_red, window.red_body_length_value)
             dir_x = -math.cos(beetle_red.rotation)
             dir_z = -math.sin(beetle_red.rotation)
@@ -10725,6 +10772,13 @@ while window.running:
                 spawn_silk(spin_x, spin_y, spin_z, dir_x, dir_z,
                            silk_speed_red, aim_y, 1, silk_spiral_phase_red)
                 silk_spiral_phase_red += 0.4
+                silk_charge_red -= red_silk_cost
+
+        # Regenerate silk charge over time (only when not firing)
+        if not silk_firing_blue:
+            silk_charge_blue = min(SILK_MAX_CHARGE, silk_charge_blue + SILK_REGEN_RATE * PHYSICS_TIMESTEP)
+        if not silk_firing_red:
+            silk_charge_red = min(SILK_MAX_CHARGE, silk_charge_red + SILK_REGEN_RATE * PHYSICS_TIMESTEP)
 
         # === VENOM PARTICLE SYSTEM (SCORPION) ===
         # Decrement venom cooldowns
@@ -11921,7 +11975,36 @@ while window.running:
     blue_charge_glow = 0.0
     red_charge_glow = 0.0
 
-    if blue_horn_type_id == 5:  # Blue is bombardier
+    if blue_horn_type_id == 7:  # Blue is spider - glow based on silk charge
+        # Full glow when charge is full, fades as charge depletes
+        silk_ratio = silk_charge_blue / SILK_MAX_CHARGE
+        blue_charge_glow = silk_ratio
+
+        # Spider glow color: bright pink/magenta when full, dark when depleted
+        if silk_ratio >= 0.99:
+            # Full charge: strong pulse effect like bombardier
+            pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
+            target_r = 0.8 + pulse * 0.2
+            target_g = 0.1 + pulse * 0.2
+            target_b = 0.4 + pulse * 0.2
+        else:
+            # Partial charge: scale from dark to bright pink/magenta
+            target_r = 0.15 + 0.85 * silk_ratio
+            target_g = 0.02 + 0.18 * silk_ratio
+            target_b = 0.08 + 0.52 * silk_ratio
+
+        # Smooth lerp toward target color
+        lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
+        stripe_color_blue[0] += (target_r - stripe_color_blue[0]) * lerp_factor
+        stripe_color_blue[1] += (target_g - stripe_color_blue[1]) * lerp_factor
+        stripe_color_blue[2] += (target_b - stripe_color_blue[2]) * lerp_factor
+
+        if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
+            simulation.blue_stripe_color[None] = ti.Vector([stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2]])
+            b = window.blue_body_color
+            simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+
+    elif blue_horn_type_id == 5:  # Blue is bombardier
         # Determine target stripe color based on charge level
         if spray_charges_blue == 0:
             target_r, target_g, target_b = 0.4, 0.4, 0.4  # Gray - depleted
@@ -11956,7 +12039,36 @@ while window.running:
             s = window.blue_stripe_color
             simulation.blue_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
 
-    if red_horn_type_id == 5:  # Red is bombardier
+    if red_horn_type_id == 7:  # Red is spider - glow based on silk charge
+        # Full glow when charge is full, fades as charge depletes
+        silk_ratio = silk_charge_red / SILK_MAX_CHARGE
+        red_charge_glow = silk_ratio
+
+        # Spider glow color: bright pink/magenta when full, dark when depleted
+        if silk_ratio >= 0.99:
+            # Full charge: strong pulse effect like bombardier
+            pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
+            target_r = 0.8 + pulse * 0.2
+            target_g = 0.1 + pulse * 0.2
+            target_b = 0.4 + pulse * 0.2
+        else:
+            # Partial charge: scale from dark to bright pink/magenta
+            target_r = 0.15 + 0.85 * silk_ratio
+            target_g = 0.02 + 0.18 * silk_ratio
+            target_b = 0.08 + 0.52 * silk_ratio
+
+        # Smooth lerp toward target color
+        lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
+        stripe_color_red[0] += (target_r - stripe_color_red[0]) * lerp_factor
+        stripe_color_red[1] += (target_g - stripe_color_red[1]) * lerp_factor
+        stripe_color_red[2] += (target_b - stripe_color_red[2]) * lerp_factor
+
+        if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
+            simulation.red_stripe_color[None] = ti.Vector([stripe_color_red[0], stripe_color_red[1], stripe_color_red[2]])
+            r = window.red_body_color
+            simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+
+    elif red_horn_type_id == 5:  # Red is bombardier
         # Determine target stripe color based on charge level
         if spray_charges_red == 0:
             target_r, target_g, target_b = 0.4, 0.4, 0.4  # Gray - depleted
