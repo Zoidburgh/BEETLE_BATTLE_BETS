@@ -338,9 +338,9 @@ def extract_silk_particles():
                 t = lifetime / SILK_FADE_TIME
                 alpha = t * t  # Quadratic ease-out for natural fade
 
-            # Add dramatic pulsing glow for stuck particles (floor or beetle)
+            # Add dramatic pulsing glow for stuck particles (floor, beetle, or ball)
             pulse = 1.0
-            if simulation.silk_stuck[idx] >= 1:  # 1=floor, 2=beetle
+            if simulation.silk_stuck[idx] >= 1:  # 1=floor, 2=beetle, 3=ball
                 # Pulse from 80% to 150% brightness
                 pulse = 1.15 + 0.35 * ti.sin(lifetime * 12.0)
 

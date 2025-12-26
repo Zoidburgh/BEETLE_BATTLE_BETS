@@ -855,8 +855,10 @@ def reset_match():
     simulation.num_silk[None] = 0
     simulation.silk_on_blue[None] = 0
     simulation.silk_on_red[None] = 0
+    simulation.silk_on_ball[None] = 0
     simulation.silk_under_blue[None] = 0
     simulation.silk_under_red[None] = 0
+    simulation.silk_under_ball[None] = 0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -1010,7 +1012,7 @@ silk_spiral_phase_red = 0.0
 
 # Spider silk charge/regeneration system
 SILK_MAX_CHARGE = 100.0      # Maximum silk charge
-SILK_REGEN_RATE = 3.25       # Charge regenerated per second
+SILK_REGEN_RATE = 3.9        # Charge regenerated per second (20% faster)
 SILK_COST_PER_SPAWN = 0.2    # Charge cost per silk spawn (0.4 total per frame)
 silk_charge_blue = SILK_MAX_CHARGE
 silk_charge_red = SILK_MAX_CHARGE
@@ -8393,37 +8395,67 @@ def update_beetle_stuck_silk_positions(
     red_rotation: ti.f32, red_pitch: ti.f32, red_roll: ti.f32,
     red_horn_pitch: ti.f32, red_horn_yaw: ti.f32, red_tail_pitch: ti.f32,
     red_horn_type_id: ti.i32, red_body_length: ti.i32, red_back_height: ti.i32,
-    red_spray_aim: ti.f32, red_spider_aim: ti.f32, red_default_horn_pitch: ti.f32
+    red_spray_aim: ti.f32, red_spider_aim: ti.f32, red_default_horn_pitch: ti.f32,
+    # Ball state
+    ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32,
+    ball_rotation: ti.f32, ball_pitch: ti.f32, ball_roll: ti.f32, ball_active: ti.i32
 ):
-    """Update world positions of silk stuck to beetles - call after beetle render"""
+    """Update world positions of silk stuck to beetles/ball - call after beetle render"""
     for idx in range(simulation.num_silk[None]):
-        if simulation.silk_stuck[idx] != 2:  # Only beetle-stuck silk
-            continue
+        stuck_type = simulation.silk_stuck[idx]
 
-        stuck_beetle = simulation.silk_stuck_beetle[idx]
-        voxel_idx = simulation.silk_stuck_voxel_idx[idx]
-        offset = simulation.silk_stuck_offset[idx]
+        if stuck_type == 2:  # Beetle-stuck silk
+            stuck_beetle = simulation.silk_stuck_beetle[idx]
+            voxel_idx = simulation.silk_stuck_voxel_idx[idx]
+            offset = simulation.silk_stuck_offset[idx]
 
-        if stuck_beetle == 0:  # Blue beetle
-            world_pos = transform_body_voxel_to_world(
-                voxel_idx, 1,
-                blue_x, blue_y, blue_z,
-                blue_rotation, blue_pitch, blue_roll,
-                blue_horn_pitch, blue_horn_yaw, blue_tail_pitch,
-                blue_horn_type_id, blue_body_length, blue_back_height,
-                blue_spray_aim, blue_spider_aim, blue_default_horn_pitch
-            )
-            simulation.silk_pos[idx] = world_pos + offset
-        else:  # Red beetle
-            world_pos = transform_body_voxel_to_world(
-                voxel_idx, 0,
-                red_x, red_y, red_z,
-                red_rotation, red_pitch, red_roll,
-                red_horn_pitch, red_horn_yaw, red_tail_pitch,
-                red_horn_type_id, red_body_length, red_back_height,
-                red_spray_aim, red_spider_aim, red_default_horn_pitch
-            )
-            simulation.silk_pos[idx] = world_pos + offset
+            if stuck_beetle == 0:  # Blue beetle
+                world_pos = transform_body_voxel_to_world(
+                    voxel_idx, 1,
+                    blue_x, blue_y, blue_z,
+                    blue_rotation, blue_pitch, blue_roll,
+                    blue_horn_pitch, blue_horn_yaw, blue_tail_pitch,
+                    blue_horn_type_id, blue_body_length, blue_back_height,
+                    blue_spray_aim, blue_spider_aim, blue_default_horn_pitch
+                )
+                simulation.silk_pos[idx] = world_pos + offset
+            else:  # Red beetle
+                world_pos = transform_body_voxel_to_world(
+                    voxel_idx, 0,
+                    red_x, red_y, red_z,
+                    red_rotation, red_pitch, red_roll,
+                    red_horn_pitch, red_horn_yaw, red_tail_pitch,
+                    red_horn_type_id, red_body_length, red_back_height,
+                    red_spray_aim, red_spider_aim, red_default_horn_pitch
+                )
+                simulation.silk_pos[idx] = world_pos + offset
+
+        elif stuck_type == 3 and ball_active == 1:  # Ball-stuck silk
+            offset = simulation.silk_stuck_offset[idx]
+
+            # Rotate offset with ball's rotation (yaw -> pitch -> roll)
+            # Step 1: Yaw (around Y-axis)
+            cos_yaw = ti.cos(ball_rotation)
+            sin_yaw = ti.sin(ball_rotation)
+            temp_x = offset.x * cos_yaw - offset.z * sin_yaw
+            temp_z = offset.x * sin_yaw + offset.z * cos_yaw
+            temp_y = offset.y
+
+            # Step 2: Pitch (around Z-axis, nose up/down)
+            cos_pitch = ti.cos(ball_pitch)
+            sin_pitch = ti.sin(ball_pitch)
+            rot_x = temp_x * cos_pitch - temp_y * sin_pitch
+            rot_y = temp_x * sin_pitch + temp_y * cos_pitch
+            rot_z = temp_z
+
+            # Step 3: Roll (around X-axis, side tilt)
+            cos_roll = ti.cos(ball_roll)
+            sin_roll = ti.sin(ball_roll)
+            final_y = rot_y * cos_roll - rot_z * sin_roll
+            final_z = rot_y * sin_roll + rot_z * cos_roll
+            final_x = rot_x
+
+            simulation.silk_pos[idx] = ti.math.vec3(ball_x + final_x, ball_y + final_y, ball_z + final_z)
 
 
 @ti.kernel
@@ -8447,25 +8479,31 @@ def cleanup_dead_silk():
                 simulation.silk_stuck_offset[write_idx] = simulation.silk_stuck_offset[read_idx]
             write_idx += 1
         else:
-            # Particle is expiring - decrement beetle counter if it was stuck to one
+            # Particle is expiring - decrement counter if it was stuck to something
             if simulation.silk_stuck[read_idx] == 2:  # Was stuck to beetle
                 if simulation.silk_stuck_beetle[read_idx] == 0:
                     ti.atomic_sub(simulation.silk_on_blue[None], 1)
                 elif simulation.silk_stuck_beetle[read_idx] == 1:
                     ti.atomic_sub(simulation.silk_on_red[None], 1)
+            elif simulation.silk_stuck[read_idx] == 3:  # Was stuck to ball
+                ti.atomic_sub(simulation.silk_on_ball[None], 1)
 
     simulation.num_silk[None] = write_idx
 
 
 @ti.kernel
-def count_floor_silk_under_beetles(blue_x: ti.f32, blue_z: ti.f32, red_x: ti.f32, red_z: ti.f32):
-    """Count floor silk particles near each beetle for speed effects"""
+def count_floor_silk_under_beetles(blue_x: ti.f32, blue_z: ti.f32, red_x: ti.f32, red_z: ti.f32,
+                                   ball_x: ti.f32, ball_z: ti.f32, ball_active: ti.i32):
+    """Count floor silk particles near each beetle and ball for speed/friction effects"""
     FLOOR_SILK_RADIUS = 8.0  # How close counts as "under" the beetle
+    BALL_SILK_RADIUS = 6.0   # Smaller radius for ball (ball is smaller than beetle)
     RADIUS_SQ = FLOOR_SILK_RADIUS * FLOOR_SILK_RADIUS
+    BALL_RADIUS_SQ = BALL_SILK_RADIUS * BALL_SILK_RADIUS
 
     # Reset counters
     simulation.silk_under_blue[None] = 0
     simulation.silk_under_red[None] = 0
+    simulation.silk_under_ball[None] = 0
 
     for idx in range(simulation.num_silk[None]):
         if simulation.silk_stuck[idx] == 1:  # Floor silk only
@@ -8482,6 +8520,79 @@ def count_floor_silk_under_beetles(blue_x: ti.f32, blue_z: ti.f32, red_x: ti.f32
             dz_red = pos.z - red_z
             if dx_red * dx_red + dz_red * dz_red < RADIUS_SQ:
                 ti.atomic_add(simulation.silk_under_red[None], 1)
+
+            # Check distance to ball (if active)
+            if ball_active == 1:
+                dx_ball = pos.x - ball_x
+                dz_ball = pos.z - ball_z
+                if dx_ball * dx_ball + dz_ball * dz_ball < BALL_RADIUS_SQ:
+                    ti.atomic_add(simulation.silk_under_ball[None], 1)
+
+
+@ti.kernel
+def check_silk_ball_collision(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, ball_radius: ti.f32,
+                               ball_rotation: ti.f32, ball_pitch: ti.f32, ball_roll: ti.f32):
+    """Check flying silk against ball and stick if hit"""
+    STICK_RADIUS = ball_radius + 1.5  # Ball radius plus small buffer
+    STICK_RADIUS_SQ = STICK_RADIUS * STICK_RADIUS
+
+    for idx in range(simulation.num_silk[None]):
+        if simulation.silk_stuck[idx] != 0:  # Only check flying silk
+            continue
+        if simulation.silk_lifetime[idx] <= 0:
+            continue
+
+        pos = simulation.silk_pos[idx]
+
+        # Distance to ball center
+        dx = pos.x - ball_x
+        dy = pos.y - ball_y
+        dz = pos.z - ball_z
+        dist_sq = dx * dx + dy * dy + dz * dz
+
+        if dist_sq < STICK_RADIUS_SQ:
+            # Hit the ball! Stick to it
+            simulation.silk_stuck[idx] = 3  # New value: stuck to ball
+            simulation.silk_stuck_beetle[idx] = 2  # 2 = ball (not 0=blue, 1=red)
+            # Store offset in BALL-LOCAL space (inverse rotate world offset)
+            dist = ti.sqrt(dist_sq)
+            # Initialize world offset (must be before if/else for Taichi scoping)
+            world_off_x = ball_radius
+            world_off_y = 0.0
+            world_off_z = 0.0
+            if dist > 0.1:
+                # Normalize and place on ball surface (world offset)
+                world_off_x = dx / dist * ball_radius
+                world_off_y = dy / dist * ball_radius
+                world_off_z = dz / dist * ball_radius
+
+            # Inverse rotate: roll^-1 -> pitch^-1 -> yaw^-1
+            # Step 1: Inverse roll (around X, negative angle)
+            cos_roll = ti.cos(-ball_roll)
+            sin_roll = ti.sin(-ball_roll)
+            r1_y = world_off_y * cos_roll - world_off_z * sin_roll
+            r1_z = world_off_y * sin_roll + world_off_z * cos_roll
+            r1_x = world_off_x
+
+            # Step 2: Inverse pitch (around Z, negative angle)
+            cos_pitch = ti.cos(-ball_pitch)
+            sin_pitch = ti.sin(-ball_pitch)
+            r2_x = r1_x * cos_pitch - r1_y * sin_pitch
+            r2_y = r1_x * sin_pitch + r1_y * cos_pitch
+            r2_z = r1_z
+
+            # Step 3: Inverse yaw (around Y, negative angle)
+            cos_yaw = ti.cos(-ball_rotation)
+            sin_yaw = ti.sin(-ball_rotation)
+            local_x = r2_x * cos_yaw - r2_z * sin_yaw
+            local_z = r2_x * sin_yaw + r2_z * cos_yaw
+            local_y = r2_y
+
+            simulation.silk_stuck_offset[idx] = ti.math.vec3(local_x, local_y, local_z)
+            simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
+            simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK
+            ti.atomic_add(simulation.silk_on_ball[None], 1)
+
 
 # ============== END SPIDER SILK SYSTEM ==============
 
@@ -8640,9 +8751,26 @@ LEG_TIP_OFFSETS_BASE = [
     (-14, -8), # 7: rear2_right (scorpion extra back right)
 ]
 
+# Spider has legs attached further forward with different angles
+# Spider prosoma is compact, legs don't spread out as much
+SPIDER_LEG_TIP_OFFSETS = [
+    (6, 7),    # 0: front_left (prosoma front, forward-left)
+    (6, -7),   # 1: front_right (prosoma front, forward-right)
+    (2, 10),   # 2: middle_left (mid-prosoma, sideways-left)
+    (2, -10),  # 3: middle_right (mid-prosoma, sideways-right)
+    (-6, 9),   # 4: rear_left (pedicel area, backward-left)
+    (-6, -9),  # 5: rear_right (pedicel area, backward-right)
+    (-8, 8),   # 6: rear2_left (back of prosoma, backward-left)
+    (-8, -8),  # 7: rear2_right (back of prosoma, backward-right)
+]
+
 def get_leg_tip_world_position(beetle, leg_id, leg_length=8):
     """Calculate world position of leg tip based on beetle position, rotation, and leg length"""
-    base_x, base_z = LEG_TIP_OFFSETS_BASE[leg_id]
+    # Use spider-specific offsets for spider
+    if beetle.horn_type == "spider":
+        base_x, base_z = SPIDER_LEG_TIP_OFFSETS[leg_id]
+    else:
+        base_x, base_z = LEG_TIP_OFFSETS_BASE[leg_id]
     # Softer scaling - sqrt curve so longer legs don't push dust too far
     # At leg_length=6: scale=1.0, at leg_length=10: scale=1.29 (instead of 1.67)
     scale = math.sqrt(leg_length / 6.0)
@@ -8717,7 +8845,12 @@ def beetle_collision(b1, b2, params):
 
     # PREDICTIVE COLLISION CHECK: Prevent horn clipping during fast spins
     # Check if horn tips WILL BE close next frame, apply gentle preventive push
-    if not is_ball_collision:
+    # Only run when beetles are actually moving/spinning (prevents false positives at rest)
+    b1_is_moving = abs(b1.angular_velocity) > 0.1 or abs(b1.vx) > 0.1 or abs(b1.vz) > 0.1
+    b2_is_moving = abs(b2.angular_velocity) > 0.1 or abs(b2.vx) > 0.1 or abs(b2.vz) > 0.1
+    either_moving = b1_is_moving or b2_is_moving
+
+    if not is_ball_collision and either_moving:
         dt = PHYSICS_TIMESTEP
         predictive_threshold = params.get("PREDICTIVE_COLLISION_DIST", 8.0)
         predictive_push = params.get("PREDICTIVE_COLLISION_PUSH", 0.3)
@@ -8798,16 +8931,24 @@ def beetle_collision(b1, b2, params):
             b1.predictive_push_z *= decay
             b2.predictive_push_x *= decay
             b2.predictive_push_z *= decay
+    else:
+        # Beetles not moving - decay any existing push values
+        decay = 0.8
+        b1.predictive_push_x *= decay
+        b1.predictive_push_z *= decay
+        b2.predictive_push_x *= decay
+        b2.predictive_push_z *= decay
 
     # SHAFT CYLINDER COLLISION CHECK: Catch shaft/attachment collisions that voxels miss
     # Check if opponent's body center is within a cylinder around each beetle's horn shaft
-    if not is_ball_collision:
+    # Skip for first 30 physics frames to let geometry initialize
+    if not is_ball_collision and physics_frame > 30:
         shaft_cylinder_radius = params.get("SHAFT_CYLINDER_RADIUS", 6.0)
         shaft_cylinder_push = params.get("SHAFT_CYLINDER_PUSH", 0.25)
 
-        # Skip for scorpion/bombardier (no forward shaft)
-        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas", "spider")
-        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider")
+        # Skip for scorpion/bombardier/spider (no forward shaft - spider has tiny fixed fangs)
+        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas")
+        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas")
 
         if b1_has_shaft or b2_has_shaft:
             # Get shaft endpoints for beetles with horns
@@ -9794,10 +9935,13 @@ clear_shadow_layer(int(RENDER_Y_OFFSET), 0)  # Clear the warm-up shadow so it do
 spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
 
 # Spray/venom kernels (bombardier and scorpion attacks)
-spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 50.0, 0, 1, 0.0, 0.6, 0.2, 1.0, 0.3)
+spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 50.0, 0, 1, 0.0, 0.6, 0.2, 1.0, 0.3)  # Spray warmup
+spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 28.0, 0, 3, -28.0, 1.5, 1.0, 0.9, 0.1)  # Venom warmup
 update_spray_particles(0.016)
 check_spray_voxel_collision_kernel(0, 0)
+check_spray_voxel_collision_kernel(1, 1)  # Also warmup red beetle check
 cleanup_dead_spray()
+simulation.num_spray[None] = 0  # Clear warmup spray
 spawn_spray_explosion(0.0, 0.0, -100.0, 0.2, 1.0, 0.3)
 
 # Spider silk kernels
@@ -9809,7 +9953,8 @@ check_silk_beetle_collision(
     # Red beetle state (dummy values)
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1
 )
-count_floor_silk_under_beetles(0.0, 0.0, 0.0, 0.0)
+check_silk_ball_collision(0.0, -100.0, 0.0, 4.0, 0.0, 0.0, 0.0)  # Ball silk collision warmup
+count_floor_silk_under_beetles(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
 cleanup_dead_silk()
 simulation.num_silk[None] = 0  # Clear warmup silk
 
@@ -10614,12 +10759,32 @@ while window.running:
 
                 # Apply rolling friction to ball only when on ground (allows proper arc when airborne)
                 if beetle_ball.on_ground:
-                    beetle_ball.vx *= physics_params["BALL_ROLLING_FRICTION"]
-                    beetle_ball.vz *= physics_params["BALL_ROLLING_FRICTION"]
-                    # Apply angular friction to all spin axes when on ground
+                    # Silk makes ball stickier - reduce friction value (more stopping power)
+                    base_friction = physics_params["BALL_ROLLING_FRICTION"]
+                    # Each silk ON ball adds 4% friction (stickier ball)
+                    silk_on_friction = 0.04 * simulation.silk_on_ball[None]
+                    # Each floor silk UNDER ball adds 2% friction (sticky floor)
+                    silk_under_friction = 0.02 * simulation.silk_under_ball[None]
+                    # Cap total silk friction bonus at 60% (prevents ball from stopping instantly)
+                    total_silk_friction = min(0.60, silk_on_friction + silk_under_friction)
+                    adjusted_friction = base_friction - total_silk_friction
+
+                    beetle_ball.vx *= adjusted_friction
+                    beetle_ball.vz *= adjusted_friction
+
+                    # Natural rolling: ground contact makes ball spin to match movement
+                    # Rolling without slipping: angular_vel = linear_vel / radius
+                    # Signs are negative because positive pitch/roll rotate opposite to movement direction
+                    # (front goes DOWN when rolling forward, not up)
+                    roll_blend = 0.15  # How quickly ball "grips" the ground (0.1=slippery, 0.3=grippy)
+                    target_pitch_vel = -beetle_ball.vx / beetle_ball.radius  # +X movement = negative pitch (front dips down)
+                    target_roll_vel = -beetle_ball.vz / beetle_ball.radius   # +Z movement = negative roll (front dips down)
+
+                    beetle_ball.pitch_velocity += (target_pitch_vel - beetle_ball.pitch_velocity) * roll_blend
+                    beetle_ball.roll_velocity += (target_roll_vel - beetle_ball.roll_velocity) * roll_blend
+
+                    # Apply angular friction to yaw spin (horizontal spin from collisions)
                     beetle_ball.angular_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
-                    beetle_ball.pitch_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
-                    beetle_ball.roll_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
 
                 # Apply bowl slide to ball (slippery perimeter pushes toward center)
                 apply_bowl_slide(beetle_ball, physics_params)
@@ -10884,16 +11049,25 @@ while window.running:
                 beetle_red.rotation, beetle_red.pitch, beetle_red.roll,
                 beetle_red.horn_pitch, beetle_red.horn_yaw, red_tail_pitch_rad,
                 beetle_red.horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
-                spray_aim_red * SPRAY_AIM_MAX, spider_aim_red * SPIDER_AIM_MAX, red_def_pitch,
+                spray_aim_red * SPRAY_AIM_MAX, spider_aim_red * SPRAY_AIM_MAX, red_def_pitch,
                 1 if beetle_red.active else 0
             )
+
+            # Check silk-ball collision if ball mode is active
+            if beetle_ball.active:
+                check_silk_ball_collision(
+                    beetle_ball.x, beetle_ball.y + RENDER_Y_OFFSET, beetle_ball.z,
+                    beetle_ball.radius,
+                    beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll
+                )
 
             # Cleanup dead silk every 5 frames (less frequent since silk persists longer)
             if physics_frame % 5 == 0:
                 cleanup_dead_silk()
 
-            # Count floor silk under each beetle for speed effects
-            count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z)
+            # Count floor silk under each beetle and ball for speed/friction effects
+            count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,
+                                           beetle_ball.x, beetle_ball.z, 1 if beetle_ball.active else 0)
 
         # === DEBRIS PARTICLES TIMING END ===
         _t_debris_end = time.perf_counter()
@@ -11336,7 +11510,8 @@ while window.running:
         _physics_timing['floor_collision'] += (_t_floor_end - _t_respawn_end) * 1000
 
         # Beetle collision (voxel-perfect) - only if both beetles are active and neither is falling
-        if beetle_blue.active and beetle_red.active and not beetle_blue.is_falling and not beetle_red.is_falling:
+        # Skip first 30 frames to let geometry fully initialize (prevents startup skipping)
+        if beetle_blue.active and beetle_red.active and not beetle_blue.is_falling and not beetle_red.is_falling and physics_frame > 30:
             beetle_collision(beetle_blue, beetle_red, physics_params)
 
         # === BEETLE COLLISION TIMING END ===
@@ -11980,18 +12155,18 @@ while window.running:
         silk_ratio = silk_charge_blue / SILK_MAX_CHARGE
         blue_charge_glow = silk_ratio
 
-        # Spider glow color: bright pink/magenta when full, dark when depleted
+        # Spider glow color: exotic yellow/gold when full, dark when depleted
         if silk_ratio >= 0.99:
             # Full charge: strong pulse effect like bombardier
             pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
             target_r = 0.8 + pulse * 0.2
-            target_g = 0.1 + pulse * 0.2
-            target_b = 0.4 + pulse * 0.2
+            target_g = 0.6 + pulse * 0.2
+            target_b = 0.05 + pulse * 0.1
         else:
-            # Partial charge: scale from dark to bright pink/magenta
+            # Partial charge: scale from dark to bright yellow/gold
             target_r = 0.15 + 0.85 * silk_ratio
-            target_g = 0.02 + 0.18 * silk_ratio
-            target_b = 0.08 + 0.52 * silk_ratio
+            target_g = 0.10 + 0.70 * silk_ratio
+            target_b = 0.02 + 0.08 * silk_ratio
 
         # Smooth lerp toward target color
         lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
@@ -12044,18 +12219,18 @@ while window.running:
         silk_ratio = silk_charge_red / SILK_MAX_CHARGE
         red_charge_glow = silk_ratio
 
-        # Spider glow color: bright pink/magenta when full, dark when depleted
+        # Spider glow color: exotic yellow/gold when full, dark when depleted
         if silk_ratio >= 0.99:
             # Full charge: strong pulse effect like bombardier
             pulse = (math.sin(current_time * 6.0) + 1.0) * 0.5
             target_r = 0.8 + pulse * 0.2
-            target_g = 0.1 + pulse * 0.2
-            target_b = 0.4 + pulse * 0.2
+            target_g = 0.6 + pulse * 0.2
+            target_b = 0.05 + pulse * 0.1
         else:
-            # Partial charge: scale from dark to bright pink/magenta
+            # Partial charge: scale from dark to bright yellow/gold
             target_r = 0.15 + 0.85 * silk_ratio
-            target_g = 0.02 + 0.18 * silk_ratio
-            target_b = 0.08 + 0.52 * silk_ratio
+            target_g = 0.10 + 0.70 * silk_ratio
+            target_b = 0.02 + 0.08 * silk_ratio
 
         # Smooth lerp toward target color
         lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
@@ -12192,8 +12367,20 @@ while window.running:
 
     perf_monitor.stop('beetle_render')
 
-    # Update silk stuck to beetles - positions need to match beetle transforms
+    # Update silk stuck to beetles/ball - positions need to match transforms
     if simulation.num_silk[None] > 0:
+        # Calculate ball render position and rotation for silk tracking
+        if beetle_ball.active:
+            ball_silk_x = beetle_ball.prev_x + (beetle_ball.x - beetle_ball.prev_x) * alpha
+            ball_silk_y = beetle_ball.prev_y + (beetle_ball.y - beetle_ball.prev_y) * alpha + RENDER_Y_OFFSET
+            ball_silk_z = beetle_ball.prev_z + (beetle_ball.z - beetle_ball.prev_z) * alpha
+            ball_silk_rotation = lerp_angle(beetle_ball.prev_rotation, beetle_ball.rotation, alpha)
+            ball_silk_pitch = lerp_angle(beetle_ball.prev_pitch, beetle_ball.pitch, alpha)
+            ball_silk_roll = lerp_angle(beetle_ball.prev_roll, beetle_ball.roll, alpha)
+        else:
+            ball_silk_x, ball_silk_y, ball_silk_z = 0.0, 0.0, 0.0
+            ball_silk_rotation, ball_silk_pitch, ball_silk_roll = 0.0, 0.0, 0.0
+
         update_beetle_stuck_silk_positions(
             # Blue beetle state (use render values for smooth interpolation)
             blue_render_x, blue_render_y, blue_render_z,
@@ -12208,7 +12395,11 @@ while window.running:
             red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch,
             red_horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
             red_render_spray_aim * SPRAY_AIM_MAX, red_render_spider_aim * SPIDER_AIM_MAX,
-            red_default_horn_pitch
+            red_default_horn_pitch,
+            # Ball state
+            ball_silk_x, ball_silk_y, ball_silk_z,
+            ball_silk_rotation, ball_silk_pitch, ball_silk_roll,
+            1 if beetle_ball.active else 0
         )
 
     # === BALL RENDER TIMING ===
