@@ -119,6 +119,8 @@ class NetworkManager:
 
         # Debug
         self.poll_count = 0
+        self.inputs_received = 0
+        self.inputs_sent = 0
 
         # Message buffer (filled by callbacks, processed by poll_messages)
         self.message_queue = []
@@ -389,6 +391,7 @@ class NetworkManager:
         if not self.connected or not self.peer_steam_id:
             return False
 
+        self.inputs_sent += 1
         data = struct.pack('>BIB', MSG_INPUT, frame, inputs)
         return self._send_packet(data, reliable=False)  # Inputs can be unreliable for speed
 
@@ -485,7 +488,7 @@ class NetworkManager:
         # Periodic debug output (every 60 frames = ~1 second)
         if self.poll_count % 60 == 0:
             queue_len = len(self.message_queue)
-            print(f"[Network] Poll #{self.poll_count}: queue={queue_len}, connected={self.connected}, is_host={self.is_host}")
+            print(f"[Network] Poll #{self.poll_count}: in={self.inputs_received} out={self.inputs_sent} host={self.is_host}")
 
         # Run Steam callbacks (don't skip based on is_ready - always try)
         try:
@@ -551,6 +554,7 @@ class NetworkManager:
             # Input packet: [type (1)] [frame (4)] [inputs (1)]
             if len(data) >= 6:
                 _, frame, inputs = struct.unpack('>BIB', data[:6])
+                self.inputs_received += 1
                 if input_buffer:
                     input_buffer.add_remote(frame, inputs)
 
