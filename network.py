@@ -117,6 +117,9 @@ class NetworkManager:
         self.ping_sent_time = 0
         self.ping_ms = 0
 
+        # Debug
+        self.poll_count = 0
+
         # Message buffer (filled by callbacks, processed by poll_messages)
         self.message_queue = []
         self.message_lock = threading.Lock()
@@ -474,14 +477,14 @@ class NetworkManager:
         if not self.initialized:
             return
 
-        # Check if client is ready
-        try:
-            if not self.client.is_ready():
-                return
-        except:
-            pass
+        self.poll_count += 1
 
-        # Run Steam callbacks
+        # Periodic debug output (every 60 frames = ~1 second)
+        if self.poll_count % 60 == 0:
+            queue_len = len(self.message_queue)
+            print(f"[Network] Poll #{self.poll_count}: queue={queue_len}, connected={self.connected}, is_host={self.is_host}")
+
+        # Run Steam callbacks (don't skip based on is_ready - always try)
         try:
             self.client.run_callbacks()
         except Exception as e:
