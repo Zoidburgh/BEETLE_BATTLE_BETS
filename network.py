@@ -489,10 +489,24 @@ class NetworkManager:
                 pass
 
         # Explicitly receive messages from Steam
-        # NOTE: receive_messages() triggers the _on_message_received callback,
-        # it does NOT return messages directly. Messages go to self.message_queue.
+        # Try both: check return value AND callback
         try:
-            self.client.receive_messages(GAME_CHANNEL, 100)
+            result = self.client.receive_messages(GAME_CHANNEL, 100)
+            # Check if receive_messages returns messages directly
+            if result:
+                print(f"[Network] receive_messages returned: {type(result)} - {result}")
+                # If it returns a list of messages, process them directly
+                if isinstance(result, list):
+                    for msg in result:
+                        print(f"[Network] Direct message: {msg}")
+                        # Try to extract data depending on format
+                        if hasattr(msg, 'data'):
+                            self._handle_packet(msg.data, getattr(msg, 'sender', None), input_buffer)
+                        elif isinstance(msg, tuple) and len(msg) >= 3:
+                            sender_id, channel, data = msg[0], msg[1], msg[2]
+                            self._handle_packet(data, sender_id, input_buffer)
+                        elif isinstance(msg, bytes):
+                            self._handle_packet(msg, None, input_buffer)
         except Exception as e:
             print(f"[Network] receive_messages error: {e}")
 
