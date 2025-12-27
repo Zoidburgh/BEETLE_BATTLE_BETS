@@ -353,10 +353,11 @@ class InputBuffer:
 
     def __init__(self, delay_frames=0):
         self.delay = delay_frames
-        self.local_inputs = {}    # frame_num -> input_bits (blue player)
-        self.remote_inputs = {}   # frame_num -> input_bits (red player / network opponent)
+        self.local_inputs = {}    # frame_num -> input_bits (our inputs)
+        self.remote_inputs = {}   # frame_num -> input_bits (opponent inputs)
         self.current_frame = 0
         self.is_network_mode = False  # Set True when connected to opponent
+        self.local_player_id = 0  # 0 = host (blue), 1 = guest (red)
 
     def add_local(self, inputs):
         """Store local player's inputs for current frame."""
@@ -374,17 +375,20 @@ class InputBuffer:
         """
         target = frame - self.delay
 
-        # In local mode, both inputs come from local buffer
-        if not self.is_network_mode:
-            blue = self.local_inputs.get(target, 0)
-            red = self.remote_inputs.get(target, 0)
-        else:
-            # In network mode, local is always blue (host perspective)
-            # Guest swaps these when applying
-            blue = self.local_inputs.get(target, 0)
-            red = self.remote_inputs.get(target, 0)
+        local = self.local_inputs.get(target, 0)
+        remote = self.remote_inputs.get(target, 0)
 
-        return blue, red
+        if not self.is_network_mode:
+            # Local mode: local=blue, remote=red
+            return local, remote
+        else:
+            # Network mode: depends on which player we are
+            if self.local_player_id == 0:
+                # We are host (blue): local=blue, remote=red
+                return local, remote
+            else:
+                # We are guest (red): local=red, remote=blue
+                return remote, local
 
     def has_inputs_for_frame(self, frame):
         """Check if we have all inputs needed to process a frame."""
@@ -12692,6 +12696,7 @@ while window.running:
                     game_state = GAME_STATE_ONLINE_PLAY
                     input_buffer.is_network_mode = True
                     input_buffer.delay = 4  # 4 frame delay for network
+                    input_buffer.local_player_id = 0  # Host is blue
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
                     network_manager.start_match_now()  # Send start signal to guest
@@ -12774,6 +12779,7 @@ while window.running:
                 game_state = GAME_STATE_ONLINE_PLAY
                 input_buffer.is_network_mode = True
                 input_buffer.delay = 4
+                input_buffer.local_player_id = 1  # Guest is red
                 input_buffer.reset()
                 local_player_id = 1  # Guest is red
                 reset_match()
