@@ -10249,44 +10249,40 @@ while window.running:
                 beetle_red.z = sync['red_z']
                 beetle_red.rotation = sync['red_rot']
 
-    # Read inputs ONCE per frame using abstraction layer (enables networking + controller support later)
-    # Store in input buffer for potential network sync
+    # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
         # ONLINE MODE: Only read inputs for our local beetle
         if local_player_id == 0:
-            # We are host (blue) - read blue inputs locally
-            frame_blue_inputs = get_local_inputs(window, 'blue')
-            frame_red_inputs = 0  # Will come from network
-            input_buffer.add_local(frame_blue_inputs)
-            # Send our inputs to opponent
-            network_manager.send_input(input_buffer.current_frame, frame_blue_inputs)
+            current_local_inputs = get_local_inputs(window, 'blue')
         else:
-            # We are guest (red) - read red inputs locally
-            frame_blue_inputs = 0  # Will come from network
-            frame_red_inputs = get_local_inputs(window, 'red')
-            input_buffer.add_local(frame_red_inputs)  # Local stores OUR inputs
-            # Send our inputs to opponent
-            network_manager.send_input(input_buffer.current_frame, frame_red_inputs)
+            current_local_inputs = get_local_inputs(window, 'red')
     else:
         # LOCAL MODE: Read both players from keyboard
         frame_blue_inputs = get_local_inputs(window, 'blue')
         frame_red_inputs = get_local_inputs(window, 'red')
-        input_buffer.add_local(frame_blue_inputs)
-        input_buffer.add_remote(input_buffer.current_frame, frame_red_inputs)
 
-    # === LOCKSTEP CHECK (network mode only) ===
-    # In network mode, we must wait for opponent's inputs before simulating
-    can_run_physics = True
-    if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
-        if not input_buffer.can_simulate():
-            # Waiting for opponent's inputs - skip physics this frame
-            can_run_physics = False
-            # Don't consume accumulator time - we'll catch up when inputs arrive
+    # Get inputs for physics (updated inside loop for network mode)
+    blue_inputs, red_inputs = 0, 0
 
-    # Get delayed inputs for physics (delay=0 for local play, delay based on ping for network)
-    blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
+    while accumulator >= PHYSICS_TIMESTEP:
+        # === NETWORK INPUT HANDLING (inside loop for proper frame sync) ===
+        if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
+            # Store and send our input for THIS physics frame
+            input_buffer.add_local(current_local_inputs)
+            network_manager.send_input(input_buffer.current_frame, current_local_inputs)
 
-    while can_run_physics and accumulator >= PHYSICS_TIMESTEP:
+            # Check if we can simulate (have both players' inputs)
+            if not input_buffer.can_simulate():
+                # Waiting for opponent - don't simulate, don't advance frame
+                break
+
+            # Get inputs for this frame
+            blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
+        else:
+            # LOCAL MODE: Store inputs and get them
+            input_buffer.add_local(frame_blue_inputs)
+            input_buffer.add_remote(input_buffer.current_frame, frame_red_inputs)
+            blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
         # Save previous state for interpolation
         beetle_blue.save_previous_state()
         beetle_red.save_previous_state()
