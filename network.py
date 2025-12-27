@@ -345,9 +345,23 @@ class NetworkManager:
                 if self.on_peer_left:
                     self.on_peer_left()
 
-    def _on_message_received(self, sender_id, channel, data):
+    def _on_message_received(self, *args):
         """Called when a P2P message is received."""
-        print(f"[Network] CALLBACK: Received {len(data)} bytes from {sender_id} on channel {channel}")
+        print(f"[Network] CALLBACK fired with {len(args)} args: {args}")
+
+        # Handle different callback signatures
+        if len(args) == 2:
+            # Signature: (sender_id, data)
+            sender_id, data = args
+            channel = 0
+        elif len(args) == 3:
+            # Signature: (sender_id, channel, data)
+            sender_id, channel, data = args
+        else:
+            print(f"[Network] Unexpected callback args: {args}")
+            return
+
+        print(f"[Network] CALLBACK: Received {len(data)} bytes from {sender_id}")
         with self.message_lock:
             self.message_queue.append((sender_id, channel, bytes(data)))
 
@@ -460,11 +474,18 @@ class NetworkManager:
         if not self.initialized:
             return
 
+        # Check if client is ready
+        try:
+            if not self.client.is_ready():
+                return
+        except:
+            pass
+
         # Run Steam callbacks
         try:
             self.client.run_callbacks()
-        except:
-            pass
+        except Exception as e:
+            print(f"[Network] run_callbacks error: {e}")
 
         # FALLBACK: If we're in a lobby but haven't detected opponent, check member list directly
         # This handles cases where the lobby_changed callback doesn't fire
@@ -488,27 +509,32 @@ class NetworkManager:
             except:
                 pass
 
-        # Explicitly receive messages from Steam
+        # Explicitly receive messages from Steam on multiple channels
         # Try both: check return value AND callback
-        try:
-            result = self.client.receive_messages(GAME_CHANNEL, 100)
-            # Check if receive_messages returns messages directly
-            if result:
-                print(f"[Network] receive_messages returned: {type(result)} - {result}")
-                # If it returns a list of messages, process them directly
-                if isinstance(result, list):
-                    for msg in result:
-                        print(f"[Network] Direct message: {msg}")
-                        # Try to extract data depending on format
-                        if hasattr(msg, 'data'):
-                            self._handle_packet(msg.data, getattr(msg, 'sender', None), input_buffer)
-                        elif isinstance(msg, tuple) and len(msg) >= 3:
-                            sender_id, channel, data = msg[0], msg[1], msg[2]
-                            self._handle_packet(data, sender_id, input_buffer)
-                        elif isinstance(msg, bytes):
-                            self._handle_packet(msg, None, input_buffer)
-        except Exception as e:
-            print(f"[Network] receive_messages error: {e}")
+        for channel in [0, 1, 2]:  # Try multiple channels
+            try:
+                result = self.client.receive_messages(channel, 100)
+                # Check if receive_messages returns messages directly
+                if result:
+                    print(f"[Network] receive_messages(ch={channel}) returned: {type(result)} len={len(result) if hasattr(result, '__len__') else 'N/A'}")
+                    # If it returns a list of messages, process them directly
+                    if isinstance(result, list):
+                        for msg in result:
+                            print(f"[Network] Direct message on ch {channel}: {type(msg)} - {msg}")
+                            # Try to extract data depending on format
+                            if hasattr(msg, 'data'):
+                                self._handle_packet(msg.data, getattr(msg, 'sender', None), input_buffer)
+                            elif isinstance(msg, tuple) and len(msg) >= 2:
+                                # Could be (sender, data) or (sender, channel, data)
+                                if len(msg) == 2:
+                                    sender_id, data = msg
+                                else:
+                                    sender_id, _, data = msg[0], msg[1], msg[2]
+                                self._handle_packet(bytes(data) if not isinstance(data, bytes) else data, sender_id, input_buffer)
+                            elif isinstance(msg, bytes):
+                                self._handle_packet(msg, None, input_buffer)
+            except Exception as e:
+                print(f"[Network] receive_messages(ch={channel}) error: {e}")
 
         # Process queued messages (from callback, if it works)
         messages = []
