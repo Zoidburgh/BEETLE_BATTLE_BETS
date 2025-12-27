@@ -407,7 +407,17 @@ class InputBuffer:
         has_local = sim_frame in self.local_inputs
 
         # Check if we have remote input for this frame
+        # Due to UDP packet loss, we might be missing exact frames
+        # If we have a newer frame, use that instead (input prediction)
         has_remote = sim_frame in self.remote_inputs
+        if not has_remote and self.remote_frame_received >= sim_frame:
+            # We have newer inputs - find the closest one and use it
+            for f in range(sim_frame, self.remote_frame_received + 1):
+                if f in self.remote_inputs:
+                    # Copy this input to the missing frame (assume same input)
+                    self.remote_inputs[sim_frame] = self.remote_inputs[f]
+                    has_remote = True
+                    break
 
         if has_local and has_remote:
             self.waiting_for_remote = False
