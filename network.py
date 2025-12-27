@@ -43,6 +43,7 @@ MSG_HORN_SELECT = 0x04  # Horn type selection
 MSG_REMATCH = 0x05      # Rematch request
 MSG_PING = 0x06         # Ping for latency measurement
 MSG_PONG = 0x07         # Ping response
+MSG_STATE_SYNC = 0x08   # Host sends authoritative game state
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -131,6 +132,9 @@ class NetworkManager:
         self.on_peer_left = None
         self.on_match_start = None
         self.on_horn_selected = None
+
+        # State sync (guest receives from host)
+        self.pending_state_sync = None
 
     def init(self, app_id=480):
         """
@@ -425,6 +429,20 @@ class NetworkManager:
         """Request a rematch."""
         self._send_packet(struct.pack('>B', MSG_REMATCH), reliable=True)
 
+    def send_state_sync(self, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot):
+        """
+        Host sends authoritative state to guest.
+        Packet format: [type:1][frame:4][blue_x:4][blue_z:4][blue_rot:4][red_x:4][red_z:4][red_rot:4] = 29 bytes
+        """
+        if not self.is_host or not self.connected:
+            return
+
+        data = struct.pack('>BIffffff',
+                           MSG_STATE_SYNC, frame,
+                           blue_x, blue_z, blue_rot,
+                           red_x, red_z, red_rot)
+        self._send_packet(data, reliable=False)  # Unreliable is fine for periodic sync
+
     def send_ping(self):
         """Send ping to measure latency."""
         # Use lower 32 bits of milliseconds to fit in uint32
@@ -609,6 +627,17 @@ class NetworkManager:
                     self.ping_ms = now - sent_time
                 else:
                     self.ping_ms = (0xFFFFFFFF - sent_time) + now
+
+        elif msg_type == MSG_STATE_SYNC:
+            # Host state sync: [type:1][frame:4][blue_x:4][blue_z:4][blue_rot:4][red_x:4][red_z:4][red_rot:4]
+            if len(data) >= 29 and not self.is_host:
+                _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot = struct.unpack('>BIffffff', data[:29])
+                # Store for guest to apply
+                self.pending_state_sync = {
+                    'frame': frame,
+                    'blue_x': blue_x, 'blue_z': blue_z, 'blue_rot': blue_rot,
+                    'red_x': red_x, 'red_z': red_z, 'red_rot': red_rot
+                }
 
     # =========================================================================
     # CONNECTION STATE

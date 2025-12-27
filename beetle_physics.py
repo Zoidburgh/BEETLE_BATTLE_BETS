@@ -340,34 +340,84 @@ def get_local_inputs(window, player='blue'):
 
 class InputBuffer:
     """
-    Buffer for storing inputs by frame number with configurable delay.
+    Delay-based lockstep input buffer for P2P networking.
 
-    This enables:
-    - Network play: Wait for remote inputs before processing
-    - Input delay: Give network time to deliver packets
-    - Deterministic sync: Both clients process same inputs on same frame
+    Key features:
+    - Symmetric input delay: Both players have same delay for fairness
+    - Lockstep: Won't simulate a frame until we have BOTH inputs
+    - Frame synchronization: Both clients process same inputs at same frame
 
     For local play, delay can be set to 0.
-    For network play, typical delay is 4 frames (~67ms at 60Hz).
+    For network play, delay is set based on ping (typically 3-6 frames).
     """
+
+    # Input delay in frames (adjusted based on network latency)
+    # 4 frames = ~67ms at 60Hz - good for 50ms ping
+    NETWORK_INPUT_DELAY = 4
 
     def __init__(self, delay_frames=0):
         self.delay = delay_frames
         self.local_inputs = {}    # frame_num -> input_bits (our inputs)
         self.remote_inputs = {}   # frame_num -> input_bits (opponent inputs)
-        self.current_frame = 0
+        self.current_frame = 0    # The frame we're about to simulate
         self.is_network_mode = False  # Set True when connected to opponent
         self.local_player_id = 0  # 0 = host (blue), 1 = guest (red)
-        self.latest_remote_input = 0  # Most recent input from opponent (for simple sync)
+
+        # Lockstep state
+        self.waiting_for_remote = False  # True when blocked waiting for opponent
+        self.frames_waited = 0  # How many frames we've been waiting
+        self.max_wait_frames = 180  # 3 seconds at 60fps before timeout
+
+        # Network stats
+        self.remote_frame_received = -1  # Highest frame number received from opponent
+        self.frames_behind = 0  # How far behind opponent we are
+
+        # State sync (host sends authoritative state periodically)
+        self.last_state_sync_frame = 0
+        self.state_sync_interval = 30  # Every 30 frames (~500ms)
 
     def add_local(self, inputs):
-        """Store local player's inputs for current frame."""
+        """Store local player's inputs for current frame + delay."""
+        # Store at current_frame (we'll use it when we reach that frame)
         self.local_inputs[self.current_frame] = inputs
 
     def add_remote(self, frame, inputs):
         """Store remote player's inputs (received from network)."""
         self.remote_inputs[frame] = inputs
-        self.latest_remote_input = inputs  # Always keep latest for simple sync
+
+        # Track highest frame received for sync detection
+        if frame > self.remote_frame_received:
+            self.remote_frame_received = frame
+
+    def get_sim_frame(self):
+        """Get the frame number we should be simulating (current - delay)."""
+        return max(0, self.current_frame - self.delay)
+
+    def can_simulate(self):
+        """
+        Check if we can simulate the next physics frame.
+        In lockstep, we need BOTH players' inputs for the frame.
+        """
+        if not self.is_network_mode:
+            return True  # Local mode: always can simulate
+
+        sim_frame = self.get_sim_frame()
+
+        # Check if we have local input for this frame
+        has_local = sim_frame in self.local_inputs
+
+        # Check if we have remote input for this frame
+        has_remote = sim_frame in self.remote_inputs
+
+        if has_local and has_remote:
+            self.waiting_for_remote = False
+            self.frames_waited = 0
+            return True
+        else:
+            if not has_remote:
+                self.waiting_for_remote = True
+                self.frames_waited += 1
+            return False
 
     def get_frame_inputs(self, frame):
         """
@@ -376,39 +426,34 @@ class InputBuffer:
         Returns: (blue_inputs, red_inputs)
         """
         if not self.is_network_mode:
-            # Local mode: use frame-based delay
+            # Local mode: simple delay-based lookup
             target = frame - self.delay
             local = self.local_inputs.get(target, 0)
             remote = self.remote_inputs.get(target, 0)
             return local, remote
-        else:
-            # Network mode: use latest inputs (no frame sync needed)
-            # This is simpler and more robust than frame-based sync
-            local = self.local_inputs.get(frame, 0)  # Our latest input
-            remote = self.latest_remote_input  # Opponent's latest input
 
-            if self.local_player_id == 0:
-                # We are host (blue): local=blue, remote=red
-                return local, remote
-            else:
-                # We are guest (red): local=red, remote=blue
-                return remote, local
+        # Network lockstep mode
+        sim_frame = self.get_sim_frame()
+        local = self.local_inputs.get(sim_frame, 0)
+        remote = self.remote_inputs.get(sim_frame, 0)
+
+        if self.local_player_id == 0:
+            # We are host (blue): local=blue, remote=red
+            return local, remote
+        else:
+            # We are guest (red): local=red, remote=blue
+            return remote, local
 
     def has_inputs_for_frame(self, frame):
         """Check if we have all inputs needed to process a frame."""
-        target = frame - self.delay
-        if target < 0:
-            return True  # Early frames before delay kicks in
-
-        has_local = target in self.local_inputs
-
         if not self.is_network_mode:
-            has_remote = target in self.remote_inputs
-        else:
-            # In network mode, we need remote inputs to proceed
-            has_remote = target in self.remote_inputs
+            target = frame - self.delay
+            if target < 0:
+                return True
+            return target in self.local_inputs and target in self.remote_inputs
 
-        return has_local and has_remote
+        # In lockstep mode, use can_simulate()
+        return self.can_simulate()
 
     def advance_frame(self):
         """Move to next frame."""
@@ -419,12 +464,26 @@ class InputBuffer:
         self.local_inputs = {k: v for k, v in self.local_inputs.items() if k > cleanup_threshold}
         self.remote_inputs = {k: v for k, v in self.remote_inputs.items() if k > cleanup_threshold}
 
+    def set_network_delay(self, ping_ms):
+        """Set input delay based on measured network latency."""
+        # Convert ping to frames: delay = (ping/2) / 16.67ms per frame
+        # Add 1 frame safety margin
+        one_way_ms = ping_ms / 2.0
+        delay_frames = int(one_way_ms / 16.67) + 1
+        # Clamp between 2 and 8 frames
+        self.delay = max(2, min(8, delay_frames))
+        print(f"[InputBuffer] Set delay to {self.delay} frames for {ping_ms:.0f}ms ping")
+
     def reset(self):
         """Reset buffer for new match."""
         self.local_inputs.clear()
         self.remote_inputs.clear()
         self.current_frame = 0
-        self.latest_remote_input = 0
+        self.waiting_for_remote = False
+        self.frames_waited = 0
+        self.remote_frame_received = -1
+        self.frames_behind = 0
+        self.last_state_sync_frame = 0
 
 
 # Global input buffer instance (used by main loop)
@@ -10163,6 +10222,33 @@ while window.running:
         if physics_frame % 60 == 0:  # Once per second
             network_manager.send_ping()
 
+        # === HOST STATE SYNC (send authoritative positions periodically) ===
+        if network_manager.is_host and physics_frame % 30 == 0:  # Every 500ms
+            network_manager.send_state_sync(
+                physics_frame,
+                beetle_blue.x, beetle_blue.z, beetle_blue.rotation,
+                beetle_red.x, beetle_red.z, beetle_red.rotation
+            )
+
+        # === GUEST STATE SYNC (apply received state if available) ===
+        if not network_manager.is_host and network_manager.pending_state_sync:
+            sync = network_manager.pending_state_sync
+            network_manager.pending_state_sync = None  # Consume it
+
+            # Only apply if positions differ significantly (>2 units)
+            blue_diff = abs(beetle_blue.x - sync['blue_x']) + abs(beetle_blue.z - sync['blue_z'])
+            red_diff = abs(beetle_red.x - sync['red_x']) + abs(beetle_red.z - sync['red_z'])
+
+            if blue_diff > 2.0 or red_diff > 2.0:
+                print(f"[Sync] Correcting desync: blue_diff={blue_diff:.1f}, red_diff={red_diff:.1f}")
+                # Snap to host state
+                beetle_blue.x = sync['blue_x']
+                beetle_blue.z = sync['blue_z']
+                beetle_blue.rotation = sync['blue_rot']
+                beetle_red.x = sync['red_x']
+                beetle_red.z = sync['red_z']
+                beetle_red.rotation = sync['red_rot']
+
     # Read inputs ONCE per frame using abstraction layer (enables networking + controller support later)
     # Store in input buffer for potential network sync
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
@@ -10188,10 +10274,19 @@ while window.running:
         input_buffer.add_local(frame_blue_inputs)
         input_buffer.add_remote(input_buffer.current_frame, frame_red_inputs)
 
-    # Get delayed inputs for physics (delay=0 for local play, delay=4 for network)
+    # === LOCKSTEP CHECK (network mode only) ===
+    # In network mode, we must wait for opponent's inputs before simulating
+    can_run_physics = True
+    if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
+        if not input_buffer.can_simulate():
+            # Waiting for opponent's inputs - skip physics this frame
+            can_run_physics = False
+            # Don't consume accumulator time - we'll catch up when inputs arrive
+
+    # Get delayed inputs for physics (delay=0 for local play, delay based on ping for network)
     blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
 
-    while accumulator >= PHYSICS_TIMESTEP:
+    while can_run_physics and accumulator >= PHYSICS_TIMESTEP:
         # Save previous state for interpolation
         beetle_blue.save_previous_state()
         beetle_red.save_previous_state()
@@ -12700,13 +12795,15 @@ while window.running:
                     # Switch to online play mode
                     game_state = GAME_STATE_ONLINE_PLAY
                     input_buffer.is_network_mode = True
-                    input_buffer.delay = 4  # 4 frame delay for network
+                    # Set delay based on measured ping (defaults to 4 if no ping yet)
+                    ping = network_manager.ping_ms if network_manager.ping_ms > 0 else 60
+                    input_buffer.set_network_delay(ping)
                     input_buffer.local_player_id = 0  # Host is blue
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
                     network_manager.start_match_now()  # Send start signal to guest
                     reset_match()
-                    print("[Game] Host started match!")
+                    print(f"[Game] Host started match! Ping: {ping}ms, Delay: {input_buffer.delay} frames")
 
             if window.GUI.button("Cancel"):
                 if network_manager:
@@ -12783,11 +12880,14 @@ while window.running:
             if network_manager and network_manager.match_started:
                 game_state = GAME_STATE_ONLINE_PLAY
                 input_buffer.is_network_mode = True
-                input_buffer.delay = 4
+                # Set delay based on measured ping (defaults to 4 if no ping yet)
+                ping = network_manager.ping_ms if network_manager.ping_ms > 0 else 60
+                input_buffer.set_network_delay(ping)
                 input_buffer.local_player_id = 1  # Guest is red
                 input_buffer.reset()
                 local_player_id = 1  # Guest is red
                 reset_match()
+                print(f"[Game] Guest joined match! Ping: {ping}ms, Delay: {input_buffer.delay} frames")
 
             if window.GUI.button("Leave"):
                 if network_manager:
@@ -12801,6 +12901,11 @@ while window.running:
             player_color = "BLUE" if local_player_id == 0 else "RED"
             window.GUI.text(f"You are: {player_color}")
             window.GUI.text(f"Ping: {network_manager.ping_ms}ms" if network_manager else "")
+
+            # Show lockstep status
+            if input_buffer.waiting_for_remote:
+                window.GUI.text(f"Waiting for opponent... ({input_buffer.frames_waited} frames)")
+            window.GUI.text(f"Frame: {input_buffer.current_frame} | Delay: {input_buffer.delay}")
 
             if window.GUI.button("Disconnect"):
                 if network_manager:
