@@ -358,6 +358,7 @@ class InputBuffer:
         self.current_frame = 0
         self.is_network_mode = False  # Set True when connected to opponent
         self.local_player_id = 0  # 0 = host (blue), 1 = guest (red)
+        self.latest_remote_input = 0  # Most recent input from opponent (for simple sync)
 
     def add_local(self, inputs):
         """Store local player's inputs for current frame."""
@@ -366,23 +367,26 @@ class InputBuffer:
     def add_remote(self, frame, inputs):
         """Store remote player's inputs (received from network)."""
         self.remote_inputs[frame] = inputs
+        self.latest_remote_input = inputs  # Always keep latest for simple sync
 
     def get_frame_inputs(self, frame):
         """
-        Get inputs for a physics frame (delayed by self.delay).
+        Get inputs for a physics frame.
 
         Returns: (blue_inputs, red_inputs)
         """
-        target = frame - self.delay
-
-        local = self.local_inputs.get(target, 0)
-        remote = self.remote_inputs.get(target, 0)
-
         if not self.is_network_mode:
-            # Local mode: local=blue, remote=red
+            # Local mode: use frame-based delay
+            target = frame - self.delay
+            local = self.local_inputs.get(target, 0)
+            remote = self.remote_inputs.get(target, 0)
             return local, remote
         else:
-            # Network mode: depends on which player we are
+            # Network mode: use latest inputs (no frame sync needed)
+            # This is simpler and more robust than frame-based sync
+            local = self.local_inputs.get(frame, 0)  # Our latest input
+            remote = self.latest_remote_input  # Opponent's latest input
+
             if self.local_player_id == 0:
                 # We are host (blue): local=blue, remote=red
                 return local, remote
@@ -420,6 +424,7 @@ class InputBuffer:
         self.local_inputs.clear()
         self.remote_inputs.clear()
         self.current_frame = 0
+        self.latest_remote_input = 0
 
 
 # Global input buffer instance (used by main loop)
