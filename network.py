@@ -556,6 +556,9 @@ class NetworkManager:
                 _, frame, inputs = struct.unpack('>BIB', data[:6])
                 self.inputs_received += 1
                 if input_buffer:
+                    # Debug: log frame mismatch periodically
+                    if self.inputs_received % 60 == 1:
+                        print(f"[Network] Frame check: received={frame}, local={input_buffer.current_frame}, diff={input_buffer.current_frame - frame}")
                     input_buffer.add_remote(frame, inputs)
 
         elif msg_type == MSG_READY:
