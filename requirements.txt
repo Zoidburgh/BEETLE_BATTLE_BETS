@@ -1,3 +1,14 @@
 taichi
-# py_steam_net - Install from GitHub releases (requires Python 3.12)
-# https://github.com/HeatXD/py_steam_net/releases
+
+# === NETWORKING SETUP (for online multiplayer) ===
+# Requires Python 3.12 (NOT 3.13+)
+#
+# 1. Install py_steam_net:
+#    pip install py_steam_net
+#    Or from wheel: pip install py_steam_net-0.1.0-cp312-cp312-win_amd64.whl
+#    GitHub: https://github.com/HeatXD/py_steam_net/releases
+#
+# 2. Copy steam_api64.dll to your Python installation folder:
+#    copy steam_api64.dll C:\Users\<USERNAME>\AppData\Local\Programs\Python\Python312\
+#
+# 3. Make sure Steam is running before launching the game

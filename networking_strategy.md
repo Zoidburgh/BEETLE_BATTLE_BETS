@@ -271,16 +271,41 @@ For comparison: Voice chat uses 30+ KB/s
 
 ---
 
+## New Machine Setup
+
+After cloning the repo on a new computer:
+
+```bash
+# 1. Install Python 3.12 (NOT 3.13+)
+
+# 2. Install dependencies
+pip install taichi
+pip install py_steam_net
+# Or from wheel if pip doesn't work:
+# pip install py_steam_net-0.1.0-cp312-cp312-win_amd64.whl
+
+# 3. Copy steam_api64.dll to Python folder (REQUIRED)
+copy steam_api64.dll C:\Users\<USERNAME>\AppData\Local\Programs\Python\Python312\
+
+# 4. Make sure Steam is running
+
+# 5. Run the game
+py -3.12 beetle_physics.py
+```
+
+---
+
 ## Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
 | py_steam_net import fails | Use Python 3.12, not 3.13+ |
-| DLL load failed | Use correct steam_api64.dll (300KB version) |
+| DLL load failed | Copy steam_api64.dll to Python312 folder |
 | Steam init failed | Make sure Steam is running |
 | Lobby not created | Check callback signature (1 arg, not 2) |
 | Beetles desync | Check for random() calls in physics - must use seeded RNG |
 | High latency | Normal for internet; consider adding input delay |
+| Network buttons not showing | Check all setup steps above, run from project folder |
 
 ---
 
