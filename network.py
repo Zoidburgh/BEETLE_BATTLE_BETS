@@ -328,6 +328,12 @@ class NetworkManager:
                 if lobby_id:
                     self.lobby_id = lobby_id
                 print(f"[Network] Opponent joined: {member_id}")
+
+                # Send ping immediately to establish bidirectional P2P channel
+                if self.is_host:
+                    print("[Network] Host sending ping to establish reverse P2P channel...")
+                    self.send_ping()
+
                 if self.on_peer_joined:
                     self.on_peer_joined()
 
@@ -411,7 +417,11 @@ class NetworkManager:
         self.start_frame = 0
 
         data = struct.pack('>BII', MSG_START, self.start_frame, self.random_seed)
-        self._send_packet(data, reliable=True)
+
+        # Send multiple times to ensure delivery (P2P channel may still be establishing)
+        for i in range(3):
+            self._send_packet(data, reliable=True)
+            time.sleep(0.05)  # Small delay between sends
 
         self.match_started = True
         print(f"[Network] Match starting! Seed: {self.random_seed}")
@@ -421,10 +431,14 @@ class NetworkManager:
     def _send_packet(self, data, reliable=True):
         """Send raw packet to peer via Steam P2P."""
         if not self.peer_steam_id:
+            print(f"[Network] Send failed: no peer_steam_id")
             return False
 
         try:
             send_type = SEND_RELIABLE if reliable else SEND_UNRELIABLE
+            msg_names = {0x01: "INPUT", 0x02: "READY", 0x03: "START", 0x04: "HORN", 0x05: "REMATCH", 0x06: "PING", 0x07: "PONG"}
+            msg_name = msg_names.get(data[0], f"0x{data[0]:02x}") if data else "EMPTY"
+            print(f"[Network] Sending {msg_name} ({len(data)} bytes) to {self.peer_steam_id}")
             self.client.send_message_to(self.peer_steam_id, send_type, GAME_CHANNEL, data)
             return True
         except Exception as e:
@@ -462,6 +476,12 @@ class NetworkManager:
                         self.peer_steam_id = member
                         self.connected = True
                         print(f"[Network] Found opponent via polling: {member}")
+
+                        # Send ping immediately to establish bidirectional P2P channel
+                        if self.is_host:
+                            print("[Network] Host sending ping to establish reverse P2P channel...")
+                            self.send_ping()
+
                         if self.on_peer_joined:
                             self.on_peer_joined()
                         break
