@@ -10060,8 +10060,13 @@ while window.running:
     # Add frame time to accumulator
     accumulator += frame_dt
 
-    # Cap accumulator to prevent spiral during geometry rebuilds (max 3 physics steps per frame)
-    MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 3  # ~50ms worth of simulation
+    # Cap accumulator to prevent spiral during geometry rebuilds
+    # For network mode: cap at 1 step to prevent multi-step catch-up (causes skipping)
+    # For local mode: cap at 3 steps for smoother recovery from hitches
+    if game_state == GAME_STATE_ONLINE_PLAY:
+        MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 1.5  # ~25ms - just over 1 step
+    else:
+        MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 3  # ~50ms worth of simulation
     accumulator = min(accumulator, MAX_ACCUMULATOR)
 
     # === NETWORK LOBBY POLLING (check for opponent join/leave) ===
@@ -10245,19 +10250,33 @@ while window.running:
             sync = network_manager.pending_state_sync
             network_manager.pending_state_sync = None  # Consume it
 
-            # Only apply if positions differ significantly (>2 units)
+            # Calculate position differences
             blue_diff = abs(beetle_blue.x - sync['blue_x']) + abs(beetle_blue.z - sync['blue_z'])
             red_diff = abs(beetle_red.x - sync['red_x']) + abs(beetle_red.z - sync['red_z'])
 
-            if blue_diff > 2.0 or red_diff > 2.0:
-                print(f"[Sync] Correcting desync: blue_diff={blue_diff:.1f}, red_diff={red_diff:.1f}")
-                # Snap to host state
+            # Smooth correction: lerp toward host state instead of snapping
+            # Small diffs (<1 unit): 20% correction per sync (invisible)
+            # Medium diffs (1-5 units): 50% correction (smooth)
+            # Large diffs (>5 units): 100% snap (desync too big)
+            if blue_diff > 5.0 or red_diff > 5.0:
+                # Large desync - snap immediately
+                print(f"[Sync] Large desync, snapping: blue={blue_diff:.1f}, red={red_diff:.1f}")
                 beetle_blue.x = sync['blue_x']
                 beetle_blue.z = sync['blue_z']
                 beetle_blue.rotation = sync['blue_rot']
                 beetle_red.x = sync['red_x']
                 beetle_red.z = sync['red_z']
                 beetle_red.rotation = sync['red_rot']
+            elif blue_diff > 0.5 or red_diff > 0.5:
+                # Small/medium desync - smooth correction
+                lerp_factor = 0.3 if (blue_diff > 1.0 or red_diff > 1.0) else 0.15
+                beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
+                beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
+                beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
+                beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
+                # Rotation lerp (simple for now)
+                beetle_blue.rotation += (sync['blue_rot'] - beetle_blue.rotation) * lerp_factor
+                beetle_red.rotation += (sync['red_rot'] - beetle_red.rotation) * lerp_factor
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
@@ -10284,6 +10303,8 @@ while window.running:
             # Check if we can simulate (have both players' inputs)
             if not input_buffer.can_simulate():
                 # Waiting for opponent - don't simulate, don't advance frame
+                # Drain accumulator to prevent catch-up skipping when inputs arrive
+                accumulator = 0
                 break
 
             # Get inputs for this frame
