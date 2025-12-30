@@ -787,7 +787,7 @@ class Beetle:
 
             # Apply different speed caps based on direction (use tunable params)
             # Spider has lower base speed (7/4) but can boost with floor silk
-            if self.horn_type_id == 7:  # Spider
+            if self.horn_type_id == 6:  # Spider
                 base_forward = 7.0
                 base_backward = 4.0
             else:
@@ -3593,13 +3593,13 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     very_tip_flags = []
 
     # Map horn_type string to horn_type_id for consistency with placement logic
-    horn_type_id_map = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "spider": 7}
+    horn_type_id_map = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "spider": 6}
     horn_type_id = horn_type_id_map.get(horn_type, 0)
 
     for i, (dx, dy, dz) in enumerate(body_voxels):
         # Stripe detection: top centerline of body (not horn, not scorpion, not spider)
         is_stripe = 0
-        if horn_type_id == 7:  # Spider - triangle glow on abdomen (wide at back, point at neck)
+        if horn_type_id == 6:  # Spider - triangle glow on abdomen (wide at back, point at neck)
             abdomen_back = -body_length  # All the way to butt tip
             pedicel_x = -2  # Narrow waist/pedicel area
 
@@ -3644,7 +3644,7 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                 is_horn_tip = 1
             elif dx >= 8 and abs(dz) <= 3:  # Mandibles region
                 is_horn_tip = 1
-        elif horn_type_id == 7:  # Spider - fangs only (like prongs)
+        elif horn_type_id == 6:  # Spider - fangs only (like prongs)
             if dx >= 8:  # Fangs start at dx=8
                 is_horn_tip = 1
         else:  # Rhino (horn_type_id == 0)
@@ -4845,7 +4845,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
     Args:
         horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
         tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 7=spider
+        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 6=spider
         body_pitch_offset: Static body tilt angle for scorpion (radians)
         butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
         spray_aim_pitch: Bombardier aim angle (radians) - tilts beetle from rear pivot
@@ -4913,7 +4913,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
             # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
             should_rotate = body_cache_x[i] >= 3 and abs(local_z) <= 1.5
-        elif horn_type_id == 7:  # Spider - no rotation at all (fangs are fixed)
+        elif horn_type_id == 6:  # Spider - no rotation at all (fangs are fixed)
             should_rotate = False
         elif body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
             should_rotate = True
@@ -5089,7 +5089,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
 
         # SPIDER AIM: Rotate abdomen around FRONT pivot (pedicel)
         # Opposite of bombardier - butt moves up/down, front stays fixed
-        if horn_type_id == 7 and spider_aim_pitch != 0.0:
+        if horn_type_id == 6 and spider_aim_pitch != 0.0:
             # Only rotate ABDOMEN voxels (dx < spider_pivot_x)
             # Leave PROSOMA (dx >= 3) and legs untouched
             orig_x_spider = body_cache_x[i]
@@ -5197,7 +5197,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         #   Group A (0, 3, 4): phase_offset = 0
         #   Group B (1, 2, 5): phase_offset = π
         phase_offset = 0.0
-        if horn_type_id == 7:  # Spider: staggered quadrupod gait (wave-like)
+        if horn_type_id == 6:  # Spider: staggered quadrupod gait (wave-like)
             # Group A with stagger: 0, 3, 4, 7 have increasing delays
             # Group B with stagger: 1, 2, 5, 6 have π + increasing delays
             if leg_id == 0:
@@ -5390,7 +5390,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
     Args:
         horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
         tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 7=spider
+        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 6=spider
         body_pitch_offset: Static body tilt angle for scorpion (radians)
         butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
         charge_glow: 0.0-1.0, glow intensity for bombardier beetle charges
@@ -5459,7 +5459,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
             # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
             should_rotate = red_body_cache_x[i] >= 3 and abs(local_z) <= 1.5
-        elif horn_type_id == 7:  # Spider - no rotation at all (fangs are fixed)
+        elif horn_type_id == 6:  # Spider - no rotation at all (fangs are fixed)
             should_rotate = False
         elif red_body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
             should_rotate = True
@@ -5635,7 +5635,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
 
         # SPIDER AIM: Rotate abdomen around FRONT pivot (pedicel)
         # Opposite of bombardier - butt moves up/down, front stays fixed
-        if horn_type_id == 7 and spider_aim_pitch != 0.0:
+        if horn_type_id == 6 and spider_aim_pitch != 0.0:
             # Only rotate ABDOMEN voxels (dx < spider_pivot_x)
             # Leave PROSOMA (dx >= 3) and legs untouched
             orig_x_spider = red_body_cache_x[i]
@@ -5743,7 +5743,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         #   Group A (0, 3, 4): phase_offset = 0
         #   Group B (1, 2, 5): phase_offset = π
         phase_offset = 0.0
-        if horn_type_id == 7:  # Spider: staggered quadrupod gait (wave-like)
+        if horn_type_id == 6:  # Spider: staggered quadrupod gait (wave-like)
             # Group A with stagger: 0, 3, 4, 7 have increasing delays
             # Group B with stagger: 1, 2, 5, 6 have π + increasing delays
             if leg_id == 0:
@@ -8187,7 +8187,7 @@ def transform_body_voxel_to_world(
         should_rotate = orig_local_x >= 2.0 and ti.abs(orig_local_z) > 2.0
     elif horn_type_id == 4:  # Atlas - only cephalic horn (center, |z| <= 1.5)
         should_rotate = orig_local_x >= 3.0 and ti.abs(orig_local_z) <= 1.5
-    elif horn_type_id == 7:  # Spider - no horn rotation
+    elif horn_type_id == 6:  # Spider - no horn rotation
         should_rotate = False
     elif orig_local_x >= 3.0:  # Other beetles - rotate horns
         should_rotate = True
@@ -8299,7 +8299,7 @@ def transform_body_voxel_to_world(
         local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
 
     # SPIDER ABDOMEN ROTATION
-    if horn_type_id == 7 and spider_aim_pitch != 0.0:
+    if horn_type_id == 6 and spider_aim_pitch != 0.0:
         spider_pivot_x = 3.0
         if orig_local_x < spider_pivot_x:
             cos_spider = ti.cos(spider_aim_pitch)
@@ -8350,7 +8350,7 @@ def is_horn_zone_voxel(voxel_idx: ti.i32, is_blue: ti.i32, horn_type_id: ti.i32,
             is_horn = 1
         elif local_y >= back_body_height + 3 and ti.abs(local_z) <= 2:  # Tail
             is_horn = 1
-    elif horn_type_id == 7:  # Spider - no horn zone
+    elif horn_type_id == 6:  # Spider - no horn zone
         is_horn = 0
     elif local_x >= 3.0:  # Other beetles - front is horn
         is_horn = 1
@@ -10515,7 +10515,7 @@ while window.running:
 
             # Floor silk effect: spiders get boost, others get slowed
             floor_silk_count = simulation.silk_under_blue[None]
-            if beetle_blue.horn_type_id == 7:  # Spider
+            if beetle_blue.horn_type_id == 6:  # Spider
                 blue_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
             else:
                 blue_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
@@ -10574,7 +10574,7 @@ while window.running:
                 # Skip horn controls for bombardier
                 pitch_pressed = False
                 yaw_pressed = False
-            elif beetle_blue.horn_type_id == 7:  # spider
+            elif beetle_blue.horn_type_id == 6:  # spider
                 # Spider abdomen aim - V tilts butt UP, B returns to level
                 # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
                 aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
@@ -10779,7 +10779,7 @@ while window.running:
 
             # Floor silk effect: spiders get boost, others get slowed
             floor_silk_count = simulation.silk_under_red[None]
-            if beetle_red.horn_type_id == 7:  # Spider
+            if beetle_red.horn_type_id == 6:  # Spider
                 red_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
             else:
                 red_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
@@ -10838,7 +10838,7 @@ while window.running:
                 # Skip horn controls for bombardier
                 pitch_pressed = False
                 yaw_pressed = False
-            elif beetle_red.horn_type_id == 7:  # spider
+            elif beetle_red.horn_type_id == 6:  # spider
                 # Spider abdomen aim - N tilts butt UP, M returns to level
                 # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
                 aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
@@ -11209,7 +11209,7 @@ while window.running:
         # Blue spider silk (continuous while firing) - fires BACKWARDS from spinneret
         # Fast shot (Y key) costs half as much as slow lob (R key)
         blue_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed_blue == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
-        if silk_firing_blue and beetle_blue.active and beetle_blue.horn_type_id == 7 and silk_charge_blue >= blue_silk_cost:
+        if silk_firing_blue and beetle_blue.active and beetle_blue.horn_type_id == 6 and silk_charge_blue >= blue_silk_cost:
             spin_x, spin_y, spin_z = get_spinneret_position(beetle_blue, spider_aim_blue, window.blue_body_length_value)
             # Direction is BACKWARDS (opposite of beetle facing)
             dir_x = -math.cos(beetle_blue.rotation)
@@ -11225,7 +11225,7 @@ while window.running:
 
         # Red spider silk - fires BACKWARDS
         red_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed_red == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
-        if silk_firing_red and beetle_red.active and beetle_red.horn_type_id == 7 and silk_charge_red >= red_silk_cost:
+        if silk_firing_red and beetle_red.active and beetle_red.horn_type_id == 6 and silk_charge_red >= red_silk_cost:
             spin_x, spin_y, spin_z = get_spinneret_position(beetle_red, spider_aim_red, window.red_body_length_value)
             dir_x = -math.cos(beetle_red.rotation)
             dir_z = -math.sin(beetle_red.rotation)
@@ -12447,7 +12447,7 @@ while window.running:
     blue_charge_glow = 0.0
     red_charge_glow = 0.0
 
-    if blue_horn_type_id == 7:  # Blue is spider - glow based on silk charge
+    if blue_horn_type_id == 6:  # Blue is spider - glow based on silk charge
         # Full glow when charge is full, fades as charge depletes
         silk_ratio = silk_charge_blue / SILK_MAX_CHARGE
         blue_charge_glow = silk_ratio
@@ -12511,7 +12511,7 @@ while window.running:
             s = window.blue_stripe_color
             simulation.blue_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
 
-    if red_horn_type_id == 7:  # Red is spider - glow based on silk charge
+    if red_horn_type_id == 6:  # Red is spider - glow based on silk charge
         # Full glow when charge is full, fades as charge depletes
         silk_ratio = silk_charge_red / SILK_MAX_CHARGE
         red_charge_glow = silk_ratio
