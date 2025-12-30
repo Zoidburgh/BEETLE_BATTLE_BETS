@@ -142,6 +142,7 @@ class NetworkManager:
         self.sync_state = "idle"  # idle -> waiting_for_guest -> go (host) / idle -> received_start -> go (guest)
         self.guest_sync_ready = False  # Host: has guest sent SYNC_READY?
         self.received_go = False  # Guest: has host sent GO?
+        self.go_sent_time = 0  # Host: when GO was sent (to delay start by one-way latency)
 
     def init(self, app_id=480):
         """
@@ -463,11 +464,26 @@ class NetworkManager:
         # Send multiple times for reliability
         for _ in range(3):
             self._send_packet(struct.pack('>B', MSG_GO), reliable=True)
-        self.sync_state = "go"
+        # Don't set sync_state = "go" yet - wait for one-way latency
+        # so guest receives GO at approximately the same time we start
+        self.go_sent_time = time.time()
+        self.sync_state = "waiting_for_go_delay"
 
     def is_ready_to_simulate(self):
         """Check if countdown sync is complete and we can start simulating."""
-        return self.sync_state == "go"
+        if self.sync_state == "go":
+            return True
+        # Host: wait for one-way latency after sending GO
+        if self.is_host and self.sync_state == "waiting_for_go_delay":
+            one_way_latency = (self.ping_ms / 1000.0) / 2.0  # Half of round-trip
+            if one_way_latency < 0.016:  # Minimum 1 frame
+                one_way_latency = 0.016
+            elapsed = time.time() - self.go_sent_time
+            if elapsed >= one_way_latency:
+                print(f"[Network] GO delay complete ({elapsed*1000:.0f}ms), starting simulation!")
+                self.sync_state = "go"
+                return True
+        return False
 
     def send_ping(self):
         """Send ping to measure latency."""
