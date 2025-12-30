@@ -13234,21 +13234,46 @@ while window.running:
     window.GUI.text(f"Active beetles: {active_count}/2")
 
     window.GUI.text("")
-    window.GUI.text("=== BLUE BEETLE GENETICS ===")
+
+    # Determine which beetle this player can edit in network mode
+    # Host edits BLUE, Guest edits RED, Local mode can edit both
+    can_edit_blue = not network_manager or not network_manager.connected or network_manager.is_host
+    can_edit_red = not network_manager or not network_manager.connected or not network_manager.is_host
+
+    if can_edit_blue:
+        window.GUI.text("=== BLUE BEETLE GENETICS ===")
+    else:
+        window.GUI.text("=== BLUE BEETLE (opponent) ===")
 
     # Front body (thorax) is fixed at 4 layers
     front_body_height = 4
 
-    # Blue beetle sliders
-    new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 8, 15)
-    new_blue_prong = window.GUI.slider_int("Blue Horn Prong", window.blue_horn_prong_value, 3, 6)
-    new_blue_back_body = window.GUI.slider_int("Blue Back Body", window.blue_back_body_height_value, 4, 8)
-    new_blue_body_length = window.GUI.slider_int("Blue Body Length", window.blue_body_length_value, 9, 14)
-    new_blue_body_width = window.GUI.slider_int("Blue Body Width", window.blue_body_width_value, 5, 9)
-    new_blue_leg_length = window.GUI.slider_int("Blue Leg Length", window.blue_leg_length_value, 6, 10)
+    # Blue beetle sliders - only editable if can_edit_blue
+    if can_edit_blue:
+        new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 8, 15)
+        new_blue_prong = window.GUI.slider_int("Blue Horn Prong", window.blue_horn_prong_value, 3, 6)
+        new_blue_back_body = window.GUI.slider_int("Blue Back Body", window.blue_back_body_height_value, 4, 8)
+        new_blue_body_length = window.GUI.slider_int("Blue Body Length", window.blue_body_length_value, 9, 14)
+        new_blue_body_width = window.GUI.slider_int("Blue Body Width", window.blue_body_width_value, 5, 9)
+        new_blue_leg_length = window.GUI.slider_int("Blue Leg Length", window.blue_leg_length_value, 6, 10)
+    else:
+        # Show read-only values for opponent's beetle
+        window.GUI.text(f"Horn Shaft: {window.blue_horn_shaft_value}")
+        window.GUI.text(f"Horn Prong: {window.blue_horn_prong_value}")
+        window.GUI.text(f"Back Body: {window.blue_back_body_height_value}")
+        window.GUI.text(f"Body Length: {window.blue_body_length_value}")
+        window.GUI.text(f"Body Width: {window.blue_body_width_value}")
+        window.GUI.text(f"Leg Length: {window.blue_leg_length_value}")
+        # Keep values unchanged
+        new_blue_shaft = window.blue_horn_shaft_value
+        new_blue_prong = window.blue_horn_prong_value
+        new_blue_back_body = window.blue_back_body_height_value
+        new_blue_body_length = window.blue_body_length_value
+        new_blue_body_width = window.blue_body_width_value
+        new_blue_leg_length = window.blue_leg_length_value
 
-    # Random blue beetle button
-    if window.GUI.button("Randomize Blue Beetle"):
+    # Random blue beetle button - only if can edit
+    if can_edit_blue and window.GUI.button("Randomize Blue Beetle"):
         new_blue_shaft = random.randint(8, 15)
         new_blue_prong = random.randint(3, 6)
         new_blue_back_body = random.randint(4, 8)
@@ -13295,22 +13320,27 @@ while window.running:
 
     # Blue beetle horn type button
     window.GUI.text("")
-    if blue_horn_type == "rhino":
-        blue_button_text = "Blue: RHINO (click for STAG)"
-    elif blue_horn_type == "stag":
-        blue_button_text = "Blue: STAG (click for HERCULES)"
-    elif blue_horn_type == "hercules":
-        blue_button_text = "Blue: HERCULES (click for SCORPION)"
-    elif blue_horn_type == "scorpion":
-        blue_button_text = "Blue: SCORPION (click for ATLAS)"
-    elif blue_horn_type == "atlas":
-        blue_button_text = "Blue: ATLAS (click for BOMBARDIER)"
-    elif blue_horn_type == "bombardier":
-        blue_button_text = "Blue: BOMBARDIER (click for SPIDER)"
-    else:  # spider
-        blue_button_text = "Blue: SPIDER (click for RHINO)"
+    if can_edit_blue:
+        if blue_horn_type == "rhino":
+            blue_button_text = "Blue: RHINO (click for STAG)"
+        elif blue_horn_type == "stag":
+            blue_button_text = "Blue: STAG (click for HERCULES)"
+        elif blue_horn_type == "hercules":
+            blue_button_text = "Blue: HERCULES (click for SCORPION)"
+        elif blue_horn_type == "scorpion":
+            blue_button_text = "Blue: SCORPION (click for ATLAS)"
+        elif blue_horn_type == "atlas":
+            blue_button_text = "Blue: ATLAS (click for BOMBARDIER)"
+        elif blue_horn_type == "bombardier":
+            blue_button_text = "Blue: BOMBARDIER (click for SPIDER)"
+        else:  # spider
+            blue_button_text = "Blue: SPIDER (click for RHINO)"
+    else:
+        # Read-only display for opponent
+        blue_button_text = f"Blue: {blue_horn_type.upper()}"
+        window.GUI.text(blue_button_text)
 
-    if window.GUI.button(blue_button_text):
+    if can_edit_blue and window.GUI.button(blue_button_text):
         # Cycle blue beetle horn type
         if blue_horn_type == "rhino":
             blue_horn_type = "stag"
@@ -13409,18 +13439,37 @@ while window.running:
         simulation.blue_horn_tip_color[None] = ti.Vector([new_blue_horn_tip_color[0], new_blue_horn_tip_color[1], new_blue_horn_tip_color[2]])
 
     window.GUI.text("")
-    window.GUI.text("=== RED BEETLE GENETICS ===")
+    if can_edit_red:
+        window.GUI.text("=== RED BEETLE GENETICS ===")
+    else:
+        window.GUI.text("=== RED BEETLE (opponent) ===")
 
-    # Red beetle sliders
-    new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 8, 15)
-    new_red_prong = window.GUI.slider_int("Red Horn Prong", window.red_horn_prong_value, 3, 6)
-    new_red_back_body = window.GUI.slider_int("Red Back Body", window.red_back_body_height_value, 4, 8)
-    new_red_body_length = window.GUI.slider_int("Red Body Length", window.red_body_length_value, 9, 14)
-    new_red_body_width = window.GUI.slider_int("Red Body Width", window.red_body_width_value, 5, 9)
-    new_red_leg_length = window.GUI.slider_int("Red Leg Length", window.red_leg_length_value, 6, 10)
+    # Red beetle sliders - only editable if can_edit_red
+    if can_edit_red:
+        new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 8, 15)
+        new_red_prong = window.GUI.slider_int("Red Horn Prong", window.red_horn_prong_value, 3, 6)
+        new_red_back_body = window.GUI.slider_int("Red Back Body", window.red_back_body_height_value, 4, 8)
+        new_red_body_length = window.GUI.slider_int("Red Body Length", window.red_body_length_value, 9, 14)
+        new_red_body_width = window.GUI.slider_int("Red Body Width", window.red_body_width_value, 5, 9)
+        new_red_leg_length = window.GUI.slider_int("Red Leg Length", window.red_leg_length_value, 6, 10)
+    else:
+        # Show read-only values for opponent's beetle
+        window.GUI.text(f"Horn Shaft: {window.red_horn_shaft_value}")
+        window.GUI.text(f"Horn Prong: {window.red_horn_prong_value}")
+        window.GUI.text(f"Back Body: {window.red_back_body_height_value}")
+        window.GUI.text(f"Body Length: {window.red_body_length_value}")
+        window.GUI.text(f"Body Width: {window.red_body_width_value}")
+        window.GUI.text(f"Leg Length: {window.red_leg_length_value}")
+        # Keep values unchanged
+        new_red_shaft = window.red_horn_shaft_value
+        new_red_prong = window.red_horn_prong_value
+        new_red_back_body = window.red_back_body_height_value
+        new_red_body_length = window.red_body_length_value
+        new_red_body_width = window.red_body_width_value
+        new_red_leg_length = window.red_leg_length_value
 
-    # Random red beetle button
-    if window.GUI.button("Randomize Red Beetle"):
+    # Random red beetle button - only if can edit
+    if can_edit_red and window.GUI.button("Randomize Red Beetle"):
         new_red_shaft = random.randint(8, 15)
         new_red_prong = random.randint(3, 6)
         new_red_back_body = random.randint(4, 8)
@@ -13467,22 +13516,27 @@ while window.running:
 
     # Red beetle horn type button
     window.GUI.text("")
-    if red_horn_type == "rhino":
-        red_button_text = "Red: RHINO (click for STAG)"
-    elif red_horn_type == "stag":
-        red_button_text = "Red: STAG (click for HERCULES)"
-    elif red_horn_type == "hercules":
-        red_button_text = "Red: HERCULES (click for SCORPION)"
-    elif red_horn_type == "scorpion":
-        red_button_text = "Red: SCORPION (click for ATLAS)"
-    elif red_horn_type == "atlas":
-        red_button_text = "Red: ATLAS (click for BOMBARDIER)"
-    elif red_horn_type == "bombardier":
-        red_button_text = "Red: BOMBARDIER (click for SPIDER)"
-    else:  # spider
-        red_button_text = "Red: SPIDER (click for RHINO)"
+    if can_edit_red:
+        if red_horn_type == "rhino":
+            red_button_text = "Red: RHINO (click for STAG)"
+        elif red_horn_type == "stag":
+            red_button_text = "Red: STAG (click for HERCULES)"
+        elif red_horn_type == "hercules":
+            red_button_text = "Red: HERCULES (click for SCORPION)"
+        elif red_horn_type == "scorpion":
+            red_button_text = "Red: SCORPION (click for ATLAS)"
+        elif red_horn_type == "atlas":
+            red_button_text = "Red: ATLAS (click for BOMBARDIER)"
+        elif red_horn_type == "bombardier":
+            red_button_text = "Red: BOMBARDIER (click for SPIDER)"
+        else:  # spider
+            red_button_text = "Red: SPIDER (click for RHINO)"
+    else:
+        # Read-only display for opponent
+        red_button_text = f"Red: {red_horn_type.upper()}"
+        window.GUI.text(red_button_text)
 
-    if window.GUI.button(red_button_text):
+    if can_edit_red and window.GUI.button(red_button_text):
         # Cycle red beetle horn type
         if red_horn_type == "rhino":
             red_horn_type = "stag"
