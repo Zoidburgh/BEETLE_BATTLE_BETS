@@ -991,6 +991,90 @@ def reset_match():
     print("NEW MATCH STARTED!")
     print("="*50 + "\n")
 
+
+def send_local_beetle_config(network_mgr, is_host):
+    """Send local player's beetle configuration to opponent."""
+    if not network_mgr:
+        return
+
+    if is_host:
+        # Host controls blue beetle
+        horn_type_id = HORN_TYPE_IDS.get(blue_horn_type, 0)
+        network_mgr.send_beetle_config(
+            horn_type_id,
+            window.blue_horn_shaft_value,
+            window.blue_horn_prong_value,
+            window.blue_back_body_height_value,
+            window.blue_body_length_value,
+            window.blue_body_width_value,
+            window.blue_leg_length_value
+        )
+    else:
+        # Guest controls red beetle
+        horn_type_id = HORN_TYPE_IDS.get(red_horn_type, 0)
+        network_mgr.send_beetle_config(
+            horn_type_id,
+            window.red_horn_shaft_value,
+            window.red_horn_prong_value,
+            window.red_back_body_height_value,
+            window.red_body_length_value,
+            window.red_body_width_value,
+            window.red_leg_length_value
+        )
+
+
+def apply_remote_beetle_config(network_mgr):
+    """Apply received opponent beetle configuration."""
+    global blue_horn_type, red_horn_type
+
+    if not network_mgr or not network_mgr.remote_beetle_config:
+        return False
+
+    config = network_mgr.remote_beetle_config
+    network_mgr.remote_beetle_config = None  # Consume it
+
+    # Reverse lookup horn type from ID
+    horn_names = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "cockchafer", "spider"]
+    horn_type = horn_names[config['horn_type_id']] if config['horn_type_id'] < len(horn_names) else "rhino"
+
+    # Determine which beetle to update based on sender's player_id
+    # player_id 0 = host = blue beetle, player_id 1 = guest = red beetle
+    if config['player_id'] == 0:
+        # Opponent is host, so update BLUE beetle (opponent's beetle)
+        blue_horn_type = horn_type
+        window.blue_horn_shaft_value = config['shaft']
+        window.blue_horn_prong_value = config['prong']
+        window.blue_back_body_height_value = config['back_body']
+        window.blue_body_length_value = config['body_len']
+        window.blue_body_width_value = config['body_width']
+        window.blue_leg_length_value = config['leg_len']
+        # Rebuild blue beetle with new settings
+        rebuild_blue_beetle(
+            config['shaft'], config['prong'], 4, config['back_body'],
+            config['body_len'], config['body_width'], config['leg_len'],
+            horn_type
+        )
+        print(f"[Config] Applied opponent's BLUE beetle: {horn_type}")
+    else:
+        # Opponent is guest, so update RED beetle (opponent's beetle)
+        red_horn_type = horn_type
+        window.red_horn_shaft_value = config['shaft']
+        window.red_horn_prong_value = config['prong']
+        window.red_back_body_height_value = config['back_body']
+        window.red_body_length_value = config['body_len']
+        window.red_body_width_value = config['body_width']
+        window.red_leg_length_value = config['leg_len']
+        # Rebuild red beetle with new settings
+        rebuild_red_beetle(
+            config['shaft'], config['prong'], 4, config['back_body'],
+            config['body_len'], config['body_width'], config['leg_len'],
+            horn_type
+        )
+        print(f"[Config] Applied opponent's RED beetle: {horn_type}")
+
+    return True
+
+
 # Create beetles - closer together for smaller arena (horn dimensions set later)
 beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)  # Facing right (toward red)
 beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (toward blue)
@@ -10247,7 +10331,8 @@ while window.running:
             network_manager.send_state_sync(
                 physics_frame,
                 beetle_blue.x, beetle_blue.z, beetle_blue.rotation,
-                beetle_red.x, beetle_red.z, beetle_red.rotation
+                beetle_red.x, beetle_red.z, beetle_red.rotation,
+                beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.active
             )
 
         # === GUEST STATE SYNC (apply received state - always lerp, never snap) ===
@@ -10275,6 +10360,13 @@ while window.running:
             if red_rot_diff > math.pi:
                 red_rot_diff -= TWO_PI
             beetle_red.rotation += red_rot_diff * lerp_factor
+
+            # Ball sync (if present in sync data)
+            if 'ball_x' in sync:
+                beetle_ball.x += (sync['ball_x'] - beetle_ball.x) * lerp_factor
+                beetle_ball.y += (sync['ball_y'] - beetle_ball.y) * lerp_factor
+                beetle_ball.z += (sync['ball_z'] - beetle_ball.z) * lerp_factor
+                beetle_ball.active = sync['ball_active']
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
@@ -12810,6 +12902,7 @@ while window.running:
         elif game_state == GAME_STATE_LOBBY_HOST:
             # Hosting - show lobby ID and wait for opponent
             window.GUI.text("=== HOSTING GAME ===")
+            window.GUI.text("You control: BLUE beetle")
             if network_manager and network_manager.lobby_id:
                 window.GUI.text(f"Lobby ID: {network_manager.lobby_id}")
                 if window.GUI.button("Copy Lobby ID"):
@@ -12826,9 +12919,16 @@ while window.running:
 
             window.GUI.text(f"Status: {network_manager.get_status() if network_manager else 'Error'}")
 
+            # Apply any received beetle config from opponent
+            if network_manager:
+                apply_remote_beetle_config(network_manager)
+
             # Check if opponent joined
             if network_manager and network_manager.connected:
                 window.GUI.text("Opponent connected!")
+                # Send our beetle config to opponent (do this every few frames to ensure delivery)
+                if physics_frame % 30 == 0:
+                    send_local_beetle_config(network_manager, is_host=True)
                 if window.GUI.button("START MATCH"):
                     # Go to syncing state - wait for guest to confirm ready
                     game_state = GAME_STATE_SYNCING
@@ -12911,8 +13011,16 @@ while window.running:
         elif game_state == GAME_STATE_LOBBY_WAITING:
             # In lobby, waiting for host to start
             window.GUI.text("=== IN LOBBY ===")
+            window.GUI.text("You control: RED beetle")
             window.GUI.text(f"Status: {network_manager.get_status() if network_manager else 'Error'}")
             window.GUI.text("Waiting for host to start...")
+
+            # Apply any received beetle config from opponent (host)
+            if network_manager:
+                apply_remote_beetle_config(network_manager)
+                # Send our beetle config to host (do this every few frames to ensure delivery)
+                if physics_frame % 30 == 0:
+                    send_local_beetle_config(network_manager, is_host=False)
 
             # Check if match started (host sent start signal)
             if network_manager and network_manager.match_started:

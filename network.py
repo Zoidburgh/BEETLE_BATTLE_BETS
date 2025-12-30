@@ -47,6 +47,7 @@ MSG_STATE_SYNC = 0x08   # Host sends authoritative game state
 MSG_SYNC_READY = 0x09   # Guest confirms ready to start (countdown sync)
 MSG_GO = 0x0A           # Host tells everyone to start simulating
 MSG_FRAME_SYNC = 0x0B   # Host sends frame counter for sync
+MSG_BEETLE_CONFIG = 0x0C  # Beetle customization (horn type + sizes)
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -147,6 +148,9 @@ class NetworkManager:
 
         # Frame sync (keeps guest frame counter aligned with host)
         self.target_frame = None  # Guest: frame counter we should be at (from host)
+
+        # Beetle customization sync
+        self.remote_beetle_config = None  # Opponent's beetle settings (horn_type_id, sizes)
 
     def init(self, app_id=480):
         """
@@ -441,18 +445,21 @@ class NetworkManager:
         """Request a rematch."""
         self._send_packet(struct.pack('>B', MSG_REMATCH), reliable=True)
 
-    def send_state_sync(self, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot):
+    def send_state_sync(self, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot,
+                        ball_x=0.0, ball_y=0.0, ball_z=0.0, ball_active=False):
         """
         Host sends authoritative state to guest.
-        Packet format: [type:1][frame:4][blue_x:4][blue_z:4][blue_rot:4][red_x:4][red_z:4][red_rot:4] = 29 bytes
+        Packet format: [type:1][frame:4][blue_x:4][blue_z:4][blue_rot:4][red_x:4][red_z:4][red_rot:4]
+                       [ball_x:4][ball_y:4][ball_z:4][ball_active:1] = 42 bytes
         """
         if not self.is_host or not self.connected:
             return
 
-        data = struct.pack('>BIffffff',
+        data = struct.pack('>BIfffffffffB',
                            MSG_STATE_SYNC, frame,
                            blue_x, blue_z, blue_rot,
-                           red_x, red_z, red_rot)
+                           red_x, red_z, red_rot,
+                           ball_x, ball_y, ball_z, 1 if ball_active else 0)
         self._send_packet(data, reliable=False)  # Unreliable is fine for periodic sync
 
     def send_sync_ready(self):
@@ -495,6 +502,14 @@ class NetworkManager:
             return
         data = struct.pack('>BI', MSG_FRAME_SYNC, frame)
         self._send_packet(data, reliable=False)
+
+    def send_beetle_config(self, horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len):
+        """Send beetle customization to opponent."""
+        player_id = 0 if self.is_host else 1
+        data = struct.pack('>BBBBBBBBB', MSG_BEETLE_CONFIG, player_id,
+                           horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len)
+        self._send_packet(data, reliable=True)
+        print(f"[Network] Sent beetle config: horn={horn_type_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
 
     def send_ping(self):
         """Send ping to measure latency."""
@@ -682,10 +697,19 @@ class NetworkManager:
                     self.ping_ms = (0xFFFFFFFF - sent_time) + now
 
         elif msg_type == MSG_STATE_SYNC:
-            # Host state sync: [type:1][frame:4][blue_x:4][blue_z:4][blue_rot:4][red_x:4][red_z:4][red_rot:4]
-            if len(data) >= 29 and not self.is_host:
-                _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot = struct.unpack('>BIffffff', data[:29])
+            # Host state sync: [type:1][frame:4][beetles:24][ball:13] = 42 bytes
+            if len(data) >= 42 and not self.is_host:
+                _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot, ball_x, ball_y, ball_z, ball_active = struct.unpack('>BIfffffffffB', data[:42])
                 # Store for guest to apply
+                self.pending_state_sync = {
+                    'frame': frame,
+                    'blue_x': blue_x, 'blue_z': blue_z, 'blue_rot': blue_rot,
+                    'red_x': red_x, 'red_z': red_z, 'red_rot': red_rot,
+                    'ball_x': ball_x, 'ball_y': ball_y, 'ball_z': ball_z, 'ball_active': ball_active == 1
+                }
+            elif len(data) >= 29 and not self.is_host:
+                # Backwards compatibility with old 29-byte format (no ball)
+                _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot = struct.unpack('>BIffffff', data[:29])
                 self.pending_state_sync = {
                     'frame': frame,
                     'blue_x': blue_x, 'blue_z': blue_z, 'blue_rot': blue_rot,
@@ -712,6 +736,22 @@ class NetworkManager:
             if len(data) >= 5 and not self.is_host:
                 _, target_frame = struct.unpack('>BI', data[:5])
                 self.target_frame = target_frame
+
+        elif msg_type == MSG_BEETLE_CONFIG:
+            # Opponent's beetle customization
+            if len(data) >= 9:
+                _, player_id, horn_id, shaft, prong, back_body, body_len, body_width, leg_len = struct.unpack('>BBBBBBBBB', data[:9])
+                self.remote_beetle_config = {
+                    'player_id': player_id,
+                    'horn_type_id': horn_id,
+                    'shaft': shaft,
+                    'prong': prong,
+                    'back_body': back_body,
+                    'body_len': body_len,
+                    'body_width': body_width,
+                    'leg_len': leg_len
+                }
+                print(f"[Network] Received beetle config from player {player_id}: horn={horn_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
 
     # =========================================================================
     # CONNECTION STATE
