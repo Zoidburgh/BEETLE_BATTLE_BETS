@@ -44,6 +44,8 @@ MSG_REMATCH = 0x05      # Rematch request
 MSG_PING = 0x06         # Ping for latency measurement
 MSG_PONG = 0x07         # Ping response
 MSG_STATE_SYNC = 0x08   # Host sends authoritative game state
+MSG_SYNC_READY = 0x09   # Guest confirms ready to start (countdown sync)
+MSG_GO = 0x0A           # Host tells everyone to start simulating
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -135,6 +137,11 @@ class NetworkManager:
 
         # State sync (guest receives from host)
         self.pending_state_sync = None
+
+        # Countdown sync state (ensures both players start at same frame)
+        self.sync_state = "idle"  # idle -> waiting_for_guest -> go (host) / idle -> received_start -> go (guest)
+        self.guest_sync_ready = False  # Host: has guest sent SYNC_READY?
+        self.received_go = False  # Guest: has host sent GO?
 
     def init(self, app_id=480):
         """
@@ -443,6 +450,25 @@ class NetworkManager:
                            red_x, red_z, red_rot)
         self._send_packet(data, reliable=False)  # Unreliable is fine for periodic sync
 
+    def send_sync_ready(self):
+        """Guest sends SYNC_READY to host to confirm ready to start."""
+        print("[Network] Sending SYNC_READY to host")
+        self._send_packet(struct.pack('>B', MSG_SYNC_READY), reliable=True)
+
+    def send_go(self):
+        """Host sends GO to start simulation on all clients."""
+        if not self.is_host:
+            return
+        print("[Network] Sending GO - all players start now!")
+        # Send multiple times for reliability
+        for _ in range(3):
+            self._send_packet(struct.pack('>B', MSG_GO), reliable=True)
+        self.sync_state = "go"
+
+    def is_ready_to_simulate(self):
+        """Check if countdown sync is complete and we can start simulating."""
+        return self.sync_state == "go"
+
     def send_ping(self):
         """Send ping to measure latency."""
         # Use lower 32 bits of milliseconds to fit in uint32
@@ -450,7 +476,7 @@ class NetworkManager:
         self._send_packet(struct.pack('>BI', MSG_PING, self.ping_sent_time), reliable=False)
 
     def _send_start(self):
-        """Host sends match start signal with frame sync and random seed."""
+        """Host sends match start signal - waits for guest SYNC_READY before GO."""
         import random
         self.random_seed = random.randint(0, 2**32 - 1)
         self.start_frame = 0
@@ -462,10 +488,10 @@ class NetworkManager:
             self._send_packet(data, reliable=True)
             time.sleep(0.05)  # Small delay between sends
 
-        self.match_started = True
-        print(f"[Network] Match starting! Seed: {self.random_seed}")
-        if self.on_match_start:
-            self.on_match_start(self.start_frame, self.random_seed)
+        # Don't start yet - wait for guest to confirm ready
+        self.sync_state = "waiting_for_guest"
+        self.match_started = True  # Match is "started" but not simulating yet
+        print(f"[Network] START sent, waiting for guest SYNC_READY... Seed: {self.random_seed}")
 
     def _send_packet(self, data, reliable=True):
         """Send raw packet to peer via Steam P2P."""
@@ -638,6 +664,21 @@ class NetworkManager:
                     'blue_x': blue_x, 'blue_z': blue_z, 'blue_rot': blue_rot,
                     'red_x': red_x, 'red_z': red_z, 'red_rot': red_rot
                 }
+
+        elif msg_type == MSG_SYNC_READY:
+            # Guest is ready to start - host can send GO
+            if self.is_host:
+                print("[Network] Received SYNC_READY from guest")
+                self.guest_sync_ready = True
+                # Send GO to start simulation
+                self.send_go()
+
+        elif msg_type == MSG_GO:
+            # Host says GO - start simulating!
+            if not self.is_host:
+                print("[Network] Received GO from host - starting simulation!")
+                self.sync_state = "go"
+                self.received_go = True
 
     # =========================================================================
     # CONNECTION STATE

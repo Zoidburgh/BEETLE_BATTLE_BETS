@@ -32,6 +32,7 @@ GAME_STATE_LOBBY_HOST = "lobby_host"        # Hosting, waiting for opponent
 GAME_STATE_LOBBY_JOIN = "lobby_join"        # Entering lobby ID to join
 GAME_STATE_LOBBY_CONNECTING = "lobby_conn"  # Connecting to lobby
 GAME_STATE_LOBBY_WAITING = "lobby_wait"     # In lobby, selecting beetles
+GAME_STATE_SYNCING = "syncing"              # Countdown sync - waiting for both players ready
 GAME_STATE_ONLINE_PLAY = "online_play"      # Playing online match
 GAME_STATE_VICTORY = "victory"              # Match ended, showing winner
 
@@ -12819,8 +12820,8 @@ while window.running:
             if network_manager and network_manager.connected:
                 window.GUI.text("Opponent connected!")
                 if window.GUI.button("START MATCH"):
-                    # Switch to online play mode
-                    game_state = GAME_STATE_ONLINE_PLAY
+                    # Go to syncing state - wait for guest to confirm ready
+                    game_state = GAME_STATE_SYNCING
                     input_buffer.is_network_mode = True
                     # Set delay based on measured ping (defaults to 4 if no ping yet)
                     ping = network_manager.ping_ms if network_manager.ping_ms > 0 else 60
@@ -12828,9 +12829,9 @@ while window.running:
                     input_buffer.local_player_id = 0  # Host is blue
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
-                    network_manager.start_match_now()  # Send start signal to guest
+                    network_manager.start_match_now()  # Send START signal to guest
                     reset_match()
-                    print(f"[Game] Host started match! Ping: {ping}ms, Delay: {input_buffer.delay} frames")
+                    print(f"[Game] Host sent START, waiting for guest sync... Ping: {ping}ms")
 
             if window.GUI.button("Cancel"):
                 if network_manager:
@@ -12905,7 +12906,8 @@ while window.running:
 
             # Check if match started (host sent start signal)
             if network_manager and network_manager.match_started:
-                game_state = GAME_STATE_ONLINE_PLAY
+                # Go to syncing state and send SYNC_READY to host
+                game_state = GAME_STATE_SYNCING
                 input_buffer.is_network_mode = True
                 # Set delay based on measured ping (defaults to 4 if no ping yet)
                 ping = network_manager.ping_ms if network_manager.ping_ms > 0 else 60
@@ -12914,13 +12916,36 @@ while window.running:
                 input_buffer.reset()
                 local_player_id = 1  # Guest is red
                 reset_match()
-                print(f"[Game] Guest joined match! Ping: {ping}ms, Delay: {input_buffer.delay} frames")
+                # Tell host we're ready to sync
+                network_manager.send_sync_ready()
+                print(f"[Game] Guest received START, sent SYNC_READY. Ping: {ping}ms, Delay: {input_buffer.delay} frames")
 
             if window.GUI.button("Leave"):
                 if network_manager:
                     network_manager.shutdown()
                     network_manager = None
                 game_state = GAME_STATE_LOCAL_PLAY
+
+        elif game_state == GAME_STATE_SYNCING:
+            # Countdown sync - both players wait until GO
+            window.GUI.text("=== SYNCING ===")
+            player_color = "BLUE (Host)" if local_player_id == 0 else "RED (Guest)"
+            window.GUI.text(f"You are: {player_color}")
+            window.GUI.text("Syncing with opponent...")
+
+            # Check if sync is complete
+            if network_manager and network_manager.is_ready_to_simulate():
+                game_state = GAME_STATE_ONLINE_PLAY
+                print(f"[Game] Sync complete! Starting simulation.")
+
+            if window.GUI.button("Cancel"):
+                if network_manager:
+                    network_manager.shutdown()
+                    network_manager = None
+                game_state = GAME_STATE_LOCAL_PLAY
+                input_buffer.is_network_mode = False
+                input_buffer.delay = 0
+                input_buffer.reset()
 
         elif game_state == GAME_STATE_ONLINE_PLAY:
             # Playing online
