@@ -12936,7 +12936,7 @@ while window.running:
 
     # HUD
     window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.95)
-    window.GUI.text(f"FPS: {actual_fps:.0f}")
+    window.GUI.text(f"FPS: {actual_fps:3.0f}")
 
     # === NETWORK / ONLINE PLAY SECTION ===
     if NETWORK_AVAILABLE:
@@ -13133,12 +13133,14 @@ while window.running:
             window.GUI.text("=== ONLINE MATCH ===")
             player_color = "BLUE" if local_player_id == 0 else "RED"
             window.GUI.text(f"You are: {player_color}")
-            window.GUI.text(f"Ping: {network_manager.ping_ms}ms" if network_manager else "")
+            window.GUI.text(f"Ping: {network_manager.ping_ms:3d}ms" if network_manager else "")
 
-            # Show lockstep status
+            # Show lockstep status - always show line to prevent layout shift
             if input_buffer.waiting_for_remote:
-                window.GUI.text(f"Waiting for opponent... ({input_buffer.frames_waited} frames)")
-            window.GUI.text(f"Frame: {input_buffer.current_frame} | Delay: {input_buffer.delay}")
+                window.GUI.text(f"Waiting for opponent... ({input_buffer.frames_waited:4d} frames)")
+            else:
+                window.GUI.text("")  # Empty line to keep layout stable
+            window.GUI.text(f"Frame: {input_buffer.current_frame:6d} | Delay: {input_buffer.delay}")
 
             if window.GUI.button("Disconnect"):
                 if network_manager:
