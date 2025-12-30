@@ -363,10 +363,11 @@ class InputBuffer:
         self.is_network_mode = False  # Set True when connected to opponent
         self.local_player_id = 0  # 0 = host (blue), 1 = guest (red)
 
-        # Lockstep state
-        self.waiting_for_remote = False  # True when blocked waiting for opponent
-        self.frames_waited = 0  # How many frames we've been waiting
-        self.max_wait_frames = 180  # 3 seconds at 60fps before timeout
+        # Input prediction state
+        self.last_remote_input = 0  # Last known remote input (for prediction)
+        self.predicting = False  # True when using predicted inputs
+        self.predicted_frames = 0  # How many frames we've predicted
+        self.max_predict_frames = 8  # Don't predict more than 8 frames ahead
 
         # Network stats
         self.remote_frame_received = -1  # Highest frame number received from opponent
@@ -384,10 +385,15 @@ class InputBuffer:
     def add_remote(self, frame, inputs):
         """Store remote player's inputs (received from network)."""
         self.remote_inputs[frame] = inputs
+        self.last_remote_input = inputs  # Track for prediction
 
         # Track highest frame received for sync detection
         if frame > self.remote_frame_received:
             self.remote_frame_received = frame
+            # Reset prediction state when we get new inputs
+            if self.predicting:
+                self.predicting = False
+                self.predicted_frames = 0
 
     def get_sim_frame(self):
         """Get the frame number we should be simulating (current - delay)."""
@@ -396,7 +402,7 @@ class InputBuffer:
     def can_simulate(self):
         """
         Check if we can simulate the next physics frame.
-        In lockstep, we need BOTH players' inputs for the frame.
+        Uses input prediction to stay responsive - never blocks waiting.
         """
         if not self.is_network_mode:
             return True  # Local mode: always can simulate
@@ -405,29 +411,29 @@ class InputBuffer:
 
         # Check if we have local input for this frame
         has_local = sim_frame in self.local_inputs
+        if not has_local:
+            return False  # Need our own inputs
 
         # Check if we have remote input for this frame
-        # Due to UDP packet loss, we might be missing exact frames
-        # If we have a newer frame, use that instead (input prediction)
         has_remote = sim_frame in self.remote_inputs
-        if not has_remote and self.remote_frame_received >= sim_frame:
-            # We have newer inputs - find the closest one and use it
-            for f in range(sim_frame, self.remote_frame_received + 1):
-                if f in self.remote_inputs:
-                    # Copy this input to the missing frame (assume same input)
-                    self.remote_inputs[sim_frame] = self.remote_inputs[f]
-                    has_remote = True
-                    break
+
+        if not has_remote:
+            # Missing remote input - use prediction instead of waiting
+            # This keeps the game responsive
+            if self.predicted_frames < self.max_predict_frames:
+                # Predict: assume opponent continues their last input
+                self.remote_inputs[sim_frame] = self.last_remote_input
+                self.predicting = True
+                self.predicted_frames += 1
+                has_remote = True
+            else:
+                # Too many predictions - must wait for real input
+                # This prevents runaway prediction
+                return False
 
         if has_local and has_remote:
-            self.waiting_for_remote = False
-            self.frames_waited = 0
             return True
-        else:
-            if not has_remote:
-                self.waiting_for_remote = True
-                self.frames_waited += 1
-            return False
+        return False
 
     def get_frame_inputs(self, frame):
         """
@@ -477,12 +483,11 @@ class InputBuffer:
     def set_network_delay(self, ping_ms):
         """Set input delay based on measured network latency."""
         # Convert ping to frames: delay = (ping/2) / 16.67ms per frame
-        # Add 3 frame buffer so host isn't always waiting on edge
-        # This adds ~50ms input lag but makes both players feel equal
+        # Add 1 frame for safety margin (prediction handles the rest)
         one_way_ms = ping_ms / 2.0
-        delay_frames = int(one_way_ms / 16.67) + 3  # +3 buffer instead of +1
-        # Clamp between 3 and 10 frames
-        self.delay = max(3, min(10, delay_frames))
+        delay_frames = int(one_way_ms / 16.67) + 1
+        # Clamp between 2 and 6 frames (prediction covers larger gaps)
+        self.delay = max(2, min(6, delay_frames))
         print(f"[InputBuffer] Set delay to {self.delay} frames for {ping_ms:.0f}ms ping")
 
     def reset(self):
@@ -490,8 +495,9 @@ class InputBuffer:
         self.local_inputs.clear()
         self.remote_inputs.clear()
         self.current_frame = 0
-        self.waiting_for_remote = False
-        self.frames_waited = 0
+        self.last_remote_input = 0
+        self.predicting = False
+        self.predicted_frames = 0
         self.remote_frame_received = -1
         self.frames_behind = 0
         self.last_state_sync_frame = 0
@@ -10301,11 +10307,10 @@ while window.running:
             input_buffer.add_local(current_local_inputs)
             network_manager.send_input(input_buffer.current_frame, current_local_inputs)
 
-            # Check if we can simulate (have both players' inputs)
+            # Check if we can simulate (have both players' inputs, or can predict)
             if not input_buffer.can_simulate():
-                # Waiting for opponent - don't simulate, don't advance frame
-                # Drain accumulator to prevent catch-up skipping when inputs arrive
-                accumulator = 0
+                # Can't simulate even with prediction - too far ahead
+                # This rarely happens - only if we've predicted 8+ frames
                 break
 
             # Get inputs for this frame
