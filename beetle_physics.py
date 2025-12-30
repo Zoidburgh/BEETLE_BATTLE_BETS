@@ -991,7 +991,7 @@ def reset_match():
 
 
 def send_local_beetle_config(network_mgr, is_host):
-    """Send local player's beetle configuration to opponent."""
+    """Send local player's beetle configuration to opponent including colors."""
     if not network_mgr:
         return
 
@@ -1005,7 +1005,12 @@ def send_local_beetle_config(network_mgr, is_host):
             window.blue_back_body_height_value,
             window.blue_body_length_value,
             window.blue_body_width_value,
-            window.blue_leg_length_value
+            window.blue_leg_length_value,
+            window.blue_body_color,
+            window.blue_leg_color,
+            window.blue_leg_tip_color,
+            window.blue_stripe_color,
+            window.blue_horn_tip_color
         )
     else:
         # Guest controls red beetle
@@ -1017,7 +1022,12 @@ def send_local_beetle_config(network_mgr, is_host):
             window.red_back_body_height_value,
             window.red_body_length_value,
             window.red_body_width_value,
-            window.red_leg_length_value
+            window.red_leg_length_value,
+            window.red_body_color,
+            window.red_leg_color,
+            window.red_leg_tip_color,
+            window.red_stripe_color,
+            window.red_horn_tip_color
         )
 
 
@@ -1047,6 +1057,19 @@ def apply_remote_beetle_config(network_mgr):
         window.blue_body_length_value = config['body_len']
         window.blue_body_width_value = config['body_width']
         window.blue_leg_length_value = config['leg_len']
+        # Apply colors if present
+        if 'body_color' in config:
+            window.blue_body_color = config['body_color']
+            window.blue_leg_color = config['leg_color']
+            window.blue_leg_tip_color = config['leg_tip_color']
+            window.blue_stripe_color = config['stripe_color']
+            window.blue_horn_tip_color = config['horn_tip_color']
+            # Update simulation color fields
+            simulation.blue_body_color[None] = ti.Vector([config['body_color'][0], config['body_color'][1], config['body_color'][2]])
+            simulation.blue_leg_color[None] = ti.Vector([config['leg_color'][0], config['leg_color'][1], config['leg_color'][2]])
+            simulation.blue_leg_tip_color[None] = ti.Vector([config['leg_tip_color'][0], config['leg_tip_color'][1], config['leg_tip_color'][2]])
+            simulation.blue_stripe_color[None] = ti.Vector([config['stripe_color'][0], config['stripe_color'][1], config['stripe_color'][2]])
+            simulation.blue_horn_tip_color[None] = ti.Vector([config['horn_tip_color'][0], config['horn_tip_color'][1], config['horn_tip_color'][2]])
         # Rebuild blue beetle with new settings
         rebuild_blue_beetle(
             config['shaft'], config['prong'], 4, config['back_body'],
@@ -1063,6 +1086,19 @@ def apply_remote_beetle_config(network_mgr):
         window.red_body_length_value = config['body_len']
         window.red_body_width_value = config['body_width']
         window.red_leg_length_value = config['leg_len']
+        # Apply colors if present
+        if 'body_color' in config:
+            window.red_body_color = config['body_color']
+            window.red_leg_color = config['leg_color']
+            window.red_leg_tip_color = config['leg_tip_color']
+            window.red_stripe_color = config['stripe_color']
+            window.red_horn_tip_color = config['horn_tip_color']
+            # Update simulation color fields
+            simulation.red_body_color[None] = ti.Vector([config['body_color'][0], config['body_color'][1], config['body_color'][2]])
+            simulation.red_leg_color[None] = ti.Vector([config['leg_color'][0], config['leg_color'][1], config['leg_color'][2]])
+            simulation.red_leg_tip_color[None] = ti.Vector([config['leg_tip_color'][0], config['leg_tip_color'][1], config['leg_tip_color'][2]])
+            simulation.red_stripe_color[None] = ti.Vector([config['stripe_color'][0], config['stripe_color'][1], config['stripe_color'][2]])
+            simulation.red_horn_tip_color[None] = ti.Vector([config['horn_tip_color'][0], config['horn_tip_color'][1], config['horn_tip_color'][2]])
         # Rebuild red beetle with new settings
         rebuild_red_beetle(
             config['shaft'], config['prong'], 4, config['back_body'],
@@ -13409,34 +13445,45 @@ while window.running:
         if network_manager and network_manager.connected and network_manager.is_host:
             send_local_beetle_config(network_manager, is_host=True)
 
-    # Blue beetle color pickers
+    # Blue beetle color pickers - only if can edit
     window.GUI.text("")
-    window.GUI.text("=== BLUE BEETLE COLORS ===")
+    if can_edit_blue:
+        window.GUI.text("=== BLUE BEETLE COLORS ===")
+        blue_color_changed = False
 
-    new_blue_body_color = window.GUI.color_edit_3("Blue Body", window.blue_body_color)
-    if new_blue_body_color != window.blue_body_color:
-        window.blue_body_color = new_blue_body_color
-        simulation.blue_body_color[None] = ti.Vector([new_blue_body_color[0], new_blue_body_color[1], new_blue_body_color[2]])
+        new_blue_body_color = window.GUI.color_edit_3("Blue Body", window.blue_body_color)
+        if new_blue_body_color != window.blue_body_color:
+            window.blue_body_color = new_blue_body_color
+            simulation.blue_body_color[None] = ti.Vector([new_blue_body_color[0], new_blue_body_color[1], new_blue_body_color[2]])
+            blue_color_changed = True
 
-    new_blue_leg_color = window.GUI.color_edit_3("Blue Legs", window.blue_leg_color)
-    if new_blue_leg_color != window.blue_leg_color:
-        window.blue_leg_color = new_blue_leg_color
-        simulation.blue_leg_color[None] = ti.Vector([new_blue_leg_color[0], new_blue_leg_color[1], new_blue_leg_color[2]])
+        new_blue_leg_color = window.GUI.color_edit_3("Blue Legs", window.blue_leg_color)
+        if new_blue_leg_color != window.blue_leg_color:
+            window.blue_leg_color = new_blue_leg_color
+            simulation.blue_leg_color[None] = ti.Vector([new_blue_leg_color[0], new_blue_leg_color[1], new_blue_leg_color[2]])
+            blue_color_changed = True
 
-    new_blue_leg_tip_color = window.GUI.color_edit_3("Blue Leg Tips", window.blue_leg_tip_color)
-    if new_blue_leg_tip_color != window.blue_leg_tip_color:
-        window.blue_leg_tip_color = new_blue_leg_tip_color
-        simulation.blue_leg_tip_color[None] = ti.Vector([new_blue_leg_tip_color[0], new_blue_leg_tip_color[1], new_blue_leg_tip_color[2]])
+        new_blue_leg_tip_color = window.GUI.color_edit_3("Blue Leg Tips", window.blue_leg_tip_color)
+        if new_blue_leg_tip_color != window.blue_leg_tip_color:
+            window.blue_leg_tip_color = new_blue_leg_tip_color
+            simulation.blue_leg_tip_color[None] = ti.Vector([new_blue_leg_tip_color[0], new_blue_leg_tip_color[1], new_blue_leg_tip_color[2]])
+            blue_color_changed = True
 
-    new_blue_stripe_color = window.GUI.color_edit_3("Blue Stripe", window.blue_stripe_color)
-    if new_blue_stripe_color != window.blue_stripe_color:
-        window.blue_stripe_color = new_blue_stripe_color
-        simulation.blue_stripe_color[None] = ti.Vector([new_blue_stripe_color[0], new_blue_stripe_color[1], new_blue_stripe_color[2]])
+        new_blue_stripe_color = window.GUI.color_edit_3("Blue Stripe", window.blue_stripe_color)
+        if new_blue_stripe_color != window.blue_stripe_color:
+            window.blue_stripe_color = new_blue_stripe_color
+            simulation.blue_stripe_color[None] = ti.Vector([new_blue_stripe_color[0], new_blue_stripe_color[1], new_blue_stripe_color[2]])
+            blue_color_changed = True
 
-    new_blue_horn_tip_color = window.GUI.color_edit_3("Blue Horn Tips", window.blue_horn_tip_color)
-    if new_blue_horn_tip_color != window.blue_horn_tip_color:
-        window.blue_horn_tip_color = new_blue_horn_tip_color
-        simulation.blue_horn_tip_color[None] = ti.Vector([new_blue_horn_tip_color[0], new_blue_horn_tip_color[1], new_blue_horn_tip_color[2]])
+        new_blue_horn_tip_color = window.GUI.color_edit_3("Blue Horn Tips", window.blue_horn_tip_color)
+        if new_blue_horn_tip_color != window.blue_horn_tip_color:
+            window.blue_horn_tip_color = new_blue_horn_tip_color
+            simulation.blue_horn_tip_color[None] = ti.Vector([new_blue_horn_tip_color[0], new_blue_horn_tip_color[1], new_blue_horn_tip_color[2]])
+            blue_color_changed = True
+
+        # Send config immediately when host changes blue beetle colors
+        if blue_color_changed and network_manager and network_manager.connected and network_manager.is_host:
+            send_local_beetle_config(network_manager, is_host=True)
 
     window.GUI.text("")
     if can_edit_red:
@@ -13605,34 +13652,45 @@ while window.running:
         if network_manager and network_manager.connected and not network_manager.is_host:
             send_local_beetle_config(network_manager, is_host=False)
 
-    # Red beetle color pickers
+    # Red beetle color pickers - only if can edit
     window.GUI.text("")
-    window.GUI.text("=== RED BEETLE COLORS ===")
+    if can_edit_red:
+        window.GUI.text("=== RED BEETLE COLORS ===")
+        red_color_changed = False
 
-    new_red_body_color = window.GUI.color_edit_3("Red Body", window.red_body_color)
-    if new_red_body_color != window.red_body_color:
-        window.red_body_color = new_red_body_color
-        simulation.red_body_color[None] = ti.Vector([new_red_body_color[0], new_red_body_color[1], new_red_body_color[2]])
+        new_red_body_color = window.GUI.color_edit_3("Red Body", window.red_body_color)
+        if new_red_body_color != window.red_body_color:
+            window.red_body_color = new_red_body_color
+            simulation.red_body_color[None] = ti.Vector([new_red_body_color[0], new_red_body_color[1], new_red_body_color[2]])
+            red_color_changed = True
 
-    new_red_leg_color = window.GUI.color_edit_3("Red Legs", window.red_leg_color)
-    if new_red_leg_color != window.red_leg_color:
-        window.red_leg_color = new_red_leg_color
-        simulation.red_leg_color[None] = ti.Vector([new_red_leg_color[0], new_red_leg_color[1], new_red_leg_color[2]])
+        new_red_leg_color = window.GUI.color_edit_3("Red Legs", window.red_leg_color)
+        if new_red_leg_color != window.red_leg_color:
+            window.red_leg_color = new_red_leg_color
+            simulation.red_leg_color[None] = ti.Vector([new_red_leg_color[0], new_red_leg_color[1], new_red_leg_color[2]])
+            red_color_changed = True
 
-    new_red_leg_tip_color = window.GUI.color_edit_3("Red Leg Tips", window.red_leg_tip_color)
-    if new_red_leg_tip_color != window.red_leg_tip_color:
-        window.red_leg_tip_color = new_red_leg_tip_color
-        simulation.red_leg_tip_color[None] = ti.Vector([new_red_leg_tip_color[0], new_red_leg_tip_color[1], new_red_leg_tip_color[2]])
+        new_red_leg_tip_color = window.GUI.color_edit_3("Red Leg Tips", window.red_leg_tip_color)
+        if new_red_leg_tip_color != window.red_leg_tip_color:
+            window.red_leg_tip_color = new_red_leg_tip_color
+            simulation.red_leg_tip_color[None] = ti.Vector([new_red_leg_tip_color[0], new_red_leg_tip_color[1], new_red_leg_tip_color[2]])
+            red_color_changed = True
 
-    new_red_stripe_color = window.GUI.color_edit_3("Red Stripe", window.red_stripe_color)
-    if new_red_stripe_color != window.red_stripe_color:
-        window.red_stripe_color = new_red_stripe_color
-        simulation.red_stripe_color[None] = ti.Vector([new_red_stripe_color[0], new_red_stripe_color[1], new_red_stripe_color[2]])
+        new_red_stripe_color = window.GUI.color_edit_3("Red Stripe", window.red_stripe_color)
+        if new_red_stripe_color != window.red_stripe_color:
+            window.red_stripe_color = new_red_stripe_color
+            simulation.red_stripe_color[None] = ti.Vector([new_red_stripe_color[0], new_red_stripe_color[1], new_red_stripe_color[2]])
+            red_color_changed = True
 
-    new_red_horn_tip_color = window.GUI.color_edit_3("Red Horn Tips", window.red_horn_tip_color)
-    if new_red_horn_tip_color != window.red_horn_tip_color:
-        window.red_horn_tip_color = new_red_horn_tip_color
-        simulation.red_horn_tip_color[None] = ti.Vector([new_red_horn_tip_color[0], new_red_horn_tip_color[1], new_red_horn_tip_color[2]])
+        new_red_horn_tip_color = window.GUI.color_edit_3("Red Horn Tips", window.red_horn_tip_color)
+        if new_red_horn_tip_color != window.red_horn_tip_color:
+            window.red_horn_tip_color = new_red_horn_tip_color
+            simulation.red_horn_tip_color[None] = ti.Vector([new_red_horn_tip_color[0], new_red_horn_tip_color[1], new_red_horn_tip_color[2]])
+            red_color_changed = True
+
+        # Send config immediately when guest changes red beetle colors
+        if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
+            send_local_beetle_config(network_manager, is_host=False)
 
     # Horn combat physics tuning
     window.GUI.text("")

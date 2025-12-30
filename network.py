@@ -503,11 +503,23 @@ class NetworkManager:
         data = struct.pack('>BI', MSG_FRAME_SYNC, frame)
         self._send_packet(data, reliable=False)
 
-    def send_beetle_config(self, horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len):
-        """Send beetle customization to opponent."""
+    def send_beetle_config(self, horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len,
+                           body_color, leg_color, leg_tip_color, stripe_color, horn_tip_color):
+        """Send beetle customization to opponent including colors."""
         player_id = 0 if self.is_host else 1
-        data = struct.pack('>BBBBBBBBB', MSG_BEETLE_CONFIG, player_id,
-                           horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len)
+        # Pack sizes (9 bytes) + 5 colors as RGB bytes (15 bytes) = 24 bytes total
+        # Colors are floats 0.0-1.0, convert to bytes 0-255
+        def color_to_bytes(c):
+            return (int(c[0] * 255), int(c[1] * 255), int(c[2] * 255))
+        bc = color_to_bytes(body_color)
+        lc = color_to_bytes(leg_color)
+        ltc = color_to_bytes(leg_tip_color)
+        sc = color_to_bytes(stripe_color)
+        htc = color_to_bytes(horn_tip_color)
+        data = struct.pack('>BBBBBBBBB BBBBBBBBBBBBBBB', MSG_BEETLE_CONFIG, player_id,
+                           horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len,
+                           bc[0], bc[1], bc[2], lc[0], lc[1], lc[2], ltc[0], ltc[1], ltc[2],
+                           sc[0], sc[1], sc[2], htc[0], htc[1], htc[2])
         self._send_packet(data, reliable=True)
         print(f"[Network] Sent beetle config: horn={horn_type_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
 
@@ -738,8 +750,35 @@ class NetworkManager:
                 self.target_frame = target_frame
 
         elif msg_type == MSG_BEETLE_CONFIG:
-            # Opponent's beetle customization
-            if len(data) >= 9:
+            # Opponent's beetle customization (24 bytes with colors, 9 bytes legacy)
+            if len(data) >= 24:
+                # New format with colors
+                unpacked = struct.unpack('>BBBBBBBBB BBBBBBBBBBBBBBB', data[:24])
+                _, player_id, horn_id, shaft, prong, back_body, body_len, body_width, leg_len = unpacked[:9]
+                # Convert color bytes (0-255) to floats (0.0-1.0)
+                body_color = (unpacked[9]/255, unpacked[10]/255, unpacked[11]/255)
+                leg_color = (unpacked[12]/255, unpacked[13]/255, unpacked[14]/255)
+                leg_tip_color = (unpacked[15]/255, unpacked[16]/255, unpacked[17]/255)
+                stripe_color = (unpacked[18]/255, unpacked[19]/255, unpacked[20]/255)
+                horn_tip_color = (unpacked[21]/255, unpacked[22]/255, unpacked[23]/255)
+                self.remote_beetle_config = {
+                    'player_id': player_id,
+                    'horn_type_id': horn_id,
+                    'shaft': shaft,
+                    'prong': prong,
+                    'back_body': back_body,
+                    'body_len': body_len,
+                    'body_width': body_width,
+                    'leg_len': leg_len,
+                    'body_color': body_color,
+                    'leg_color': leg_color,
+                    'leg_tip_color': leg_tip_color,
+                    'stripe_color': stripe_color,
+                    'horn_tip_color': horn_tip_color
+                }
+                print(f"[Network] Received beetle config from player {player_id}: horn={horn_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
+            elif len(data) >= 9:
+                # Legacy format without colors
                 _, player_id, horn_id, shaft, prong, back_body, body_len, body_width, leg_len = struct.unpack('>BBBBBBBBB', data[:9])
                 self.remote_beetle_config = {
                     'player_id': player_id,
