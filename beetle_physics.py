@@ -12935,9 +12935,9 @@ while window.running:
             window.GUI.text(f"You are: {player_color}")
             window.GUI.text(f"Ping: {network_manager.ping_ms}ms" if network_manager else "")
 
-            # Show lockstep status
-            if input_buffer.waiting_for_remote:
-                window.GUI.text(f"Waiting for opponent... ({input_buffer.frames_waited} frames)")
+            # Show network status
+            if input_buffer.predicting:
+                window.GUI.text(f"Predicting inputs... ({input_buffer.predicted_frames} frames)")
             window.GUI.text(f"Frame: {input_buffer.current_frame} | Delay: {input_buffer.delay}")
 
             if window.GUI.button("Disconnect"):
