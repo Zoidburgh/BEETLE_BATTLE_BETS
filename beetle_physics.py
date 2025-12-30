@@ -10344,6 +10344,8 @@ while window.running:
     # === NETWORK POLLING (must happen every frame) ===
     if network_manager and game_state == GAME_STATE_ONLINE_PLAY:
         network_manager.poll_messages(input_buffer)
+        # Apply any received beetle config (allows mid-game customization sync)
+        apply_remote_beetle_config(network_manager)
         # Send ping periodically for latency measurement
         if physics_frame % 60 == 0:  # Once per second
             network_manager.send_ping()
