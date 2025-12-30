@@ -239,7 +239,7 @@ HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to 
 
 # OPTIMIZATION: Horn type ID mapping and pitch/yaw limit lookup tables
 # Eliminates string comparisons in the physics loop (120 checks/sec -> integer lookup)
-HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "cockchafer": 6, "spider": 7}
+HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "spider": 6}
 # Pitch limits: (max_pitch, min_pitch) indexed by horn_type_id
 HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_RHINO, HORN_MIN_PITCH_RHINO),       # 0: rhino
@@ -248,8 +248,7 @@ HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 3: scorpion (symmetric ±17° around 20° default)
     (HORN_MAX_PITCH_ATLAS, HORN_MIN_PITCH_ATLAS),       # 4: atlas
     (0.0, 0.0),                                         # 5: bombardier (no horn - uses firing controls)
-    (HORN_MAX_PITCH, HORN_MIN_PITCH),                   # 6: cockchafer
-    (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 7: spider (fangs)
+    (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 6: spider (fangs)
 ]
 # Yaw limits: (max_yaw, min_yaw) indexed by horn_type_id
 HORN_YAW_LIMITS = [
@@ -259,8 +258,7 @@ HORN_YAW_LIMITS = [
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 3: scorpion
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 4: atlas
     (0.0, 0.0),                             # 5: bombardier (no horn - uses firing controls)
-    (HORN_MAX_YAW, HORN_MIN_YAW),           # 6: cockchafer
-    (HORN_MAX_YAW, HORN_MIN_YAW),           # 7: spider
+    (HORN_MAX_YAW, HORN_MIN_YAW),           # 6: spider
 ]
 
 # ============================================================================
@@ -1034,7 +1032,7 @@ def apply_remote_beetle_config(network_mgr):
     network_mgr.remote_beetle_config = None  # Consume it
 
     # Reverse lookup horn type from ID
-    horn_names = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "cockchafer", "spider"]
+    horn_names = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "spider"]
     horn_type = horn_names[config['horn_type_id']] if config['horn_type_id'] < len(horn_names) else "rhino"
 
     # Determine which beetle to update based on sender's player_id
@@ -12334,7 +12332,7 @@ while window.running:
             shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
             place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
 
-    # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas, 5=bombardier, 6=cockchafer, 7=spider
+    # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas, 5=bombardier, 6=spider
     blue_horn_type_id = HORN_TYPE_IDS.get(blue_horn_type, 0)
     red_horn_type_id = HORN_TYPE_IDS.get(red_horn_type, 0)
 
