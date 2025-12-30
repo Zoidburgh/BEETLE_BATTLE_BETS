@@ -10261,29 +10261,23 @@ while window.running:
             blue_diff = abs(beetle_blue.x - sync['blue_x']) + abs(beetle_blue.z - sync['blue_z'])
             red_diff = abs(beetle_red.x - sync['red_x']) + abs(beetle_red.z - sync['red_z'])
 
-            # Smooth correction: lerp toward host state instead of snapping
-            # Small diffs (<1 unit): 20% correction per sync (invisible)
-            # Medium diffs (1-5 units): 50% correction (smooth)
-            # Large diffs (>5 units): 100% snap (desync too big)
-            if blue_diff > 5.0 or red_diff > 5.0:
+            # Only correct the OPPONENT beetle, not your own
+            # Guest is red (local_player_id=1), so only correct blue (host's beetle)
+            # Your own beetle position is authoritative for you
+
+            # Smooth correction for opponent beetle only
+            if blue_diff > 5.0:
                 # Large desync - snap immediately
-                print(f"[Sync] Large desync, snapping: blue={blue_diff:.1f}, red={red_diff:.1f}")
+                print(f"[Sync] Large desync on host beetle, snapping: blue={blue_diff:.1f}")
                 beetle_blue.x = sync['blue_x']
                 beetle_blue.z = sync['blue_z']
                 beetle_blue.rotation = sync['blue_rot']
-                beetle_red.x = sync['red_x']
-                beetle_red.z = sync['red_z']
-                beetle_red.rotation = sync['red_rot']
-            elif blue_diff > 0.5 or red_diff > 0.5:
+            elif blue_diff > 0.3:
                 # Small/medium desync - smooth correction
-                lerp_factor = 0.3 if (blue_diff > 1.0 or red_diff > 1.0) else 0.15
+                lerp_factor = 0.4 if blue_diff > 1.0 else 0.2
                 beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
                 beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
-                beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
-                beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
-                # Rotation lerp (simple for now)
                 beetle_blue.rotation += (sync['blue_rot'] - beetle_blue.rotation) * lerp_factor
-                beetle_red.rotation += (sync['red_rot'] - beetle_red.rotation) * lerp_factor
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
