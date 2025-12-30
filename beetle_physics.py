@@ -1672,8 +1672,19 @@ def render_score_digit(digit: ti.i32, base_x: ti.f32, base_y: ti.f32, base_z: ti
 
 @ti.kernel
 def clear_score_digits():
-    """Clear all score digit voxels"""
-    for i, j, k in ti.ndrange(128, 128, 128):
+    """Clear score digit voxels - OPTIMIZED: only scan known digit locations instead of full grid
+    Score digits are at fixed positions: Blue=(96,53,64), Red=(32,53,64)
+    Digits can scale up to 3x height during bounce animation, so Y range needs to be 43-85
+    Still ~25k voxels vs 2.1M (80x faster)
+    """
+    # Clear blue digit area (x=96, y=53, z=64) - extended Y for bounce animation
+    for i, j, k in ti.ndrange((88, 104), (43, 85), (56, 72)):
+        if simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_BLUE or \
+           simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_RED:
+            simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+    # Clear red digit area (x=32, y=53, z=64) - extended Y for bounce animation
+    for i, j, k in ti.ndrange((24, 40), (43, 85), (56, 72)):
         if simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_BLUE or \
            simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_RED:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
