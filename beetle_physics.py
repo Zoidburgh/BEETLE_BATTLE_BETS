@@ -7538,7 +7538,7 @@ STAG_SQUEEZE_DAMPING = 0.70
 
 @ti.kernel
 def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32, dt: ti.f32, pitch_inertia: ti.f32, roll_inertia: ti.f32):
-    """GPU-accelerated edge tipping calculation"""
+    """GPU-accelerated edge tipping calculation - OPTIMIZED: 2 passes instead of 3"""
     # Reset outputs
     edge_tipping_vy[None] = 0.0
     edge_tipping_pitch_vel[None] = 0.0
@@ -7556,11 +7556,21 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
     y_min = ti.max(0, y_base - 3)
     y_max = ti.min(simulation.n_grid, y_base + 20)
 
-    # First pass: calculate center of gravity
+    arena_center_x = ARENA_CENTER_X - simulation.n_grid / 2.0
+    arena_center_z = ARENA_CENTER_Z - simulation.n_grid / 2.0
+
+    # First pass: calculate center of gravity AND count over-edge voxels AND find max lever distance
     sum_x = 0.0
     sum_y = 0.0
     sum_z = 0.0
     voxel_count = 0
+    over_edge_count = 0
+    max_lever_dist = 0.0
+
+    # Track top 3 farthest over-edge voxels (lever_x, lever_z, lever_dist)
+    top3_lever_x = ti.Vector([0.0, 0.0, 0.0])
+    top3_lever_z = ti.Vector([0.0, 0.0, 0.0])
+    top3_lever_dist = ti.Vector([0.0, 0.0, 0.0])
 
     for i in range(x_min, x_max):
         for k in range(z_min, z_max):
@@ -7580,6 +7590,7 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                     world_y_v = float(j) - RENDER_Y_OFFSET
                     world_z_v = float(k) - simulation.n_grid / 2.0
 
+                    # Accumulate for COG
                     sum_x += world_x_v
                     sum_y += world_y_v
                     sum_z += world_z_v
@@ -7591,12 +7602,7 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
         cog_y = sum_y / float(voxel_count)
         cog_z = sum_z / float(voxel_count)
 
-        # Second pass: find max lever distance for over-edge voxels
-        over_edge_count = 0
-        max_lever_dist = 0.0
-        arena_center_x = ARENA_CENTER_X - simulation.n_grid / 2.0
-        arena_center_z = ARENA_CENTER_Z - simulation.n_grid / 2.0
-
+        # Second pass: find over-edge voxels and track top 3 farthest (merged pass 2+3)
         for i in range(x_min, x_max):
             for k in range(z_min, z_max):
                 for j in range(y_min, y_max):
@@ -7618,53 +7624,63 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
 
                         if dist_from_center > ARENA_EDGE_RADIUS:
                             over_edge_count += 1
-                            lever_dist = ti.sqrt((world_x_v - cog_x)**2 + (world_z_v - cog_z)**2)
+                            lever_x = world_x_v - cog_x
+                            lever_z = world_z_v - cog_z
+                            lever_dist = ti.sqrt(lever_x * lever_x + lever_z * lever_z)
+
                             if lever_dist > max_lever_dist:
                                 max_lever_dist = lever_dist
+
+                            # Track top 3 farthest voxels (insertion sort style)
+                            if lever_dist > top3_lever_dist[2]:
+                                if lever_dist > top3_lever_dist[1]:
+                                    if lever_dist > top3_lever_dist[0]:
+                                        # New #1, shift others down
+                                        top3_lever_dist[2] = top3_lever_dist[1]
+                                        top3_lever_x[2] = top3_lever_x[1]
+                                        top3_lever_z[2] = top3_lever_z[1]
+                                        top3_lever_dist[1] = top3_lever_dist[0]
+                                        top3_lever_x[1] = top3_lever_x[0]
+                                        top3_lever_z[1] = top3_lever_z[0]
+                                        top3_lever_dist[0] = lever_dist
+                                        top3_lever_x[0] = lever_x
+                                        top3_lever_z[0] = lever_z
+                                    else:
+                                        # New #2, shift #3 down
+                                        top3_lever_dist[2] = top3_lever_dist[1]
+                                        top3_lever_x[2] = top3_lever_x[1]
+                                        top3_lever_z[2] = top3_lever_z[1]
+                                        top3_lever_dist[1] = lever_dist
+                                        top3_lever_x[1] = lever_x
+                                        top3_lever_z[1] = lever_z
+                                else:
+                                    # New #3
+                                    top3_lever_dist[2] = lever_dist
+                                    top3_lever_x[2] = lever_x
+                                    top3_lever_z[2] = lever_z
 
         # Only continue if voxels are over edge
         if over_edge_count > 0:
             tipping_force = float(over_edge_count) * EDGE_TIPPING_STRENGTH
 
-            # Third pass: apply torque at farthest voxels (within 90% of max distance)
+            # Apply torque from top 3 farthest voxels (those within 90% of max distance)
             total_vy = 0.0
             total_pitch = 0.0
             total_roll = 0.0
-            num_far_voxels = 0
+            threshold = max_lever_dist * 0.9
 
-            for i in range(x_min, x_max):
-                for k in range(z_min, z_max):
-                    for j in range(y_min, y_max):
-                        vtype = simulation.voxel_type[i, j, k]
-                        is_beetle = 0
+            for idx in ti.static(range(3)):
+                lever_dist = top3_lever_dist[idx]
+                if lever_dist > threshold and lever_dist > 0.0:
+                    lever_x = top3_lever_x[idx]
+                    lever_z = top3_lever_z[idx]
 
-                        if beetle_color == simulation.BEETLE_BLUE:
-                            if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_BLUE:
-                                is_beetle = 1
-                        else:
-                            if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_RED:
-                                is_beetle = 1
+                    lever_x_norm = lever_x / lever_dist
+                    lever_z_norm = lever_z / lever_dist
 
-                        if is_beetle == 1:
-                            world_x_v = float(i) - simulation.n_grid / 2.0
-                            world_z_v = float(k) - simulation.n_grid / 2.0
-
-                            dist_from_center = ti.sqrt((world_x_v - arena_center_x)**2 + (world_z_v - arena_center_z)**2)
-
-                            if dist_from_center > ARENA_EDGE_RADIUS:
-                                lever_dist = ti.sqrt((world_x_v - cog_x)**2 + (world_z_v - cog_z)**2)
-
-                                if lever_dist > max_lever_dist * 0.9 and lever_dist > 0.0 and num_far_voxels < 3:
-                                    lever_x = world_x_v - cog_x
-                                    lever_z = world_z_v - cog_z
-
-                                    lever_x_norm = lever_x / lever_dist
-                                    lever_z_norm = lever_z / lever_dist
-
-                                    total_vy -= tipping_force * dt
-                                    total_pitch += (lever_z_norm * tipping_force * lever_dist / pitch_inertia) * dt
-                                    total_roll += (lever_x_norm * tipping_force * lever_dist / roll_inertia) * dt
-                                    num_far_voxels += 1
+                    total_vy -= tipping_force * dt
+                    total_pitch += (lever_z_norm * tipping_force * lever_dist / pitch_inertia) * dt
+                    total_roll += (lever_x_norm * tipping_force * lever_dist / roll_inertia) * dt
 
             edge_tipping_vy[None] = total_vy
             edge_tipping_pitch_vel[None] = total_pitch
