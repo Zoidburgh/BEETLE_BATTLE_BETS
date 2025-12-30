@@ -10072,8 +10072,8 @@ while window.running:
 
     # === NETWORK LOBBY POLLING (check for opponent join/leave) ===
     # Must poll even in lobby states to receive callbacks
-    if network_manager and game_state in [GAME_STATE_LOBBY_HOST, GAME_STATE_LOBBY_CONNECTING, GAME_STATE_LOBBY_WAITING]:
-        network_manager.poll_messages(None)  # No input buffer during lobby
+    if network_manager and game_state in [GAME_STATE_LOBBY_HOST, GAME_STATE_LOBBY_CONNECTING, GAME_STATE_LOBBY_WAITING, GAME_STATE_SYNCING]:
+        network_manager.poll_messages(None)  # No input buffer during lobby/sync
 
     # === CAMERA TIMING ===
     perf_monitor.start('camera')
