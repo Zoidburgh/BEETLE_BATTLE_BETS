@@ -1029,6 +1029,7 @@ def apply_remote_beetle_config(network_mgr):
         return False
 
     config = network_mgr.remote_beetle_config
+    print(f"[DEBUG] Applying remote config: player_id={config['player_id']}, horn={config['horn_type_id']}")
     network_mgr.remote_beetle_config = None  # Consume it
 
     # Reverse lookup horn type from ID
@@ -13279,8 +13280,10 @@ while window.running:
         blue_previous_stinger_curvature = blue_current_stinger_curvature
         blue_previous_tail_rotation = blue_current_tail_rotation
         # Send config immediately when host changes blue beetle
-        if network_manager and network_manager.connected and network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=True)
+        if network_manager:
+            print(f"[DEBUG] Blue slider changed. connected={network_manager.connected}, is_host={network_manager.is_host}")
+            if network_manager.connected and network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=True)
 
     # Blue beetle stats
     window.GUI.text(f"Blue Shaft: {window.blue_horn_shaft_value} voxels")
@@ -13449,8 +13452,10 @@ while window.running:
         red_previous_stinger_curvature = red_current_stinger_curvature
         red_previous_tail_rotation = red_current_tail_rotation
         # Send config immediately when guest changes red beetle
-        if network_manager and network_manager.connected and not network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=False)
+        if network_manager:
+            print(f"[DEBUG] Red slider changed. connected={network_manager.connected}, is_host={network_manager.is_host}")
+            if network_manager.connected and not network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=False)
 
     # Red beetle stats
     window.GUI.text(f"Red Shaft: {window.red_horn_shaft_value} voxels")
