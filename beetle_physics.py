@@ -10262,8 +10262,19 @@ while window.running:
             beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
             beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
             beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
-            beetle_blue.rotation += (sync['blue_rot'] - beetle_blue.rotation) * lerp_factor
-            beetle_red.rotation += (sync['red_rot'] - beetle_red.rotation) * lerp_factor
+
+            # Rotation lerp with angle wrapping (shortest path)
+            # This prevents beetles from spinning the wrong way when angles wrap around 0/2π
+            TWO_PI = 2.0 * math.pi
+            blue_rot_diff = (sync['blue_rot'] - beetle_blue.rotation) % TWO_PI
+            if blue_rot_diff > math.pi:
+                blue_rot_diff -= TWO_PI
+            beetle_blue.rotation += blue_rot_diff * lerp_factor
+
+            red_rot_diff = (sync['red_rot'] - beetle_red.rotation) % TWO_PI
+            if red_rot_diff > math.pi:
+                red_rot_diff -= TWO_PI
+            beetle_red.rotation += red_rot_diff * lerp_factor
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
