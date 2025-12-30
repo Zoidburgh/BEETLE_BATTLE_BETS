@@ -46,6 +46,7 @@ MSG_PONG = 0x07         # Ping response
 MSG_STATE_SYNC = 0x08   # Host sends authoritative game state
 MSG_SYNC_READY = 0x09   # Guest confirms ready to start (countdown sync)
 MSG_GO = 0x0A           # Host tells everyone to start simulating
+MSG_FRAME_SYNC = 0x0B   # Host sends frame counter for sync
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -143,6 +144,9 @@ class NetworkManager:
         self.guest_sync_ready = False  # Host: has guest sent SYNC_READY?
         self.received_go = False  # Guest: has host sent GO?
         self.go_sent_time = 0  # Host: when GO was sent (to delay start by one-way latency)
+
+        # Frame sync (keeps guest frame counter aligned with host)
+        self.target_frame = None  # Guest: frame counter we should be at (from host)
 
     def init(self, app_id=480):
         """
@@ -485,6 +489,13 @@ class NetworkManager:
                 return True
         return False
 
+    def send_frame_sync(self, frame):
+        """Host sends current frame counter to keep guest in sync."""
+        if not self.is_host:
+            return
+        data = struct.pack('>BI', MSG_FRAME_SYNC, frame)
+        self._send_packet(data, reliable=False)
+
     def send_ping(self):
         """Send ping to measure latency."""
         # Use lower 32 bits of milliseconds to fit in uint32
@@ -695,6 +706,12 @@ class NetworkManager:
                 print("[Network] Received GO from host - starting simulation!")
                 self.sync_state = "go"
                 self.received_go = True
+
+        elif msg_type == MSG_FRAME_SYNC:
+            # Host sends frame counter for sync
+            if len(data) >= 5 and not self.is_host:
+                _, target_frame = struct.unpack('>BI', data[:5])
+                self.target_frame = target_frame
 
     # =========================================================================
     # CONNECTION STATE

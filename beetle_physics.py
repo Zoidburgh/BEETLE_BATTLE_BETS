@@ -10238,46 +10238,32 @@ while window.running:
         if physics_frame % 60 == 0:  # Once per second
             network_manager.send_ping()
 
+        # === HOST FRAME SYNC (send frame counter to keep guest aligned) ===
+        if network_manager.is_host and physics_frame % 30 == 0:
+            network_manager.send_frame_sync(input_buffer.current_frame)
+
         # === HOST STATE SYNC (send authoritative positions periodically) ===
-        if network_manager.is_host and physics_frame % 30 == 0:  # Every 500ms
+        if network_manager.is_host and physics_frame % 10 == 0:  # Every ~167ms (more frequent)
             network_manager.send_state_sync(
                 physics_frame,
                 beetle_blue.x, beetle_blue.z, beetle_blue.rotation,
                 beetle_red.x, beetle_red.z, beetle_red.rotation
             )
 
-        # === GUEST STATE SYNC (apply received state if available) ===
+        # === GUEST STATE SYNC (apply received state - always lerp, never snap) ===
         if not network_manager.is_host and network_manager.pending_state_sync:
             sync = network_manager.pending_state_sync
             network_manager.pending_state_sync = None  # Consume it
 
-            # Calculate position differences
-            blue_diff = abs(beetle_blue.x - sync['blue_x']) + abs(beetle_blue.z - sync['blue_z'])
-            red_diff = abs(beetle_red.x - sync['red_x']) + abs(beetle_red.z - sync['red_z'])
-
-            # Smooth correction: lerp toward host state instead of snapping
-            # Small diffs (<1 unit): 20% correction per sync (invisible)
-            # Medium diffs (1-5 units): 50% correction (smooth)
-            # Large diffs (>5 units): 100% snap (desync too big)
-            if blue_diff > 5.0 or red_diff > 5.0:
-                # Large desync - snap immediately
-                print(f"[Sync] Large desync, snapping: blue={blue_diff:.1f}, red={red_diff:.1f}")
-                beetle_blue.x = sync['blue_x']
-                beetle_blue.z = sync['blue_z']
-                beetle_blue.rotation = sync['blue_rot']
-                beetle_red.x = sync['red_x']
-                beetle_red.z = sync['red_z']
-                beetle_red.rotation = sync['red_rot']
-            elif blue_diff > 0.5 or red_diff > 0.5:
-                # Small/medium desync - smooth correction
-                lerp_factor = 0.3 if (blue_diff > 1.0 or red_diff > 1.0) else 0.15
-                beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
-                beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
-                beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
-                beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
-                # Rotation lerp (simple for now)
-                beetle_blue.rotation += (sync['blue_rot'] - beetle_blue.rotation) * lerp_factor
-                beetle_red.rotation += (sync['red_rot'] - beetle_red.rotation) * lerp_factor
+            # Always lerp toward host state - no more snapping
+            # Larger lerp factor for faster convergence since syncing more often
+            lerp_factor = 0.25
+            beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
+            beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
+            beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
+            beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
+            beetle_blue.rotation += (sync['blue_rot'] - beetle_blue.rotation) * lerp_factor
+            beetle_red.rotation += (sync['red_rot'] - beetle_red.rotation) * lerp_factor
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
@@ -10307,6 +10293,19 @@ while window.running:
                 # Drain accumulator to prevent catch-up skipping when inputs arrive
                 accumulator = 0
                 break
+
+            # === GUEST FRAME ADJUSTMENT (keep frame counter aligned with host) ===
+            if not network_manager.is_host and network_manager.target_frame is not None:
+                frame_diff = network_manager.target_frame - input_buffer.current_frame
+                if frame_diff < -2:
+                    # Guest is AHEAD of host - skip this physics step to slow down
+                    accumulator -= PHYSICS_TIMESTEP
+                    network_manager.target_frame = None
+                    continue
+                elif frame_diff > 2:
+                    # Guest is BEHIND host - run extra step by adding to accumulator
+                    accumulator += PHYSICS_TIMESTEP
+                network_manager.target_frame = None  # Consumed
 
             # Get inputs for this frame
             blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
