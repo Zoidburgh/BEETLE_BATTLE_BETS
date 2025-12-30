@@ -363,11 +363,10 @@ class InputBuffer:
         self.is_network_mode = False  # Set True when connected to opponent
         self.local_player_id = 0  # 0 = host (blue), 1 = guest (red)
 
-        # Input prediction state
-        self.last_remote_input = 0  # Last known remote input (for prediction)
-        self.predicting = False  # True when using predicted inputs
-        self.predicted_frames = 0  # How many frames we've predicted
-        self.max_predict_frames = 8  # Don't predict more than 8 frames ahead
+        # Lockstep state
+        self.waiting_for_remote = False  # True when blocked waiting for opponent
+        self.frames_waited = 0  # How many frames we've been waiting
+        self.max_wait_frames = 180  # 3 seconds at 60fps before timeout
 
         # Network stats
         self.remote_frame_received = -1  # Highest frame number received from opponent
@@ -385,15 +384,10 @@ class InputBuffer:
     def add_remote(self, frame, inputs):
         """Store remote player's inputs (received from network)."""
         self.remote_inputs[frame] = inputs
-        self.last_remote_input = inputs  # Track for prediction
 
         # Track highest frame received for sync detection
         if frame > self.remote_frame_received:
             self.remote_frame_received = frame
-            # Reset prediction state when we get new inputs
-            if self.predicting:
-                self.predicting = False
-                self.predicted_frames = 0
 
     def get_sim_frame(self):
         """Get the frame number we should be simulating (current - delay)."""
@@ -402,7 +396,7 @@ class InputBuffer:
     def can_simulate(self):
         """
         Check if we can simulate the next physics frame.
-        Uses input prediction to stay responsive - never blocks waiting.
+        In lockstep, we need BOTH players' inputs for the frame.
         """
         if not self.is_network_mode:
             return True  # Local mode: always can simulate
@@ -411,29 +405,29 @@ class InputBuffer:
 
         # Check if we have local input for this frame
         has_local = sim_frame in self.local_inputs
-        if not has_local:
-            return False  # Need our own inputs
 
         # Check if we have remote input for this frame
+        # Due to UDP packet loss, we might be missing exact frames
+        # If we have a newer frame, use that instead (input prediction)
         has_remote = sim_frame in self.remote_inputs
-
-        if not has_remote:
-            # Missing remote input - use prediction instead of waiting
-            # This keeps the game responsive
-            if self.predicted_frames < self.max_predict_frames:
-                # Predict: assume opponent continues their last input
-                self.remote_inputs[sim_frame] = self.last_remote_input
-                self.predicting = True
-                self.predicted_frames += 1
-                has_remote = True
-            else:
-                # Too many predictions - must wait for real input
-                # This prevents runaway prediction
-                return False
+        if not has_remote and self.remote_frame_received >= sim_frame:
+            # We have newer inputs - find the closest one and use it
+            for f in range(sim_frame, self.remote_frame_received + 1):
+                if f in self.remote_inputs:
+                    # Copy this input to the missing frame (assume same input)
+                    self.remote_inputs[sim_frame] = self.remote_inputs[f]
+                    has_remote = True
+                    break
 
         if has_local and has_remote:
+            self.waiting_for_remote = False
+            self.frames_waited = 0
             return True
-        return False
+        else:
+            if not has_remote:
+                self.waiting_for_remote = True
+                self.frames_waited += 1
+            return False
 
     def get_frame_inputs(self, frame):
         """
@@ -483,11 +477,11 @@ class InputBuffer:
     def set_network_delay(self, ping_ms):
         """Set input delay based on measured network latency."""
         # Convert ping to frames: delay = (ping/2) / 16.67ms per frame
-        # Add 1 frame for safety margin (prediction handles the rest)
+        # Add 1 frame safety margin
         one_way_ms = ping_ms / 2.0
         delay_frames = int(one_way_ms / 16.67) + 1
-        # Clamp between 2 and 6 frames (prediction covers larger gaps)
-        self.delay = max(2, min(6, delay_frames))
+        # Clamp between 2 and 8 frames
+        self.delay = max(2, min(8, delay_frames))
         print(f"[InputBuffer] Set delay to {self.delay} frames for {ping_ms:.0f}ms ping")
 
     def reset(self):
@@ -495,9 +489,8 @@ class InputBuffer:
         self.local_inputs.clear()
         self.remote_inputs.clear()
         self.current_frame = 0
-        self.last_remote_input = 0
-        self.predicting = False
-        self.predicted_frames = 0
+        self.waiting_for_remote = False
+        self.frames_waited = 0
         self.remote_frame_received = -1
         self.frames_behind = 0
         self.last_state_sync_frame = 0
@@ -10261,23 +10254,29 @@ while window.running:
             blue_diff = abs(beetle_blue.x - sync['blue_x']) + abs(beetle_blue.z - sync['blue_z'])
             red_diff = abs(beetle_red.x - sync['red_x']) + abs(beetle_red.z - sync['red_z'])
 
-            # Only correct the OPPONENT beetle, not your own
-            # Guest is red (local_player_id=1), so only correct blue (host's beetle)
-            # Your own beetle position is authoritative for you
-
-            # Smooth correction for opponent beetle only
-            if blue_diff > 5.0:
+            # Smooth correction: lerp toward host state instead of snapping
+            # Small diffs (<1 unit): 20% correction per sync (invisible)
+            # Medium diffs (1-5 units): 50% correction (smooth)
+            # Large diffs (>5 units): 100% snap (desync too big)
+            if blue_diff > 5.0 or red_diff > 5.0:
                 # Large desync - snap immediately
-                print(f"[Sync] Large desync on host beetle, snapping: blue={blue_diff:.1f}")
+                print(f"[Sync] Large desync, snapping: blue={blue_diff:.1f}, red={red_diff:.1f}")
                 beetle_blue.x = sync['blue_x']
                 beetle_blue.z = sync['blue_z']
                 beetle_blue.rotation = sync['blue_rot']
-            elif blue_diff > 0.3:
+                beetle_red.x = sync['red_x']
+                beetle_red.z = sync['red_z']
+                beetle_red.rotation = sync['red_rot']
+            elif blue_diff > 0.5 or red_diff > 0.5:
                 # Small/medium desync - smooth correction
-                lerp_factor = 0.4 if blue_diff > 1.0 else 0.2
+                lerp_factor = 0.3 if (blue_diff > 1.0 or red_diff > 1.0) else 0.15
                 beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
                 beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
+                beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
+                beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
+                # Rotation lerp (simple for now)
                 beetle_blue.rotation += (sync['blue_rot'] - beetle_blue.rotation) * lerp_factor
+                beetle_red.rotation += (sync['red_rot'] - beetle_red.rotation) * lerp_factor
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
@@ -10301,10 +10300,11 @@ while window.running:
             input_buffer.add_local(current_local_inputs)
             network_manager.send_input(input_buffer.current_frame, current_local_inputs)
 
-            # Check if we can simulate (have both players' inputs, or can predict)
+            # Check if we can simulate (have both players' inputs)
             if not input_buffer.can_simulate():
-                # Can't simulate even with prediction - too far ahead
-                # This rarely happens - only if we've predicted 8+ frames
+                # Waiting for opponent - don't simulate, don't advance frame
+                # Drain accumulator to prevent catch-up skipping when inputs arrive
+                accumulator = 0
                 break
 
             # Get inputs for this frame
@@ -12929,9 +12929,9 @@ while window.running:
             window.GUI.text(f"You are: {player_color}")
             window.GUI.text(f"Ping: {network_manager.ping_ms}ms" if network_manager else "")
 
-            # Show network status
-            if input_buffer.predicting:
-                window.GUI.text(f"Predicting inputs... ({input_buffer.predicted_frames} frames)")
+            # Show lockstep status
+            if input_buffer.waiting_for_remote:
+                window.GUI.text(f"Waiting for opponent... ({input_buffer.frames_waited} frames)")
             window.GUI.text(f"Frame: {input_buffer.current_frame} | Delay: {input_buffer.delay}")
 
             if window.GUI.button("Disconnect"):
