@@ -477,11 +477,12 @@ class InputBuffer:
     def set_network_delay(self, ping_ms):
         """Set input delay based on measured network latency."""
         # Convert ping to frames: delay = (ping/2) / 16.67ms per frame
-        # Add 1 frame safety margin
+        # Add 3 frame buffer so host isn't always waiting on edge
+        # This adds ~50ms input lag but makes both players feel equal
         one_way_ms = ping_ms / 2.0
-        delay_frames = int(one_way_ms / 16.67) + 1
-        # Clamp between 2 and 8 frames
-        self.delay = max(2, min(8, delay_frames))
+        delay_frames = int(one_way_ms / 16.67) + 3  # +3 buffer instead of +1
+        # Clamp between 3 and 10 frames
+        self.delay = max(3, min(10, delay_frames))
         print(f"[InputBuffer] Set delay to {self.delay} frames for {ping_ms:.0f}ms ping")
 
     def reset(self):
