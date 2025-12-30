@@ -13280,6 +13280,9 @@ while window.running:
         window.blue_leg_length_value = new_blue_leg_length
         blue_previous_stinger_curvature = blue_current_stinger_curvature
         blue_previous_tail_rotation = blue_current_tail_rotation
+        # Send config immediately when host changes blue beetle
+        if network_manager and network_manager.connected and network_manager.is_host:
+            send_local_beetle_config(network_manager, is_host=True)
 
     # Blue beetle stats
     window.GUI.text(f"Blue Shaft: {window.blue_horn_shaft_value} voxels")
@@ -13369,6 +13372,9 @@ while window.running:
             stinger_curvature=0.0
         )
         ti.sync()
+        # Send config immediately when host changes blue beetle type
+        if network_manager and network_manager.connected and network_manager.is_host:
+            send_local_beetle_config(network_manager, is_host=True)
 
     # Blue beetle color pickers
     window.GUI.text("")
@@ -13444,6 +13450,9 @@ while window.running:
         window.red_leg_length_value = new_red_leg_length
         red_previous_stinger_curvature = red_current_stinger_curvature
         red_previous_tail_rotation = red_current_tail_rotation
+        # Send config immediately when guest changes red beetle
+        if network_manager and network_manager.connected and not network_manager.is_host:
+            send_local_beetle_config(network_manager, is_host=False)
 
     # Red beetle stats
     window.GUI.text(f"Red Shaft: {window.red_horn_shaft_value} voxels")
@@ -13533,6 +13542,9 @@ while window.running:
             stinger_curvature=0.0
         )
         ti.sync()
+        # Send config immediately when guest changes red beetle type
+        if network_manager and network_manager.connected and not network_manager.is_host:
+            send_local_beetle_config(network_manager, is_host=False)
 
     # Red beetle color pickers
     window.GUI.text("")
