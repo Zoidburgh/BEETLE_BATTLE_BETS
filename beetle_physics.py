@@ -297,7 +297,19 @@ RED_KEYS = {
     'horn_right': 'm',
 }
 
-def get_local_inputs(window, player='blue'):
+# Simplified controls for network mode (one player per machine)
+NETWORK_KEYS = {
+    'forward': 'w',
+    'backward': 's',
+    'left': 'a',
+    'right': 'd',
+    'horn_up': ti.GUI.UP,
+    'horn_down': ti.GUI.DOWN,
+    'horn_left': ti.GUI.LEFT,
+    'horn_right': ti.GUI.RIGHT,
+}
+
+def get_local_inputs(window, player='blue', network_mode=False):
     """
     Read keyboard inputs and return 8-bit input state.
 
@@ -310,11 +322,15 @@ def get_local_inputs(window, player='blue'):
     Args:
         window: The game window to read key presses from
         player: 'blue' or 'red' to select key bindings
+        network_mode: If True, use WASD + arrow keys instead of split keyboard
 
     Returns:
         int: 8-bit input state (0-255)
     """
-    keys = BLUE_KEYS if player == 'blue' else RED_KEYS
+    if network_mode:
+        keys = NETWORK_KEYS
+    else:
+        keys = BLUE_KEYS if player == 'blue' else RED_KEYS
     inputs = 0
 
     if window.is_pressed(keys['forward']):
@@ -10436,13 +10452,13 @@ while window.running:
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
-        # ONLINE MODE: Only read inputs for our local beetle
+        # ONLINE MODE: Use WASD + arrow keys (network_mode=True)
         if local_player_id == 0:
-            current_local_inputs = get_local_inputs(window, 'blue')
+            current_local_inputs = get_local_inputs(window, 'blue', network_mode=True)
         else:
-            current_local_inputs = get_local_inputs(window, 'red')
+            current_local_inputs = get_local_inputs(window, 'red', network_mode=True)
     else:
-        # LOCAL MODE: Read both players from keyboard
+        # LOCAL MODE: Read both players from keyboard (split keyboard layout)
         frame_blue_inputs = get_local_inputs(window, 'blue')
         frame_red_inputs = get_local_inputs(window, 'red')
 
