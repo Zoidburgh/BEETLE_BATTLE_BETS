@@ -309,7 +309,7 @@ NETWORK_KEYS = {
     'horn_right': ti.GUI.RIGHT,
 }
 
-def get_local_inputs(window, player='blue', network_mode=False):
+def get_local_inputs(window, player='blue', network_mode=False, horn_type_id=0):
     """
     Read keyboard inputs and return 8-bit input state.
 
@@ -323,6 +323,7 @@ def get_local_inputs(window, player='blue', network_mode=False):
         window: The game window to read key presses from
         player: 'blue' or 'red' to select key bindings
         network_mode: If True, use WASD + arrow keys instead of split keyboard
+        horn_type_id: Beetle type for network mode arrow key remapping
 
     Returns:
         int: 8-bit input state (0-255)
@@ -333,6 +334,7 @@ def get_local_inputs(window, player='blue', network_mode=False):
         keys = BLUE_KEYS if player == 'blue' else RED_KEYS
     inputs = 0
 
+    # Movement keys (same for all beetle types)
     if window.is_pressed(keys['forward']):
         inputs |= INPUT_FORWARD
     if window.is_pressed(keys['backward']):
@@ -341,14 +343,55 @@ def get_local_inputs(window, player='blue', network_mode=False):
         inputs |= INPUT_LEFT
     if window.is_pressed(keys['right']):
         inputs |= INPUT_RIGHT
-    if window.is_pressed(keys['horn_up']):
-        inputs |= INPUT_HORN_UP
-    if window.is_pressed(keys['horn_down']):
-        inputs |= INPUT_HORN_DOWN
-    if window.is_pressed(keys['horn_left']):
-        inputs |= INPUT_HORN_LEFT
-    if window.is_pressed(keys['horn_right']):
-        inputs |= INPUT_HORN_RIGHT
+
+    if network_mode:
+        # Beetle-specific arrow key remapping for intuitive controls
+        if horn_type_id == 0 or horn_type_id == 4:  # Rhino or Atlas: swap LEFT<->RIGHT for intuitive yaw
+            if window.is_pressed(ti.GUI.UP):
+                inputs |= INPUT_HORN_UP
+            if window.is_pressed(ti.GUI.DOWN):
+                inputs |= INPUT_HORN_DOWN
+            if window.is_pressed(ti.GUI.LEFT):
+                inputs |= INPUT_HORN_RIGHT  # Swapped
+            if window.is_pressed(ti.GUI.RIGHT):
+                inputs |= INPUT_HORN_LEFT   # Swapped
+        elif horn_type_id == 5:  # Bombardier: UP/DOWN=body, LEFT/RIGHT=fire
+            if window.is_pressed(ti.GUI.UP):
+                inputs |= INPUT_HORN_LEFT   # Body up
+            if window.is_pressed(ti.GUI.DOWN):
+                inputs |= INPUT_HORN_RIGHT  # Body down
+            if window.is_pressed(ti.GUI.LEFT):
+                inputs |= INPUT_HORN_DOWN   # Fire behind
+            if window.is_pressed(ti.GUI.RIGHT):
+                inputs |= INPUT_HORN_UP     # Fire forward
+        elif horn_type_id == 6:  # Spider: UP/DOWN=body, LEFT/RIGHT=silk types
+            if window.is_pressed(ti.GUI.UP):
+                inputs |= INPUT_HORN_LEFT   # Body up
+            if window.is_pressed(ti.GUI.DOWN):
+                inputs |= INPUT_HORN_RIGHT  # Body down
+            if window.is_pressed(ti.GUI.LEFT):
+                inputs |= INPUT_HORN_DOWN   # Normal silk
+            if window.is_pressed(ti.GUI.RIGHT):
+                inputs |= INPUT_HORN_UP     # Fast silk
+        else:  # Stag, Hercules, Scorpion - default mapping
+            if window.is_pressed(keys['horn_up']):
+                inputs |= INPUT_HORN_UP
+            if window.is_pressed(keys['horn_down']):
+                inputs |= INPUT_HORN_DOWN
+            if window.is_pressed(keys['horn_left']):
+                inputs |= INPUT_HORN_LEFT
+            if window.is_pressed(keys['horn_right']):
+                inputs |= INPUT_HORN_RIGHT
+    else:
+        # Local mode - standard mapping
+        if window.is_pressed(keys['horn_up']):
+            inputs |= INPUT_HORN_UP
+        if window.is_pressed(keys['horn_down']):
+            inputs |= INPUT_HORN_DOWN
+        if window.is_pressed(keys['horn_left']):
+            inputs |= INPUT_HORN_LEFT
+        if window.is_pressed(keys['horn_right']):
+            inputs |= INPUT_HORN_RIGHT
 
     return inputs
 
@@ -10452,11 +10495,11 @@ while window.running:
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
-        # ONLINE MODE: Use WASD + arrow keys (network_mode=True)
+        # ONLINE MODE: Use WASD + arrow keys with beetle-specific remapping
         if local_player_id == 0:
-            current_local_inputs = get_local_inputs(window, 'blue', network_mode=True)
+            current_local_inputs = get_local_inputs(window, 'blue', network_mode=True, horn_type_id=beetle_blue.horn_type_id)
         else:
-            current_local_inputs = get_local_inputs(window, 'red', network_mode=True)
+            current_local_inputs = get_local_inputs(window, 'red', network_mode=True, horn_type_id=beetle_red.horn_type_id)
     else:
         # LOCAL MODE: Read both players from keyboard (split keyboard layout)
         frame_blue_inputs = get_local_inputs(window, 'blue')
