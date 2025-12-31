@@ -10013,6 +10013,9 @@ front_light_strength = 0.35  # Front camera light intensity (adjustable via GUI 
 # Dynamic lighting system
 dynamic_lighting_enabled = False  # Camera-relative lighting for cinematic effect (press L to toggle)
 
+# Advanced settings panel (collapsed by default for performance)
+show_advanced_settings = False
+
 # Initialize gradient background for forest atmosphere
 renderer.init_gradient_background()
 
@@ -10056,7 +10059,7 @@ physics_params = {
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
     "TUMBLE_MULTIPLIER": 5.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
-    "HORN_LIFT_STRENGTH": 0.7,  # Multiplier for horn combat lift force (higher = more intense lifts)
+    "HORN_LIFT_STRENGTH": 1.6,  # Multiplier for horn combat lift force (higher = more intense lifts)
     "HORN_TIP_STRENGTH": 1.5,  # Tipping torque strength for horn collisions (replaces separation)
     "COLLISION_SPIN_BIAS": 0.8,  # Strength of away-from-attacker spin bias (prevents turning into collisions)
     "BODY_TILT_STRENGTH": 1.8,  # How much bodies tilt on body-to-body collisions (opposite directions)
@@ -13272,6 +13275,12 @@ while window.running:
 
     window.GUI.text("")
 
+    # Throttle beetle customization GUI during active gameplay for performance
+    # Only show full sliders every 6 frames, or always during lobby/paused
+    gui_frame_counter = physics_frame % 6
+    in_active_gameplay = game_state == GAME_STATE_ONLINE_PLAY and beetle_blue.active and beetle_red.active
+    show_full_customization = (gui_frame_counter == 0) or not in_active_gameplay
+
     # Determine which beetle this player can edit in network mode
     # Host edits BLUE, Guest edits RED, Local mode can edit both
     can_edit_blue = not network_manager or not network_manager.connected or network_manager.is_host
@@ -13285,8 +13294,8 @@ while window.running:
     # Front body (thorax) is fixed at 4 layers
     front_body_height = 4
 
-    # Blue beetle sliders - only editable if can_edit_blue
-    if can_edit_blue:
+    # Blue beetle sliders - only editable if can_edit_blue, throttled during gameplay
+    if can_edit_blue and show_full_customization:
         new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 8, 15)
         new_blue_prong = window.GUI.slider_int("Blue Horn Prong", window.blue_horn_prong_value, 3, 6)
         new_blue_back_body = window.GUI.slider_int("Blue Back Body", window.blue_back_body_height_value, 4, 8)
@@ -13294,7 +13303,7 @@ while window.running:
         new_blue_body_width = window.GUI.slider_int("Blue Body Width", window.blue_body_width_value, 5, 9)
         new_blue_leg_length = window.GUI.slider_int("Blue Leg Length", window.blue_leg_length_value, 6, 10)
     else:
-        # Show read-only values for opponent's beetle
+        # Show read-only values (opponent's beetle OR throttled during gameplay)
         window.GUI.text(f"Horn Shaft: {window.blue_horn_shaft_value}")
         window.GUI.text(f"Horn Prong: {window.blue_horn_prong_value}")
         window.GUI.text(f"Back Body: {window.blue_back_body_height_value}")
@@ -13309,8 +13318,8 @@ while window.running:
         new_blue_body_width = window.blue_body_width_value
         new_blue_leg_length = window.blue_leg_length_value
 
-    # Random blue beetle button - only if can edit
-    if can_edit_blue and window.GUI.button("Randomize Blue Beetle"):
+    # Random blue beetle button - only if can edit and not throttled
+    if can_edit_blue and show_full_customization and window.GUI.button("Randomize Blue Beetle"):
         new_blue_shaft = random.randint(8, 15)
         new_blue_prong = random.randint(3, 6)
         new_blue_back_body = random.randint(4, 8)
@@ -13353,9 +13362,9 @@ while window.running:
     blue_total_reach = window.blue_horn_shaft_value + window.blue_horn_prong_value
     window.GUI.text(f"Blue Total Horn: {blue_total_reach} voxels")
 
-    # Blue beetle horn type button
+    # Blue beetle horn type button - throttled during gameplay
     window.GUI.text("")
-    if can_edit_blue:
+    if can_edit_blue and show_full_customization:
         if blue_horn_type == "rhino":
             blue_button_text = "Blue: RHINO (click for STAG)"
         elif blue_horn_type == "stag":
@@ -13371,11 +13380,11 @@ while window.running:
         else:  # spider
             blue_button_text = "Blue: SPIDER (click for RHINO)"
     else:
-        # Read-only display for opponent
-        blue_button_text = f"Blue: {blue_horn_type.upper()}"
-        window.GUI.text(blue_button_text)
+        # Read-only display (opponent's beetle OR throttled during gameplay)
+        window.GUI.text(f"Blue: {blue_horn_type.upper()}")
+        blue_button_text = None
 
-    if can_edit_blue and window.GUI.button(blue_button_text):
+    if blue_button_text and window.GUI.button(blue_button_text):
         # Cycle blue beetle horn type
         if blue_horn_type == "rhino":
             blue_horn_type = "stag"
@@ -13444,9 +13453,9 @@ while window.running:
         if network_manager and network_manager.connected and network_manager.is_host:
             send_local_beetle_config(network_manager, is_host=True)
 
-    # Blue beetle color pickers - only if can edit
+    # Blue beetle color pickers - only if can edit, throttled during gameplay
     window.GUI.text("")
-    if can_edit_blue:
+    if can_edit_blue and show_full_customization:
         window.GUI.text("=== BLUE BEETLE COLORS ===")
         blue_color_changed = False
 
@@ -13490,8 +13499,8 @@ while window.running:
     else:
         window.GUI.text("=== RED BEETLE (opponent) ===")
 
-    # Red beetle sliders - only editable if can_edit_red
-    if can_edit_red:
+    # Red beetle sliders - only editable if can_edit_red, throttled during gameplay
+    if can_edit_red and show_full_customization:
         new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 8, 15)
         new_red_prong = window.GUI.slider_int("Red Horn Prong", window.red_horn_prong_value, 3, 6)
         new_red_back_body = window.GUI.slider_int("Red Back Body", window.red_back_body_height_value, 4, 8)
@@ -13499,7 +13508,7 @@ while window.running:
         new_red_body_width = window.GUI.slider_int("Red Body Width", window.red_body_width_value, 5, 9)
         new_red_leg_length = window.GUI.slider_int("Red Leg Length", window.red_leg_length_value, 6, 10)
     else:
-        # Show read-only values for opponent's beetle
+        # Show read-only values (opponent's beetle OR throttled during gameplay)
         window.GUI.text(f"Horn Shaft: {window.red_horn_shaft_value}")
         window.GUI.text(f"Horn Prong: {window.red_horn_prong_value}")
         window.GUI.text(f"Back Body: {window.red_back_body_height_value}")
@@ -13514,8 +13523,8 @@ while window.running:
         new_red_body_width = window.red_body_width_value
         new_red_leg_length = window.red_leg_length_value
 
-    # Random red beetle button - only if can edit
-    if can_edit_red and window.GUI.button("Randomize Red Beetle"):
+    # Random red beetle button - only if can edit and not throttled
+    if can_edit_red and show_full_customization and window.GUI.button("Randomize Red Beetle"):
         new_red_shaft = random.randint(8, 15)
         new_red_prong = random.randint(3, 6)
         new_red_back_body = random.randint(4, 8)
@@ -13558,9 +13567,9 @@ while window.running:
     red_total_reach = window.red_horn_shaft_value + window.red_horn_prong_value
     window.GUI.text(f"Red Total Horn: {red_total_reach} voxels")
 
-    # Red beetle horn type button
+    # Red beetle horn type button - throttled during gameplay
     window.GUI.text("")
-    if can_edit_red:
+    if can_edit_red and show_full_customization:
         if red_horn_type == "rhino":
             red_button_text = "Red: RHINO (click for STAG)"
         elif red_horn_type == "stag":
@@ -13576,11 +13585,11 @@ while window.running:
         else:  # spider
             red_button_text = "Red: SPIDER (click for RHINO)"
     else:
-        # Read-only display for opponent
-        red_button_text = f"Red: {red_horn_type.upper()}"
-        window.GUI.text(red_button_text)
+        # Read-only display (opponent's beetle OR throttled during gameplay)
+        window.GUI.text(f"Red: {red_horn_type.upper()}")
+        red_button_text = None
 
-    if can_edit_red and window.GUI.button(red_button_text):
+    if red_button_text and window.GUI.button(red_button_text):
         # Cycle red beetle horn type
         if red_horn_type == "rhino":
             red_horn_type = "stag"
@@ -13649,9 +13658,9 @@ while window.running:
         if network_manager and network_manager.connected and not network_manager.is_host:
             send_local_beetle_config(network_manager, is_host=False)
 
-    # Red beetle color pickers - only if can edit
+    # Red beetle color pickers - only if can edit, throttled during gameplay
     window.GUI.text("")
-    if can_edit_red:
+    if can_edit_red and show_full_customization:
         window.GUI.text("=== RED BEETLE COLORS ===")
         red_color_changed = False
 
@@ -13689,21 +13698,7 @@ while window.running:
         if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
             send_local_beetle_config(network_manager, is_host=False)
 
-    # Horn combat physics tuning
-    window.GUI.text("")
-    window.GUI.text("=== HORN COMBAT PHYSICS ===")
-
-    # Horn Lift Strength (how intense lifts are during horn combat)
-    new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 2.0)
-    if new_horn_lift != physics_params["HORN_LIFT_STRENGTH"]:
-        physics_params["HORN_LIFT_STRENGTH"] = new_horn_lift
-
-    # Horn Tip Strength (tipping torque on horn collisions)
-    new_horn_tip = window.GUI.slider_float("Horn Tip Strength", physics_params["HORN_TIP_STRENGTH"], 0.5, 5.0)
-    if new_horn_tip != physics_params["HORN_TIP_STRENGTH"]:
-        physics_params["HORN_TIP_STRENGTH"] = new_horn_tip
-
-    # Ball controls (beetle soccer)
+    # Ball controls (beetle soccer) - always visible
     window.GUI.text("")
     window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
 
@@ -13763,94 +13758,10 @@ while window.running:
             # Rebuild floor height cache to include the ice bowl
             build_floor_height_cache()
 
-    # Ball radius slider (only show when ball is enabled)
+    # Ball score display (only show when ball is enabled)
     if beetle_ball.active:
         # Display score
         window.GUI.text(f"SCORE: Blue {blue_score} - {red_score} Red")
-        window.GUI.text("")
-        new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
-        if new_ball_radius != int(beetle_ball.radius):
-            beetle_ball.radius = float(new_ball_radius)
-            # Reinitialize ball cache when radius changes
-            init_ball_cache(beetle_ball.radius)
-        window.GUI.text(f"Ball Position: ({beetle_ball.x:.1f}, {beetle_ball.y:.1f}, {beetle_ball.z:.1f})")
-        window.GUI.text(f"Ball Velocity: ({beetle_ball.vx:.1f}, {beetle_ball.vy:.1f}, {beetle_ball.vz:.1f})")
-
-        # Ball physics tuning sliders
-        window.GUI.text("")
-        window.GUI.text("--- Ball Physics Tuning ---")
-
-        # Separation Force (how hard ball pushes away from beetles)
-        new_separation = window.GUI.slider_float("Separation Force", physics_params["BALL_SEPARATION_FORCE"], 0.1, 2.0)
-        if new_separation != physics_params["BALL_SEPARATION_FORCE"]:
-            physics_params["BALL_SEPARATION_FORCE"] = new_separation
-
-        # Momentum Transfer (how much beetle velocity transfers to ball)
-        new_momentum = window.GUI.slider_float("Momentum Transfer", physics_params["BALL_MOMENTUM_TRANSFER"], 0.0, 2.0)
-        if new_momentum != physics_params["BALL_MOMENTUM_TRANSFER"]:
-            physics_params["BALL_MOMENTUM_TRANSFER"] = new_momentum
-
-        # Restitution (bounciness in collisions)
-        new_restitution = window.GUI.slider_float("Restitution (Bounce)", physics_params["BALL_RESTITUTION"], 0.0, 1.0)
-        if new_restitution != physics_params["BALL_RESTITUTION"]:
-            physics_params["BALL_RESTITUTION"] = new_restitution
-
-        # Rolling Friction (horizontal slowdown)
-        new_friction = window.GUI.slider_float("Rolling Friction", physics_params["BALL_ROLLING_FRICTION"], 0.80, 0.99)
-        if new_friction != physics_params["BALL_ROLLING_FRICTION"]:
-            physics_params["BALL_ROLLING_FRICTION"] = new_friction
-
-        # Ground Bounce (floor bounce coefficient)
-        new_ground_bounce = window.GUI.slider_float("Ground Bounce", physics_params["BALL_GROUND_BOUNCE"], 0.0, 0.8)
-        if new_ground_bounce != physics_params["BALL_GROUND_BOUNCE"]:
-            physics_params["BALL_GROUND_BOUNCE"] = new_ground_bounce
-
-        # Ball contact physics (torque/lift/tip based on hit location)
-        window.GUI.text("")
-        window.GUI.text("--- Ball Contact Physics ---")
-
-        # Lift Strength (upward force when scooping with horn)
-        new_lift = window.GUI.slider_float("Scoop Lift", physics_params["BALL_LIFT_STRENGTH"], 0.0, 10.0)
-        if new_lift != physics_params["BALL_LIFT_STRENGTH"]:
-            physics_params["BALL_LIFT_STRENGTH"] = new_lift
-
-        # Passive Lift Strength (automatic lift when touching bottom of ball)
-        new_passive_lift = window.GUI.slider_float("Passive Lift", physics_params["BALL_PASSIVE_LIFT_STRENGTH"], 0.0, 10.0)
-        if new_passive_lift != physics_params["BALL_PASSIVE_LIFT_STRENGTH"]:
-            physics_params["BALL_PASSIVE_LIFT_STRENGTH"] = new_passive_lift
-
-        # Tip Strength (downward force when hit from above)
-        new_tip = window.GUI.slider_float("Tip Strength", physics_params["BALL_TIP_STRENGTH"], 0.0, 5.0)
-        if new_tip != physics_params["BALL_TIP_STRENGTH"]:
-            physics_params["BALL_TIP_STRENGTH"] = new_tip
-
-        # Torque Strength (spin from side hits)
-        new_torque = window.GUI.slider_float("Torque Strength", physics_params["BALL_TORQUE_STRENGTH"], 0.0, 10.0)
-        if new_torque != physics_params["BALL_TORQUE_STRENGTH"]:
-            physics_params["BALL_TORQUE_STRENGTH"] = new_torque
-
-        # Gravity Multiplier (how fast ball falls)
-        new_grav = window.GUI.slider_float("Gravity Multiplier", physics_params["BALL_GRAVITY_MULTIPLIER"], 1.0, 5.0)
-        if new_grav != physics_params["BALL_GRAVITY_MULTIPLIER"]:
-            physics_params["BALL_GRAVITY_MULTIPLIER"] = new_grav
-
-        window.GUI.text("")
-        window.GUI.text("--- Ball Feel (Mass/Spin) ---")
-
-        # Push Multiplier (how easily beetles can push the ball)
-        new_push = window.GUI.slider_float("Push Ease", physics_params["BALL_PUSH_MULTIPLIER"], 0.5, 4.0)
-        if new_push != physics_params["BALL_PUSH_MULTIPLIER"]:
-            physics_params["BALL_PUSH_MULTIPLIER"] = new_push
-
-        # Spin Multiplier (how easily ball spins when hit)
-        new_spin = window.GUI.slider_float("Spin Ease", physics_params["BALL_SPIN_MULTIPLIER"], 0.5, 5.0)
-        if new_spin != physics_params["BALL_SPIN_MULTIPLIER"]:
-            physics_params["BALL_SPIN_MULTIPLIER"] = new_spin
-
-        # Angular Friction (how quickly ball spin slows down)
-        new_ang_fric = window.GUI.slider_float("Spin Retain", physics_params["BALL_ANGULAR_FRICTION"], 0.90, 0.995)
-        if new_ang_fric != physics_params["BALL_ANGULAR_FRICTION"]:
-            physics_params["BALL_ANGULAR_FRICTION"] = new_ang_fric
 
     # Winner announcement and restart button
     if blue_celebrating or red_celebrating:
@@ -13867,46 +13778,123 @@ while window.running:
         if window.GUI.button("RESTART MATCH"):
             reset_match()
 
-    # Physics parameter sliders (commented out - can re-enable later if needed)
-    # window.GUI.text("")
-    window.GUI.text("=== PHYSICS TUNING ===")
-    physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 60.0)
-    physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 4.0)
-    physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
-    physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
-    physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
-    physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
-    physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
-    new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
+    # Advanced settings toggle (collapsed by default for performance - saves ~36 slider renders)
+    window.GUI.text("")
+    adv_button_text = "Hide Advanced Settings" if show_advanced_settings else "Show Advanced Settings"
+    if window.GUI.button(adv_button_text):
+        show_advanced_settings = not show_advanced_settings
 
-    window.GUI.text("--- Airborne Tumbling ---")
-    physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
-    physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
-    physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
-    physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 5.0)
-    physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
-    physics_params["WEAK_RESTORING"] = window.GUI.slider_float("Restoring (Bouncing)", physics_params["WEAK_RESTORING"], 5.0, 50.0)
+    if show_advanced_settings:
+        # Horn combat physics tuning
+        window.GUI.text("")
+        window.GUI.text("=== HORN COMBAT PHYSICS ===")
 
-    window.GUI.text("--- Auto-Follow Camera ---")
-    physics_params["CAMERA_PITCH"] = window.GUI.slider_float("Camera Angle", physics_params["CAMERA_PITCH"], -90.0, -30.0)
-    physics_params["CAMERA_BASE_HEIGHT"] = window.GUI.slider_float("Camera Height", physics_params["CAMERA_BASE_HEIGHT"], 20.0, 120.0)
-    physics_params["CAMERA_DISTANCE"] = window.GUI.slider_float("Camera Distance", physics_params["CAMERA_DISTANCE"], 10.0, 80.0)
-    spotlight_strength = window.GUI.slider_float("Spotlight Strength", spotlight_strength, 0.0, 1.5)
-    spotlight_height = window.GUI.slider_float("Spotlight Size", spotlight_height, 10.0, 100.0)
-    base_light_brightness = window.GUI.slider_float("Base Light Brightness", base_light_brightness, 0.0, 2.0)
-    front_light_strength = window.GUI.slider_float("Front Light Strength", front_light_strength, 0.0, 1.5)
-    # Camera always positions on edge side (beetles in foreground, edge in background)
+        new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 2.0)
+        if new_horn_lift != physics_params["HORN_LIFT_STRENGTH"]:
+            physics_params["HORN_LIFT_STRENGTH"] = new_horn_lift
 
-    # Dynamic lighting toggle
-    lighting_button_text = "Dynamic Lighting: ON" if dynamic_lighting_enabled else "Dynamic Lighting: OFF"
-    if window.GUI.button(lighting_button_text):
-        dynamic_lighting_enabled = not dynamic_lighting_enabled
+        new_horn_tip = window.GUI.slider_float("Horn Tip Strength", physics_params["HORN_TIP_STRENGTH"], 0.5, 5.0)
+        if new_horn_tip != physics_params["HORN_TIP_STRENGTH"]:
+            physics_params["HORN_TIP_STRENGTH"] = new_horn_tip
 
-    # Update beetle inertia if factor changed
-    if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
-        physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
-        beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
-        beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+        # Ball physics sliders (only when ball is active)
+        if beetle_ball.active:
+            window.GUI.text("")
+            window.GUI.text("=== BALL PHYSICS ===")
+            new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
+            if new_ball_radius != int(beetle_ball.radius):
+                beetle_ball.radius = float(new_ball_radius)
+                init_ball_cache(beetle_ball.radius)
+            window.GUI.text(f"Ball Position: ({beetle_ball.x:.1f}, {beetle_ball.y:.1f}, {beetle_ball.z:.1f})")
+            window.GUI.text(f"Ball Velocity: ({beetle_ball.vx:.1f}, {beetle_ball.vy:.1f}, {beetle_ball.vz:.1f})")
+
+            window.GUI.text("")
+            window.GUI.text("--- Ball Physics Tuning ---")
+            new_separation = window.GUI.slider_float("Separation Force", physics_params["BALL_SEPARATION_FORCE"], 0.1, 2.0)
+            if new_separation != physics_params["BALL_SEPARATION_FORCE"]:
+                physics_params["BALL_SEPARATION_FORCE"] = new_separation
+            new_momentum = window.GUI.slider_float("Momentum Transfer", physics_params["BALL_MOMENTUM_TRANSFER"], 0.0, 2.0)
+            if new_momentum != physics_params["BALL_MOMENTUM_TRANSFER"]:
+                physics_params["BALL_MOMENTUM_TRANSFER"] = new_momentum
+            new_restitution = window.GUI.slider_float("Restitution (Bounce)", physics_params["BALL_RESTITUTION"], 0.0, 1.0)
+            if new_restitution != physics_params["BALL_RESTITUTION"]:
+                physics_params["BALL_RESTITUTION"] = new_restitution
+            new_friction = window.GUI.slider_float("Rolling Friction", physics_params["BALL_ROLLING_FRICTION"], 0.80, 0.99)
+            if new_friction != physics_params["BALL_ROLLING_FRICTION"]:
+                physics_params["BALL_ROLLING_FRICTION"] = new_friction
+            new_ground_bounce = window.GUI.slider_float("Ground Bounce", physics_params["BALL_GROUND_BOUNCE"], 0.0, 0.8)
+            if new_ground_bounce != physics_params["BALL_GROUND_BOUNCE"]:
+                physics_params["BALL_GROUND_BOUNCE"] = new_ground_bounce
+
+            window.GUI.text("")
+            window.GUI.text("--- Ball Contact Physics ---")
+            new_lift = window.GUI.slider_float("Scoop Lift", physics_params["BALL_LIFT_STRENGTH"], 0.0, 10.0)
+            if new_lift != physics_params["BALL_LIFT_STRENGTH"]:
+                physics_params["BALL_LIFT_STRENGTH"] = new_lift
+            new_passive_lift = window.GUI.slider_float("Passive Lift", physics_params["BALL_PASSIVE_LIFT_STRENGTH"], 0.0, 10.0)
+            if new_passive_lift != physics_params["BALL_PASSIVE_LIFT_STRENGTH"]:
+                physics_params["BALL_PASSIVE_LIFT_STRENGTH"] = new_passive_lift
+            new_tip = window.GUI.slider_float("Tip Strength", physics_params["BALL_TIP_STRENGTH"], 0.0, 5.0)
+            if new_tip != physics_params["BALL_TIP_STRENGTH"]:
+                physics_params["BALL_TIP_STRENGTH"] = new_tip
+            new_torque = window.GUI.slider_float("Torque Strength", physics_params["BALL_TORQUE_STRENGTH"], 0.0, 10.0)
+            if new_torque != physics_params["BALL_TORQUE_STRENGTH"]:
+                physics_params["BALL_TORQUE_STRENGTH"] = new_torque
+            new_grav = window.GUI.slider_float("Gravity Multiplier", physics_params["BALL_GRAVITY_MULTIPLIER"], 1.0, 5.0)
+            if new_grav != physics_params["BALL_GRAVITY_MULTIPLIER"]:
+                physics_params["BALL_GRAVITY_MULTIPLIER"] = new_grav
+
+            window.GUI.text("")
+            window.GUI.text("--- Ball Feel (Mass/Spin) ---")
+            new_push = window.GUI.slider_float("Push Ease", physics_params["BALL_PUSH_MULTIPLIER"], 0.5, 4.0)
+            if new_push != physics_params["BALL_PUSH_MULTIPLIER"]:
+                physics_params["BALL_PUSH_MULTIPLIER"] = new_push
+            new_spin = window.GUI.slider_float("Spin Ease", physics_params["BALL_SPIN_MULTIPLIER"], 0.5, 5.0)
+            if new_spin != physics_params["BALL_SPIN_MULTIPLIER"]:
+                physics_params["BALL_SPIN_MULTIPLIER"] = new_spin
+            new_ang_fric = window.GUI.slider_float("Spin Retain", physics_params["BALL_ANGULAR_FRICTION"], 0.90, 0.995)
+            if new_ang_fric != physics_params["BALL_ANGULAR_FRICTION"]:
+                physics_params["BALL_ANGULAR_FRICTION"] = new_ang_fric
+
+        # Physics parameter sliders
+        window.GUI.text("")
+        window.GUI.text("=== PHYSICS TUNING ===")
+        physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 60.0)
+        physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 4.0)
+        physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
+        physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
+        physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
+        physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
+        physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
+        new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
+
+        window.GUI.text("--- Airborne Tumbling ---")
+        physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
+        physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
+        physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
+        physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 5.0)
+        physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
+        physics_params["WEAK_RESTORING"] = window.GUI.slider_float("Restoring (Bouncing)", physics_params["WEAK_RESTORING"], 5.0, 50.0)
+
+        window.GUI.text("--- Auto-Follow Camera ---")
+        physics_params["CAMERA_PITCH"] = window.GUI.slider_float("Camera Angle", physics_params["CAMERA_PITCH"], -90.0, -30.0)
+        physics_params["CAMERA_BASE_HEIGHT"] = window.GUI.slider_float("Camera Height", physics_params["CAMERA_BASE_HEIGHT"], 20.0, 120.0)
+        physics_params["CAMERA_DISTANCE"] = window.GUI.slider_float("Camera Distance", physics_params["CAMERA_DISTANCE"], 10.0, 80.0)
+        spotlight_strength = window.GUI.slider_float("Spotlight Strength", spotlight_strength, 0.0, 1.5)
+        spotlight_height = window.GUI.slider_float("Spotlight Size", spotlight_height, 10.0, 100.0)
+        base_light_brightness = window.GUI.slider_float("Base Light Brightness", base_light_brightness, 0.0, 2.0)
+        front_light_strength = window.GUI.slider_float("Front Light Strength", front_light_strength, 0.0, 1.5)
+
+        # Dynamic lighting toggle
+        lighting_button_text = "Dynamic Lighting: ON" if dynamic_lighting_enabled else "Dynamic Lighting: OFF"
+        if window.GUI.button(lighting_button_text):
+            dynamic_lighting_enabled = not dynamic_lighting_enabled
+
+        # Update beetle inertia if factor changed
+        if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
+            physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
+            beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+            beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
 
     window.GUI.end()
 
