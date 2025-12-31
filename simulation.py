@@ -51,6 +51,14 @@ silk_under_ball = ti.field(dtype=ti.i32, shape=())  # Floor silk near ball
 silk_stuck_voxel_idx = ti.field(dtype=ti.i32, shape=MAX_SILK)  # index into body cache
 silk_stuck_offset = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)  # small random offset for variation
 
+# Silk spatial grid for O(1) neighbor queries (replaces O(n²) anti-stacking check)
+# Arena is 64m diameter, cell_size = 1.0m, grid covers -32 to +32 in x/z
+SILK_GRID_SIZE = 64  # 64x64 grid cells
+SILK_CELL_SIZE = 1.0  # 1 meter per cell (2x MIN_FLOOR_SPACING of 0.5m)
+SILK_MAX_PER_CELL = 16  # Max silk particles per grid cell
+silk_grid_count = ti.field(dtype=ti.i32, shape=(SILK_GRID_SIZE, SILK_GRID_SIZE))  # Count per cell
+silk_grid_particles = ti.field(dtype=ti.i32, shape=(SILK_GRID_SIZE, SILK_GRID_SIZE, SILK_MAX_PER_CELL))  # Particle indices
+
 # Projectile system (cannonballs)
 MAX_PROJECTILES = 10  # Maximum active projectiles
 num_projectiles = ti.field(dtype=ti.i32, shape=())  # Active projectile count

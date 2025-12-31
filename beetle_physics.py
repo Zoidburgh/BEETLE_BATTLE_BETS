@@ -10,7 +10,42 @@ import time
 import math
 import random
 import os
+import sys
 from collections import deque
+
+# ============================================================================
+# RESOLUTION PRESETS (for 4K monitor performance)
+# ============================================================================
+# Use command-line: python beetle_physics.py --res 720
+# Or: python beetle_physics.py --res 1080 (default)
+RESOLUTION_PRESETS = {
+    '720': (1280, 720),    # 720p - Best performance
+    '900': (1600, 900),    # 900p - Good balance
+    '1080': (1920, 1080),  # 1080p - Default
+    '1440': (2560, 1440),  # 1440p - High quality
+    '4k': (3840, 2160),    # 4K - Native (slow on some systems)
+}
+
+def get_resolution_from_args():
+    """Parse --res argument to get window resolution"""
+    res_key = '1080'  # Default
+    for i, arg in enumerate(sys.argv):
+        if arg in ('--res', '-r', '--resolution') and i + 1 < len(sys.argv):
+            res_key = sys.argv[i + 1].lower()
+            break
+        elif arg.startswith('--res='):
+            res_key = arg.split('=')[1].lower()
+            break
+
+    if res_key in RESOLUTION_PRESETS:
+        return RESOLUTION_PRESETS[res_key], res_key
+    else:
+        print(f"[Resolution] Unknown preset '{res_key}', using 1080p")
+        print(f"[Resolution] Available: {', '.join(RESOLUTION_PRESETS.keys())}")
+        return RESOLUTION_PRESETS['1080'], '1080'
+
+WINDOW_RESOLUTION, RESOLUTION_NAME = get_resolution_from_args()
+print(f"[Resolution] Using {RESOLUTION_NAME}p ({WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]})")
 
 # Add DLL directory for Steam networking (must be before network import)
 os.add_dll_directory(os.getcwd())
@@ -8474,6 +8509,59 @@ def spawn_silk(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
         simulation.silk_stuck_voxel_idx[idx] = 0
         simulation.silk_stuck_offset[idx] = ti.math.vec3(0.0, 0.0, 0.0)
 
+@ti.func
+def silk_pos_to_grid(x: ti.f32, z: ti.f32) -> ti.math.ivec2:
+    """Convert world position to grid cell (arena center is at 0,0)"""
+    # Arena spans -32 to +32, grid is 0 to 63
+    gx = int((x + 32.0) / simulation.SILK_CELL_SIZE)
+    gz = int((z + 32.0) / simulation.SILK_CELL_SIZE)
+    # Clamp to grid bounds
+    gx = ti.max(0, ti.min(simulation.SILK_GRID_SIZE - 1, gx))
+    gz = ti.max(0, ti.min(simulation.SILK_GRID_SIZE - 1, gz))
+    return ti.math.ivec2(gx, gz)
+
+@ti.kernel
+def build_silk_spatial_grid():
+    """Build spatial grid from floor-stuck silk for O(1) neighbor queries"""
+    # Clear grid counts
+    for i, j in simulation.silk_grid_count:
+        simulation.silk_grid_count[i, j] = 0
+
+    # Insert floor-stuck silk into grid
+    for idx in range(simulation.num_silk[None]):
+        if simulation.silk_stuck[idx] == 1:  # Floor-stuck only
+            pos = simulation.silk_pos[idx]
+            cell = silk_pos_to_grid(pos.x, pos.z)
+            # Atomically add to cell
+            slot = ti.atomic_add(simulation.silk_grid_count[cell.x, cell.y], 1)
+            if slot < simulation.SILK_MAX_PER_CELL:
+                simulation.silk_grid_particles[cell.x, cell.y, slot] = idx
+
+@ti.func
+def check_silk_nearby_grid(x: ti.f32, z: ti.f32, min_dist_sq: ti.f32) -> ti.i32:
+    """Check if there's floor silk within min_dist using spatial grid. Returns 1 if collision."""
+    cell = silk_pos_to_grid(x, z)
+    collision = 0
+
+    # Check 3x3 neighborhood of cells
+    for di in ti.static(range(-1, 2)):
+        for dj in ti.static(range(-1, 2)):
+            ni = cell.x + di
+            nj = cell.y + dj
+            # Bounds check
+            if 0 <= ni < simulation.SILK_GRID_SIZE and 0 <= nj < simulation.SILK_GRID_SIZE:
+                # Check all silk in this cell
+                count = simulation.silk_grid_count[ni, nj]
+                for k in range(count):
+                    if k < simulation.SILK_MAX_PER_CELL:  # Safety bound
+                        other_idx = simulation.silk_grid_particles[ni, nj, k]
+                        other_pos = simulation.silk_pos[other_idx]
+                        dx = x - other_pos.x
+                        dz = z - other_pos.z
+                        if dx * dx + dz * dz < min_dist_sq:
+                            collision = 1
+    return collision
+
 @ti.kernel
 def update_silk_particles(dt: ti.f32):
     """Update silk positions, apply gravity, stick to floor"""
@@ -8491,20 +8579,12 @@ def update_silk_particles(dt: ti.f32):
             dist_from_center = ti.sqrt(pos.x * pos.x + pos.z * pos.z)
 
             if pos.y < RENDER_Y_OFFSET and dist_from_center < ARENA_RADIUS:
-                # Check if there's already floor silk nearby (prevent stacking)
+                # Check if there's already floor silk nearby using spatial grid (O(1) instead of O(n²))
                 MIN_FLOOR_SPACING = 0.5  # Minimum distance between floor silk
-                can_stick = True
-                for other in range(simulation.num_silk[None]):
-                    if other != idx and simulation.silk_stuck[other] == 1:  # Other floor-stuck silk
-                        other_pos = simulation.silk_pos[other]
-                        dx = pos.x - other_pos.x
-                        dz = pos.z - other_pos.z
-                        dist_sq = dx * dx + dz * dz
-                        if dist_sq < MIN_FLOOR_SPACING * MIN_FLOOR_SPACING:
-                            can_stick = False
-                            break
+                MIN_FLOOR_SPACING_SQ = MIN_FLOOR_SPACING * MIN_FLOOR_SPACING
+                has_collision = check_silk_nearby_grid(pos.x, pos.z, MIN_FLOOR_SPACING_SQ)
 
-                if can_stick:
+                if has_collision == 0:
                     # Hit floor inside arena - stick!
                     simulation.silk_pos[idx].y = RENDER_Y_OFFSET
                     simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
@@ -10048,8 +10128,8 @@ def shortest_rotation(current, target):
         diff += TWO_PI
     return diff
 
-# Window
-window = ti.ui.Window("Beetle Physics", (1920, 1080), vsync=True)
+# Window (resolution set via --res command line argument)
+window = ti.ui.Window("Beetle Physics", WINDOW_RESOLUTION, vsync=True)
 canvas = window.get_canvas()
 scene = window.get_scene()
 
@@ -10232,6 +10312,7 @@ spawn_spray_explosion(0.0, 0.0, -100.0, 0.2, 1.0, 0.3)
 
 # Spider silk kernels
 spawn_silk(0.0, -100.0, 0.0, 1.0, 0.0, 50.0, 0.0, 0, 0.0)
+build_silk_spatial_grid()
 update_silk_particles(0.016)
 check_silk_beetle_collision(
     # Blue beetle state (dummy values)
@@ -11384,6 +11465,7 @@ while window.running:
 
         # Update silk particles (physics, sticking)
         if simulation.num_silk[None] > 0:
+            build_silk_spatial_grid()  # Build O(1) lookup grid before anti-stacking check
             update_silk_particles(PHYSICS_TIMESTEP)
 
             # Check silk collision with beetles
