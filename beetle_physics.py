@@ -13275,10 +13275,11 @@ while window.running:
 
     window.GUI.text("")
 
-    # Throttle beetle customization GUI during active gameplay for performance
-    # Only show full sliders every 6 frames, or always during lobby/paused
+    # Throttle beetle customization GUI during active LOCAL gameplay for performance
+    # Only show full sliders every 6 frames during local play, always show full in network mode
     gui_frame_counter = physics_frame % 6
-    in_active_gameplay = game_state == GAME_STATE_ONLINE_PLAY and beetle_blue.active and beetle_red.active
+    is_local_play = not network_manager or not network_manager.connected
+    in_active_gameplay = game_state == GAME_STATE_ONLINE_PLAY and beetle_blue.active and beetle_red.active and is_local_play
     show_full_customization = (gui_frame_counter == 0) or not in_active_gameplay
 
     # Determine which beetle this player can edit in network mode
