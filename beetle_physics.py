@@ -718,6 +718,12 @@ class Beetle:
         self.horn_type = "rhino"  # Horn type: "rhino" (single horn), "stag" (dual pincers), "hercules" (dual jaws), or "scorpion"
         self.horn_type_id = HORN_TYPE_IDS["rhino"]  # OPTIMIZATION: Integer ID for fast lookup (avoids string comparisons)
         self.silk_speed_mult = 1.0  # Silk speed multiplier (set each frame based on body/floor silk)
+
+        # Speed boost system - builds over 5 sec of holding forward/backward
+        self.forward_hold_time = 0.0   # Seconds holding forward
+        self.backward_hold_time = 0.0  # Seconds holding backward
+        self.forward_bonus = 0.0       # 0.0 to 0.30 (30% max bonus)
+        self.backward_bonus = 0.0      # 0.0 to 0.30 (30% max bonus)
         self.body_pitch_offset = 0.0  # Static body tilt angle (radians) - calculated from leg geometry for scorpion
 
         # Scorpion stinger control (VB/NM keys)
@@ -888,8 +894,9 @@ class Beetle:
                 base_forward = physics_params.get("FORWARD_SPEED", 7.0)
                 base_backward = physics_params.get("BACKWARD_SPEED", 5.0)
             # Silk speed multiplier adjusts max speed (spider boost on floor silk)
-            forward_max = base_forward * self.silk_speed_mult
-            backward_max = base_backward * self.silk_speed_mult
+            # Speed boost from holding forward/backward adds up to 30% more
+            forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus)
+            backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus)
             if dot_product >= 0:  # Moving forward
                 if speed > forward_max:
                     self.vx = (self.vx / speed) * forward_max
@@ -10645,7 +10652,10 @@ while window.running:
             if not beetle_blue.in_horn_collision:
                 # Check if rotating without moving (skill-based faster turning)
                 is_moving = (blue_inputs & INPUT_FORWARD) or (blue_inputs & INPUT_BACKWARD)
-                rotation_multiplier = 1.0 if is_moving else 1.3  # 30% faster when stationary
+                # Speed boost turn penalty: faster you go, harder to turn (uses previous frame's bonus)
+                active_bonus = max(beetle_blue.forward_bonus, beetle_blue.backward_bonus)
+                turn_penalty = 1.0 - active_bonus  # 30% bonus = 30% slower turning
+                rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
 
                 if blue_inputs & INPUT_LEFT:
                     beetle_blue.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
@@ -10666,16 +10676,33 @@ while window.running:
             blue_speed_mult = blue_silk_slowdown * blue_floor_modifier
             beetle_blue.silk_speed_mult = blue_speed_mult  # Set on beetle for max speed cap
 
+            # Speed boost system - track hold time and calculate bonus
+            if blue_inputs & INPUT_FORWARD:
+                beetle_blue.forward_hold_time += PHYSICS_TIMESTEP
+            else:
+                beetle_blue.forward_hold_time = 0.0
+            if blue_inputs & INPUT_BACKWARD:
+                beetle_blue.backward_hold_time += PHYSICS_TIMESTEP
+            else:
+                beetle_blue.backward_hold_time = 0.0
+            # Calculate bonuses (linear ramp: 0% to 30% over 5 seconds)
+            beetle_blue.forward_bonus = min(0.30, beetle_blue.forward_hold_time / 5.0 * 0.30)
+            beetle_blue.backward_bonus = min(0.30, beetle_blue.backward_hold_time / 5.0 * 0.30)
+
             if blue_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
                 move_x = math.cos(beetle_blue.rotation)
                 move_z = math.sin(beetle_blue.rotation)
-                beetle_blue.apply_force(move_x * MOVE_FORCE * blue_speed_mult, move_z * MOVE_FORCE * blue_speed_mult, PHYSICS_TIMESTEP)
+                # Force scales with speed bonus to reach higher cap
+                forward_force_mult = blue_speed_mult * (1.0 + beetle_blue.forward_bonus)
+                beetle_blue.apply_force(move_x * MOVE_FORCE * forward_force_mult, move_z * MOVE_FORCE * forward_force_mult, PHYSICS_TIMESTEP)
             if blue_inputs & INPUT_BACKWARD:
                 # Move backward in facing direction
                 move_x = -math.cos(beetle_blue.rotation)
                 move_z = -math.sin(beetle_blue.rotation)
-                beetle_blue.apply_force(move_x * BACKWARD_MOVE_FORCE * blue_speed_mult, move_z * BACKWARD_MOVE_FORCE * blue_speed_mult, PHYSICS_TIMESTEP)
+                # Force scales with speed bonus to reach higher cap
+                backward_force_mult = blue_speed_mult * (1.0 + beetle_blue.backward_bonus)
+                beetle_blue.apply_force(move_x * BACKWARD_MOVE_FORCE * backward_force_mult, move_z * BACKWARD_MOVE_FORCE * backward_force_mult, PHYSICS_TIMESTEP)
 
             # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
             if beetle_blue.horn_type_id == 5:  # bombardier
@@ -10909,7 +10936,10 @@ while window.running:
             if not beetle_red.in_horn_collision:
                 # Check if rotating without moving (skill-based faster turning)
                 is_moving = (red_inputs & INPUT_FORWARD) or (red_inputs & INPUT_BACKWARD)
-                rotation_multiplier = 1.0 if is_moving else 1.3  # 30% faster when stationary
+                # Speed boost turn penalty: faster you go, harder to turn (uses previous frame's bonus)
+                active_bonus = max(beetle_red.forward_bonus, beetle_red.backward_bonus)
+                turn_penalty = 1.0 - active_bonus  # 30% bonus = 30% slower turning
+                rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
 
                 if red_inputs & INPUT_LEFT:
                     beetle_red.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
@@ -10930,16 +10960,33 @@ while window.running:
             red_speed_mult = red_silk_slowdown * red_floor_modifier
             beetle_red.silk_speed_mult = red_speed_mult  # Set on beetle for max speed cap
 
+            # Speed boost system - track hold time and calculate bonus
+            if red_inputs & INPUT_FORWARD:
+                beetle_red.forward_hold_time += PHYSICS_TIMESTEP
+            else:
+                beetle_red.forward_hold_time = 0.0
+            if red_inputs & INPUT_BACKWARD:
+                beetle_red.backward_hold_time += PHYSICS_TIMESTEP
+            else:
+                beetle_red.backward_hold_time = 0.0
+            # Calculate bonuses (linear ramp: 0% to 30% over 5 seconds)
+            beetle_red.forward_bonus = min(0.30, beetle_red.forward_hold_time / 5.0 * 0.30)
+            beetle_red.backward_bonus = min(0.30, beetle_red.backward_hold_time / 5.0 * 0.30)
+
             if red_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
                 move_x = math.cos(beetle_red.rotation)
                 move_z = math.sin(beetle_red.rotation)
-                beetle_red.apply_force(move_x * MOVE_FORCE * red_speed_mult, move_z * MOVE_FORCE * red_speed_mult, PHYSICS_TIMESTEP)
+                # Force scales with speed bonus to reach higher cap
+                forward_force_mult = red_speed_mult * (1.0 + beetle_red.forward_bonus)
+                beetle_red.apply_force(move_x * MOVE_FORCE * forward_force_mult, move_z * MOVE_FORCE * forward_force_mult, PHYSICS_TIMESTEP)
             if red_inputs & INPUT_BACKWARD:
                 # Move backward in facing direction
                 move_x = -math.cos(beetle_red.rotation)
                 move_z = -math.sin(beetle_red.rotation)
-                beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE * red_speed_mult, move_z * BACKWARD_MOVE_FORCE * red_speed_mult, PHYSICS_TIMESTEP)
+                # Force scales with speed bonus to reach higher cap
+                backward_force_mult = red_speed_mult * (1.0 + beetle_red.backward_bonus)
+                beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE * backward_force_mult, move_z * BACKWARD_MOVE_FORCE * backward_force_mult, PHYSICS_TIMESTEP)
 
             # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
             if beetle_red.horn_type_id == 5:  # bombardier
@@ -11509,6 +11556,14 @@ while window.running:
             # Count floor silk under each beetle and ball for speed/friction effects
             count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,
                                            beetle_ball.x, beetle_ball.z, 1 if beetle_ball.active else 0)
+        else:
+            # No silk particles - reset floor counters so they don't stay stale
+            simulation.silk_under_blue[None] = 0
+            simulation.silk_under_red[None] = 0
+            simulation.silk_under_ball[None] = 0
+            simulation.silk_on_blue[None] = 0
+            simulation.silk_on_red[None] = 0
+            simulation.silk_on_ball[None] = 0
 
         # === DEBRIS PARTICLES TIMING END ===
         _t_debris_end = time.perf_counter()
