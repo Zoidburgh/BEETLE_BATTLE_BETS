@@ -886,15 +886,15 @@ class Beetle:
             dot_product = self.vx * forward_x + self.vz * forward_z
 
             # Apply different speed caps based on direction (use tunable params)
-            # Spider has lower base speed (7/4) but can boost with floor silk
+            # Spider has lower base speed (6/4) but can boost with floor silk
             if self.horn_type_id == 6:  # Spider
-                base_forward = 7.0
+                base_forward = 6.0
                 base_backward = 4.0
             else:
                 base_forward = physics_params.get("FORWARD_SPEED", 7.0)
                 base_backward = physics_params.get("BACKWARD_SPEED", 5.0)
             # Silk speed multiplier adjusts max speed (spider boost on floor silk)
-            # Speed boost from holding forward/backward adds up to 30% more
+            # Speed boost from holding: forward up to 70%, backward up to 30%
             forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus)
             backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus)
             if dot_product >= 0:  # Moving forward
@@ -10197,7 +10197,7 @@ physics_params = {
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
     "GRAVITY": 60.0,  # Adjustable gravity
     "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
-    "FORWARD_SPEED": 12.0,  # Forward top speed
+    "FORWARD_SPEED": 10.0,  # Forward top speed (base before momentum bonus)
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
 
     # Airborne tumbling physics parameters
@@ -10685,9 +10685,9 @@ while window.running:
                 beetle_blue.backward_hold_time += PHYSICS_TIMESTEP
             else:
                 beetle_blue.backward_hold_time = 0.0
-            # Calculate bonuses (linear ramp: 0% to 30% over 5 seconds)
-            beetle_blue.forward_bonus = min(0.30, beetle_blue.forward_hold_time / 5.0 * 0.30)
-            beetle_blue.backward_bonus = min(0.30, beetle_blue.backward_hold_time / 5.0 * 0.30)
+            # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
+            beetle_blue.forward_bonus = min(0.70, beetle_blue.forward_hold_time / 3.0 * 0.70)
+            beetle_blue.backward_bonus = min(0.30, beetle_blue.backward_hold_time / 3.0 * 0.30)
 
             if blue_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
@@ -10969,9 +10969,9 @@ while window.running:
                 beetle_red.backward_hold_time += PHYSICS_TIMESTEP
             else:
                 beetle_red.backward_hold_time = 0.0
-            # Calculate bonuses (linear ramp: 0% to 30% over 5 seconds)
-            beetle_red.forward_bonus = min(0.30, beetle_red.forward_hold_time / 5.0 * 0.30)
-            beetle_red.backward_bonus = min(0.30, beetle_red.backward_hold_time / 5.0 * 0.30)
+            # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
+            beetle_red.forward_bonus = min(0.70, beetle_red.forward_hold_time / 3.0 * 0.70)
+            beetle_red.backward_bonus = min(0.30, beetle_red.backward_hold_time / 3.0 * 0.30)
 
             if red_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
