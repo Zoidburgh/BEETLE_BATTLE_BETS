@@ -10594,7 +10594,9 @@ while window.running:
         frame_red_inputs = get_local_inputs(window, 'red')
 
     # Get inputs for physics (updated inside loop for network mode)
+    # Also track last known inputs for animation when network stalls
     blue_inputs, red_inputs = 0, 0
+    network_stalled = False  # Track if we're waiting for opponent inputs
 
     while accumulator >= PHYSICS_TIMESTEP:
         # === NETWORK INPUT HANDLING (inside loop for proper frame sync) ===
@@ -10607,6 +10609,8 @@ while window.running:
             if not input_buffer.can_simulate():
                 # Waiting for opponent - don't simulate, don't advance frame
                 # Drain accumulator to prevent catch-up skipping when inputs arrive
+                # But keep last known inputs for animation (dust particles, etc.)
+                network_stalled = True
                 accumulator = 0
                 break
 
@@ -10625,11 +10629,16 @@ while window.running:
 
             # Get inputs for this frame
             blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
+            # Store for animation when network stalls
+            g['last_blue_inputs'] = blue_inputs
+            g['last_red_inputs'] = red_inputs
         else:
             # LOCAL MODE: Store inputs and get them
             input_buffer.add_local(frame_blue_inputs)
             input_buffer.add_remote(input_buffer.current_frame, frame_red_inputs)
             blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
+            g['last_blue_inputs'] = blue_inputs
+            g['last_red_inputs'] = red_inputs
         # Save previous state for interpolation
         beetle_blue.save_previous_state()
         beetle_red.save_previous_state()
@@ -12023,6 +12032,12 @@ while window.running:
     # ===== END FIXED TIMESTEP PHYSICS LOOP =====
     perf_monitor.stop('physics')
 
+    # If network stalled waiting for inputs, use last known inputs for animation
+    # This ensures dust particles and walk animations continue smoothly
+    if network_stalled and blue_inputs == 0 and red_inputs == 0:
+        blue_inputs = g.get('last_blue_inputs', 0)
+        red_inputs = g.get('last_red_inputs', 0)
+
     # Calculate interpolation alpha for smooth rendering between physics states
     alpha = accumulator / PHYSICS_TIMESTEP
 
@@ -12245,6 +12260,9 @@ while window.running:
     if beetle_blue.active and beetle_blue.y < 3.0:  # Only when on/near ground (within 3 voxels)
         # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
         if beetle_blue.is_moving and not beetle_blue.is_rotating_only:
+            # Scale dust particles with speed bonus (more dust when going faster)
+            active_bonus = beetle_blue.backward_bonus if beetle_blue.is_moving_backward else beetle_blue.forward_bonus
+            blue_dust_count = int(8 * (1.0 + active_bonus))
             # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
             if beetle_blue.is_moving_backward:
                 dust_legs = [0, 1]  # Front legs
@@ -12278,7 +12296,7 @@ while window.running:
                         rand_x = (random.random() - 0.5) * 1.5
                         rand_z = (random.random() - 0.5) * 1.5
                         spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, 8)
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, blue_dust_count)
 
         # Spinning: spawn dust from back leg on opposite side
         # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
@@ -12337,6 +12355,9 @@ while window.running:
     if beetle_red.active and beetle_red.y < 3.0:  # Only when on/near ground (within 3 voxels)
         # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
         if beetle_red.is_moving and not beetle_red.is_rotating_only:
+            # Scale dust particles with speed bonus (more dust when going faster)
+            active_bonus = beetle_red.backward_bonus if beetle_red.is_moving_backward else beetle_red.forward_bonus
+            red_dust_count = int(8 * (1.0 + active_bonus))
             # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
             if beetle_red.is_moving_backward:
                 dust_legs = [0, 1]  # Front legs
@@ -12370,7 +12391,7 @@ while window.running:
                         rand_x = (random.random() - 0.5) * 1.5
                         rand_z = (random.random() - 0.5) * 1.5
                         spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, 8)
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, red_dust_count)
 
         # Spinning: spawn dust from back leg on opposite side
         # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
