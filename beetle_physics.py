@@ -8997,14 +8997,15 @@ def generate_ladybug_geometry():
     shell_radius = 8
 
     # Define round spot centers on the shell surface (x, y, z, radius)
+    # Positioned lower and further out to be visible from side/bottom angles
     spot_centers = [
-        (4, 5, -3, 1.8),   # Front left
-        (4, 5, 3, 1.8),    # Front right
-        (-1, 6, -5, 1.8),  # Middle left - moved back
-        (-1, 6, 5, 1.8),   # Middle right - moved back
-        (-3, 5, -4, 1.8),  # Back left
-        (-3, 5, 4, 1.8),   # Back right
-        (-4, 5, 0, 2.0),   # Center back - moved up and bigger radius
+        (4, 3, -5, 1.8),   # Front left - lower and wider
+        (4, 3, 5, 1.8),    # Front right - lower and wider
+        (0, 3, -7, 1.8),   # Middle left - lower and at edge
+        (0, 3, 7, 1.8),    # Middle right - lower and at edge
+        (-4, 3, -5, 1.8),  # Back left - lower and wider
+        (-4, 3, 5, 1.8),   # Back right - lower and wider
+        (-5, 4, 0, 1.8),   # Center back
     ]
 
     for dx in range(-shell_radius, shell_radius + 1):
@@ -9226,7 +9227,7 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
             existing = simulation.voxel_type[grid_x, grid_y, grid_z]
-            if existing != simulation.CONCRETE and existing != simulation.SHADOW:
+            if existing != simulation.CONCRETE and existing != simulation.SHADOW and existing != simulation.SLIPPERY and existing != simulation.GOAL:
                 simulation.voxel_type[grid_x, grid_y, grid_z] = vtype
 
     # Place wing voxels with flapping animation
@@ -9266,7 +9267,7 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                 existing = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing != simulation.CONCRETE and existing != simulation.SHADOW:
+                if existing != simulation.CONCRETE and existing != simulation.SHADOW and existing != simulation.SLIPPERY and existing != simulation.GOAL:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = simulation.LADYBUG_WINGS
 
     # Place leg voxels with kick animation
@@ -9290,10 +9291,10 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         else:
             attach_x, attach_z = -5.0, 5.0
 
-        # Kick animation for front legs (0, 1)
-        kick_lift = 0.0
-        if leg_id == 0 or leg_id == 1:
-            kick_lift = ti.max(0.0, ti.sin(kick_phase)) * 6.0
+        # Leg wiggle animation - each leg has phase offset for wave effect
+        leg_phase_offset = float(leg_id) * 0.5  # Stagger legs
+        wiggle_amount = ti.sin(kick_phase * 3.0 + leg_phase_offset) * 2.0  # Faster wiggle
+        kick_lift = wiggle_amount if kick_phase > 0.01 else 0.0  # Only wiggle when kick_phase is active
 
         for idx in range(start_idx, end_idx):
             local_x = float(ladybug_leg_cache_x[idx]) + attach_x
@@ -9314,7 +9315,7 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
                 existing = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing != simulation.CONCRETE and existing != simulation.SHADOW:
+                if existing != simulation.CONCRETE and existing != simulation.SHADOW and existing != simulation.SLIPPERY and existing != simulation.GOAL:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = simulation.LADYBUG_LEGS
 
 def render_ladybug(ladybug, dt):
@@ -9352,6 +9353,306 @@ def clear_test_ladybug():
     global test_ladybug
     test_ladybug = None
     print("Test ladybug cleared")
+
+def spawn_circle_ladybugs():
+    """Spawn 8 ladybugs in a circle around the arena perimeter, facing center"""
+    global active_ladybugs
+    active_ladybugs.clear()
+
+    num_ladybugs = 5
+    spawn_radius = ARENA_RADIUS + 10  # Just outside arena edge
+    hover_height = 7.0
+
+    for i in range(num_ladybugs):
+        # Position around circle
+        angle = (2 * math.pi * i) / num_ladybugs
+        x = math.cos(angle) * spawn_radius
+        z = math.sin(angle) * spawn_radius
+
+        # Face toward center (rotation = angle + 180 degrees)
+        facing_center = angle + math.pi
+
+        ladybug = Ladybug(x, z, rotation=facing_center)
+        ladybug.y = hover_height
+        # Offset animation phase so they don't all sync
+        ladybug.antenna_phase = (2 * math.pi * i) / num_ladybugs
+        active_ladybugs.append(ladybug)
+
+    print(f"Spawned {num_ladybugs} ladybugs in circle around arena")
+
+def clear_circle_ladybugs():
+    """Clear all circle ladybugs"""
+    global active_ladybugs
+    active_ladybugs.clear()
+    print("Circle ladybugs cleared")
+
+# Flying referee ladybug - stays opposite side of camera
+referee_ladybug = None
+referee_enabled = True  # Enabled by default
+referee_time = 0.0  # Time accumulator for organic movement
+
+def toggle_referee():
+    """Toggle flying referee on/off"""
+    global referee_ladybug, referee_enabled, referee_time, referee_beam_active
+    referee_enabled = not referee_enabled
+    if referee_enabled:
+        referee_ladybug = Ladybug(0.0, 0.0, rotation=0.0)
+        referee_ladybug.y = 8.0
+        referee_time = 0.0
+        print("Flying referee ENABLED")
+    else:
+        # Clear the referee's voxels from the grid before removing
+        clear_ladybug_voxels()
+        referee_ladybug = None
+        referee_beam_active = False  # Stop any active beam
+        print("Flying referee DISABLED")
+
+def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
+    """Update referee position to stay opposite camera with organic exploration"""
+    global referee_ladybug, referee_time
+    if referee_ladybug is None or not referee_enabled:
+        return
+
+    # Accumulate time for organic movement
+    referee_time += dt
+
+    # Base position opposite the camera (180 degrees away)
+    opposite_angle = camera_angle + math.pi
+
+    # Organic variations using sine waves at different frequencies
+    # Angle wander: ±20 degrees (~0.35 radians) at slow frequency
+    angle_wander = math.sin(referee_time * 0.4) * 0.35
+    angle_wander += math.sin(referee_time * 0.17) * 0.15  # Secondary slower wave
+
+    # Radius breathing: ±6 voxels at different frequency
+    radius_breathe = math.sin(referee_time * 0.25) * 6.0
+    radius_breathe += math.sin(referee_time * 0.6) * 2.0  # Faster subtle variation
+
+    # Apply variations to base position
+    final_angle = opposite_angle + angle_wander
+    referee_radius = ARENA_RADIUS + 22 + radius_breathe
+
+    target_x = math.cos(final_angle) * referee_radius
+    target_z = math.sin(final_angle) * referee_radius
+
+    # Smooth movement (lerp)
+    referee_ladybug.x += (target_x - referee_ladybug.x) * 0.08
+    referee_ladybug.z += (target_z - referee_ladybug.z) * 0.08
+
+    # Look-around: face toward midpoint but with slight scanning motion
+    dx = mid_x - referee_ladybug.x
+    dz = mid_z - referee_ladybug.z
+    base_rotation = math.atan2(dz, dx)
+
+    # Look-around with much more turning (±50-60 degrees to show side profile)
+    look_offset = math.sin(referee_time * 0.5) * 0.42
+    look_offset += math.sin(referee_time * 0.23) * 0.24
+    look_offset += math.sin(referee_time * 0.8) * 0.12
+
+    # Smooth the rotation to reduce flickering
+    target_rotation = base_rotation + look_offset
+    angle_diff = target_rotation - referee_ladybug.rotation
+    # Normalize angle diff
+    while angle_diff > math.pi:
+        angle_diff -= 2 * math.pi
+    while angle_diff < -math.pi:
+        angle_diff += 2 * math.pi
+    referee_ladybug.rotation += angle_diff * 0.15
+
+    # Forward/back tilt (±18 degrees on top of base 30 degree tilt)
+    tilt_offset = math.sin(referee_time * 0.35) * 0.22
+    tilt_offset += math.sin(referee_time * 0.6) * 0.1
+    referee_ladybug.body_tilt = math.radians(30) + tilt_offset
+
+    # Slow vertical drift (±4 voxels on top of base height)
+    height_drift = math.sin(referee_time * 0.2) * 3.0
+    height_drift += math.sin(referee_time * 0.45) * 1.5
+    referee_ladybug.y = 8.0 + height_drift
+
+def get_referee_antenna_tips():
+    """Get world positions of referee's antenna tips for beam effect"""
+    if referee_ladybug is None:
+        return None, None
+
+    # Antenna tips are at local position roughly (head_x + 9, head_y + 8, ±spread)
+    # head_x = 11, head_y = 2, so tips around (20, 10, ±5)
+    # Apply body tilt and rotation transforms
+    cos_rot = math.cos(referee_ladybug.rotation)
+    sin_rot = math.sin(referee_ladybug.rotation)
+    cos_tilt = math.cos(referee_ladybug.body_tilt)
+    sin_tilt = math.sin(referee_ladybug.body_tilt)
+
+    # Local antenna tip positions (approximate)
+    local_x = 18.0
+    local_y = 9.0
+    local_z_left = -4.0
+    local_z_right = 4.0
+
+    # Apply tilt
+    tilted_x = local_x * cos_tilt - local_y * sin_tilt
+    tilted_y = local_x * sin_tilt + local_y * cos_tilt
+
+    # Apply rotation for left antenna
+    world_x_left = referee_ladybug.x + tilted_x * cos_rot - local_z_left * sin_rot
+    world_z_left = referee_ladybug.z + tilted_x * sin_rot + local_z_left * cos_rot
+    world_y = referee_ladybug.y + tilted_y
+
+    # Apply rotation for right antenna
+    world_x_right = referee_ladybug.x + tilted_x * cos_rot - local_z_right * sin_rot
+    world_z_right = referee_ladybug.z + tilted_x * sin_rot + local_z_right * cos_rot
+
+    return (world_x_left, world_y, world_z_left), (world_x_right, world_y, world_z_right)
+
+# Referee beam state
+referee_beam_active = False
+referee_beam_timer = 0.0
+referee_beam_target = None  # 'blue' or 'red'
+REFEREE_BEAM_DURATION = 0.375  # Duration of beam effect (50% longer)
+
+@ti.kernel
+def clear_referee_beam_voxels():
+    """Clear ALL score digit colored voxels - they get re-rendered each frame anyway"""
+    for i, j, k in ti.ndrange(simulation.n_grid, simulation.n_grid, simulation.n_grid):
+        vtype = simulation.voxel_type[i, j, k]
+        if vtype == simulation.SCORE_DIGIT_BLUE or vtype == simulation.SCORE_DIGIT_RED:
+            simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+def get_referee_belly_position():
+    """Get the bottom center of the referee ladybug's belly"""
+    if referee_ladybug is None:
+        return None
+    # Belly is at center of ladybug, below the shell
+    # The ladybug y is the base, shell goes up from there
+    # Belly bottom is approximately at y - 1 (just below body center)
+    return (referee_ladybug.x, referee_ladybug.y - 1.0, referee_ladybug.z)
+
+# Magic beam voxel type - uses score digit color to match the target
+@ti.kernel
+def render_referee_beam(start_x: ti.f32, start_y: ti.f32, start_z: ti.f32,
+                        end_x: ti.f32, end_y: ti.f32, end_z: ti.f32,
+                        head_progress: ti.f32, tail_progress: ti.f32,
+                        spiral_phase: ti.f32, beam_type: ti.i32):
+    """Render a magical spiral beam from referee to score"""
+    # Beam travels from start to end based on progress (0-1)
+    # Head leads, tail follows - creates a traveling beam effect
+    beam_length = ti.sqrt((end_x - start_x)**2 + (end_y - start_y)**2 + (end_z - start_z)**2)
+    num_points = int(beam_length * 1.5)  # Points along beam
+
+    for i in range(num_points):
+        t = float(i) / float(num_points)
+
+        # Only draw points between tail and head (traveling beam)
+        if t > head_progress or t < tail_progress:
+            continue
+
+        # Base position along beam
+        px = start_x + (end_x - start_x) * t
+        py = start_y + (end_y - start_y) * t
+        pz = start_z + (end_z - start_z) * t
+
+        # Add spiral offset
+        spiral_radius = 2.0 * (1.0 - t * 0.5)  # Spiral gets tighter toward end
+        spiral_angle = spiral_phase + t * 12.0  # Multiple rotations along beam
+        offset_x = ti.cos(spiral_angle) * spiral_radius
+        offset_z = ti.sin(spiral_angle) * spiral_radius
+
+        # Grid position (center of beam)
+        center_x = int(px + offset_x + simulation.n_grid / 2.0)
+        center_y = int(py + RENDER_Y_OFFSET)
+        center_z = int(pz + offset_z + simulation.n_grid / 2.0)
+
+        # Place a 2x2x2 cluster for thicker beam
+        for dx in range(-1, 1):
+            for dy in range(-1, 1):
+                for dz in range(-1, 1):
+                    grid_x = center_x + dx
+                    grid_y = center_y + dy
+                    grid_z = center_z + dz
+                    if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                        existing = simulation.voxel_type[grid_x, grid_y, grid_z]
+                        if existing == simulation.EMPTY:
+                            simulation.voxel_type[grid_x, grid_y, grid_z] = beam_type
+
+def trigger_referee_beam(target):
+    """Start the referee beam effect toward a score"""
+    global referee_beam_active, referee_beam_timer, referee_beam_target
+    if referee_ladybug is None or not referee_enabled:
+        return
+    referee_beam_active = True
+    referee_beam_timer = REFEREE_BEAM_DURATION
+    referee_beam_target = target
+
+def update_and_render_referee_beam(dt):
+    """Update beam timer and render if active"""
+    global referee_beam_active, referee_beam_timer, referee_time
+
+    # Skip entirely if referee is disabled and beam is not active
+    if not referee_enabled and not referee_beam_active:
+        return
+
+    # Clear beam voxels if beam is/was active (need to clear when beam ends too)
+    if referee_beam_active:
+        clear_referee_beam_voxels()
+
+        referee_beam_timer -= dt
+        if referee_beam_timer <= 0:
+            referee_beam_active = False
+            # Final clear already done above, just return
+            return
+    else:
+        # Beam not active - smoothly decay leg wiggle
+        if referee_ladybug is not None and referee_ladybug.kick_phase > 0:
+            referee_ladybug.kick_phase = max(0.0, referee_ladybug.kick_phase - dt * 8.0)
+        return
+
+    # Animate leg wiggle while beam is active
+    if referee_ladybug is not None:
+        referee_ladybug.kick_phase += dt * 12.0  # Fast wiggle during beam
+
+    # Get belly position as beam origin
+    belly = get_referee_belly_position()
+    if belly is None:
+        return
+
+    # Beam comes from bottom middle of belly
+    start_x = belly[0]
+    start_y = belly[1]
+    start_z = belly[2]
+
+    # Target position (score digit center)
+    # Blue score at x=96, Red score at x=32, both at y=53, z=64
+    # Overshoot slightly so beam really reaches the digit
+    if referee_beam_target == 'blue':
+        end_x = 96.0 - simulation.n_grid / 2.0  # Convert to world coords
+        end_z = 64.0 - simulation.n_grid / 2.0
+    else:
+        end_x = 32.0 - simulation.n_grid / 2.0
+        end_z = 64.0 - simulation.n_grid / 2.0
+    # Target the center of the digit (y=53 in grid = 20 in world coords)
+    # Overshoot significantly to ensure beam reaches the digit
+    end_y = 53.0 - RENDER_Y_OFFSET + 6.0
+
+    # Progress: head leads, tail follows (creates traveling beam effect)
+    # Total animation: head goes 0->1, then tail catches up 0->1
+    raw_progress = 1.0 - (referee_beam_timer / REFEREE_BEAM_DURATION)
+
+    # Head moves fast, reaches end at 60% of duration
+    head_progress = min(1.0, raw_progress * 1.7)
+    # Tail follows behind, delayed by ~40% of the beam length
+    tail_progress = max(0.0, (raw_progress - 0.3) * 1.5)
+    tail_progress = min(1.0, tail_progress)
+
+    # Spiral phase for animation
+    spiral_phase = referee_time * 15.0
+
+    # Choose beam color based on scoring team
+    if referee_beam_target == 'blue':
+        beam_type = simulation.SCORE_DIGIT_BLUE
+    else:
+        beam_type = simulation.SCORE_DIGIT_RED
+
+    render_referee_beam(start_x, start_y, start_z, end_x, end_y, end_z,
+                        head_progress, tail_progress, spiral_phase, beam_type)
 
 # ============== END LADYBUG CHEERLEADER SYSTEM ==============
 
@@ -10730,6 +11031,11 @@ print("All kernels warmed up (pre-compiled)")
 # Build initial floor height cache (for fast collision lookups)
 build_floor_height_cache()
 
+# Initialize flying referee ladybug (enabled by default)
+if referee_enabled:
+    referee_ladybug = Ladybug(0.0, 0.0, rotation=0.0)
+    referee_ladybug.y = 8.0  # Hover height
+
 # Global state dictionary for storing inputs during network stalls
 g = {}
 
@@ -10904,6 +11210,10 @@ while window.running:
             yaw_diff += 360.0
         camera.yaw += yaw_diff * lerp_factor
         camera.yaw = camera.yaw % 360.0  # Normalize to 0-360
+
+        # Update flying referee position (opposite side of camera)
+        if referee_enabled and referee_ladybug is not None:
+            update_referee_position(camera_edge_angle, mid_x, mid_z, frame_dt)
     else:
         # Use manual camera controls
         renderer.handle_camera_controls(camera, window, frame_dt)
@@ -13341,7 +13651,7 @@ while window.running:
         render_ball_assembly_fast(0.0, 57.0, 0.0, progress)
 
     # Clear old ladybug voxels before redrawing (so wings can animate)
-    if test_ladybug is not None or len(active_ladybugs) > 0:
+    if test_ladybug is not None or len(active_ladybugs) > 0 or referee_ladybug is not None:
         clear_ladybug_voxels()
 
     # Render test ladybug (if active)
@@ -13351,6 +13661,10 @@ while window.running:
     # Render active ladybug cheerleaders
     for ladybug in active_ladybugs:
         render_ladybug(ladybug, frame_dt)
+
+    # Render flying referee ladybug
+    if referee_ladybug is not None and referee_enabled:
+        render_ladybug(referee_ladybug, frame_dt)
 
     perf_monitor.stop('beetle_render')
 
@@ -13424,7 +13738,11 @@ while window.running:
 
     # Update delay timers - when they hit zero, trigger animation, explosion, and score increment
     if blue_score_delay_timer > 0:
+        prev_blue_delay = blue_score_delay_timer
         blue_score_delay_timer -= 1.0 / 60.0
+        # Trigger referee beam when timer crosses 0.25 threshold
+        if prev_blue_delay > 0.25 and blue_score_delay_timer <= 0.25:
+            trigger_referee_beam('blue')
         if blue_score_delay_timer <= 0:
             blue_score_delay_timer = 0
             if blue_score_pending:
@@ -13437,7 +13755,11 @@ while window.running:
             blue_burst_spawned = 0
 
     if red_score_delay_timer > 0:
+        prev_red_delay = red_score_delay_timer
         red_score_delay_timer -= 1.0 / 60.0
+        # Trigger referee beam when timer crosses 0.25 threshold
+        if prev_red_delay > 0.25 and red_score_delay_timer <= 0.25:
+            trigger_referee_beam('red')
         if red_score_delay_timer <= 0:
             red_score_delay_timer = 0
             if red_score_pending:
@@ -13585,6 +13907,9 @@ while window.running:
     simulation.blue_score_flash[None] = get_flash_brightness(blue_score_bounce_timer)
     simulation.red_score_flash[None] = get_flash_brightness(red_score_bounce_timer)
 
+    # Render referee beam effect (magical spiral to score) - must be after clear_score_digits
+    update_and_render_referee_beam(frame_dt)
+
     # Digit positions in grid coords:
     # Blue score hovers above RED goal pit (east, x=96)
     # Red score hovers above BLUE goal pit (west, x=32)
@@ -13627,6 +13952,11 @@ while window.running:
     # HUD
     window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.95)
     window.GUI.text(f"FPS: {actual_fps:3.0f}")
+
+    # Flying referee toggle (compact button at top)
+    ref_text = "Ref: ON" if referee_enabled else "Ref: OFF"
+    if window.GUI.button(ref_text):
+        toggle_referee()
 
     # === NETWORK / ONLINE PLAY SECTION ===
     if NETWORK_AVAILABLE:
@@ -14587,6 +14917,13 @@ while window.running:
                 clear_test_ladybug()
             else:
                 spawn_test_ladybug()
+
+        circle_button_text = "Hide Circle Ladybugs" if len(active_ladybugs) > 0 else "Show Circle Ladybugs"
+        if window.GUI.button(circle_button_text):
+            if len(active_ladybugs) > 0:
+                clear_circle_ladybugs()
+            else:
+                spawn_circle_ladybugs()
 
         # Update beetle inertia if factor changed
         if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
