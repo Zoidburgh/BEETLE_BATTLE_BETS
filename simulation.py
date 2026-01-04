@@ -55,7 +55,7 @@ silk_stuck_offset = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)  # small ra
 # Arena is 64m diameter, cell_size = 1.0m, grid covers -32 to +32 in x/z
 SILK_GRID_SIZE = 64  # 64x64 grid cells
 SILK_CELL_SIZE = 1.0  # 1 meter per cell (2x MIN_FLOOR_SPACING of 0.5m)
-SILK_MAX_PER_CELL = 16  # Max silk particles per grid cell
+SILK_MAX_PER_CELL = 32  # Max silk particles per grid cell (doubled for 2 spider matches)
 silk_grid_count = ti.field(dtype=ti.i32, shape=(SILK_GRID_SIZE, SILK_GRID_SIZE))  # Count per cell
 silk_grid_particles = ti.field(dtype=ti.i32, shape=(SILK_GRID_SIZE, SILK_GRID_SIZE, SILK_MAX_PER_CELL))  # Particle indices
 

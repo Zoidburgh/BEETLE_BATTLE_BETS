@@ -8557,16 +8557,15 @@ def check_silk_nearby_grid(x: ti.f32, z: ti.f32, min_dist_sq: ti.f32) -> ti.i32:
             nj = cell.y + dj
             # Bounds check
             if 0 <= ni < simulation.SILK_GRID_SIZE and 0 <= nj < simulation.SILK_GRID_SIZE:
-                # Check all silk in this cell
-                count = simulation.silk_grid_count[ni, nj]
+                # Check all silk in this cell (cap to prevent overflow)
+                count = ti.min(simulation.silk_grid_count[ni, nj], simulation.SILK_MAX_PER_CELL)
                 for k in range(count):
-                    if k < simulation.SILK_MAX_PER_CELL:  # Safety bound
-                        other_idx = simulation.silk_grid_particles[ni, nj, k]
-                        other_pos = simulation.silk_pos[other_idx]
-                        dx = x - other_pos.x
-                        dz = z - other_pos.z
-                        if dx * dx + dz * dz < min_dist_sq:
-                            collision = 1
+                    other_idx = simulation.silk_grid_particles[ni, nj, k]
+                    other_pos = simulation.silk_pos[other_idx]
+                    dx = x - other_pos.x
+                    dz = z - other_pos.z
+                    if dx * dx + dz * dz < min_dist_sq:
+                        collision = 1
     return collision
 
 @ti.kernel
@@ -10339,6 +10338,9 @@ print("All kernels warmed up (pre-compiled)")
 
 # Build initial floor height cache (for fast collision lookups)
 build_floor_height_cache()
+
+# Global state dictionary for storing inputs during network stalls
+g = {}
 
 while window.running:
     # === START FRAME TIMING ===
