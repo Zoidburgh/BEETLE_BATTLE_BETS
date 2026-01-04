@@ -8995,29 +8995,30 @@ def generate_ladybug_geometry():
 
     # SHELL DOME - hemispherical top (bigger!)
     shell_radius = 8
+
+    # Define round spot centers on the shell surface (x, y, z, radius)
+    spot_centers = [
+        (4, 5, -3, 1.8),   # Front left
+        (4, 5, 3, 1.8),    # Front right
+        (-1, 6, -5, 1.8),  # Middle left - moved back
+        (-1, 6, 5, 1.8),   # Middle right - moved back
+        (-3, 5, -4, 1.8),  # Back left
+        (-3, 5, 4, 1.8),   # Back right
+        (-4, 5, 0, 2.0),   # Center back - moved up and bigger radius
+    ]
+
     for dx in range(-shell_radius, shell_radius + 1):
         for dy in range(0, shell_radius + 1):  # Only top half
             for dz in range(-shell_radius, shell_radius + 1):
                 dist = math.sqrt(dx*dx + dy*dy + dz*dz)
                 if dist <= shell_radius and dist > shell_radius - 1.8:
-                    # Shell surface - check if it's a spot location
+                    # Shell surface - check if near any spot center
                     is_spot = False
-                    # Bigger spots for bigger shell
-                    # Front spots
-                    if dx >= 3 and dy >= 3:
-                        if abs(dz) >= 3 and abs(dz) <= 4 and dx >= 4 and dx <= 5:
+                    for sx, sy, sz, sr in spot_centers:
+                        spot_dist = math.sqrt((dx-sx)**2 + (dy-sy)**2 + (dz-sz)**2)
+                        if spot_dist <= sr:
                             is_spot = True
-                    # Middle spots
-                    if dx >= 0 and dx <= 2 and dy >= 2:
-                        if abs(dz) >= 4 and abs(dz) <= 5:
-                            is_spot = True
-                    # Back spots
-                    if dx <= -2 and dy >= 2:
-                        if abs(dz) >= 3 and abs(dz) <= 4 and dx >= -5:
-                            is_spot = True
-                        # Center back spot
-                        if abs(dz) <= 1 and dx <= -4 and dy >= 3:
-                            is_spot = True
+                            break
 
                     if is_spot:
                         body_voxels.append((dx, dy, dz, simulation.LADYBUG_SPOTS))
@@ -9041,36 +9042,30 @@ def generate_ladybug_geometry():
                 if dist <= 2.5:
                     body_voxels.append((head_x + dx, head_y + dy, dz, simulation.LADYBUG_HEAD))
 
-    # ANTENNAE - start from TOP of head, go up and forward (attached to head!)
-    # Made denser with 2 voxels wide and more segments
-    for i in range(6):
-        ant_x = head_x + 2 + i  # Start from front of head
-        ant_y = head_y + 2 + i  # Start at actual head top (lowered to connect)
-        # Left antenna - 2 voxels wide for density
-        body_voxels.append((ant_x, ant_y, -2, simulation.LADYBUG_HEAD))
-        body_voxels.append((ant_x, ant_y, -3, simulation.LADYBUG_HEAD))
-        # Right antenna - 2 voxels wide for density
-        body_voxels.append((ant_x, ant_y, 2, simulation.LADYBUG_HEAD))
-        body_voxels.append((ant_x, ant_y, 3, simulation.LADYBUG_HEAD))
-        # Add thickness in Y direction for middle segments
-        if i > 0 and i < 5:
-            body_voxels.append((ant_x, ant_y + 1, -2, simulation.LADYBUG_HEAD))
-            body_voxels.append((ant_x, ant_y + 1, 2, simulation.LADYBUG_HEAD))
+    # ANTENNAE - thin lines going up, forward, and spreading outward
+    # Use smaller Y step to avoid gaps (2 voxels per Y level)
+    for i in range(8):
+        ant_x = head_x + 2 + i  # Start from front of head, go forward
+        ant_y = head_y + 2 + int(i * 0.6)  # Gentler slope - no gaps
+        ant_z_spread = 2 + int(i * 0.4)  # Spread outward as they extend
+        # Left antenna - single voxel
+        body_voxels.append((ant_x, ant_y, -ant_z_spread, simulation.LADYBUG_HEAD))
+        # Right antenna - single voxel
+        body_voxels.append((ant_x, ant_y, ant_z_spread, simulation.LADYBUG_HEAD))
 
-    # WINGS - SINGLE CURVED LINE of voxels, not a filled shape!
-    # Just one voxel per position along the curve
-    # Moved forward and shortened to not get too big
-    wing_length = 11  # Reduced from 16 - cut off end layers
+    # WINGS - curved line with 2 voxel thickness (Y direction)
+    wing_length = 11
     for i in range(wing_length):
-        wing_x = 1 - i  # Start further forward (was -2), extend backward
-        wing_y = shell_radius - 1  # At top of shell
-        # Z curves outward as we go back
-        wing_z_offset = int(i * 0.7)  # Slightly gentler curve
+        wing_x = 1 - i  # Start forward, extend backward
+        wing_y = shell_radius - 1  # At top of shell (7)
+        wing_z_offset = int(i * 0.7)  # Gentle outward curve
 
-        # Left wing - single voxel curving left
+        # Left wing - 2 voxels tall
         wing_voxels[0].append((wing_x, wing_y, -5 - wing_z_offset))
-        # Right wing - single voxel curving right
+        wing_voxels[0].append((wing_x, wing_y + 1, -5 - wing_z_offset))
+        # Right wing - 2 voxels tall
         wing_voxels[1].append((wing_x, wing_y, 5 + wing_z_offset))
+        wing_voxels[1].append((wing_x, wing_y + 1, 5 + wing_z_offset))
 
     # LEGS - 6 legs (3 pairs), scaled up
     leg_positions = [
@@ -9095,15 +9090,11 @@ def generate_ladybug_geometry():
             leg.append((0, -4, z_dir * 3, simulation.LADYBUG_LEGS))
             leg.append((0, -5, z_dir * 3, simulation.LADYBUG_LEGS))
         else:
-            # Middle and rear legs (2, 3, 4, 5) - slightly thicker but not beefy
+            # Middle and rear legs (2, 3, 4, 5) - single voxel width
             for seg in range(6):
                 y_off = -seg
                 z_off = z_dir * min(seg, 3)
-                # Main voxel
                 leg.append((0, y_off, z_off, simulation.LADYBUG_LEGS))
-                # Add one adjacent voxel only on lower half for slight thickness
-                if seg >= 3:
-                    leg.append((1, y_off, z_off, simulation.LADYBUG_LEGS))
 
         leg_voxels[leg_id] = leg
 
@@ -9177,6 +9168,16 @@ active_ladybugs = []
 test_ladybug = None
 
 @ti.kernel
+def clear_ladybug_voxels():
+    """Clear all ladybug voxels from the grid before redrawing"""
+    for i, j, k in ti.ndrange(simulation.n_grid, simulation.n_grid, simulation.n_grid):
+        vtype = simulation.voxel_type[i, j, k]
+        if vtype == simulation.LADYBUG_SHELL or vtype == simulation.LADYBUG_SPOTS or \
+           vtype == simulation.LADYBUG_HEAD or vtype == simulation.LADYBUG_LEGS or \
+           vtype == simulation.LADYBUG_WINGS:
+            simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+@ti.kernel
 def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                          rotation: ti.f32, body_tilt: ti.f32, kick_phase: ti.f32, wing_phase: ti.f32):
     """Place a ladybug at world position with rotation, kick, and wing flap animation"""
@@ -9189,8 +9190,11 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
     cos_tilt = ti.cos(body_tilt)
     sin_tilt = ti.sin(body_tilt)
 
-    # Wing flap angle - oscillates between 0 (down/closed) and ~60 degrees (up/open)
-    wing_flap_angle = (ti.sin(wing_phase) * 0.5 + 0.5) * 1.05  # 0 to ~60 degrees
+    # Wing flap - oscillates between -1 and +1 for clear visible movement
+    wing_flap_amount = ti.sin(wing_phase)
+
+    # Antenna wobble - trails behind body bob (forward/back sway)
+    antenna_wobble = -ti.sin(wing_phase - 1.0) * 1.0  # Reduced to prevent gaps
 
     # Place body voxels
     for i in range(ladybug_body_cache_size[None]):
@@ -9199,9 +9203,18 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         local_z = float(ladybug_body_cache_z[i])
         vtype = ladybug_body_cache_type[i]
 
+        # Antenna voxels get wobble (antennae are at y >= 4, x >= 13)
+        extra_x = 0.0
+        extra_y = 0.0
+        if local_y >= 4.0 and local_x >= 13.0:
+            # More wobble towards the tips (higher Y = further out)
+            tip_factor = (local_y - 4.0) / 5.0  # 0 at base, 1 at tips
+            extra_x = antenna_wobble * tip_factor  # Forward/back
+            extra_y = antenna_wobble * tip_factor * 2.0  # Down more than forward
+
         # Apply body tilt (pitch back)
-        tilted_x = local_x * cos_tilt - local_y * sin_tilt
-        tilted_y = local_x * sin_tilt + local_y * cos_tilt
+        tilted_x = (local_x + extra_x) * cos_tilt - (local_y - extra_y) * sin_tilt
+        tilted_y = (local_x + extra_x) * sin_tilt + (local_y - extra_y) * cos_tilt
 
         # Apply world rotation (yaw)
         rotated_x = tilted_x * cos_rot - local_z * sin_rot
@@ -9221,26 +9234,23 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         start_idx = ladybug_wing_start_idx[wing_id]
         end_idx = ladybug_wing_end_idx[wing_id]
 
-        # Wing rotation - left wing rotates one way, right wing the other
-        wing_cos = ti.cos(wing_flap_angle)
-        wing_sin = ti.sin(wing_flap_angle)
-        if wing_id == 1:  # Right wing - flip rotation
-            wing_sin = -wing_sin
+        # Simple flap: outer wing voxels move up/down more than inner ones
+        # Wing base is at z=±5, tips extend to z=±12
+        wing_base_z = 5.0  # Inner edge distance from center
 
         for idx in range(start_idx, end_idx):
             local_x = float(ladybug_wing_cache_x[idx])
             local_y = float(ladybug_wing_cache_y[idx])
             local_z = float(ladybug_wing_cache_z[idx])
 
-            # Rotate wing around X-axis (flap up/down) from attachment point at top of shell
-            # Wing attachment is at y=7 (shell_radius-1), rotate around that
-            wing_attach_y = 7.0
-            rel_y = local_y - wing_attach_y
-            rel_z = local_z
+            # How far is this voxel from the wing base? (0 at base, ~7 at tip)
+            dist_from_base = ti.abs(local_z) - wing_base_z
 
-            # Apply wing flap rotation (around X-axis)
-            flapped_y = rel_y * wing_cos - rel_z * wing_sin + wing_attach_y
-            flapped_z = rel_y * wing_sin + rel_z * wing_cos
+            # Flap offset: scales with distance from base (tips move ±3 voxels)
+            flap_offset = dist_from_base * wing_flap_amount * 0.5
+
+            flapped_y = local_y + flap_offset
+            flapped_z = local_z
 
             # Apply body tilt
             tilted_x = local_x * cos_tilt - flapped_y * sin_tilt
@@ -9312,18 +9322,21 @@ def render_ladybug(ladybug, dt):
     if not ladybug.visible:
         return
 
-    # Update kick animation
-    ladybug.kick_phase += dt * 4.0  # ~0.6 kicks per second
-    if ladybug.kick_phase > math.pi * 2:
-        ladybug.kick_phase -= math.pi * 2
+    # Kick animation disabled for now - will implement later
+    # ladybug.kick_phase += dt * 4.0
+    # if ladybug.kick_phase > math.pi * 2:
+    #     ladybug.kick_phase -= math.pi * 2
 
-    # Update wing flap animation (faster than kicks for buzzy feel)
-    ladybug.antenna_phase += dt * 12.0  # Fast wing beats
+    # Update wing flap animation - gentle hovering speed
+    ladybug.antenna_phase += dt * 8.0  # ~1.3 flaps per second for natural hover
     if ladybug.antenna_phase > math.pi * 2:
         ladybug.antenna_phase -= math.pi * 2
 
+    # Bob up and down with wing beats (body rises as wings flap down)
+    bob_offset = -math.sin(ladybug.antenna_phase) * 1.5  # ±1.5 voxels, inverted
+
     # Place voxels
-    place_ladybug_kernel(ladybug.x, ladybug.y, ladybug.z,
+    place_ladybug_kernel(ladybug.x, ladybug.y + bob_offset, ladybug.z,
                          ladybug.rotation, ladybug.body_tilt, ladybug.kick_phase, ladybug.antenna_phase)
 
 def spawn_test_ladybug():
@@ -13326,6 +13339,10 @@ while window.running:
         progress = min(g['ball_assembly_timer'] / BALL_ASSEMBLY_DURATION, 1.0)
         # Assemble high above arena (y=59), ball will drop from y=30 after assembly
         render_ball_assembly_fast(0.0, 57.0, 0.0, progress)
+
+    # Clear old ladybug voxels before redrawing (so wings can animate)
+    if test_ladybug is not None or len(active_ladybugs) > 0:
+        clear_ladybug_voxels()
 
     # Render test ladybug (if active)
     if test_ladybug is not None:
