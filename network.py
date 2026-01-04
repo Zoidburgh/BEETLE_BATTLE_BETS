@@ -48,6 +48,7 @@ MSG_SYNC_READY = 0x09   # Guest confirms ready to start (countdown sync)
 MSG_GO = 0x0A           # Host tells everyone to start simulating
 MSG_FRAME_SYNC = 0x0B   # Host sends frame counter for sync
 MSG_BEETLE_CONFIG = 0x0C  # Beetle customization (horn type + sizes)
+MSG_SCORE = 0x0D          # Host sends authoritative score event (death/goal)
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -151,6 +152,9 @@ class NetworkManager:
 
         # Beetle customization sync
         self.remote_beetle_config = None  # Opponent's beetle settings (horn_type_id, sizes)
+
+        # Score sync (host-authoritative death/goal detection)
+        self.pending_score = None  # Guest: pending score event from host (0=blue scores, 1=red scores)
 
     def init(self, app_id=480):
         """
@@ -523,6 +527,19 @@ class NetworkManager:
         self._send_packet(data, reliable=True)
         print(f"[Network] Sent beetle config: horn={horn_type_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
 
+    def send_score(self, scorer):
+        """
+        Host sends authoritative score event to guest.
+
+        Args:
+            scorer: 0 = blue scores (red died), 1 = red scores (blue died)
+        """
+        if not self.is_host or not self.connected:
+            return
+        data = struct.pack('>BB', MSG_SCORE, scorer)
+        self._send_packet(data, reliable=True)
+        print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores")
+
     def send_ping(self):
         """Send ping to measure latency."""
         # Use lower 32 bits of milliseconds to fit in uint32
@@ -791,6 +808,13 @@ class NetworkManager:
                     'leg_len': leg_len
                 }
                 print(f"[Network] Received beetle config from player {player_id}: horn={horn_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
+
+        elif msg_type == MSG_SCORE:
+            # Host-authoritative score event (guest receives)
+            if len(data) >= 2 and not self.is_host:
+                _, scorer = struct.unpack('>BB', data[:2])
+                self.pending_score = scorer  # 0=blue scores, 1=red scores
+                print(f"[Network] Received score event: {'Blue' if scorer == 0 else 'Red'} scores")
 
     # =========================================================================
     # CONNECTION STATE

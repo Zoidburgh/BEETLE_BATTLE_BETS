@@ -10353,18 +10353,19 @@ while window.running:
     # Calculate actual FPS before capping (for accurate display)
     actual_fps = 1.0 / frame_dt if frame_dt > 0 else 0
 
-    frame_dt = min(frame_dt, 0.02)  # Cap at 20ms to prevent accumulator spikes
+    frame_dt = min(frame_dt, 0.1)  # Cap at 100ms (allows catch-up down to ~10fps)
 
     # Add frame time to accumulator
     accumulator += frame_dt
 
-    # Cap accumulator to prevent spiral during geometry rebuilds
-    # For network mode: cap at 1 step to prevent multi-step catch-up (causes skipping)
-    # For local mode: cap at 3 steps for smoother recovery from hitches
+    # Cap accumulator to allow physics catch-up at low framerates
+    # This keeps game speed consistent - physics runs at real-time even if rendering is slow
+    # For network mode: moderate cap to balance catch-up with sync stability
+    # For local mode: generous cap for consistent game speed down to ~10fps
     if game_state == GAME_STATE_ONLINE_PLAY:
-        MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 1.5  # ~25ms - just over 1 step
+        MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 6  # ~100ms - allows catch-up at 30fps
     else:
-        MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 3  # ~50ms worth of simulation
+        MAX_ACCUMULATOR = PHYSICS_TIMESTEP * 12  # ~200ms - allows catch-up at ~10fps
     accumulator = min(accumulator, MAX_ACCUMULATOR)
 
     # === NETWORK LOBBY POLLING (check for opponent join/leave) ===
@@ -11296,9 +11297,11 @@ while window.running:
             # Score detection - check if ball fell through goal pit
             # Ball Y is in physics space where floor is at ~0, so check well below
             # Goals are at x=-32 (blue) and x=32 (red) in physics space
+            # Network mode: only host detects goals, sends MSG_SCORE to guest
             goal_pit_half_width = 12
             g = globals()
-            if beetle_ball.y < -10:  # Ball fell well below floor level
+            is_host_or_local_ball = game_state != GAME_STATE_ONLINE_PLAY or (network_manager and network_manager.is_host)
+            if is_host_or_local_ball and beetle_ball.y < -10:  # Ball fell well below floor level
                 if not g['ball_scored_this_fall']:  # Only score once per fall
                     if abs(beetle_ball.z) < goal_pit_half_width:  # In goal lane (z is centered at 0 in physics space)
                         if beetle_ball.x < -32:  # Blue goal pit (west) - RED scores
@@ -11307,6 +11310,8 @@ while window.running:
                             g['goal_celebration_timer'] = 0.0
                             g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
                             g['red_score_pending'] = True  # Score will be added after delay
+                            if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
+                                network_manager.send_score(1)  # Red scores
                             print(f"RED SCORES!")
                         elif beetle_ball.x > 32:  # Red goal pit (east) - BLUE scores
                             g['ball_scored_this_fall'] = True
@@ -11314,6 +11319,8 @@ while window.running:
                             g['goal_celebration_timer'] = 0.0
                             g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
                             g['blue_score_pending'] = True  # Score will be added after delay
+                            if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
+                                network_manager.send_score(0)  # Blue scores
                             print(f"BLUE SCORES!")
             # NOTE: ball_scored_this_fall is only reset on ball respawn, not when ball goes above ground
             # This prevents double-scoring if ball bounces in the goal pit
@@ -11585,6 +11592,7 @@ while window.running:
         FALL_DEATH_Y = -25.0  # Fully removed at this point (25 voxels below floor)
 
         # Stage 1: Point of no return - disable controls but keep rendering
+        # (Both host and guest detect this for visual feedback)
         if beetle_blue.active and not beetle_blue.is_falling and beetle_blue.y < POINT_OF_NO_RETURN:
             beetle_blue.is_falling = True
             print("BLUE BEETLE IS FALLING!")
@@ -11599,8 +11607,59 @@ while window.running:
         TOTAL_PARTICLES = 1012  # 50% more than 675 (675 * 1.5 = 1012)
         PARTICLES_PER_FRAME = int(TOTAL_PARTICLES / (EXPLOSION_DURATION * 60))  # ~24 particles per frame at 60 FPS
 
+        # Network mode: Check for score events from host (guest only)
+        # This ensures both computers score at the same time
+        # Handles both fall deaths (beetle explosion) and ball goals
+        if game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host:
+            if network_manager.pending_score is not None:
+                scorer = network_manager.pending_score
+                network_manager.pending_score = None  # Consume the event
+                if scorer == 1:  # Red scores (blue died or ball goal)
+                    # Only trigger explosion if beetle is falling (fall death, not ball goal)
+                    if beetle_blue.is_falling and not beetle_blue.has_exploded:
+                        beetle_blue.explosion_pos_x = beetle_blue.x
+                        beetle_blue.explosion_pos_y = beetle_blue.y + 30.0
+                        beetle_blue.explosion_pos_z = beetle_blue.z
+                        beetle_blue.explosion_delay = EXPLOSION_DELAY
+                        beetle_blue.explosion_timer = EXPLOSION_DURATION
+                        beetle_blue.has_exploded = True
+                        g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                    # Always set score (works for both fall death and ball goal)
+                    g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY
+                    g['red_score_pending'] = True
+                    # Ball goal state (if ball is active)
+                    if beetle_ball.active:
+                        g['ball_scored_this_fall'] = True
+                        g['goal_scored_by'] = "RED"
+                        g['goal_celebration_timer'] = 0.0
+                    print(f"RED SCORES! (from host)")
+                elif scorer == 0:  # Blue scores (red died or ball goal)
+                    # Only trigger explosion if beetle is falling (fall death, not ball goal)
+                    if beetle_red.is_falling and not beetle_red.has_exploded:
+                        beetle_red.explosion_pos_x = beetle_red.x
+                        beetle_red.explosion_pos_y = beetle_red.y + 30.0
+                        beetle_red.explosion_pos_z = beetle_red.z
+                        beetle_red.explosion_delay = EXPLOSION_DELAY
+                        beetle_red.explosion_timer = EXPLOSION_DURATION
+                        beetle_red.has_exploded = True
+                        g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                    # Always set score (works for both fall death and ball goal)
+                    g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY
+                    g['blue_score_pending'] = True
+                    # Ball goal state (if ball is active)
+                    if beetle_ball.active:
+                        g['ball_scored_this_fall'] = True
+                        g['goal_scored_by'] = "BLUE"
+                        g['goal_celebration_timer'] = 0.0
+                    print(f"BLUE SCORES! (from host)")
+
+        # Determine if we should detect deaths locally
+        # Network mode: only host detects, then sends to guest
+        # Local mode: always detect locally
+        is_host_or_local = game_state != GAME_STATE_ONLINE_PLAY or (network_manager and network_manager.is_host)
+
         # Blue beetle explosion
-        if beetle_blue.is_falling and not beetle_blue.has_exploded and beetle_blue.y < EXPLOSION_TRIGGER_Y:
+        if is_host_or_local and beetle_blue.is_falling and not beetle_blue.has_exploded and beetle_blue.y < EXPLOSION_TRIGGER_Y:
             # Start explosion - store position
             beetle_blue.explosion_pos_x = beetle_blue.x
             beetle_blue.explosion_pos_y = beetle_blue.y + 30.0
@@ -11612,6 +11671,9 @@ while window.running:
             g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
             g['red_score_pending'] = True  # Score will be added after delay
             g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
+            # Network mode: host sends score event to guest
+            if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
+                network_manager.send_score(1)  # Red scores
             print(f"RED SCORES!")
             print("BLUE BEETLE EXPLOSION STARTED!")
 
@@ -11642,7 +11704,7 @@ while window.running:
                                                batch_offset, batch_size, TOTAL_PARTICLES)
 
         # Red beetle explosion
-        if beetle_red.is_falling and not beetle_red.has_exploded and beetle_red.y < EXPLOSION_TRIGGER_Y:
+        if is_host_or_local and beetle_red.is_falling and not beetle_red.has_exploded and beetle_red.y < EXPLOSION_TRIGGER_Y:
             # Start explosion - store position
             beetle_red.explosion_pos_x = beetle_red.x
             beetle_red.explosion_pos_y = beetle_red.y + 30.0
@@ -11654,6 +11716,9 @@ while window.running:
             g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
             g['blue_score_pending'] = True  # Score will be added after delay
             g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
+            # Network mode: host sends score event to guest
+            if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
+                network_manager.send_score(0)  # Blue scores
             print(f"BLUE SCORES!")
             print("RED BEETLE EXPLOSION STARTED!")
 
