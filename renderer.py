@@ -173,8 +173,20 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 34:  # VENOM_TIP_RED
         color = simulation.red_venom_tip_color[None]
 
+    # Ladybug cheerleader colors
+    elif voxel_type == 35:  # LADYBUG_SHELL - bright red
+        color = ti.math.vec3(0.85, 0.12, 0.08)
+    elif voxel_type == 36:  # LADYBUG_SPOTS - black
+        color = ti.math.vec3(0.08, 0.08, 0.08)
+    elif voxel_type == 37:  # LADYBUG_HEAD - black
+        color = ti.math.vec3(0.1, 0.1, 0.1)
+    elif voxel_type == 38:  # LADYBUG_LEGS - dark brown/black
+        color = ti.math.vec3(0.12, 0.1, 0.08)
+    elif voxel_type == 39:  # LADYBUG_WINGS - translucent amber/gold
+        color = ti.math.vec3(0.95, 0.85, 0.6)
+
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
-    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34:  # All beetle parts
+    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34 or voxel_type == 35:  # All beetle/ladybug shell parts
         shimmer = get_shimmer_from_lut(world_x, world_z)
         color *= shimmer
 

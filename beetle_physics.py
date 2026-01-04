@@ -8965,6 +8965,384 @@ def check_silk_ball_collision(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, ba
 
 # ============== END SPIDER SILK SYSTEM ==============
 
+
+# ============== LADYBUG CHEERLEADER SYSTEM ==============
+# Decorative ladybugs that dance when you win a round
+
+class Ladybug:
+    """Ladybug cheerleader - visual only, no collision"""
+    def __init__(self, x, z, rotation=0.0):
+        self.x = x
+        self.z = z
+        self.y = 0.0  # Ground level
+        self.rotation = rotation  # Facing direction
+        self.body_tilt = math.radians(30)  # Tilted back slightly (less extreme so head visible)
+        self.kick_phase = 0.0  # 0-2π animation phase
+        self.shell_open = 0.0  # 0.0-1.0 for shell clap
+        self.antenna_phase = 0.0  # Antenna bounce
+        self.visible = True
+
+def generate_ladybug_geometry():
+    """Generate ladybug body voxels (shell dome + head + spots + wings)
+
+    Returns: (body_voxels, leg_voxels, wing_voxels) where each voxel is (dx, dy, dz, voxel_type)
+    Local coordinates: X = forward, Y = up, Z = left/right
+    Scale: Larger size, radius ~8 voxels for visibility
+    """
+    body_voxels = []
+    leg_voxels = [[], [], [], [], [], []]  # 6 legs
+    wing_voxels = [[], []]  # Left wing, Right wing
+
+    # SHELL DOME - hemispherical top (bigger!)
+    shell_radius = 8
+    for dx in range(-shell_radius, shell_radius + 1):
+        for dy in range(0, shell_radius + 1):  # Only top half
+            for dz in range(-shell_radius, shell_radius + 1):
+                dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                if dist <= shell_radius and dist > shell_radius - 1.8:
+                    # Shell surface - check if it's a spot location
+                    is_spot = False
+                    # Bigger spots for bigger shell
+                    # Front spots
+                    if dx >= 3 and dy >= 3:
+                        if abs(dz) >= 3 and abs(dz) <= 4 and dx >= 4 and dx <= 5:
+                            is_spot = True
+                    # Middle spots
+                    if dx >= 0 and dx <= 2 and dy >= 2:
+                        if abs(dz) >= 4 and abs(dz) <= 5:
+                            is_spot = True
+                    # Back spots
+                    if dx <= -2 and dy >= 2:
+                        if abs(dz) >= 3 and abs(dz) <= 4 and dx >= -5:
+                            is_spot = True
+                        # Center back spot
+                        if abs(dz) <= 1 and dx <= -4 and dy >= 3:
+                            is_spot = True
+
+                    if is_spot:
+                        body_voxels.append((dx, dy, dz, simulation.LADYBUG_SPOTS))
+                    else:
+                        body_voxels.append((dx, dy, dz, simulation.LADYBUG_SHELL))
+
+    # UNDERSIDE - flat belly
+    for dx in range(-6, 7):
+        for dz in range(-6, 7):
+            dist = math.sqrt(dx*dx + dz*dz)
+            if dist <= 6:
+                body_voxels.append((dx, -1, dz, simulation.LADYBUG_HEAD))  # Black underside
+
+    # HEAD - dome at front, clearly outside shell
+    head_x = shell_radius + 3  # Well in front of shell
+    head_y = 2
+    for dx in range(-2, 3):
+        for dy in range(-1, 4):
+            for dz in range(-2, 3):
+                dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                if dist <= 2.5:
+                    body_voxels.append((head_x + dx, head_y + dy, dz, simulation.LADYBUG_HEAD))
+
+    # ANTENNAE - start from TOP of head, go up and forward (attached to head!)
+    # Made denser with 2 voxels wide and more segments
+    for i in range(6):
+        ant_x = head_x + 2 + i  # Start from front of head
+        ant_y = head_y + 2 + i  # Start at actual head top (lowered to connect)
+        # Left antenna - 2 voxels wide for density
+        body_voxels.append((ant_x, ant_y, -2, simulation.LADYBUG_HEAD))
+        body_voxels.append((ant_x, ant_y, -3, simulation.LADYBUG_HEAD))
+        # Right antenna - 2 voxels wide for density
+        body_voxels.append((ant_x, ant_y, 2, simulation.LADYBUG_HEAD))
+        body_voxels.append((ant_x, ant_y, 3, simulation.LADYBUG_HEAD))
+        # Add thickness in Y direction for middle segments
+        if i > 0 and i < 5:
+            body_voxels.append((ant_x, ant_y + 1, -2, simulation.LADYBUG_HEAD))
+            body_voxels.append((ant_x, ant_y + 1, 2, simulation.LADYBUG_HEAD))
+
+    # WINGS - SINGLE CURVED LINE of voxels, not a filled shape!
+    # Just one voxel per position along the curve
+    # Moved forward and shortened to not get too big
+    wing_length = 11  # Reduced from 16 - cut off end layers
+    for i in range(wing_length):
+        wing_x = 1 - i  # Start further forward (was -2), extend backward
+        wing_y = shell_radius - 1  # At top of shell
+        # Z curves outward as we go back
+        wing_z_offset = int(i * 0.7)  # Slightly gentler curve
+
+        # Left wing - single voxel curving left
+        wing_voxels[0].append((wing_x, wing_y, -5 - wing_z_offset))
+        # Right wing - single voxel curving right
+        wing_voxels[1].append((wing_x, wing_y, 5 + wing_z_offset))
+
+    # LEGS - 6 legs (3 pairs), scaled up
+    leg_positions = [
+        (3, -1, -5),   # Front left - kick leg
+        (3, -1, 5),    # Front right - kick leg
+        (-1, -1, -6),  # Middle left
+        (-1, -1, 6),   # Middle right
+        (-5, -1, -5),  # Rear left - anchor
+        (-5, -1, 5),   # Rear right - anchor
+    ]
+
+    for leg_id, (lx, ly, lz) in enumerate(leg_positions):
+        leg = []
+        z_dir = -1 if lz < 0 else 1
+
+        # Front legs (0, 1) - single voxel width, they look good
+        if leg_id < 2:
+            leg.append((0, 0, 0, simulation.LADYBUG_LEGS))
+            leg.append((0, -1, z_dir, simulation.LADYBUG_LEGS))
+            leg.append((0, -2, z_dir * 2, simulation.LADYBUG_LEGS))
+            leg.append((0, -3, z_dir * 3, simulation.LADYBUG_LEGS))
+            leg.append((0, -4, z_dir * 3, simulation.LADYBUG_LEGS))
+            leg.append((0, -5, z_dir * 3, simulation.LADYBUG_LEGS))
+        else:
+            # Middle and rear legs (2, 3, 4, 5) - slightly thicker but not beefy
+            for seg in range(6):
+                y_off = -seg
+                z_off = z_dir * min(seg, 3)
+                # Main voxel
+                leg.append((0, y_off, z_off, simulation.LADYBUG_LEGS))
+                # Add one adjacent voxel only on lower half for slight thickness
+                if seg >= 3:
+                    leg.append((1, y_off, z_off, simulation.LADYBUG_LEGS))
+
+        leg_voxels[leg_id] = leg
+
+    return body_voxels, leg_voxels, wing_voxels
+
+# Generate ladybug geometry once at startup
+LADYBUG_BODY, LADYBUG_LEGS, LADYBUG_WINGS = generate_ladybug_geometry()
+print(f"Ladybug geometry cached: {len(LADYBUG_BODY)} body voxels + {sum(len(leg) for leg in LADYBUG_LEGS)} leg voxels + {sum(len(wing) for wing in LADYBUG_WINGS)} wing voxels")
+
+# Taichi fields for ladybug geometry cache
+MAX_LADYBUG_BODY_VOXELS = 800  # Increased for bigger shell + head
+ladybug_body_cache_size = ti.field(ti.i32, shape=())
+ladybug_body_cache_x = ti.field(ti.i32, shape=MAX_LADYBUG_BODY_VOXELS)
+ladybug_body_cache_y = ti.field(ti.i32, shape=MAX_LADYBUG_BODY_VOXELS)
+ladybug_body_cache_z = ti.field(ti.i32, shape=MAX_LADYBUG_BODY_VOXELS)
+ladybug_body_cache_type = ti.field(ti.i32, shape=MAX_LADYBUG_BODY_VOXELS)
+
+# Initialize ladybug body cache
+ladybug_body_cache_size[None] = len(LADYBUG_BODY)
+for i, (dx, dy, dz, vtype) in enumerate(LADYBUG_BODY):
+    if i < MAX_LADYBUG_BODY_VOXELS:
+        ladybug_body_cache_x[i] = dx
+        ladybug_body_cache_y[i] = dy
+        ladybug_body_cache_z[i] = dz
+        ladybug_body_cache_type[i] = vtype
+
+# Leg cache for ladybug
+MAX_LADYBUG_LEG_VOXELS = 100  # Increased for denser back legs
+ladybug_leg_cache_x = ti.field(ti.i32, shape=MAX_LADYBUG_LEG_VOXELS)
+ladybug_leg_cache_y = ti.field(ti.i32, shape=MAX_LADYBUG_LEG_VOXELS)
+ladybug_leg_cache_z = ti.field(ti.i32, shape=MAX_LADYBUG_LEG_VOXELS)
+ladybug_leg_start_idx = ti.field(ti.i32, shape=6)
+ladybug_leg_end_idx = ti.field(ti.i32, shape=6)
+
+# Initialize leg cache
+offset = 0
+for leg_id, leg_voxels in enumerate(LADYBUG_LEGS):
+    ladybug_leg_start_idx[leg_id] = offset
+    for i, (dx, dy, dz, vtype) in enumerate(leg_voxels):
+        if offset + i < MAX_LADYBUG_LEG_VOXELS:
+            ladybug_leg_cache_x[offset + i] = dx
+            ladybug_leg_cache_y[offset + i] = dy
+            ladybug_leg_cache_z[offset + i] = dz
+    offset += len(leg_voxels)
+    ladybug_leg_end_idx[leg_id] = offset
+
+# Wing cache for ladybug (2 wings: left and right)
+MAX_LADYBUG_WING_VOXELS = 300  # Increased for safety
+ladybug_wing_cache_x = ti.field(ti.i32, shape=MAX_LADYBUG_WING_VOXELS)
+ladybug_wing_cache_y = ti.field(ti.i32, shape=MAX_LADYBUG_WING_VOXELS)
+ladybug_wing_cache_z = ti.field(ti.i32, shape=MAX_LADYBUG_WING_VOXELS)
+ladybug_wing_start_idx = ti.field(ti.i32, shape=2)  # Left, Right
+ladybug_wing_end_idx = ti.field(ti.i32, shape=2)
+
+# Initialize wing cache
+offset = 0
+for wing_id, wing_voxels in enumerate(LADYBUG_WINGS):
+    ladybug_wing_start_idx[wing_id] = offset
+    for i, (dx, dy, dz) in enumerate(wing_voxels):
+        if offset + i < MAX_LADYBUG_WING_VOXELS:
+            ladybug_wing_cache_x[offset + i] = dx
+            ladybug_wing_cache_y[offset + i] = dy
+            ladybug_wing_cache_z[offset + i] = dz
+    offset += len(wing_voxels)
+    ladybug_wing_end_idx[wing_id] = offset
+
+# Active ladybugs list (spawned on win, cleared on reset)
+active_ladybugs = []
+
+# Test ladybug for preview
+test_ladybug = None
+
+@ti.kernel
+def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
+                         rotation: ti.f32, body_tilt: ti.f32, kick_phase: ti.f32, wing_phase: ti.f32):
+    """Place a ladybug at world position with rotation, kick, and wing flap animation"""
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+    base_y = int(world_y + RENDER_Y_OFFSET)
+
+    cos_rot = ti.cos(rotation)
+    sin_rot = ti.sin(rotation)
+    cos_tilt = ti.cos(body_tilt)
+    sin_tilt = ti.sin(body_tilt)
+
+    # Wing flap angle - oscillates between 0 (down/closed) and ~60 degrees (up/open)
+    wing_flap_angle = (ti.sin(wing_phase) * 0.5 + 0.5) * 1.05  # 0 to ~60 degrees
+
+    # Place body voxels
+    for i in range(ladybug_body_cache_size[None]):
+        local_x = float(ladybug_body_cache_x[i])
+        local_y = float(ladybug_body_cache_y[i])
+        local_z = float(ladybug_body_cache_z[i])
+        vtype = ladybug_body_cache_type[i]
+
+        # Apply body tilt (pitch back)
+        tilted_x = local_x * cos_tilt - local_y * sin_tilt
+        tilted_y = local_x * sin_tilt + local_y * cos_tilt
+
+        # Apply world rotation (yaw)
+        rotated_x = tilted_x * cos_rot - local_z * sin_rot
+        rotated_z = tilted_x * sin_rot + local_z * cos_rot
+
+        grid_x = center_x + int(ti.round(rotated_x))
+        grid_y = base_y + int(ti.round(tilted_y))
+        grid_z = center_z + int(ti.round(rotated_z))
+
+        if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+            existing = simulation.voxel_type[grid_x, grid_y, grid_z]
+            if existing != simulation.CONCRETE and existing != simulation.SHADOW:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = vtype
+
+    # Place wing voxels with flapping animation
+    for wing_id in range(2):
+        start_idx = ladybug_wing_start_idx[wing_id]
+        end_idx = ladybug_wing_end_idx[wing_id]
+
+        # Wing rotation - left wing rotates one way, right wing the other
+        wing_cos = ti.cos(wing_flap_angle)
+        wing_sin = ti.sin(wing_flap_angle)
+        if wing_id == 1:  # Right wing - flip rotation
+            wing_sin = -wing_sin
+
+        for idx in range(start_idx, end_idx):
+            local_x = float(ladybug_wing_cache_x[idx])
+            local_y = float(ladybug_wing_cache_y[idx])
+            local_z = float(ladybug_wing_cache_z[idx])
+
+            # Rotate wing around X-axis (flap up/down) from attachment point at top of shell
+            # Wing attachment is at y=7 (shell_radius-1), rotate around that
+            wing_attach_y = 7.0
+            rel_y = local_y - wing_attach_y
+            rel_z = local_z
+
+            # Apply wing flap rotation (around X-axis)
+            flapped_y = rel_y * wing_cos - rel_z * wing_sin + wing_attach_y
+            flapped_z = rel_y * wing_sin + rel_z * wing_cos
+
+            # Apply body tilt
+            tilted_x = local_x * cos_tilt - flapped_y * sin_tilt
+            tilted_y = local_x * sin_tilt + flapped_y * cos_tilt
+
+            # Apply world rotation
+            rotated_x = tilted_x * cos_rot - flapped_z * sin_rot
+            rotated_z = tilted_x * sin_rot + flapped_z * cos_rot
+
+            grid_x = center_x + int(ti.round(rotated_x))
+            grid_y = base_y + int(ti.round(tilted_y))
+            grid_z = center_z + int(ti.round(rotated_z))
+
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                existing = simulation.voxel_type[grid_x, grid_y, grid_z]
+                if existing != simulation.CONCRETE and existing != simulation.SHADOW:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = simulation.LADYBUG_WINGS
+
+    # Place leg voxels with kick animation
+    for leg_id in range(6):
+        start_idx = ladybug_leg_start_idx[leg_id]
+        end_idx = ladybug_leg_end_idx[leg_id]
+
+        # Leg attachment points (scaled up for bigger body)
+        attach_x = 0.0
+        attach_z = 0.0
+        if leg_id == 0:
+            attach_x, attach_z = 3.0, -5.0
+        elif leg_id == 1:
+            attach_x, attach_z = 3.0, 5.0
+        elif leg_id == 2:
+            attach_x, attach_z = -1.0, -6.0
+        elif leg_id == 3:
+            attach_x, attach_z = -1.0, 6.0
+        elif leg_id == 4:
+            attach_x, attach_z = -5.0, -5.0
+        else:
+            attach_x, attach_z = -5.0, 5.0
+
+        # Kick animation for front legs (0, 1)
+        kick_lift = 0.0
+        if leg_id == 0 or leg_id == 1:
+            kick_lift = ti.max(0.0, ti.sin(kick_phase)) * 6.0
+
+        for idx in range(start_idx, end_idx):
+            local_x = float(ladybug_leg_cache_x[idx]) + attach_x
+            local_y = float(ladybug_leg_cache_y[idx]) - 1.0 + kick_lift
+            local_z = float(ladybug_leg_cache_z[idx]) + attach_z
+
+            # Apply body tilt
+            tilted_x = local_x * cos_tilt - local_y * sin_tilt
+            tilted_y = local_x * sin_tilt + local_y * cos_tilt
+
+            # Apply world rotation
+            rotated_x = tilted_x * cos_rot - local_z * sin_rot
+            rotated_z = tilted_x * sin_rot + local_z * cos_rot
+
+            grid_x = center_x + int(ti.round(rotated_x))
+            grid_y = base_y + int(ti.round(tilted_y))
+            grid_z = center_z + int(ti.round(rotated_z))
+
+            if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+                existing = simulation.voxel_type[grid_x, grid_y, grid_z]
+                if existing != simulation.CONCRETE and existing != simulation.SHADOW:
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = simulation.LADYBUG_LEGS
+
+def render_ladybug(ladybug, dt):
+    """Render a single ladybug and update its animation"""
+    if not ladybug.visible:
+        return
+
+    # Update kick animation
+    ladybug.kick_phase += dt * 4.0  # ~0.6 kicks per second
+    if ladybug.kick_phase > math.pi * 2:
+        ladybug.kick_phase -= math.pi * 2
+
+    # Update wing flap animation (faster than kicks for buzzy feel)
+    ladybug.antenna_phase += dt * 12.0  # Fast wing beats
+    if ladybug.antenna_phase > math.pi * 2:
+        ladybug.antenna_phase -= math.pi * 2
+
+    # Place voxels
+    place_ladybug_kernel(ladybug.x, ladybug.y, ladybug.z,
+                         ladybug.rotation, ladybug.body_tilt, ladybug.kick_phase, ladybug.antenna_phase)
+
+def spawn_test_ladybug():
+    """Spawn a test ladybug in the center of the arena for preview"""
+    global test_ladybug
+    # Face toward camera (roughly toward -X, -Z which is where camera usually is)
+    test_ladybug = Ladybug(0.0, 0.0, rotation=math.radians(-135))
+    test_ladybug.y = 15.0  # Hovering above the arena
+    print("Test ladybug spawned hovering above arena center")
+
+def clear_test_ladybug():
+    """Remove the test ladybug"""
+    global test_ladybug
+    test_ladybug = None
+    print("Test ladybug cleared")
+
+# ============== END LADYBUG CHEERLEADER SYSTEM ==============
+
+
 @ti.kernel
 def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                           color_r: ti.f32, color_g: ti.f32, color_b: ti.f32):
@@ -12949,6 +13327,14 @@ while window.running:
         # Assemble high above arena (y=59), ball will drop from y=30 after assembly
         render_ball_assembly_fast(0.0, 57.0, 0.0, progress)
 
+    # Render test ladybug (if active)
+    if test_ladybug is not None:
+        render_ladybug(test_ladybug, frame_dt)
+
+    # Render active ladybug cheerleaders
+    for ladybug in active_ladybugs:
+        render_ladybug(ladybug, frame_dt)
+
     perf_monitor.stop('beetle_render')
 
     # Update silk stuck to beetles/ball - positions need to match transforms
@@ -14174,6 +14560,16 @@ while window.running:
         lighting_button_text = "Dynamic Lighting: ON" if dynamic_lighting_enabled else "Dynamic Lighting: OFF"
         if window.GUI.button(lighting_button_text):
             dynamic_lighting_enabled = not dynamic_lighting_enabled
+
+        # Ladybug cheerleader test
+        window.GUI.text("")
+        window.GUI.text("=== LADYBUG CHEERLEADERS ===")
+        ladybug_button_text = "Hide Test Ladybug" if test_ladybug is not None else "Show Test Ladybug"
+        if window.GUI.button(ladybug_button_text):
+            if test_ladybug is not None:
+                clear_test_ladybug()
+            else:
+                spawn_test_ladybug()
 
         # Update beetle inertia if factor changed
         if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:

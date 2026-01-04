@@ -100,6 +100,13 @@ ASSEMBLY_VOXEL_BALL = 27  # Ball assembly animation voxel
 VENOM_TIP_BLUE = 33  # Blue scorpion venom bulb/stinger tip (glows with charges)
 VENOM_TIP_RED = 34  # Red scorpion venom bulb/stinger tip (glows with charges)
 
+# Ladybug cheerleader voxel types
+LADYBUG_SHELL = 35  # Red ladybug shell (dome)
+LADYBUG_SPOTS = 36  # Black spots on shell
+LADYBUG_HEAD = 37   # Black head
+LADYBUG_LEGS = 38   # Black legs
+LADYBUG_WINGS = 39  # Translucent/light wings
+
 # Score digit flash brightness (1.0 = normal, >1.0 = bright flash)
 blue_score_flash = ti.field(dtype=ti.f32, shape=())
 red_score_flash = ti.field(dtype=ti.f32, shape=())
