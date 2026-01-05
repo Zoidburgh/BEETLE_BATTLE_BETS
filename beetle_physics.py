@@ -8977,9 +8977,11 @@ class Ladybug:
         self.y = 0.0  # Ground level
         self.rotation = rotation  # Facing direction
         self.body_tilt = math.radians(30)  # Tilted back slightly (less extreme so head visible)
+        self.body_roll = 0.0  # Left/right tilt (roll)
         self.kick_phase = 0.0  # 0-2π animation phase
         self.shell_open = 0.0  # 0.0-1.0 for shell clap
         self.antenna_phase = 0.0  # Antenna bounce
+        self.head_turn_phase = 0.0  # Independent head look-around animation
         self.visible = True
 
 def generate_ladybug_geometry():
@@ -9170,7 +9172,7 @@ test_ladybug = None
 
 @ti.kernel
 def clear_ladybug_voxels():
-    """Clear all ladybug voxels from the grid before redrawing"""
+    """Clear all ladybug voxels from the grid (full scan - used for cleanup on disable)"""
     for i, j, k in ti.ndrange(simulation.n_grid, simulation.n_grid, simulation.n_grid):
         vtype = simulation.voxel_type[i, j, k]
         if vtype == simulation.LADYBUG_SHELL or vtype == simulation.LADYBUG_SPOTS or \
@@ -9179,9 +9181,36 @@ def clear_ladybug_voxels():
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 @ti.kernel
+def clear_ladybug_bounded(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32):
+    """Clear ladybug voxels using bounding box around position (much faster than full scan)"""
+    # Ladybug shell radius 8, plus wings (~10), legs (~8), and body tilt extends it further
+    margin = 24
+
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_y = int(world_y + RENDER_Y_OFFSET)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+
+    min_x = ti.max(0, center_x - margin)
+    max_x = ti.min(simulation.n_grid, center_x + margin)
+    min_y = ti.max(0, center_y - margin)
+    max_y = ti.min(simulation.n_grid, center_y + margin)
+    min_z = ti.max(0, center_z - margin)
+    max_z = ti.min(simulation.n_grid, center_z + margin)
+
+    for i in range(min_x, max_x):
+        for j in range(min_y, max_y):
+            for k in range(min_z, max_z):
+                vtype = simulation.voxel_type[i, j, k]
+                if vtype == simulation.LADYBUG_SHELL or vtype == simulation.LADYBUG_SPOTS or \
+                   vtype == simulation.LADYBUG_HEAD or vtype == simulation.LADYBUG_LEGS or \
+                   vtype == simulation.LADYBUG_WINGS:
+                    simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+@ti.kernel
 def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
-                         rotation: ti.f32, body_tilt: ti.f32, kick_phase: ti.f32, wing_phase: ti.f32):
-    """Place a ladybug at world position with rotation, kick, and wing flap animation"""
+                         rotation: ti.f32, body_tilt: ti.f32, body_roll: ti.f32,
+                         kick_phase: ti.f32, wing_phase: ti.f32, head_turn: ti.f32):
+    """Place a ladybug at world position with rotation, tilt, roll, kick, wing flap, and head turn"""
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
     base_y = int(world_y + RENDER_Y_OFFSET)
@@ -9190,6 +9219,13 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
     sin_rot = ti.sin(rotation)
     cos_tilt = ti.cos(body_tilt)
     sin_tilt = ti.sin(body_tilt)
+    cos_roll = ti.cos(body_roll)
+    sin_roll = ti.sin(body_roll)
+
+    # Head turn rotation (around neck pivot point)
+    cos_head = ti.cos(head_turn)
+    sin_head = ti.sin(head_turn)
+    head_pivot_x = 9.0  # Neck attachment point (where head meets body)
 
     # Wing flap - oscillates between -1 and +1 for clear visible movement
     wing_flap_amount = ti.sin(wing_phase)
@@ -9204,6 +9240,14 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         local_z = float(ladybug_body_cache_z[i])
         vtype = ladybug_body_cache_type[i]
 
+        # Head voxels (x >= 9) get independent head turn rotation
+        if vtype == simulation.LADYBUG_HEAD and local_x >= 9.0:
+            # Rotate around neck pivot point (head_pivot_x)
+            rel_x = local_x - head_pivot_x
+            rel_z = local_z
+            local_x = head_pivot_x + rel_x * cos_head - rel_z * sin_head
+            local_z = rel_x * sin_head + rel_z * cos_head
+
         # Antenna voxels get wobble (antennae are at y >= 4, x >= 13)
         extra_x = 0.0
         extra_y = 0.0
@@ -9217,12 +9261,16 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         tilted_x = (local_x + extra_x) * cos_tilt - (local_y - extra_y) * sin_tilt
         tilted_y = (local_x + extra_x) * sin_tilt + (local_y - extra_y) * cos_tilt
 
+        # Apply body roll (left/right tilt) - rotates Y and Z
+        rolled_y = tilted_y * cos_roll - local_z * sin_roll
+        rolled_z = tilted_y * sin_roll + local_z * cos_roll
+
         # Apply world rotation (yaw)
-        rotated_x = tilted_x * cos_rot - local_z * sin_rot
-        rotated_z = tilted_x * sin_rot + local_z * cos_rot
+        rotated_x = tilted_x * cos_rot - rolled_z * sin_rot
+        rotated_z = tilted_x * sin_rot + rolled_z * cos_rot
 
         grid_x = center_x + int(ti.round(rotated_x))
-        grid_y = base_y + int(ti.round(tilted_y))
+        grid_y = base_y + int(ti.round(rolled_y))
         grid_z = center_z + int(ti.round(rotated_z))
 
         if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
@@ -9257,12 +9305,16 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             tilted_x = local_x * cos_tilt - flapped_y * sin_tilt
             tilted_y = local_x * sin_tilt + flapped_y * cos_tilt
 
+            # Apply body roll (left/right tilt)
+            rolled_y = tilted_y * cos_roll - flapped_z * sin_roll
+            rolled_z = tilted_y * sin_roll + flapped_z * cos_roll
+
             # Apply world rotation
-            rotated_x = tilted_x * cos_rot - flapped_z * sin_rot
-            rotated_z = tilted_x * sin_rot + flapped_z * cos_rot
+            rotated_x = tilted_x * cos_rot - rolled_z * sin_rot
+            rotated_z = tilted_x * sin_rot + rolled_z * cos_rot
 
             grid_x = center_x + int(ti.round(rotated_x))
-            grid_y = base_y + int(ti.round(tilted_y))
+            grid_y = base_y + int(ti.round(rolled_y))
             grid_z = center_z + int(ti.round(rotated_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
@@ -9305,12 +9357,16 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             tilted_x = local_x * cos_tilt - local_y * sin_tilt
             tilted_y = local_x * sin_tilt + local_y * cos_tilt
 
+            # Apply body roll (left/right tilt)
+            rolled_y = tilted_y * cos_roll - local_z * sin_roll
+            rolled_z = tilted_y * sin_roll + local_z * cos_roll
+
             # Apply world rotation
-            rotated_x = tilted_x * cos_rot - local_z * sin_rot
-            rotated_z = tilted_x * sin_rot + local_z * cos_rot
+            rotated_x = tilted_x * cos_rot - rolled_z * sin_rot
+            rotated_z = tilted_x * sin_rot + rolled_z * cos_rot
 
             grid_x = center_x + int(ti.round(rotated_x))
-            grid_y = base_y + int(ti.round(tilted_y))
+            grid_y = base_y + int(ti.round(rolled_y))
             grid_z = center_z + int(ti.round(rotated_z))
 
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
@@ -9333,12 +9389,20 @@ def render_ladybug(ladybug, dt):
     if ladybug.antenna_phase > math.pi * 2:
         ladybug.antenna_phase -= math.pi * 2
 
+    # Update head turn animation - slower, independent look-around
+    ladybug.head_turn_phase += dt * 1.5  # Slow head movement
+
+    # Calculate head turn angle using multiple sine waves for organic feel
+    head_turn = math.sin(ladybug.head_turn_phase * 0.7) * 0.35  # ±20 degrees main
+    head_turn += math.sin(ladybug.head_turn_phase * 1.3) * 0.15  # ±9 degrees secondary
+
     # Bob up and down with wing beats (body rises as wings flap down)
     bob_offset = -math.sin(ladybug.antenna_phase) * 1.5  # ±1.5 voxels, inverted
 
     # Place voxels
     place_ladybug_kernel(ladybug.x, ladybug.y + bob_offset, ladybug.z,
-                         ladybug.rotation, ladybug.body_tilt, ladybug.kick_phase, ladybug.antenna_phase)
+                         ladybug.rotation, ladybug.body_tilt, ladybug.body_roll,
+                         ladybug.kick_phase, ladybug.antenna_phase, head_turn)
 
 def spawn_test_ladybug():
     """Spawn a test ladybug in the center of the arena for preview"""
@@ -9420,24 +9484,30 @@ def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
     opposite_angle = camera_angle + math.pi
 
     # Organic variations using sine waves at different frequencies
-    # Angle wander: ±20 degrees (~0.35 radians) at slow frequency
-    angle_wander = math.sin(referee_time * 0.4) * 0.35
-    angle_wander += math.sin(referee_time * 0.17) * 0.15  # Secondary slower wave
+    # Angle wander: ±40 degrees (~0.7 radians) at slow frequency - wider patrol arc
+    angle_wander = math.sin(referee_time * 0.4) * 0.55
+    angle_wander += math.sin(referee_time * 0.17) * 0.25  # Secondary slower wave
 
-    # Radius breathing: ±6 voxels at different frequency
-    radius_breathe = math.sin(referee_time * 0.25) * 6.0
-    radius_breathe += math.sin(referee_time * 0.6) * 2.0  # Faster subtle variation
+    # Radius breathing: only outward movement (never closer to center)
+    radius_breathe = max(0, math.sin(referee_time * 0.25)) * 4.0
+    radius_breathe += max(0, math.sin(referee_time * 0.6)) * 1.5  # Faster subtle variation
 
     # Apply variations to base position
     final_angle = opposite_angle + angle_wander
-    referee_radius = ARENA_RADIUS + 22 + radius_breathe
+    # Keep within grid bounds to prevent wing/leg tips going out of bounds
+    referee_radius = ARENA_RADIUS + 18 + radius_breathe
 
     target_x = math.cos(final_angle) * referee_radius
     target_z = math.sin(final_angle) * referee_radius
 
-    # Smooth movement (lerp)
-    referee_ladybug.x += (target_x - referee_ladybug.x) * 0.08
-    referee_ladybug.z += (target_z - referee_ladybug.z) * 0.08
+    # Speed variation: sometimes faster, sometimes slower (organic patrol feel)
+    speed_variation = math.sin(referee_time * 0.3) * 0.04  # ±0.04
+    speed_variation += math.sin(referee_time * 0.7) * 0.02  # Faster subtle variation
+    move_speed = 0.08 + speed_variation  # Base 0.08, range 0.02 to 0.14
+
+    # Smooth movement (lerp with variable speed)
+    referee_ladybug.x += (target_x - referee_ladybug.x) * move_speed
+    referee_ladybug.z += (target_z - referee_ladybug.z) * move_speed
 
     # Look-around: face toward midpoint but with slight scanning motion
     dx = mid_x - referee_ladybug.x
@@ -9463,6 +9533,11 @@ def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
     tilt_offset = math.sin(referee_time * 0.35) * 0.22
     tilt_offset += math.sin(referee_time * 0.6) * 0.1
     referee_ladybug.body_tilt = math.radians(30) + tilt_offset
+
+    # Left/right roll (±12 degrees) - subtle banking during patrol
+    roll_offset = math.sin(referee_time * 0.28) * 0.15  # ±9 degrees main
+    roll_offset += math.sin(referee_time * 0.55) * 0.06  # ±3 degrees secondary
+    referee_ladybug.body_roll = roll_offset
 
     # Slow vertical drift (±4 voxels on top of base height)
     height_drift = math.sin(referee_time * 0.2) * 3.0
@@ -11022,6 +11097,12 @@ check_silk_ball_collision(0.0, -100.0, 0.0, 4.0, 0.0, 0.0, 0.0)  # Ball silk col
 count_floor_silk_under_beetles(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
 cleanup_dead_silk()
 simulation.num_silk[None] = 0  # Clear warmup silk
+
+# Referee beam warmup (prevents lag on first score)
+clear_referee_beam_voxels()
+render_referee_beam(0.0, -100.0, 0.0, 0.0, -100.0, 0.0, 0.5, 0.0, 0.0, simulation.SCORE_DIGIT_BLUE)
+clear_ladybug_bounded(0.0, -100.0, 0.0)  # Bounded ladybug clear warmup
+place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # Ladybug render warmup
 
 # Sync GPU to ensure all warm-up compilations complete
 ti.sync()
@@ -13650,20 +13731,22 @@ while window.running:
         # Assemble high above arena (y=59), ball will drop from y=30 after assembly
         render_ball_assembly_fast(0.0, 57.0, 0.0, progress)
 
-    # Clear old ladybug voxels before redrawing (so wings can animate)
-    if test_ladybug is not None or len(active_ladybugs) > 0 or referee_ladybug is not None:
-        clear_ladybug_voxels()
+    # Clear and render ladybugs using bounded clearing (much faster than full grid scan)
+    # Each ladybug clears its own bounding box before redraw
 
     # Render test ladybug (if active)
     if test_ladybug is not None:
+        clear_ladybug_bounded(test_ladybug.x, test_ladybug.y, test_ladybug.z)
         render_ladybug(test_ladybug, frame_dt)
 
     # Render active ladybug cheerleaders
     for ladybug in active_ladybugs:
+        clear_ladybug_bounded(ladybug.x, ladybug.y, ladybug.z)
         render_ladybug(ladybug, frame_dt)
 
     # Render flying referee ladybug
     if referee_ladybug is not None and referee_enabled:
+        clear_ladybug_bounded(referee_ladybug.x, referee_ladybug.y, referee_ladybug.z)
         render_ladybug(referee_ladybug, frame_dt)
 
     perf_monitor.stop('beetle_render')
