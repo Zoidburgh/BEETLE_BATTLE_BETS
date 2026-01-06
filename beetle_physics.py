@@ -9455,8 +9455,8 @@ referee_ladybug = None
 referee_enabled = True  # Enabled by default
 referee_time = 0.0  # Time accumulator for organic movement
 
-def toggle_referee(send_network=True):
-    """Toggle flying referee on/off"""
+def toggle_referee():
+    """Toggle flying referee on/off (local only - doesn't sync over network)"""
     global referee_ladybug, referee_enabled, referee_time, referee_beam_active
     referee_enabled = not referee_enabled
     if referee_enabled:
@@ -9470,9 +9470,6 @@ def toggle_referee(send_network=True):
         referee_ladybug = None
         referee_beam_active = False  # Stop any active beam
         print("Flying referee DISABLED")
-    # Sync to guest if we're the host
-    if send_network and network_manager and network_manager.is_host:
-        network_manager.send_game_options(referee_enabled, beetle_ball.active)
 
 def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
     """Update referee position to stay opposite camera with organic exploration"""
@@ -12453,14 +12450,11 @@ while window.running:
                         g['goal_celebration_timer'] = 0.0
                     print(f"BLUE SCORES! (from host)")
 
-            # Check for game options from host (referee, ball toggle)
+            # Check for game options from host (ball toggle only - referee is local)
             if network_manager.pending_game_options is not None:
                 opts = network_manager.pending_game_options
                 network_manager.pending_game_options = None  # Consume
-                # Apply referee state
-                if opts['referee_enabled'] != referee_enabled:
-                    toggle_referee(send_network=False)  # Don't send back
-                # Apply ball state
+                # Apply ball state (referee is local-only, not synced)
                 if opts['ball_active'] != beetle_ball.active:
                     beetle_ball.active = opts['ball_active']
                     if beetle_ball.active:
