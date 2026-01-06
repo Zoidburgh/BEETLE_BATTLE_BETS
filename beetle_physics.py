@@ -10727,12 +10727,25 @@ def beetle_collision(b1, b2, params):
                 # This makes the ball respond to where the beetle is pushing, not relative motion
                 if b1.horn_type == "ball":
                     beetle = b2
+                    ball = b1
                     beetle_vel_along_normal = -(beetle.vx * normal_x + beetle.vz * normal_z)
                 else:
                     beetle = b1
+                    ball = b2
                     beetle_vel_along_normal = beetle.vx * normal_x + beetle.vz * normal_z
+                
+                # Also consider horn tip velocity from rotation
+                # When beetle rotates, horn tip moves even if beetle center doesn't
+                # Tip velocity = angular_velocity * distance_from_center (perpendicular to radius)
+                horn_reach = 15.0  # Approximate horn length
+                # Tangential velocity at horn tip from rotation
+                tip_tangent_speed = abs(beetle.angular_velocity) * horn_reach
+                # If rotating significantly, treat as active movement toward ball
+                if tip_tangent_speed > 1.0:
+                    beetle_vel_along_normal = max(abs(beetle_vel_along_normal), tip_tangent_speed * 0.5)
+                
                 # Override vel_along_normal with beetle's push direction (negative = toward ball)
-                if abs(beetle_vel_along_normal) > 0.5:  # Beetle must be actively moving
+                if abs(beetle_vel_along_normal) > 0.3:  # Lower threshold, rotation counts
                     vel_along_normal = -abs(beetle_vel_along_normal) * 0.8  # Treat as approaching
 
             if apply_impulse:
