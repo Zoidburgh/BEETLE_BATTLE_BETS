@@ -465,6 +465,12 @@ class InputBuffer:
         self.remote_frame_received = -1  # Highest frame number received from opponent
         self.frames_behind = 0  # How far behind opponent we are
 
+        # Debug stats for network responsiveness analysis
+        self.debug_wait_count = 0  # How many times we waited for opponent
+        self.debug_predict_count = 0  # How many times we used input prediction
+        self.debug_total_frames = 0  # Total frames processed
+        self.debug_last_report = 0  # Last frame we printed debug info
+
         # State sync (host sends authoritative state periodically)
         self.last_state_sync_frame = 0
         self.state_sync_interval = 30  # Every 30 frames (~500ms)
@@ -503,6 +509,7 @@ class InputBuffer:
         # Due to UDP packet loss, we might be missing exact frames
         # If we have a newer frame, use that instead (input prediction)
         has_remote = sim_frame in self.remote_inputs
+        used_prediction = False
         if not has_remote and self.remote_frame_received >= sim_frame:
             # We have newer inputs - find the closest one and use it
             for f in range(sim_frame, self.remote_frame_received + 1):
@@ -510,16 +517,20 @@ class InputBuffer:
                     # Copy this input to the missing frame (assume same input)
                     self.remote_inputs[sim_frame] = self.remote_inputs[f]
                     has_remote = True
+                    used_prediction = True
+                    self.debug_predict_count += 1
                     break
 
         if has_local and has_remote:
             self.waiting_for_remote = False
             self.frames_waited = 0
+            self.debug_total_frames += 1
             return True
         else:
             if not has_remote:
                 self.waiting_for_remote = True
                 self.frames_waited += 1
+                self.debug_wait_count += 1
             return False
 
     def get_frame_inputs(self, frame):
@@ -11491,6 +11502,19 @@ while window.running:
             # Store for animation when network stalls
             g['last_blue_inputs'] = blue_inputs
             g['last_red_inputs'] = red_inputs
+
+            # === DEBUG: Network responsiveness logging (every 120 frames = ~2 sec) ===
+            if input_buffer.current_frame - input_buffer.debug_last_report >= 120:
+                role = "HOST" if network_manager.is_host else "GUEST"
+                frame_diff = input_buffer.remote_frame_received - input_buffer.current_frame
+                wait_pct = (input_buffer.debug_wait_count / max(1, input_buffer.debug_total_frames + input_buffer.debug_wait_count)) * 100
+                predict_pct = (input_buffer.debug_predict_count / max(1, input_buffer.debug_total_frames)) * 100
+                print(f"[{role}] Frame:{input_buffer.current_frame} RemoteFrame:{input_buffer.remote_frame_received} Diff:{frame_diff:+d} | Waits:{input_buffer.debug_wait_count} ({wait_pct:.1f}%) Predicts:{input_buffer.debug_predict_count} ({predict_pct:.1f}%)")
+                input_buffer.debug_last_report = input_buffer.current_frame
+                # Reset counters for next period
+                input_buffer.debug_wait_count = 0
+                input_buffer.debug_predict_count = 0
+                input_buffer.debug_total_frames = 0
         else:
             # LOCAL MODE: Store inputs and get them
             input_buffer.add_local(frame_blue_inputs)
