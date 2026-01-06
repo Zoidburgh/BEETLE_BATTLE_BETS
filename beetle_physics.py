@@ -11367,6 +11367,21 @@ while window.running:
                 beetle_ball.x += (sync['ball_x'] - beetle_ball.x) * lerp_factor
                 beetle_ball.y += (sync['ball_y'] - beetle_ball.y) * lerp_factor
                 beetle_ball.z += (sync['ball_z'] - beetle_ball.z) * lerp_factor
+                # Check if ball is becoming active (need to initialize)
+                if sync['ball_active'] and not beetle_ball.active:
+                    # Initialize ball cache if needed
+                    if not ball_cache_initialized:
+                        init_ball_cache(beetle_ball.radius)
+                    # Render bowl and rebuild floor cache
+                    simulation.render_bowl_perimeter()
+                    build_floor_height_cache()
+                    print("Ball enabled via state sync")
+                elif not sync['ball_active'] and beetle_ball.active:
+                    # Ball being disabled
+                    clear_ball()
+                    simulation.clear_bowl_perimeter()
+                    build_floor_height_cache()
+                    print("Ball disabled via state sync")
                 beetle_ball.active = sync['ball_active']
 
     # Read current inputs from keyboard (will be used inside physics loop)
