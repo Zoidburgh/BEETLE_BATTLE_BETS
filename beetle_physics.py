@@ -12440,6 +12440,7 @@ while window.running:
                         beetle_blue.explosion_timer = EXPLOSION_DURATION
                         beetle_blue.has_exploded = True
                         beetle_blue.is_falling = True  # Ensure falling state matches host
+                        beetle_blue.active = False  # Deactivate beetle (host is authoritative)
                     # Always start respawn timer (host is authoritative)
                     if g['blue_respawn_timer'] <= 0:
                         g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
@@ -12462,6 +12463,7 @@ while window.running:
                         beetle_red.explosion_timer = EXPLOSION_DURATION
                         beetle_red.has_exploded = True
                         beetle_red.is_falling = True  # Ensure falling state matches host
+                        beetle_red.active = False  # Deactivate beetle (host is authoritative)
                     # Always start respawn timer (host is authoritative)
                     if g['red_respawn_timer'] <= 0:
                         g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
@@ -12700,28 +12702,31 @@ while window.running:
                 print("Ball respawned!")
 
         # Stage 2: Full removal - deactivate completely
-        blue_dying = beetle_blue.active and beetle_blue.y < FALL_DEATH_Y
-        red_dying = beetle_red.active and beetle_red.y < FALL_DEATH_Y
+        # IMPORTANT: Only host detects deaths - guest relies on MSG_SCORE from host
+        # This prevents desync where guest sees death that host doesn't
+        if is_host_or_local:
+            blue_dying = beetle_blue.active and beetle_blue.y < FALL_DEATH_Y
+            red_dying = beetle_red.active and beetle_red.y < FALL_DEATH_Y
 
-        if blue_dying:
-            beetle_blue.active = False
-            print("BLUE BEETLE FELL INTO THE ABYSS!")
-            # Red scores when blue dies
-            if not red_celebrating:
-                red_celebrating = True
-                if not beetle_ball.active:
-                    red_pulse_timer = 0.001  # Start red's independent celebration
-                print("RED SCORES!")
+            if blue_dying:
+                beetle_blue.active = False
+                print("BLUE BEETLE FELL INTO THE ABYSS!")
+                # Red scores when blue dies
+                if not red_celebrating:
+                    red_celebrating = True
+                    if not beetle_ball.active:
+                        red_pulse_timer = 0.001  # Start red's independent celebration
+                    print("RED SCORES!")
 
-        if red_dying:
-            beetle_red.active = False
-            print("RED BEETLE FELL INTO THE ABYSS!")
-            # Blue scores when red dies
-            if not blue_celebrating:
-                blue_celebrating = True
-                if not beetle_ball.active:
-                    blue_pulse_timer = 0.001  # Start blue's independent celebration
-                print("BLUE SCORES!")
+            if red_dying:
+                beetle_red.active = False
+                print("RED BEETLE FELL INTO THE ABYSS!")
+                # Blue scores when red dies
+                if not blue_celebrating:
+                    blue_celebrating = True
+                    if not beetle_ball.active:
+                        blue_pulse_timer = 0.001  # Start blue's independent celebration
+                    print("BLUE SCORES!")
 
         # Beetle respawn timers (works in both normal and ball mode)
         # Blue beetle respawn with assembly animation
