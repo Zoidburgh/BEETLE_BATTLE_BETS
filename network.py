@@ -49,6 +49,7 @@ MSG_GO = 0x0A           # Host tells everyone to start simulating
 MSG_FRAME_SYNC = 0x0B   # Host sends frame counter for sync
 MSG_BEETLE_CONFIG = 0x0C  # Beetle customization (horn type + sizes)
 MSG_SCORE = 0x0D          # Host sends authoritative score event (death/goal)
+MSG_GAME_OPTIONS = 0x0E   # Game options (referee enabled, ball active)
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -155,6 +156,9 @@ class NetworkManager:
 
         # Score sync (host-authoritative death/goal detection)
         self.pending_score = None  # Guest: pending score event from host (0=blue scores, 1=red scores)
+
+        # Game options sync (referee, ball, etc.)
+        self.pending_game_options = None  # Guest: pending options from host
 
     def init(self, app_id=480):
         """
@@ -540,6 +544,18 @@ class NetworkManager:
         self._send_packet(data, reliable=True)
         print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores")
 
+    def send_game_options(self, referee_enabled, ball_active):
+        """
+        Host sends game options to guest.
+        Packet format: [type:1][referee:1][ball:1] = 3 bytes
+        """
+        if not self.is_host or not self.connected:
+            return
+        data = struct.pack('>BBB', MSG_GAME_OPTIONS,
+                          1 if referee_enabled else 0,
+                          1 if ball_active else 0)
+        self._send_packet(data, reliable=True)
+
     def send_ping(self):
         """Send ping to measure latency."""
         # Use lower 32 bits of milliseconds to fit in uint32
@@ -815,6 +831,16 @@ class NetworkManager:
                 _, scorer = struct.unpack('>BB', data[:2])
                 self.pending_score = scorer  # 0=blue scores, 1=red scores
                 print(f"[Network] Received score event: {'Blue' if scorer == 0 else 'Red'} scores")
+
+        elif msg_type == MSG_GAME_OPTIONS:
+            # Host sends game options (guest receives)
+            if len(data) >= 3 and not self.is_host:
+                _, referee_enabled, ball_active = struct.unpack('>BBB', data[:3])
+                self.pending_game_options = {
+                    'referee_enabled': referee_enabled == 1,
+                    'ball_active': ball_active == 1
+                }
+                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}")
 
     # =========================================================================
     # CONNECTION STATE

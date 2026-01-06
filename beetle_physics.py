@@ -445,8 +445,8 @@ class InputBuffer:
     """
 
     # Input delay in frames (adjusted based on network latency)
-    # 4 frames = ~67ms at 60Hz - good for 50ms ping
-    NETWORK_INPUT_DELAY = 4
+    # 3 frames = ~50ms at 60Hz - more responsive
+    NETWORK_INPUT_DELAY = 3
 
     def __init__(self, delay_frames=0):
         self.delay = delay_frames
@@ -9455,7 +9455,7 @@ referee_ladybug = None
 referee_enabled = True  # Enabled by default
 referee_time = 0.0  # Time accumulator for organic movement
 
-def toggle_referee():
+def toggle_referee(send_network=True):
     """Toggle flying referee on/off"""
     global referee_ladybug, referee_enabled, referee_time, referee_beam_active
     referee_enabled = not referee_enabled
@@ -9470,6 +9470,9 @@ def toggle_referee():
         referee_ladybug = None
         referee_beam_active = False  # Stop any active beam
         print("Flying referee DISABLED")
+    # Sync to guest if we're the host
+    if send_network and network_manager and network_manager.is_host:
+        network_manager.send_game_options(referee_enabled, beetle_ball.active)
 
 def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
     """Update referee position to stay opposite camera with organic exploration"""
@@ -11340,7 +11343,7 @@ while window.running:
 
             # Always lerp toward host state - no more snapping
             # Larger lerp factor for faster convergence since syncing more often
-            lerp_factor = 0.25
+            lerp_factor = 0.5
             beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
             beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
             beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
@@ -12434,6 +12437,32 @@ while window.running:
                         g['goal_scored_by'] = "BLUE"
                         g['goal_celebration_timer'] = 0.0
                     print(f"BLUE SCORES! (from host)")
+
+            # Check for game options from host (referee, ball toggle)
+            if network_manager.pending_game_options is not None:
+                opts = network_manager.pending_game_options
+                network_manager.pending_game_options = None  # Consume
+                # Apply referee state
+                if opts['referee_enabled'] != referee_enabled:
+                    toggle_referee(send_network=False)  # Don't send back
+                # Apply ball state
+                if opts['ball_active'] != beetle_ball.active:
+                    beetle_ball.active = opts['ball_active']
+                    if beetle_ball.active:
+                        # Initialize ball for guest
+                        beetle_ball.x = 0.0
+                        beetle_ball.y = 28.0
+                        beetle_ball.z = 0.0
+                        beetle_ball.vx = 0.0
+                        beetle_ball.vy = 0.0
+                        beetle_ball.vz = 0.0
+                        simulation.render_bowl_perimeter()
+                        build_floor_height_cache()
+                    else:
+                        clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        build_floor_height_cache()
+                    print(f"Ball mode: {opts['ball_active']} (from host)")
 
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
@@ -14858,6 +14887,9 @@ while window.running:
             simulation.render_bowl_perimeter()
             # Rebuild floor height cache to include the ice bowl
             build_floor_height_cache()
+        # Sync to guest if we're the host
+        if network_manager and network_manager.is_host:
+            network_manager.send_game_options(referee_enabled, beetle_ball.active)
 
     # Ball score display (only show when ball is enabled)
     if beetle_ball.active:
