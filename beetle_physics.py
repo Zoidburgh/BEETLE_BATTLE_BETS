@@ -11361,9 +11361,25 @@ while window.running:
 
             # Ball sync (if present in sync data)
             if 'ball_x' in sync:
-                beetle_ball.x += (sync['ball_x'] - beetle_ball.x) * lerp_factor
-                beetle_ball.y += (sync['ball_y'] - beetle_ball.y) * lerp_factor
-                beetle_ball.z += (sync['ball_z'] - beetle_ball.z) * lerp_factor
+                # Detect respawn: if Y changed drastically (>15 units), snap instead of lerp
+                y_diff = abs(sync['ball_y'] - beetle_ball.y)
+                if y_diff > 15:
+                    # Respawn detected - snap to position and reset velocity
+                    beetle_ball.x = sync['ball_x']
+                    beetle_ball.y = sync['ball_y']
+                    beetle_ball.z = sync['ball_z']
+                    beetle_ball.vx = 0.0
+                    beetle_ball.vy = 0.0
+                    beetle_ball.vz = 0.0
+                    beetle_ball.angular_velocity = 0.0
+                    beetle_ball.pitch_velocity = 0.0
+                    beetle_ball.roll_velocity = 0.0
+                    print(f"Ball respawn detected (Y jump: {y_diff:.1f}), snapping to spawn")
+                else:
+                    # Normal movement - lerp toward host position
+                    beetle_ball.x += (sync['ball_x'] - beetle_ball.x) * lerp_factor
+                    beetle_ball.y += (sync['ball_y'] - beetle_ball.y) * lerp_factor
+                    beetle_ball.z += (sync['ball_z'] - beetle_ball.z) * lerp_factor
                 # Check if ball is becoming active (need to initialize)
                 if sync['ball_active'] and not beetle_ball.active:
                     # Initialize ball cache if needed
@@ -12412,14 +12428,17 @@ while window.running:
                 scorer = network_manager.pending_score
                 network_manager.pending_score = None  # Consume the event
                 if scorer == 1:  # Red scores (blue died or ball goal)
-                    # Only trigger explosion if beetle is falling (fall death, not ball goal)
-                    if beetle_blue.is_falling and not beetle_blue.has_exploded:
+                    # Trigger explosion if beetle hasn't exploded yet
+                    if not beetle_blue.has_exploded:
                         beetle_blue.explosion_pos_x = beetle_blue.x
                         beetle_blue.explosion_pos_y = beetle_blue.y + 30.0
                         beetle_blue.explosion_pos_z = beetle_blue.z
                         beetle_blue.explosion_delay = EXPLOSION_DELAY
                         beetle_blue.explosion_timer = EXPLOSION_DURATION
                         beetle_blue.has_exploded = True
+                        beetle_blue.is_falling = True  # Ensure falling state matches host
+                    # Always start respawn timer (host is authoritative)
+                    if g['blue_respawn_timer'] <= 0:
                         g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
                     # Always set score (works for both fall death and ball goal)
                     g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY
@@ -12431,14 +12450,17 @@ while window.running:
                         g['goal_celebration_timer'] = 0.0
                     print(f"RED SCORES! (from host)")
                 elif scorer == 0:  # Blue scores (red died or ball goal)
-                    # Only trigger explosion if beetle is falling (fall death, not ball goal)
-                    if beetle_red.is_falling and not beetle_red.has_exploded:
+                    # Trigger explosion if beetle hasn't exploded yet
+                    if not beetle_red.has_exploded:
                         beetle_red.explosion_pos_x = beetle_red.x
                         beetle_red.explosion_pos_y = beetle_red.y + 30.0
                         beetle_red.explosion_pos_z = beetle_red.z
                         beetle_red.explosion_delay = EXPLOSION_DELAY
                         beetle_red.explosion_timer = EXPLOSION_DURATION
                         beetle_red.has_exploded = True
+                        beetle_red.is_falling = True  # Ensure falling state matches host
+                    # Always start respawn timer (host is authoritative)
+                    if g['red_respawn_timer'] <= 0:
                         g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
                     # Always set score (works for both fall death and ball goal)
                     g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY
