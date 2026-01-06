@@ -12191,7 +12191,7 @@ while window.running:
                             g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
                             g['red_score_pending'] = True  # Score will be added after delay
                             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
-                                network_manager.send_score(1)  # Red scores
+                                network_manager.send_score(1, score_type=1)  # Red scores (ball goal)
                             print(f"RED SCORES!")
                         elif beetle_ball.x > 32:  # Red goal pit (east) - BLUE scores
                             g['ball_scored_this_fall'] = True
@@ -12200,7 +12200,7 @@ while window.running:
                             g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
                             g['blue_score_pending'] = True  # Score will be added after delay
                             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
-                                network_manager.send_score(0)  # Blue scores
+                                network_manager.send_score(0, score_type=1)  # Blue scores (ball goal)
                             print(f"BLUE SCORES!")
             # NOTE: ball_scored_this_fall is only reset on ball respawn, not when ball goes above ground
             # This prevents double-scoring if ball bounces in the goal pit
@@ -12492,54 +12492,59 @@ while window.running:
         # Handles both fall deaths (beetle explosion) and ball goals
         if game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host:
             if network_manager.pending_score is not None:
-                scorer = network_manager.pending_score
+                score_event = network_manager.pending_score
                 network_manager.pending_score = None  # Consume the event
+                scorer = score_event['scorer']
+                score_type = score_event['score_type']  # 0=beetle death, 1=ball goal
+                is_beetle_death = (score_type == 0)
+
                 if scorer == 1:  # Red scores (blue died or ball goal)
-                    # Trigger explosion if beetle hasn't exploded yet
-                    if not beetle_blue.has_exploded:
+                    # Only trigger beetle explosion for actual death, not ball goals
+                    if is_beetle_death and not beetle_blue.has_exploded:
                         beetle_blue.explosion_pos_x = beetle_blue.x
                         beetle_blue.explosion_pos_y = beetle_blue.y + 30.0
                         beetle_blue.explosion_pos_z = beetle_blue.z
                         beetle_blue.explosion_delay = EXPLOSION_DELAY
                         beetle_blue.explosion_timer = EXPLOSION_DURATION
                         beetle_blue.has_exploded = True
-                        beetle_blue.is_falling = True  # Ensure falling state matches host
-                        beetle_blue.active = False  # Deactivate beetle (host is authoritative)
-                    # Always start respawn timer (host is authoritative)
-                    if g['blue_respawn_timer'] <= 0:
-                        g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
-                    # Always set score (works for both fall death and ball goal)
+                        beetle_blue.is_falling = True
+                        beetle_blue.active = False
+                        # Start respawn timer for beetle death
+                        if g['blue_respawn_timer'] <= 0:
+                            g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                    # Set score animation
                     g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY
                     g['red_score_pending'] = True
-                    # Ball goal state (if ball is active)
-                    if beetle_ball.active:
+                    # Ball goal state (only for ball goals, not beetle deaths)
+                    if not is_beetle_death and beetle_ball.active:
                         g['ball_scored_this_fall'] = True
                         g['goal_scored_by'] = "RED"
                         g['goal_celebration_timer'] = 0.0
-                    print(f"RED SCORES! (from host)")
+                    print(f"RED SCORES! ({'death' if is_beetle_death else 'ball goal'} from host)")
+
                 elif scorer == 0:  # Blue scores (red died or ball goal)
-                    # Trigger explosion if beetle hasn't exploded yet
-                    if not beetle_red.has_exploded:
+                    # Only trigger beetle explosion for actual death, not ball goals
+                    if is_beetle_death and not beetle_red.has_exploded:
                         beetle_red.explosion_pos_x = beetle_red.x
                         beetle_red.explosion_pos_y = beetle_red.y + 30.0
                         beetle_red.explosion_pos_z = beetle_red.z
                         beetle_red.explosion_delay = EXPLOSION_DELAY
                         beetle_red.explosion_timer = EXPLOSION_DURATION
                         beetle_red.has_exploded = True
-                        beetle_red.is_falling = True  # Ensure falling state matches host
-                        beetle_red.active = False  # Deactivate beetle (host is authoritative)
-                    # Always start respawn timer (host is authoritative)
-                    if g['red_respawn_timer'] <= 0:
-                        g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
-                    # Always set score (works for both fall death and ball goal)
+                        beetle_red.is_falling = True
+                        beetle_red.active = False
+                        # Start respawn timer for beetle death
+                        if g['red_respawn_timer'] <= 0:
+                            g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                    # Set score animation
                     g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY
                     g['blue_score_pending'] = True
-                    # Ball goal state (if ball is active)
-                    if beetle_ball.active:
+                    # Ball goal state (only for ball goals, not beetle deaths)
+                    if not is_beetle_death and beetle_ball.active:
                         g['ball_scored_this_fall'] = True
                         g['goal_scored_by'] = "BLUE"
                         g['goal_celebration_timer'] = 0.0
-                    print(f"BLUE SCORES! (from host)")
+                    print(f"BLUE SCORES! ({'death' if is_beetle_death else 'ball goal'} from host)")
 
             # Check for game options from host (ball toggle only - referee is local)
             if network_manager.pending_game_options is not None:
@@ -12549,19 +12554,53 @@ while window.running:
                 if opts['ball_active'] != beetle_ball.active:
                     beetle_ball.active = opts['ball_active']
                     if beetle_ball.active:
-                        # Initialize ball for guest
+                        # Initialize ball cache for guest (CRITICAL - without this ball won't render!)
+                        if not ball_cache_initialized:
+                            init_ball_cache(beetle_ball.radius)
+                            ball_cache_initialized = True
+                        # Initialize ball position and physics
                         beetle_ball.x = 0.0
                         beetle_ball.y = 28.0
                         beetle_ball.z = 0.0
                         beetle_ball.vx = 0.0
                         beetle_ball.vy = 0.0
                         beetle_ball.vz = 0.0
+                        beetle_ball.rotation = 0.0
+                        beetle_ball.angular_velocity = 0.0
+                        beetle_ball.pitch = 0.0
+                        beetle_ball.pitch_velocity = 0.0
+                        beetle_ball.roll = 0.0
+                        beetle_ball.roll_velocity = 0.0
+                        # Reset prev state for interpolation
+                        beetle_ball.prev_x = beetle_ball.x
+                        beetle_ball.prev_y = beetle_ball.y
+                        beetle_ball.prev_z = beetle_ball.z
+                        beetle_ball.prev_rotation = beetle_ball.rotation
+                        beetle_ball.prev_pitch = beetle_ball.pitch
+                        beetle_ball.prev_roll = beetle_ball.roll
+                        # Reset ball game state
+                        g['ball_scored_this_fall'] = False
+                        g['ball_has_exploded'] = False
+                        g['ball_explosion_delay'] = 0.0
+                        g['ball_explosion_timer'] = 0.0
+                        g['blue_score'] = 0
+                        g['red_score'] = 0
+                        # Render bowl and rebuild floor cache
                         simulation.render_bowl_perimeter()
                         build_floor_height_cache()
                     else:
-                        clear_ball()
+                        # Disabling ball - clear voxels
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
                         simulation.clear_bowl_perimeter()
                         build_floor_height_cache()
+                        g['blue_score'] = 0
+                        g['red_score'] = 0
                     print(f"Ball mode: {opts['ball_active']} (from host)")
 
         # Determine if we should detect deaths locally
@@ -14943,64 +14982,70 @@ while window.running:
     window.GUI.text("")
     window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
 
-    # Ball toggle button
-    ball_button_text = "Disable Ball" if beetle_ball.active else "Enable Ball"
-    if window.GUI.button(ball_button_text):
-        if beetle_ball.active:
-            # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
-            if ball_last_rendered[None] == 1:
-                num_voxels = ball_cache_size[None]
-                if num_voxels > 0:
-                    clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                ball_last_rendered[None] = 0
-            else:
-                clear_ball()  # Fallback to full clear if ball position unknown
-            simulation.clear_bowl_perimeter()
-            # Rebuild floor height cache without the ice bowl
-            build_floor_height_cache()
-            # Reset scores when leaving ball mode
-            blue_score = 0
-            red_score = 0
-        beetle_ball.active = not beetle_ball.active
-        if beetle_ball.active:
-            # Initialize ball cache for assembly animation if not already done
-            if not ball_cache_initialized:
-                init_ball_cache(beetle_ball.radius)
-                ball_cache_initialized = True
-            # Reset ball to center when enabling
-            beetle_ball.x = 0.0
-            beetle_ball.y = 28.0  # Drop from higher than beetles
-            beetle_ball.z = 0.0
-            beetle_ball.vx = 0.0
-            beetle_ball.vy = 0.0
-            beetle_ball.vz = 0.0
-            beetle_ball.rotation = 0.0
-            beetle_ball.angular_velocity = 0.0
-            beetle_ball.pitch = 0.0
-            beetle_ball.pitch_velocity = 0.0
-            beetle_ball.roll = 0.0
-            beetle_ball.roll_velocity = 0.0
-            # Reset prev state to avoid interpolation jump
-            beetle_ball.prev_x = beetle_ball.x
-            beetle_ball.prev_y = beetle_ball.y
-            beetle_ball.prev_z = beetle_ball.z
-            beetle_ball.prev_rotation = beetle_ball.rotation
-            beetle_ball.prev_pitch = beetle_ball.pitch
-            beetle_ball.prev_roll = beetle_ball.roll
-            # Reset scores and flags
-            blue_score = 0
-            red_score = 0
-            ball_scored_this_fall = False
-            ball_has_exploded = False
-            ball_explosion_delay = 0.0
-            ball_explosion_timer = 0.0
-            # Render the bowl perimeter for ball mode (with goal pit cutouts)
-            simulation.render_bowl_perimeter()
-            # Rebuild floor height cache to include the ice bowl
-            build_floor_height_cache()
-        # Sync to guest if we're the host
-        if network_manager and network_manager.is_host:
-            network_manager.send_game_options(referee_enabled, beetle_ball.active)
+    # Ball toggle button (only host can toggle in online mode)
+    is_online_guest = game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host
+    if is_online_guest:
+        # Guest sees ball state but can't toggle
+        ball_status = "Ball: ON (host controls)" if beetle_ball.active else "Ball: OFF (host controls)"
+        window.GUI.text(ball_status)
+    else:
+        ball_button_text = "Disable Ball" if beetle_ball.active else "Enable Ball"
+        if window.GUI.button(ball_button_text):
+            if beetle_ball.active:
+                # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
+                if ball_last_rendered[None] == 1:
+                    num_voxels = ball_cache_size[None]
+                    if num_voxels > 0:
+                        clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                    ball_last_rendered[None] = 0
+                else:
+                    clear_ball()  # Fallback to full clear if ball position unknown
+                simulation.clear_bowl_perimeter()
+                # Rebuild floor height cache without the ice bowl
+                build_floor_height_cache()
+                # Reset scores when leaving ball mode
+                blue_score = 0
+                red_score = 0
+            beetle_ball.active = not beetle_ball.active
+            if beetle_ball.active:
+                # Initialize ball cache for assembly animation if not already done
+                if not ball_cache_initialized:
+                    init_ball_cache(beetle_ball.radius)
+                    ball_cache_initialized = True
+                # Reset ball to center when enabling
+                beetle_ball.x = 0.0
+                beetle_ball.y = 28.0  # Drop from higher than beetles
+                beetle_ball.z = 0.0
+                beetle_ball.vx = 0.0
+                beetle_ball.vy = 0.0
+                beetle_ball.vz = 0.0
+                beetle_ball.rotation = 0.0
+                beetle_ball.angular_velocity = 0.0
+                beetle_ball.pitch = 0.0
+                beetle_ball.pitch_velocity = 0.0
+                beetle_ball.roll = 0.0
+                beetle_ball.roll_velocity = 0.0
+                # Reset prev state to avoid interpolation jump
+                beetle_ball.prev_x = beetle_ball.x
+                beetle_ball.prev_y = beetle_ball.y
+                beetle_ball.prev_z = beetle_ball.z
+                beetle_ball.prev_rotation = beetle_ball.rotation
+                beetle_ball.prev_pitch = beetle_ball.pitch
+                beetle_ball.prev_roll = beetle_ball.roll
+                # Reset scores and flags
+                blue_score = 0
+                red_score = 0
+                ball_scored_this_fall = False
+                ball_has_exploded = False
+                ball_explosion_delay = 0.0
+                ball_explosion_timer = 0.0
+                # Render the bowl perimeter for ball mode (with goal pit cutouts)
+                simulation.render_bowl_perimeter()
+                # Rebuild floor height cache to include the ice bowl
+                build_floor_height_cache()
+            # Sync to guest if we're the host
+            if network_manager and network_manager.is_host:
+                network_manager.send_game_options(referee_enabled, beetle_ball.active)
 
     # Ball score display (only show when ball is enabled)
     if beetle_ball.active:

@@ -531,18 +531,20 @@ class NetworkManager:
         self._send_packet(data, reliable=True)
         print(f"[Network] Sent beetle config: horn={horn_type_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
 
-    def send_score(self, scorer):
+    def send_score(self, scorer, score_type=0):
         """
         Host sends authoritative score event to guest.
 
         Args:
-            scorer: 0 = blue scores (red died), 1 = red scores (blue died)
+            scorer: 0 = blue scores (red died/goal), 1 = red scores (blue died/goal)
+            score_type: 0 = beetle death (explode beetle), 1 = ball goal (don't explode beetle)
         """
         if not self.is_host or not self.connected:
             return
-        data = struct.pack('>BB', MSG_SCORE, scorer)
+        data = struct.pack('>BBB', MSG_SCORE, scorer, score_type)
         self._send_packet(data, reliable=True)
-        print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores")
+        type_str = "death" if score_type == 0 else "ball goal"
+        print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str})")
 
     def send_game_options(self, referee_enabled, ball_active):
         """
@@ -827,10 +829,11 @@ class NetworkManager:
 
         elif msg_type == MSG_SCORE:
             # Host-authoritative score event (guest receives)
-            if len(data) >= 2 and not self.is_host:
-                _, scorer = struct.unpack('>BB', data[:2])
-                self.pending_score = scorer  # 0=blue scores, 1=red scores
-                print(f"[Network] Received score event: {'Blue' if scorer == 0 else 'Red'} scores")
+            if len(data) >= 3 and not self.is_host:
+                _, scorer, score_type = struct.unpack('>BBB', data[:3])
+                self.pending_score = {'scorer': scorer, 'score_type': score_type}
+                type_str = "death" if score_type == 0 else "ball goal"
+                print(f"[Network] Received score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str})")
 
         elif msg_type == MSG_GAME_OPTIONS:
             # Host sends game options (guest receives)
