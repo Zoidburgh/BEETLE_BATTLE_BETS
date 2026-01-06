@@ -13179,7 +13179,9 @@ while window.running:
         if beetle_blue.is_moving and not beetle_blue.is_rotating_only:
             # Scale dust particles with speed bonus (more dust when going faster)
             active_bonus = beetle_blue.backward_bonus if beetle_blue.is_moving_backward else beetle_blue.forward_bonus
-            blue_dust_count = int(8 * (1.0 + active_bonus))
+            # Spider has fewer base particles (slower base speed)
+            base_dust = 4 if beetle_blue.horn_type_id == 6 else 8
+            blue_dust_count = int(base_dust * (1.0 + active_bonus))
             # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
             if beetle_blue.is_moving_backward:
                 dust_legs = [0, 1]  # Front legs
@@ -13276,7 +13278,9 @@ while window.running:
         if beetle_red.is_moving and not beetle_red.is_rotating_only:
             # Scale dust particles with speed bonus (more dust when going faster)
             active_bonus = beetle_red.backward_bonus if beetle_red.is_moving_backward else beetle_red.forward_bonus
-            red_dust_count = int(8 * (1.0 + active_bonus))
+            # Spider has fewer base particles (slower base speed)
+            base_dust = 4 if beetle_red.horn_type_id == 6 else 8
+            red_dust_count = int(base_dust * (1.0 + active_bonus))
             # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
             if beetle_red.is_moving_backward:
                 dust_legs = [0, 1]  # Front legs
