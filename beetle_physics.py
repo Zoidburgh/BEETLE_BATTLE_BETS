@@ -888,7 +888,7 @@ class Beetle:
             # Apply different speed caps based on direction (use tunable params)
             # Spider has lower base speed (6/4) but can boost with floor silk
             if self.horn_type_id == 6:  # Spider
-                base_forward = 7.0
+                base_forward = 6.5
                 base_backward = 4.0
             else:
                 base_forward = physics_params.get("FORWARD_SPEED", 7.0)
@@ -10963,7 +10963,7 @@ physics_params = {
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
     "GRAVITY": 60.0,  # Adjustable gravity
     "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
-    "FORWARD_SPEED": 12.0,  # Forward top speed (base before momentum bonus)
+    "FORWARD_SPEED": 12.5,  # Forward top speed (base before momentum bonus)
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
 
     # Airborne tumbling physics parameters
