@@ -8009,10 +8009,12 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                               dir_x: ti.f32, dir_z: ti.f32, speed: ti.f32,
                               color_r: ti.f32, color_g: ti.f32, color_b: ti.f32,
                               rand_offset_x: ti.f32, rand_offset_z: ti.f32,
-                              stagger_scale: ti.f32, num_particles: ti.i32):
+                              stagger_scale: ti.f32, num_particles: ti.i32,
+                              height_mult: ti.f32):
     """Spawn staggered dust particles kicked up from leg tip at ~25° angle"""
     # 25° angle: tan(25°) ≈ 0.466, so vertical = horizontal * 0.466
-    upward_ratio = 0.466
+    # height_mult scales vertical velocity (1.0 = normal, 1.5 = 50% higher at max speed bonus)
+    upward_ratio = 0.466 * height_mult
 
     for i in range(num_particles):
         idx = ti.atomic_add(simulation.num_debris[None], 1)
@@ -13205,8 +13207,10 @@ while window.running:
                         # Per-leg random offset for variety
                         rand_x = (random.random() - 0.5) * 1.5
                         rand_z = (random.random() - 0.5) * 1.5
+                        # Height scales with speed bonus: 1.0 at base, 1.5 at max (50% higher)
+                        blue_height_mult = 1.0 + active_bonus * 0.714
                         spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, blue_dust_count)
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, blue_dust_count, blue_height_mult)
 
         # Spinning: spawn dust from back leg on opposite side
         # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
@@ -13300,8 +13304,10 @@ while window.running:
                         # Per-leg random offset for variety
                         rand_x = (random.random() - 0.5) * 1.5
                         rand_z = (random.random() - 0.5) * 1.5
+                        # Height scales with speed bonus: 1.0 at base, 1.5 at max (50% higher)
+                        red_height_mult = 1.0 + active_bonus * 0.714
                         spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, red_dust_count)
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, red_dust_count, red_height_mult)
 
         # Spinning: spawn dust from back leg on opposite side
         # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
