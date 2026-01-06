@@ -9183,8 +9183,9 @@ def clear_ladybug_voxels():
 @ti.kernel
 def clear_ladybug_bounded(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32):
     """Clear ladybug voxels using bounding box around position (much faster than full scan)"""
-    # Ladybug shell radius 8, plus wings (~10), legs (~8), and body tilt extends it further
-    margin = 24
+    # Ladybug shell radius 8, plus wings (~12), legs (~8), body tilt/roll extends further
+    # Extra margin to cover movement between frames
+    margin = 28
 
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_y = int(world_y + RENDER_Y_OFFSET)
