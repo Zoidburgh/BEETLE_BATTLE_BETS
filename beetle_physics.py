@@ -10640,6 +10640,21 @@ def beetle_collision(b1, b2, params):
                 # BODY COLLISION or BALL: Keep full separation behavior with momentum
                 b1_toward = b1.vx * (-normal_x) + b1.vz * (-normal_z)
                 b2_toward = b2.vx * normal_x + b2.vz * normal_z
+
+                # For ball collisions, include angular velocity contribution to momentum
+                # This ensures rotating the horn into the ball transfers momentum properly
+                if is_ball_collision:
+                    horn_reach = 15.0  # Distance from beetle center to horn tip
+                    # Check which beetle is the ball
+                    if b1.horn_type != "ball":
+                        # b1 is the beetle - add its rotation momentum
+                        tip_tangent = abs(b1.angular_velocity) * horn_reach
+                        b1_toward = max(b1_toward, tip_tangent * 0.7)
+                    if b2.horn_type != "ball":
+                        # b2 is the beetle - add its rotation momentum
+                        tip_tangent = abs(b2.angular_velocity) * horn_reach
+                        b2_toward = max(b2_toward, tip_tangent * 0.7)
+
                 b1_toward = max(b1_toward, 0.0)
                 b2_toward = max(b2_toward, 0.0)
                 total_momentum = b1_toward + b2_toward + 0.01
@@ -10894,6 +10909,15 @@ def beetle_collision(b1, b2, params):
                 b2.collision_spin_direction = 1 if b2.angular_velocity > 0 else -1
                 # Apply full damping strength on any significant collision
                 b2.body_rotation_damping = BODY_ROTATION_DAMPING_STRENGTH
+
+            # === CLAMP ANGULAR VELOCITY IMMEDIATELY ===
+            # Prevents huge rotation jumps on next frame before update_physics clamps
+            # Without this, angular_velocity can exceed MAX_ANGULAR_SPEED and cause
+            # jarring 180-degree spins when the unclamped value is applied to rotation
+            if abs(b1.angular_velocity) > MAX_ANGULAR_SPEED:
+                b1.angular_velocity = MAX_ANGULAR_SPEED if b1.angular_velocity > 0 else -MAX_ANGULAR_SPEED
+            if abs(b2.angular_velocity) > MAX_ANGULAR_SPEED:
+                b2.angular_velocity = MAX_ANGULAR_SPEED if b2.angular_velocity > 0 else -MAX_ANGULAR_SPEED
     else:
         # No collision - reset smoothed collision normals
         b1.contact_normal_x = 0.0
