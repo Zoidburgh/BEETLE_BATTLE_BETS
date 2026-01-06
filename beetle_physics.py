@@ -886,10 +886,13 @@ class Beetle:
             dot_product = self.vx * forward_x + self.vz * forward_z
 
             # Apply different speed caps based on direction (use tunable params)
-            # Spider has lower base speed (6/4) but can boost with floor silk
+            # Spider has lower base speed, Scorpion is medium
             if self.horn_type_id == 6:  # Spider
                 base_forward = 6.5
                 base_backward = 4.0
+            elif self.horn_type_id == 3:  # Scorpion
+                base_forward = 9.0
+                base_backward = 6.0
             else:
                 base_forward = physics_params.get("FORWARD_SPEED", 7.0)
                 base_backward = physics_params.get("BACKWARD_SPEED", 5.0)
