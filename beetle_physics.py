@@ -9339,7 +9339,7 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 if existing != simulation.CONCRETE and existing != simulation.SHADOW and existing != simulation.SLIPPERY and existing != simulation.GOAL:
                     simulation.voxel_type[grid_x, grid_y, grid_z] = simulation.LADYBUG_WINGS
 
-    # Place leg voxels with kick animation
+    # Place leg voxels with natural sway animation
     for leg_id in range(6):
         start_idx = ladybug_leg_start_idx[leg_id]
         end_idx = ladybug_leg_end_idx[leg_id]
@@ -9360,14 +9360,25 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         else:
             attach_x, attach_z = -5.0, 5.0
 
-        # Leg wiggle animation - each leg has phase offset for wave effect
-        leg_phase_offset = float(leg_id) * 0.5  # Stagger legs
-        wiggle_amount = ti.sin(kick_phase * 3.0 + leg_phase_offset) * 2.0  # Faster wiggle
-        kick_lift = wiggle_amount if kick_phase > 0.01 else 0.0  # Only wiggle when kick_phase is active
+        # Natural leg sway - trails behind body bob for organic dangling feel
+        # Each leg pair has phase offset for wave effect (front to back)
+        leg_row = leg_id // 2  # 0=front, 1=mid, 2=back
+        leg_phase_offset = float(leg_row) * 0.4  # Slight delay back to front
+
+        # Sway trails behind wing phase (body bob) - legs dangle with inertia
+        sway_phase = wing_phase - 1.2 + leg_phase_offset  # Trail behind bob
+        leg_sway_amount = ti.sin(sway_phase) * 1.2  # Subtle ±1.2 voxel sway
 
         for idx in range(start_idx, end_idx):
-            local_x = float(ladybug_leg_cache_x[idx]) + attach_x
-            local_y = float(ladybug_leg_cache_y[idx]) - 1.0 + kick_lift
+            # Calculate how far down the leg this voxel is (for graduated sway)
+            leg_local_y = float(ladybug_leg_cache_y[idx])
+            tip_factor = ti.max(0.0, (-leg_local_y) / 5.0)  # 0 at top, 1 at tips
+
+            # Apply sway more to leg tips than base (natural pendulum effect)
+            sway_offset = leg_sway_amount * tip_factor
+
+            local_x = float(ladybug_leg_cache_x[idx]) + attach_x + sway_offset
+            local_y = float(ladybug_leg_cache_y[idx]) - 1.0
             local_z = float(ladybug_leg_cache_z[idx]) + attach_z
 
             # Apply body tilt
