@@ -12531,7 +12531,7 @@ while window.running:
                         beetle_blue.is_falling = True
                         beetle_blue.guest_death_falling = True  # Flag for guest to handle explosion
                         beetle_blue.on_ground = False
-                        beetle_blue.vy = -5.0  # Give initial downward velocity
+                        beetle_blue.vy = -40.0  # Fast fall to minimize host/guest timing gap
                         # Start respawn timer
                         if g['blue_respawn_timer'] <= 0:
                             g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
@@ -12557,7 +12557,7 @@ while window.running:
                         beetle_red.is_falling = True
                         beetle_red.guest_death_falling = True  # Flag for guest to handle explosion
                         beetle_red.on_ground = False
-                        beetle_red.vy = -5.0  # Give initial downward velocity
+                        beetle_red.vy = -40.0  # Fast fall to minimize host/guest timing gap
                         # Start respawn timer
                         if g['red_respawn_timer'] <= 0:
                             g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
