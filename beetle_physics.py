@@ -12661,6 +12661,7 @@ while window.running:
             beetle_blue.explosion_delay = EXPLOSION_DELAY
             beetle_blue.explosion_timer = EXPLOSION_DURATION
             beetle_blue.has_exploded = True
+            beetle_blue.active = False  # Deactivate beetle (stops rendering)
             beetle_blue.guest_death_falling = False  # Clear the flag
             print("BLUE BEETLE EXPLOSION (GUEST) STARTED!")
 
@@ -12718,6 +12719,7 @@ while window.running:
             beetle_red.explosion_delay = EXPLOSION_DELAY
             beetle_red.explosion_timer = EXPLOSION_DURATION
             beetle_red.has_exploded = True
+            beetle_red.active = False  # Deactivate beetle (stops rendering)
             beetle_red.guest_death_falling = False  # Clear the flag
             print("RED BEETLE EXPLOSION (GUEST) STARTED!")
 
