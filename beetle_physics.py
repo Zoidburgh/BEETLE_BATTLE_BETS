@@ -11379,7 +11379,7 @@ while window.running:
             network_manager.send_frame_sync(input_buffer.current_frame)
 
         # === HOST STATE SYNC (send authoritative positions periodically) ===
-        if network_manager.is_host and physics_frame % 10 == 0:  # Every ~167ms (6 syncs/sec)
+        if network_manager.is_host and physics_frame % 7 == 0:  # Every ~117ms (8.5 syncs/sec)
             network_manager.send_state_sync(
                 physics_frame,
                 beetle_blue.x, beetle_blue.z, beetle_blue.rotation,
