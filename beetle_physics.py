@@ -9522,9 +9522,10 @@ def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
     speed_variation += math.sin(referee_time * 0.7) * 0.02  # Faster subtle variation
     move_speed = 0.08 + speed_variation  # Base 0.08, range 0.02 to 0.14
 
-    # Smooth movement (lerp with variable speed)
-    referee_ladybug.x += (target_x - referee_ladybug.x) * move_speed
-    referee_ladybug.z += (target_z - referee_ladybug.z) * move_speed
+    # Smooth movement (lerp with variable speed, frame-rate independent)
+    dt_factor = dt * 60.0  # Normalize to 60 FPS baseline
+    referee_ladybug.x += (target_x - referee_ladybug.x) * move_speed * dt_factor
+    referee_ladybug.z += (target_z - referee_ladybug.z) * move_speed * dt_factor
 
     # Look-around: face toward midpoint but with slight scanning motion
     dx = mid_x - referee_ladybug.x
@@ -9536,7 +9537,7 @@ def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
     look_offset += math.sin(referee_time * 0.23) * 0.24
     look_offset += math.sin(referee_time * 0.8) * 0.12
 
-    # Smooth the rotation to reduce flickering
+    # Smooth the rotation to reduce flickering (frame-rate independent)
     target_rotation = base_rotation + look_offset
     angle_diff = target_rotation - referee_ladybug.rotation
     # Normalize angle diff
@@ -9544,7 +9545,7 @@ def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
         angle_diff -= 2 * math.pi
     while angle_diff < -math.pi:
         angle_diff += 2 * math.pi
-    referee_ladybug.rotation += angle_diff * 0.15
+    referee_ladybug.rotation += angle_diff * 0.15 * dt_factor
 
     # Forward/back tilt (±18 degrees on top of base 30 degree tilt)
     tilt_offset = math.sin(referee_time * 0.35) * 0.22
