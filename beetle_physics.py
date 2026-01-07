@@ -762,6 +762,7 @@ class Beetle:
         # Beetle active state (for fall death)
         self.active = True  # False when beetle has fallen off arena
         self.is_falling = False  # True when beetle has passed point of no return
+        self.guest_death_falling = False  # True when guest receives death event and beetle is falling to explode
         self.has_exploded = False  # True when death particle explosion has been triggered
         self.explosion_delay = 0.0  # Delay before particles start spawning
         self.explosion_timer = 0.0  # Timer for gradual particle spawning (0.3 seconds)
@@ -12520,24 +12521,18 @@ while window.running:
 
                 if scorer == 1:  # Red scores (blue died or ball goal)
                     # Only trigger beetle explosion for actual death, not ball goals
-                    if is_beetle_death and not beetle_blue.has_exploded:
+                    if is_beetle_death and not beetle_blue.has_exploded and not beetle_blue.guest_death_falling:
                         # Get death position from host (where beetle actually died)
                         death_x = score_event.get('death_x', beetle_blue.x)
                         death_z = score_event.get('death_z', beetle_blue.z)
-                        # Smoothly lerp beetle toward death position before explosion
-                        # Use high lerp factor for quick but visible movement
-                        beetle_blue.x += (death_x - beetle_blue.x) * 0.7
-                        beetle_blue.z += (death_z - beetle_blue.z) * 0.7
-                        # Set explosion at death position (not current position)
-                        beetle_blue.explosion_pos_x = death_x
-                        beetle_blue.explosion_pos_y = beetle_blue.y + 30.0
-                        beetle_blue.explosion_pos_z = death_z
-                        beetle_blue.explosion_delay = EXPLOSION_DELAY
-                        beetle_blue.explosion_timer = EXPLOSION_DURATION
-                        beetle_blue.has_exploded = True
+                        # Snap beetle to death position and let it fall naturally
+                        beetle_blue.x = death_x
+                        beetle_blue.z = death_z
                         beetle_blue.is_falling = True
-                        beetle_blue.active = False
-                        # Start respawn timer for beetle death
+                        beetle_blue.guest_death_falling = True  # Flag for guest to handle explosion
+                        beetle_blue.on_ground = False
+                        beetle_blue.vy = -5.0  # Give initial downward velocity
+                        # Start respawn timer
                         if g['blue_respawn_timer'] <= 0:
                             g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
                     # Set score animation
@@ -12552,24 +12547,18 @@ while window.running:
 
                 elif scorer == 0:  # Blue scores (red died or ball goal)
                     # Only trigger beetle explosion for actual death, not ball goals
-                    if is_beetle_death and not beetle_red.has_exploded:
+                    if is_beetle_death and not beetle_red.has_exploded and not beetle_red.guest_death_falling:
                         # Get death position from host (where beetle actually died)
                         death_x = score_event.get('death_x', beetle_red.x)
                         death_z = score_event.get('death_z', beetle_red.z)
-                        # Smoothly lerp beetle toward death position before explosion
-                        # Use high lerp factor for quick but visible movement
-                        beetle_red.x += (death_x - beetle_red.x) * 0.7
-                        beetle_red.z += (death_z - beetle_red.z) * 0.7
-                        # Set explosion at death position (not current position)
-                        beetle_red.explosion_pos_x = death_x
-                        beetle_red.explosion_pos_y = beetle_red.y + 30.0
-                        beetle_red.explosion_pos_z = death_z
-                        beetle_red.explosion_delay = EXPLOSION_DELAY
-                        beetle_red.explosion_timer = EXPLOSION_DURATION
-                        beetle_red.has_exploded = True
+                        # Snap beetle to death position and let it fall naturally
+                        beetle_red.x = death_x
+                        beetle_red.z = death_z
                         beetle_red.is_falling = True
-                        beetle_red.active = False
-                        # Start respawn timer for beetle death
+                        beetle_red.guest_death_falling = True  # Flag for guest to handle explosion
+                        beetle_red.on_ground = False
+                        beetle_red.vy = -5.0  # Give initial downward velocity
+                        # Start respawn timer
                         if g['red_respawn_timer'] <= 0:
                             g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
                     # Set score animation
@@ -12663,6 +12652,18 @@ while window.running:
             print(f"RED SCORES!")
             print("BLUE BEETLE EXPLOSION STARTED!")
 
+        # Guest-side blue beetle explosion (triggered after receiving death event from host)
+        if beetle_blue.guest_death_falling and not beetle_blue.has_exploded and beetle_blue.y < EXPLOSION_TRIGGER_Y:
+            # Start explosion at current position (after falling from death position)
+            beetle_blue.explosion_pos_x = beetle_blue.x
+            beetle_blue.explosion_pos_y = beetle_blue.y + 30.0
+            beetle_blue.explosion_pos_z = beetle_blue.z
+            beetle_blue.explosion_delay = EXPLOSION_DELAY
+            beetle_blue.explosion_timer = EXPLOSION_DURATION
+            beetle_blue.has_exploded = True
+            beetle_blue.guest_death_falling = False  # Clear the flag
+            print("BLUE BEETLE EXPLOSION (GUEST) STARTED!")
+
         # Continue spawning particles during explosion (after delay)
         if beetle_blue.has_exploded:
             if beetle_blue.explosion_delay > 0.0:
@@ -12707,6 +12708,18 @@ while window.running:
                 network_manager.send_score(0, score_type=0, death_x=beetle_red.x, death_z=beetle_red.z)  # Blue scores, red died
             print(f"BLUE SCORES!")
             print("RED BEETLE EXPLOSION STARTED!")
+
+        # Guest-side red beetle explosion (triggered after receiving death event from host)
+        if beetle_red.guest_death_falling and not beetle_red.has_exploded and beetle_red.y < EXPLOSION_TRIGGER_Y:
+            # Start explosion at current position (after falling from death position)
+            beetle_red.explosion_pos_x = beetle_red.x
+            beetle_red.explosion_pos_y = beetle_red.y + 30.0
+            beetle_red.explosion_pos_z = beetle_red.z
+            beetle_red.explosion_delay = EXPLOSION_DELAY
+            beetle_red.explosion_timer = EXPLOSION_DURATION
+            beetle_red.has_exploded = True
+            beetle_red.guest_death_falling = False  # Clear the flag
+            print("RED BEETLE EXPLOSION (GUEST) STARTED!")
 
         # Continue spawning particles during explosion (after delay)
         if beetle_red.has_exploded:
@@ -12901,6 +12914,7 @@ while window.running:
                 beetle_blue.active = True
                 beetle_blue.has_exploded = False
                 beetle_blue.is_falling = False
+                beetle_blue.guest_death_falling = False  # Reset guest death flag
                 beetle_blue.on_ground = False  # Will fall to ground
                 # Only reset red's celebration (they scored on blue)
                 red_celebrating = False
@@ -12941,6 +12955,7 @@ while window.running:
                 beetle_red.active = True
                 beetle_red.has_exploded = False
                 beetle_red.is_falling = False
+                beetle_red.guest_death_falling = False  # Reset guest death flag
                 beetle_red.on_ground = False  # Will fall to ground
                 # Only reset blue's celebration (they scored on red)
                 blue_celebrating = False
