@@ -11481,7 +11481,14 @@ while window.running:
     blue_inputs, red_inputs = 0, 0
     network_stalled = False  # Track if we're waiting for opponent inputs
 
+    MAX_PHYSICS_STEPS_PER_FRAME = 4  # Cap catch-up to prevent freeze during lag spikes
+
     while accumulator >= PHYSICS_TIMESTEP:
+        # Cap physics iterations to prevent freeze when many frames need catch-up
+        if physics_iterations_this_frame >= MAX_PHYSICS_STEPS_PER_FRAME:
+            # Don't drain accumulator - let it catch up gradually over next frames
+            break
+
         # === NETWORK INPUT HANDLING (inside loop for proper frame sync) ===
         if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
             # Store and send our input for THIS physics frame
