@@ -531,20 +531,21 @@ class NetworkManager:
         self._send_packet(data, reliable=True)
         print(f"[Network] Sent beetle config: horn={horn_type_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
 
-    def send_score(self, scorer, score_type=0):
+    def send_score(self, scorer, score_type=0, death_x=0.0, death_z=0.0):
         """
         Host sends authoritative score event to guest.
 
         Args:
             scorer: 0 = blue scores (red died/goal), 1 = red scores (blue died/goal)
             score_type: 0 = beetle death (explode beetle), 1 = ball goal (don't explode beetle)
+            death_x, death_z: Position where beetle died (for smooth death animation on guest)
         """
         if not self.is_host or not self.connected:
             return
-        data = struct.pack('>BBB', MSG_SCORE, scorer, score_type)
+        data = struct.pack('>BBBff', MSG_SCORE, scorer, score_type, death_x, death_z)
         self._send_packet(data, reliable=True)
         type_str = "death" if score_type == 0 else "ball goal"
-        print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str})")
+        print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str}) at ({death_x:.1f}, {death_z:.1f})")
 
     def send_game_options(self, referee_enabled, ball_active):
         """
@@ -829,9 +830,16 @@ class NetworkManager:
 
         elif msg_type == MSG_SCORE:
             # Host-authoritative score event (guest receives)
-            if len(data) >= 3 and not self.is_host:
+            if len(data) >= 11 and not self.is_host:
+                # New format with death position
+                _, scorer, score_type, death_x, death_z = struct.unpack('>BBBff', data[:11])
+                self.pending_score = {'scorer': scorer, 'score_type': score_type, 'death_x': death_x, 'death_z': death_z}
+                type_str = "death" if score_type == 0 else "ball goal"
+                print(f"[Network] Received score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str}) at ({death_x:.1f}, {death_z:.1f})")
+            elif len(data) >= 3 and not self.is_host:
+                # Old format without death position (backwards compatibility)
                 _, scorer, score_type = struct.unpack('>BBB', data[:3])
-                self.pending_score = {'scorer': scorer, 'score_type': score_type}
+                self.pending_score = {'scorer': scorer, 'score_type': score_type, 'death_x': 0.0, 'death_z': 0.0}
                 type_str = "death" if score_type == 0 else "ball goal"
                 print(f"[Network] Received score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str})")
 

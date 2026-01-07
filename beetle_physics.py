@@ -12521,9 +12521,17 @@ while window.running:
                 if scorer == 1:  # Red scores (blue died or ball goal)
                     # Only trigger beetle explosion for actual death, not ball goals
                     if is_beetle_death and not beetle_blue.has_exploded:
-                        beetle_blue.explosion_pos_x = beetle_blue.x
+                        # Get death position from host (where beetle actually died)
+                        death_x = score_event.get('death_x', beetle_blue.x)
+                        death_z = score_event.get('death_z', beetle_blue.z)
+                        # Smoothly lerp beetle toward death position before explosion
+                        # Use high lerp factor for quick but visible movement
+                        beetle_blue.x += (death_x - beetle_blue.x) * 0.7
+                        beetle_blue.z += (death_z - beetle_blue.z) * 0.7
+                        # Set explosion at death position (not current position)
+                        beetle_blue.explosion_pos_x = death_x
                         beetle_blue.explosion_pos_y = beetle_blue.y + 30.0
-                        beetle_blue.explosion_pos_z = beetle_blue.z
+                        beetle_blue.explosion_pos_z = death_z
                         beetle_blue.explosion_delay = EXPLOSION_DELAY
                         beetle_blue.explosion_timer = EXPLOSION_DURATION
                         beetle_blue.has_exploded = True
@@ -12545,9 +12553,17 @@ while window.running:
                 elif scorer == 0:  # Blue scores (red died or ball goal)
                     # Only trigger beetle explosion for actual death, not ball goals
                     if is_beetle_death and not beetle_red.has_exploded:
-                        beetle_red.explosion_pos_x = beetle_red.x
+                        # Get death position from host (where beetle actually died)
+                        death_x = score_event.get('death_x', beetle_red.x)
+                        death_z = score_event.get('death_z', beetle_red.z)
+                        # Smoothly lerp beetle toward death position before explosion
+                        # Use high lerp factor for quick but visible movement
+                        beetle_red.x += (death_x - beetle_red.x) * 0.7
+                        beetle_red.z += (death_z - beetle_red.z) * 0.7
+                        # Set explosion at death position (not current position)
+                        beetle_red.explosion_pos_x = death_x
                         beetle_red.explosion_pos_y = beetle_red.y + 30.0
-                        beetle_red.explosion_pos_z = beetle_red.z
+                        beetle_red.explosion_pos_z = death_z
                         beetle_red.explosion_delay = EXPLOSION_DELAY
                         beetle_red.explosion_timer = EXPLOSION_DURATION
                         beetle_red.has_exploded = True
@@ -12641,9 +12657,9 @@ while window.running:
             g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
             g['red_score_pending'] = True  # Score will be added after delay
             g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
-            # Network mode: host sends score event to guest
+            # Network mode: host sends score event to guest with death position
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
-                network_manager.send_score(1)  # Red scores
+                network_manager.send_score(1, score_type=0, death_x=beetle_blue.x, death_z=beetle_blue.z)  # Red scores, blue died
             print(f"RED SCORES!")
             print("BLUE BEETLE EXPLOSION STARTED!")
 
@@ -12686,9 +12702,9 @@ while window.running:
             g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
             g['blue_score_pending'] = True  # Score will be added after delay
             g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
-            # Network mode: host sends score event to guest
+            # Network mode: host sends score event to guest with death position
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
-                network_manager.send_score(0)  # Blue scores
+                network_manager.send_score(0, score_type=0, death_x=beetle_red.x, death_z=beetle_red.z)  # Blue scores, red died
             print(f"BLUE SCORES!")
             print("RED BEETLE EXPLOSION STARTED!")
 
