@@ -9368,7 +9368,7 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         # Sway synced with wing phase (body bob) - legs dangle with inertia
         # When body bobs up, legs trail down/back; when body drops, legs swing forward
         sway_phase = wing_phase + leg_phase_offset
-        leg_sway_amount = -ti.sin(sway_phase) * 1.2  # Negated to match bob direction
+        leg_sway_amount = -ti.sin(sway_phase) * 2.5  # Increased sway for visible tip movement
 
         for idx in range(start_idx, end_idx):
             # Calculate how far down the leg this voxel is (for graduated sway)
