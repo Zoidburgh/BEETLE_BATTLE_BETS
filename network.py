@@ -741,7 +741,10 @@ class NetworkManager:
             self.message_queue.clear()
 
         for sender_id, channel, data in messages:
-            self._handle_packet(data, sender_id, input_buffer)
+            try:
+                self._handle_packet(data, sender_id, input_buffer)
+            except Exception as e:
+                print(f"[Network] Error handling packet: {e}")
 
     def _handle_packet(self, data, sender_id, input_buffer):
         """Process a received network packet."""

@@ -11395,12 +11395,16 @@ while window.running:
 
     # === NETWORK POLLING (must happen every frame) ===
     if network_manager and game_state == GAME_STATE_ONLINE_PLAY:
-        network_manager.poll_messages(input_buffer)
-        # Apply any received beetle config (allows mid-game customization sync)
-        apply_remote_beetle_config(network_manager)
-        # Send ping periodically for latency measurement
-        if physics_frame % 60 == 0:  # Once per second
-            network_manager.send_ping()
+        try:
+            network_manager.poll_messages(input_buffer)
+            # Apply any received beetle config (allows mid-game customization sync)
+            apply_remote_beetle_config(network_manager)
+            # Send ping periodically for latency measurement
+            if physics_frame % 60 == 0:  # Once per second
+                network_manager.send_ping()
+        except Exception as e:
+            print(f"[Network] Error during polling: {e}")
+            # Don't crash - just continue, disconnect detection will handle it
 
         # === HOST FRAME SYNC (send frame counter to keep guest aligned) ===
         if network_manager.is_host and physics_frame % 30 == 0:
@@ -11557,13 +11561,16 @@ while window.running:
         if network_manager.pending_disconnect:
             network_manager.pending_disconnect = False
             print("[Network] Opponent left the match")
-            # Return to menu
+            # Return to local play
             network_manager.shutdown()
             network_manager = None
             game_state = GAME_STATE_LOCAL_PLAY
             input_buffer.is_network_mode = False
             input_buffer.delay = 0
             input_buffer.reset()
+            opponent_disconnected = False
+            disconnect_timer = 0.0
+            reconnect_banner_timer = 0.0
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
@@ -14589,12 +14596,20 @@ while window.running:
 
             if window.GUI.button("Disconnect"):
                 if network_manager:
+                    # Send graceful disconnect message before shutting down
+                    try:
+                        network_manager.send_disconnect()
+                    except:
+                        pass  # Ignore errors if already disconnected
                     network_manager.shutdown()
                     network_manager = None
                 game_state = GAME_STATE_LOCAL_PLAY
                 input_buffer.is_network_mode = False
                 input_buffer.delay = 0
                 input_buffer.reset()
+                opponent_disconnected = False
+                disconnect_timer = 0.0
+                reconnect_banner_timer = 0.0
 
         window.GUI.text("")
 
