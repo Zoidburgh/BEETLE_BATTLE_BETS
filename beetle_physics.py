@@ -998,6 +998,7 @@ def reset_match():
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
+    global opponent_disconnected, disconnect_timer, reconnect_banner_timer
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1017,6 +1018,11 @@ def reset_match():
     red_pulse_timer = 0.0
     blue_confetti_timer = 0.0
     red_confetti_timer = 0.0
+
+    # Reset network disconnect state
+    opponent_disconnected = False
+    disconnect_timer = 0.0
+    reconnect_banner_timer = 0.0
 
     # Reset spray charges for bombardier beetles
     spray_charges_blue = SPRAY_MAX_CHARGES
@@ -1247,6 +1253,11 @@ ball_explosion_pos_x = 0.0
 ball_explosion_pos_y = 0.0
 ball_explosion_pos_z = 0.0
 ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
+
+# Network disconnect state
+opponent_disconnected = False  # True when opponent stops sending inputs
+disconnect_timer = 0.0  # How long opponent has been disconnected
+reconnect_banner_timer = 0.0  # Timer for "Reconnected!" banner display
 
 # Bombardier spray attack state
 spray_cooldown_blue = 0.0  # Time until blue beetle can spray again
@@ -9366,22 +9377,25 @@ def place_ladybug_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         leg_row = leg_id // 2  # 0=front, 1=mid, 2=back
         leg_phase_offset = float(leg_row) * 0.4  # Slight delay back to front
 
-        # Sway synced with wing phase (body bob) - legs dangle with inertia
-        # When body bobs up, legs trail down/back; when body drops, legs swing forward
+        # Sway synced with wing phase (body bob) - legs splay outward with bounce
+        # When body bobs up, legs spread out; when body drops, legs come back in
         sway_phase = wing_phase + leg_phase_offset
         leg_sway_amount = ti.sin(sway_phase) * 1.8  # Subtle but visible sway
+
+        # Determine which side this leg is on based on Z (left=neg Z, right=pos Z)
+        side = ti.select(attach_z < 0.0, -1.0, 1.0)
 
         for idx in range(start_idx, end_idx):
             # Calculate how far down the leg this voxel is (for graduated sway)
             leg_local_y = float(ladybug_leg_cache_y[idx])
             tip_factor = ti.max(0.0, (-leg_local_y) / 5.0)  # 0 at top, 1 at tips
 
-            # Apply sway more to leg tips than base (natural pendulum effect)
-            sway_offset = leg_sway_amount * tip_factor
+            # Apply sway to Z axis (left-right) - legs splay outward to sides
+            sway_offset = leg_sway_amount * tip_factor * side
 
-            local_x = float(ladybug_leg_cache_x[idx]) + attach_x + sway_offset
+            local_x = float(ladybug_leg_cache_x[idx]) + attach_x
             local_y = float(ladybug_leg_cache_y[idx]) - 1.0
-            local_z = float(ladybug_leg_cache_z[idx]) + attach_z
+            local_z = float(ladybug_leg_cache_z[idx]) + attach_z + sway_offset
 
             # Apply body tilt
             tilted_x = local_x * cos_tilt - local_y * sin_tilt
@@ -11030,7 +11044,7 @@ physics_params = {
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
     "GRAVITY": 60.0,  # Adjustable gravity
-    "SEPARATION_FORCE": 0.4,  # Gradual position separation on collision
+    "SEPARATION_FORCE": 0.7,  # Gradual position separation on collision
     "FORWARD_SPEED": 12.5,  # Forward top speed (base before momentum bonus)
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
 
@@ -11464,6 +11478,92 @@ while window.running:
                     build_floor_height_cache()
                     print("Ball disabled via state sync")
                 beetle_ball.active = sync['ball_active']
+
+        # === DISCONNECT DETECTION (check if opponent stopped sending inputs) ===
+        if input_buffer.frames_waited > 180:  # 3 seconds at 60fps
+            if not opponent_disconnected:
+                opponent_disconnected = True
+                disconnect_timer = 0.0
+                print("[Network] Opponent disconnected - waiting for reconnect...")
+            disconnect_timer += dt
+        elif opponent_disconnected and input_buffer.frames_waited == 0:
+            # Opponent is back! They sent inputs again
+            opponent_disconnected = False
+            reconnect_banner_timer = 2.0  # Show "Reconnected!" for 2 seconds
+            # Host proactively sends full state to resync guest after reconnect
+            if network_manager.is_host:
+                network_manager.pending_reconnect_request = True  # Trigger state send
+            print("[Network] Opponent reconnected!")
+
+        # Decrement reconnect banner timer
+        if reconnect_banner_timer > 0:
+            reconnect_banner_timer -= dt
+
+        # === RECONNECT REQUEST HANDLING (host sends state when guest requests) ===
+        if network_manager.is_host and network_manager.pending_reconnect_request:
+            network_manager.pending_reconnect_request = False
+            # Build and send full game state
+            blue_state = {
+                'x': beetle_blue.x, 'y': beetle_blue.y, 'z': beetle_blue.z,
+                'vx': beetle_blue.vx, 'vy': beetle_blue.vy, 'vz': beetle_blue.vz,
+                'rotation': beetle_blue.rotation, 'pitch': beetle_blue.pitch, 'roll': beetle_blue.roll
+            }
+            red_state = {
+                'x': beetle_red.x, 'y': beetle_red.y, 'z': beetle_red.z,
+                'vx': beetle_red.vx, 'vy': beetle_red.vy, 'vz': beetle_red.vz,
+                'rotation': beetle_red.rotation, 'pitch': beetle_red.pitch, 'roll': beetle_red.roll
+            }
+            ball_state = {
+                'x': beetle_ball.x, 'y': beetle_ball.y, 'z': beetle_ball.z,
+                'vx': beetle_ball.vx, 'vy': beetle_ball.vy, 'vz': beetle_ball.vz,
+                'active': 1 if beetle_ball.active else 0
+            }
+            network_manager.send_reconnect_state(
+                physics_frame, blue_state, red_state, ball_state,
+                (blue_score, red_score),
+                (g['blue_respawn_timer'], g['red_respawn_timer'])
+            )
+            print("[Network] Sent full state to reconnecting guest")
+
+        # === RECONNECT STATE HANDLING (guest applies received state) ===
+        if not network_manager.is_host and network_manager.pending_reconnect_state:
+            state = network_manager.pending_reconnect_state
+            network_manager.pending_reconnect_state = None
+            # Apply beetle states
+            beetle_blue.x, beetle_blue.y, beetle_blue.z = state['blue']['x'], state['blue']['y'], state['blue']['z']
+            beetle_blue.vx, beetle_blue.vy, beetle_blue.vz = state['blue']['vx'], state['blue']['vy'], state['blue']['vz']
+            beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll = state['blue']['rotation'], state['blue']['pitch'], state['blue']['roll']
+            beetle_red.x, beetle_red.y, beetle_red.z = state['red']['x'], state['red']['y'], state['red']['z']
+            beetle_red.vx, beetle_red.vy, beetle_red.vz = state['red']['vx'], state['red']['vy'], state['red']['vz']
+            beetle_red.rotation, beetle_red.pitch, beetle_red.roll = state['red']['rotation'], state['red']['pitch'], state['red']['roll']
+            # Apply ball state
+            beetle_ball.x, beetle_ball.y, beetle_ball.z = state['ball']['x'], state['ball']['y'], state['ball']['z']
+            beetle_ball.vx, beetle_ball.vy, beetle_ball.vz = state['ball']['vx'], state['ball']['vy'], state['ball']['vz']
+            beetle_ball.active = state['ball']['active'] == 1
+            # Apply scores
+            blue_score = state['blue_score']
+            red_score = state['red_score']
+            # Apply timers
+            g['blue_respawn_timer'] = state['blue_respawn_timer']
+            g['red_respawn_timer'] = state['red_respawn_timer']
+            # Reset input buffer to match host frame
+            input_buffer.current_frame = state['frame']
+            input_buffer.local_inputs.clear()
+            input_buffer.remote_inputs.clear()
+            input_buffer.frames_waited = 0
+            print(f"[Network] Applied reconnect state: frame={state['frame']}, scores=({blue_score}, {red_score})")
+
+        # === GRACEFUL DISCONNECT HANDLING ===
+        if network_manager.pending_disconnect:
+            network_manager.pending_disconnect = False
+            print("[Network] Opponent left the match")
+            # Return to menu
+            network_manager.shutdown()
+            network_manager = None
+            game_state = GAME_STATE_LOCAL_PLAY
+            input_buffer.is_network_mode = False
+            input_buffer.delay = 0
+            input_buffer.reset()
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
@@ -14470,11 +14570,21 @@ while window.running:
             window.GUI.text(f"You are: {player_color}")
             window.GUI.text(f"Ping: {network_manager.ping_ms:3d}ms" if network_manager else "")
 
-            # Show lockstep status - always show line to prevent layout shift
-            if input_buffer.waiting_for_remote:
+            # Show disconnect/reconnect status
+            if opponent_disconnected:
+                mins = int(disconnect_timer // 60)
+                secs = int(disconnect_timer % 60)
+                window.GUI.text(f"OPPONENT DISCONNECTED ({mins}:{secs:02d})")
+                window.GUI.text("Waiting for reconnect...")
+            elif reconnect_banner_timer > 0:
+                window.GUI.text("OPPONENT RECONNECTED!")
+                window.GUI.text("")  # Empty line for layout
+            elif input_buffer.waiting_for_remote:
                 window.GUI.text(f"Waiting for opponent... ({input_buffer.frames_waited:4d} frames)")
+                window.GUI.text("")  # Empty line for layout
             else:
-                window.GUI.text("")  # Empty line to keep layout stable
+                window.GUI.text("")  # Empty lines to keep layout stable
+                window.GUI.text("")
             window.GUI.text(f"Frame: {input_buffer.current_frame:6d} | Delay: {input_buffer.delay}")
 
             if window.GUI.button("Disconnect"):

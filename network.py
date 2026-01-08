@@ -50,6 +50,9 @@ MSG_FRAME_SYNC = 0x0B   # Host sends frame counter for sync
 MSG_BEETLE_CONFIG = 0x0C  # Beetle customization (horn type + sizes)
 MSG_SCORE = 0x0D          # Host sends authoritative score event (death/goal)
 MSG_GAME_OPTIONS = 0x0E   # Game options (referee enabled, ball active)
+MSG_RECONNECT_REQUEST = 0x0F  # Guest requests full state after reconnecting
+MSG_RECONNECT_STATE = 0x10    # Host sends full game state snapshot
+MSG_DISCONNECT = 0x11         # Player intentionally leaving (graceful exit)
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -159,6 +162,11 @@ class NetworkManager:
 
         # Game options sync (referee, ball, etc.)
         self.pending_game_options = None  # Guest: pending options from host
+
+        # Reconnection sync
+        self.pending_reconnect_request = False  # Host: guest requesting full state
+        self.pending_reconnect_state = None  # Guest: full state from host
+        self.pending_disconnect = False  # Opponent gracefully leaving
 
     def init(self, app_id=480):
         """
@@ -559,6 +567,64 @@ class NetworkManager:
                           1 if ball_active else 0)
         self._send_packet(data, reliable=True)
 
+    def send_reconnect_request(self):
+        """
+        Guest sends request for full state after reconnecting.
+        Host will respond with MSG_RECONNECT_STATE containing full game snapshot.
+        """
+        if self.is_host:
+            return  # Only guest sends this
+        data = struct.pack('>B', MSG_RECONNECT_REQUEST)
+        self._send_packet(data, reliable=True)
+        print("[Network] Sent reconnect request")
+
+    def send_reconnect_state(self, frame, blue_state, red_state, ball_state, scores, timers):
+        """
+        Host sends full game state snapshot after opponent reconnects.
+
+        Args:
+            frame: Current physics frame number
+            blue_state: dict with x, y, z, vx, vy, vz, rotation, pitch, roll
+            red_state: dict with x, y, z, vx, vy, vz, rotation, pitch, roll
+            ball_state: dict with x, y, z, vx, vy, vz, active
+            scores: tuple (blue_score, red_score)
+            timers: tuple (blue_respawn_timer, red_respawn_timer)
+        """
+        if not self.is_host or not self.connected:
+            return
+        data = struct.pack('>BI fffffffff fffffffff ffffff B BB ff',
+            MSG_RECONNECT_STATE,
+            frame,
+            # Blue beetle (9 floats = 36 bytes)
+            blue_state['x'], blue_state['y'], blue_state['z'],
+            blue_state['vx'], blue_state['vy'], blue_state['vz'],
+            blue_state['rotation'], blue_state['pitch'], blue_state['roll'],
+            # Red beetle (9 floats = 36 bytes)
+            red_state['x'], red_state['y'], red_state['z'],
+            red_state['vx'], red_state['vy'], red_state['vz'],
+            red_state['rotation'], red_state['pitch'], red_state['roll'],
+            # Ball (6 floats = 24 bytes)
+            ball_state['x'], ball_state['y'], ball_state['z'],
+            ball_state['vx'], ball_state['vy'], ball_state['vz'],
+            ball_state['active'],  # 1 byte
+            # Scores (2 bytes)
+            scores[0], scores[1],
+            # Timers (8 bytes)
+            timers[0], timers[1]
+        )
+        self._send_packet(data, reliable=True)
+        print(f"[Network] Sent reconnect state: frame={frame}, scores={scores}")
+
+    def send_disconnect(self):
+        """
+        Send graceful disconnect message before leaving.
+        """
+        data = struct.pack('>B', MSG_DISCONNECT)
+        # Send multiple times for reliability
+        for _ in range(3):
+            self._send_packet(data, reliable=True)
+        print("[Network] Sent disconnect message")
+
     def send_ping(self):
         """Send ping to measure latency."""
         # Use lower 32 bits of milliseconds to fit in uint32
@@ -852,6 +918,45 @@ class NetworkManager:
                     'ball_active': ball_active == 1
                 }
                 print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}")
+
+        elif msg_type == MSG_RECONNECT_REQUEST:
+            # Guest is reconnecting and requesting full state (host receives)
+            if self.is_host:
+                self.pending_reconnect_request = True
+                print("[Network] Received reconnect request from guest")
+
+        elif msg_type == MSG_RECONNECT_STATE:
+            # Host sent full state snapshot (guest receives)
+            if not self.is_host and len(data) >= 83:  # 1 + 4 + 36 + 36 + 24 + 1 + 2 + 8 = 112 bytes min
+                unpacked = struct.unpack('>BI fffffffff fffffffff ffffff B BB ff', data[:112])
+                self.pending_reconnect_state = {
+                    'frame': unpacked[1],
+                    'blue': {
+                        'x': unpacked[2], 'y': unpacked[3], 'z': unpacked[4],
+                        'vx': unpacked[5], 'vy': unpacked[6], 'vz': unpacked[7],
+                        'rotation': unpacked[8], 'pitch': unpacked[9], 'roll': unpacked[10]
+                    },
+                    'red': {
+                        'x': unpacked[11], 'y': unpacked[12], 'z': unpacked[13],
+                        'vx': unpacked[14], 'vy': unpacked[15], 'vz': unpacked[16],
+                        'rotation': unpacked[17], 'pitch': unpacked[18], 'roll': unpacked[19]
+                    },
+                    'ball': {
+                        'x': unpacked[20], 'y': unpacked[21], 'z': unpacked[22],
+                        'vx': unpacked[23], 'vy': unpacked[24], 'vz': unpacked[25],
+                        'active': unpacked[26]
+                    },
+                    'blue_score': unpacked[27],
+                    'red_score': unpacked[28],
+                    'blue_respawn_timer': unpacked[29],
+                    'red_respawn_timer': unpacked[30]
+                }
+                print(f"[Network] Received reconnect state: frame={unpacked[1]}")
+
+        elif msg_type == MSG_DISCONNECT:
+            # Opponent is leaving gracefully
+            self.pending_disconnect = True
+            print("[Network] Received disconnect message - opponent leaving")
 
     # =========================================================================
     # CONNECTION STATE
