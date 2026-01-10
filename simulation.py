@@ -1,9 +1,90 @@
 import taichi as ti
+import subprocess
+import sys
 
-# Force CPU backend - faster than CUDA for this game's particle count (~4000)
-# GPU has sync overhead that hurts more than it helps at this scale
-ti.init(arch=ti.cpu, debug=False)
-print("Using CPU backend")
+# Backend selection: Vulkan (GPU) vs CPU
+# - Vulkan: Best for discrete GPUs (NVIDIA/AMD) - no CPU→GPU transfer overhead
+# - CPU: Best for integrated graphics (Intel) - faster physics compute
+
+def detect_gpu_type():
+    """Detect GPU type: 'nvidia', 'amd', or None"""
+    try:
+        result = subprocess.run(
+            ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            output = result.stdout.lower()
+            # Check for NVIDIA discrete GPU (GeForce, RTX, GTX, Quadro)
+            if 'nvidia' in output and any(x in output for x in ['geforce', 'rtx', 'gtx', 'quadro']):
+                return 'nvidia'
+            # Check for AMD discrete GPU
+            if 'amd' in output and ('radeon' in output or 'rx ' in output):
+                return 'amd'
+    except:
+        pass
+    return None
+
+def choose_backend():
+    """Auto-detect best backend, with manual override flags"""
+    # Manual overrides first
+    if '--cpu' in sys.argv:
+        return 'cpu', 'CPU (--cpu flag)'
+    if '--vulkan' in sys.argv or '--gpu' in sys.argv:
+        return 'vulkan', 'Vulkan (--gpu flag)'
+    if '--cuda' in sys.argv:
+        return 'cuda', 'CUDA (--cuda flag)'
+
+    # Auto-detect based on GPU
+    # CPU backend is most consistent - Vulkan compute is slow on many NVIDIA cards
+    # GPU backends available via --vulkan or --cuda flags for testing
+    gpu_type = detect_gpu_type()
+
+    # Always use CPU - it's more consistent (38+ FPS vs 12 FPS on Vulkan for some GPUs)
+    # The 12ms CPU->GPU transfer overhead is better than 50ms slow Vulkan physics
+    if gpu_type:
+        return 'cpu', f'CPU ({gpu_type.upper()} GPU detected, use --vulkan to test GPU mode)'
+    else:
+        return 'cpu', 'CPU (no discrete GPU detected)'
+
+BACKEND, BACKEND_REASON = choose_backend()
+
+# GPU backends need less frequent cleanup (serialized loops are slow on GPU)
+# CPU can cleanup every 2 frames, GPU should cleanup less often
+CLEANUP_FREQUENCY_DEBRIS = 2 if BACKEND == 'cpu' else 30  # Every 0.5s on GPU
+CLEANUP_FREQUENCY_SPRAY = 2 if BACKEND == 'cpu' else 30
+CLEANUP_FREQUENCY_SILK = 5 if BACKEND == 'cpu' else 60
+
+if BACKEND == 'cpu':
+    ti.init(arch=ti.cpu, debug=False, offline_cache=True)
+elif BACKEND == 'cuda':
+    ti.init(arch=ti.cuda, debug=False, offline_cache=True)
+else:
+    ti.init(arch=ti.vulkan, debug=False, offline_cache=True)
+print(f"Using {BACKEND_REASON}")
+
+# Print GPU info for debugging (helps diagnose performance issues)
+def print_gpu_info():
+    try:
+        # Try to get GPU info on Windows
+        result = subprocess.run(
+            ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            lines = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
+            if lines:
+                print(f"[GPU Info] Detected: {', '.join(lines)}")
+                # Warn about potential Optimus issues
+                has_nvidia = any('nvidia' in l.lower() for l in lines)
+                has_intel = any('intel' in l.lower() for l in lines)
+                if has_nvidia and has_intel:
+                    print("[GPU Info] WARNING: Laptop has both Intel + NVIDIA (Optimus)")
+                    print("[GPU Info] If FPS is low, right-click BeetleBattle.exe -> Run with graphics processor -> NVIDIA")
+    except Exception as e:
+        print(f"[GPU Info] Could not detect GPU: {e}")
+
+print_gpu_info()
 
 # 128x128x128 grid - optimal power-of-2 size for beetle battle (GPU cache friendly)
 n_grid = 128
@@ -11,15 +92,16 @@ voxel_type = ti.field(dtype=ti.i32, shape=(n_grid, n_grid, n_grid))
 
 # Debris particle system (flying particles from destroyed voxels)
 MAX_DEBRIS = 20000  # Pre-allocated pool for performance
-num_debris = ti.field(dtype=ti.i32, shape=())  # Active particle count
+num_debris = ti.field(dtype=ti.i32, shape=())  # High water mark (max index used)
 debris_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_material = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)  # RGB color (0.0-1.0)
 debris_lifetime = ti.field(dtype=ti.f32, shape=MAX_DEBRIS)  # Time alive (seconds)
+debris_active = ti.field(dtype=ti.i32, shape=MAX_DEBRIS)  # 1=alive, 0=dead (for free list pattern)
 
 # Spray particle system (bombardier beetle acid spray)
 MAX_SPRAY = 500  # Pre-allocated pool for spray particles
-num_spray = ti.field(dtype=ti.i32, shape=())  # Active spray particle count
+num_spray = ti.field(dtype=ti.i32, shape=())  # High water mark (max index used)
 spray_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)
 spray_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)
 spray_color = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)  # RGB color (0.0-1.0)
@@ -27,16 +109,18 @@ spray_lifetime = ti.field(dtype=ti.f32, shape=MAX_SPRAY)  # Time alive (seconds)
 spray_owner = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 0=blue, 1=red (don't hit own beetle)
 spray_hit = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 1=hit beetle this frame, 0=no hit
 spray_hit_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)  # Position where hit occurred
+spray_active = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 1=alive, 0=dead (for free list pattern)
 
 # Spider silk particle system (separate from spray - persists longer)
 MAX_SILK = 600  # More particles since they persist longer
-num_silk = ti.field(dtype=ti.i32, shape=())  # Active silk particle count
+num_silk = ti.field(dtype=ti.i32, shape=())  # High water mark (max index used)
 silk_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)
 silk_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)
 silk_color = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)  # RGB color (cream/white)
 silk_lifetime = ti.field(dtype=ti.f32, shape=MAX_SILK)  # Time remaining (seconds)
 silk_owner = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=blue, 1=red
 silk_stuck = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=flying, 1=stuck to floor, 2=stuck to beetle, 3=stuck to ball
+silk_active = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 1=alive, 0=dead (for free list pattern)
 # Beetle-sticking tracking
 silk_stuck_beetle = ti.field(dtype=ti.i32, shape=MAX_SILK)  # -1=none/floor, 0=blue, 1=red, 2=ball
 # Silk counters per beetle (for slowdown effects)

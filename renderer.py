@@ -233,16 +233,20 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32):
 
 @ti.kernel
 def extract_debris_particles():
-    """Extract debris particles and merge into main voxel buffer with smaller radius (runs on GPU)"""
-    # Get number of active debris particles from simulation
+    """Extract debris particles and merge into main voxel buffer with smaller radius (runs on GPU)
+
+    Uses free list pattern: skips inactive particles and uses atomic counting.
+    """
+    # Get high water mark of debris particles (includes inactive slots)
     debris_count = simulation.num_debris[None]
 
-    # Get current voxel count to append debris after regular voxels
-    voxel_count = num_voxels[None]
-
-    # Merge debris particles into main voxel buffer (with smaller radius via per_vertex_radius)
+    # Merge active debris particles into main voxel buffer
     for idx in range(debris_count):
-        write_idx = voxel_count + idx
+        # Skip inactive particles (free list pattern)
+        if simulation.debris_active[idx] == 0:
+            continue
+
+        write_idx = ti.atomic_add(num_voxels[None], 1)
         if write_idx < MAX_VOXELS:  # Bounds check
             # Get position from physics system
             debris_pos = simulation.debris_pos[idx]
@@ -269,21 +273,22 @@ def extract_debris_particles():
                 voxel_colors[write_idx] = base_color
                 voxel_radii[write_idx] = DEBRIS_RADIUS
 
-    # Update total voxel count to include debris
-    num_voxels[None] = min(voxel_count + debris_count, MAX_VOXELS)
-
 @ti.kernel
 def extract_spray_particles():
-    """Extract spray particles (bombardier beetle acid) and merge into main voxel buffer"""
-    # Get number of active spray particles from simulation
+    """Extract spray particles (bombardier beetle acid) and merge into main voxel buffer
+
+    Uses free list pattern: skips inactive particles and uses atomic counting.
+    """
+    # Get high water mark of spray particles (includes inactive slots)
     spray_count = simulation.num_spray[None]
 
-    # Get current voxel count to append spray after regular voxels
-    voxel_count = num_voxels[None]
-
-    # Merge spray particles into main voxel buffer
+    # Merge active spray particles into main voxel buffer
     for idx in range(spray_count):
-        write_idx = voxel_count + idx
+        # Skip inactive particles (free list pattern)
+        if simulation.spray_active[idx] == 0:
+            continue
+
+        write_idx = ti.atomic_add(num_voxels[None], 1)
         if write_idx < MAX_VOXELS:  # Bounds check
             # Get position from physics system
             spray_pos = simulation.spray_pos[idx]
@@ -313,26 +318,25 @@ def extract_spray_particles():
             # Set slightly smaller radius for spray particles (same as debris)
             voxel_radii[write_idx] = DEBRIS_RADIUS
 
-    # Update total voxel count to include spray
-    num_voxels[None] = min(voxel_count + spray_count, MAX_VOXELS)
-
 @ti.kernel
 def extract_silk_particles():
-    """Extract spider silk particles and merge into main voxel buffer with alpha fade"""
-    # Get number of active silk particles from simulation
-    silk_count = simulation.num_silk[None]
+    """Extract spider silk particles and merge into main voxel buffer with alpha fade
 
-    # Get current voxel count to append silk after other particles
-    voxel_count = num_voxels[None]
+    Uses free list pattern: skips inactive particles and uses atomic counting.
+    """
+    # Get high water mark of silk particles (includes inactive slots)
+    silk_count = simulation.num_silk[None]
 
     # Silk fade time constant (last 2 seconds)
     SILK_FADE_TIME = 2.0
 
-    # Merge silk particles into main voxel buffer
+    # Merge active silk particles into main voxel buffer
     for idx in range(silk_count):
+        # Skip inactive particles (free list pattern)
+        if simulation.silk_active[idx] == 0:
+            continue
+
         lifetime = simulation.silk_lifetime[idx]
-        if lifetime <= 0:
-            continue  # Skip dead particles
 
         write_idx = ti.atomic_add(num_voxels[None], 1)
         if write_idx < MAX_VOXELS:  # Bounds check

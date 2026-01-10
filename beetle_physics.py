@@ -44,8 +44,111 @@ def get_resolution_from_args():
         print(f"[Resolution] Available: {', '.join(RESOLUTION_PRESETS.keys())}")
         return RESOLUTION_PRESETS['1080'], '1080'
 
-WINDOW_RESOLUTION, RESOLUTION_NAME = get_resolution_from_args()
-print(f"[Resolution] Using {RESOLUTION_NAME}p ({WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]})")
+def get_vsync_from_args():
+    """Parse --vsync/--novsync arguments (default: OFF)"""
+    for arg in sys.argv:
+        if arg in ('--vsync',):
+            print("[VSync] ENABLED (--vsync flag)")
+            return True
+    # Default: vsync OFF for better performance on varied hardware
+    return False
+
+def get_steam_connect_lobby():
+    """Parse +connect_lobby argument from Steam friend join"""
+    for i, arg in enumerate(sys.argv):
+        if arg == '+connect_lobby' and i + 1 < len(sys.argv):
+            lobby_id = sys.argv[i + 1]
+            print(f"[Steam] Friend join detected! Lobby ID: {lobby_id}")
+            return lobby_id
+    return None
+
+def get_fullscreen_from_args():
+    """Parse --fullscreen argument and return screen resolution if enabled"""
+    for arg in sys.argv:
+        if arg in ('--fullscreen', '-f'):
+            # Get screen resolution using ctypes (Windows)
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                screen_w = user32.GetSystemMetrics(0)
+                screen_h = user32.GetSystemMetrics(1)
+                print(f"[Fullscreen] ENABLED - using screen resolution {screen_w}x{screen_h}")
+                return True, (screen_w, screen_h)
+            except Exception as e:
+                print(f"[Fullscreen] Failed to get screen resolution: {e}")
+                return False, None
+    return False, None
+
+FULLSCREEN_ENABLED, FULLSCREEN_RES = get_fullscreen_from_args()
+if FULLSCREEN_ENABLED:
+    WINDOW_RESOLUTION = FULLSCREEN_RES
+    RESOLUTION_NAME = "fullscreen"
+    WINDOW_POS = (0, 0)
+else:
+    WINDOW_RESOLUTION, RESOLUTION_NAME = get_resolution_from_args()
+    WINDOW_POS = (100, 100)
+
+# Fullscreen toggle state (for runtime toggling via Windows API)
+is_fullscreen = FULLSCREEN_ENABLED
+
+def toggle_fullscreen_windows():
+    """Toggle borderless fullscreen using Windows API"""
+    global is_fullscreen
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+
+        # Get the foreground window (our game window)
+        hwnd = user32.GetForegroundWindow()
+
+        # Get screen dimensions
+        screen_w = user32.GetSystemMetrics(0)
+        screen_h = user32.GetSystemMetrics(1)
+
+        # Window style constants
+        GWL_STYLE = -16
+        WS_BORDER = 0x00800000
+        WS_CAPTION = 0x00C00000
+        WS_SYSMENU = 0x00080000
+        WS_THICKFRAME = 0x00040000
+        WS_MINIMIZEBOX = 0x00020000
+        WS_MAXIMIZEBOX = 0x00010000
+        WS_OVERLAPPEDWINDOW = WS_BORDER | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX
+
+        SWP_FRAMECHANGED = 0x0020
+        SWP_SHOWWINDOW = 0x0040
+        HWND_TOP = 0
+
+        # Get current style
+        style = user32.GetWindowLongW(hwnd, GWL_STYLE)
+
+        if not is_fullscreen:
+            # Go fullscreen - remove window decorations and maximize
+            new_style = style & ~WS_OVERLAPPEDWINDOW
+            user32.SetWindowLongW(hwnd, GWL_STYLE, new_style)
+            user32.SetWindowPos(hwnd, HWND_TOP, 0, 0, screen_w, screen_h, SWP_FRAMECHANGED | SWP_SHOWWINDOW)
+            is_fullscreen = True
+            print(f"[Fullscreen] Enabled ({screen_w}x{screen_h})")
+        else:
+            # Go windowed - restore decorations
+            new_style = style | WS_OVERLAPPEDWINDOW
+            user32.SetWindowLongW(hwnd, GWL_STYLE, new_style)
+            # Restore to a reasonable windowed size
+            win_w, win_h = RESOLUTION_PRESETS.get('1080', (1920, 1080))
+            x = (screen_w - win_w) // 2
+            y = (screen_h - win_h) // 2
+            user32.SetWindowPos(hwnd, HWND_TOP, x, y, win_w, win_h, SWP_FRAMECHANGED | SWP_SHOWWINDOW)
+            is_fullscreen = False
+            print(f"[Fullscreen] Disabled (windowed {win_w}x{win_h})")
+        return True
+    except Exception as e:
+        print(f"[Fullscreen] Toggle failed: {e}")
+        return False
+VSYNC_ENABLED = get_vsync_from_args()
+STEAM_CONNECT_LOBBY = get_steam_connect_lobby()
+print(f"[Resolution] Using {RESOLUTION_NAME} ({WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]})")
 
 # Add DLL directory for Steam networking (must be before network import)
 os.add_dll_directory(os.getcwd())
@@ -1640,7 +1743,8 @@ def check_spray_ball_collision():
 
     num_spray = simulation.num_spray[None]
     for idx in range(num_spray):
-        if simulation.spray_lifetime[idx] <= 0:
+        # Skip inactive particles (free list pattern)
+        if simulation.spray_active[idx] == 0:
             continue
         # Grace period - skip very fresh particles (first ~0.1 sec)
         # Works for both spray (starts 0.6-0.9) and venom (starts 1.5-1.8)
@@ -7860,18 +7964,27 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
 
 @ti.kernel
 def update_debris_particles(dt: ti.f32):
-    """Update debris particle physics - position, velocity, lifetime (GPU parallel)"""
+    """Update debris particle physics - position, velocity, lifetime (GPU parallel)
+
+    Uses free list pattern: loops over all slots, skips inactive ones.
+    Dead particles marked inactive (not compacted) for GPU parallelism.
+    """
     gravity = 10.0  # Gravity acceleration (lighter for floaty dust arc)
     air_drag = 0.99  # Air resistance per frame (very gentle for smooth motion)
 
-    # Update all active particles in parallel
+    # Update all particles in parallel - skip inactive slots (free list pattern)
     for idx in range(simulation.num_debris[None]):
-        # Skip dead particles early to save GPU cycles
-        if simulation.debris_lifetime[idx] <= 0.0:
+        # Skip inactive particles (free list pattern - no compaction needed)
+        if simulation.debris_active[idx] == 0:
             continue
 
         # Age the particle
         simulation.debris_lifetime[idx] -= dt
+
+        # Mark dead particles as inactive (will be skipped next frame, slot reusable)
+        if simulation.debris_lifetime[idx] <= 0.0:
+            simulation.debris_active[idx] = 0
+            continue
 
         # Update physics (gravity + air drag + position)
         simulation.debris_vel[idx].y -= gravity * dt
@@ -7938,9 +8051,10 @@ def spawn_death_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             elif rand >= 0.90:
                 particle_color = ti.math.vec3(tip_r, tip_g, tip_b)
 
-            # Add particle to debris system
+            # Add particle to debris system (free list pattern: mark active)
             idx = ti.atomic_add(simulation.num_debris[None], 1)
             if idx < simulation.MAX_DEBRIS:
+                simulation.debris_active[idx] = 1  # Mark slot as active
                 simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
                 simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
                 simulation.debris_material[idx] = particle_color
@@ -7980,9 +8094,10 @@ def spawn_ball_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             if rand >= 0.7:
                 particle_color = ball_stripe_color
 
-            # Add particle to debris system
+            # Add particle to debris system (free list pattern: mark active)
             idx = ti.atomic_add(simulation.num_debris[None], 1)
             if idx < simulation.MAX_DEBRIS:
+                simulation.debris_active[idx] = 1  # Mark slot as active
                 simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
                 simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
                 simulation.debris_material[idx] = particle_color
@@ -8022,9 +8137,10 @@ def spawn_victory_confetti(center_x: ti.f32, center_z: ti.f32, spawn_height: ti.
         elif rand >= 0.90:
             particle_color = ti.math.vec3(tip_r, tip_g, tip_b)
 
-        # Add particle to debris system
+        # Add particle to debris system (free list pattern: mark active)
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1  # Mark slot as active
             simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
             simulation.debris_material[idx] = particle_color
@@ -8045,6 +8161,7 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
     for i in range(num_particles):
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
             # Stagger particles along kick direction, scaled by leg length
             # 0.7 multiplier keeps total range same as before (was 1.2 with 5 particles)
             stagger = ti.cast(i, ti.f32) * 0.7 * stagger_scale
@@ -8078,6 +8195,7 @@ def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
     for i in range(2):  # Always spawn 2 particles per call
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
             # Cluster spawn around leg tip with random spread
             spread = 1.5 * scale
             spawn_x = pos_x + (ti.random() - 0.5) * spread
@@ -8131,6 +8249,7 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
         if i < num_particles:
             idx = ti.atomic_add(simulation.num_debris[None], 1)
             if idx < simulation.MAX_DEBRIS:
+                simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
                 # Random angle around circle (radial spread)
                 angle = ti.random() * 2.0 * 3.14159
 
@@ -8180,6 +8299,7 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
     for i in range(num_particles):
         idx = ti.atomic_add(simulation.num_spray[None], 1)
         if idx < simulation.MAX_SPRAY:
+            simulation.spray_active[idx] = 1  # Mark slot as active (free list pattern)
             # Apply angle offset to direction (rotate direction by angle_offset)
             cos_a = ti.cos(angle_offset)
             sin_a = ti.sin(angle_offset)
@@ -8213,25 +8333,38 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
 
 @ti.kernel
 def update_spray_particles(dt: ti.f32):
-    """Update spray positions and apply gravity, with ground collision inside arena"""
+    """Update spray positions and apply gravity, with ground collision inside arena
+
+    Uses free list pattern: loops over all slots, skips inactive ones.
+    Dead particles marked inactive (not compacted) for GPU parallelism.
+    """
     for idx in range(simulation.num_spray[None]):
-        if simulation.spray_lifetime[idx] > 0:
-            simulation.spray_vel[idx].y -= 15.0 * dt  # Light gravity
-            simulation.spray_pos[idx] += simulation.spray_vel[idx] * dt
-            simulation.spray_lifetime[idx] -= dt
+        # Skip inactive particles (free list pattern - no compaction needed)
+        if simulation.spray_active[idx] == 0:
+            continue
 
-            # Ground collision - only inside arena, particles can fall off edge
-            pos = simulation.spray_pos[idx]
-            dist_from_center = ti.sqrt(pos.x * pos.x + pos.z * pos.z)
-            ground_y = RENDER_Y_OFFSET  # 33.0 - ground level in grid space
+        simulation.spray_lifetime[idx] -= dt
 
-            if pos.y < ground_y and dist_from_center < ARENA_RADIUS:
-                # Inside arena - stop at ground level
-                simulation.spray_pos[idx].y = ground_y
-                simulation.spray_vel[idx].y = 0.0
-                # Reduce horizontal velocity (friction/splat)
-                simulation.spray_vel[idx].x *= 0.3
-                simulation.spray_vel[idx].z *= 0.3
+        # Mark dead particles as inactive
+        if simulation.spray_lifetime[idx] <= 0:
+            simulation.spray_active[idx] = 0
+            continue
+
+        simulation.spray_vel[idx].y -= 15.0 * dt  # Light gravity
+        simulation.spray_pos[idx] += simulation.spray_vel[idx] * dt
+
+        # Ground collision - only inside arena, particles can fall off edge
+        pos = simulation.spray_pos[idx]
+        dist_from_center = ti.sqrt(pos.x * pos.x + pos.z * pos.z)
+        ground_y = RENDER_Y_OFFSET  # 33.0 - ground level in grid space
+
+        if pos.y < ground_y and dist_from_center < ARENA_RADIUS:
+            # Inside arena - stop at ground level
+            simulation.spray_pos[idx].y = ground_y
+            simulation.spray_vel[idx].y = 0.0
+            # Reduce horizontal velocity (friction/splat)
+            simulation.spray_vel[idx].x *= 0.3
+            simulation.spray_vel[idx].z *= 0.3
 
 @ti.kernel
 def cleanup_dead_spray():
@@ -8495,6 +8628,7 @@ def spawn_silk(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
     """Spawn single silk particle in elegant expanding spiral pattern"""
     idx = ti.atomic_add(simulation.num_silk[None], 1)
     if idx < simulation.MAX_SILK:
+        simulation.silk_active[idx] = 1  # Mark slot as active (free list pattern)
         # Tight starting spiral radius (expands via tangential velocity)
         spiral_radius = 0.3
 
@@ -8564,6 +8698,9 @@ def build_silk_spatial_grid():
 
     # Insert floor-stuck silk into grid
     for idx in range(simulation.num_silk[None]):
+        # Skip inactive particles (free list pattern)
+        if simulation.silk_active[idx] == 0:
+            continue
         if simulation.silk_stuck[idx] == 1:  # Floor-stuck only
             pos = simulation.silk_pos[idx]
             cell = silk_pos_to_grid(pos.x, pos.z)
@@ -8598,9 +8735,30 @@ def check_silk_nearby_grid(x: ti.f32, z: ti.f32, min_dist_sq: ti.f32) -> ti.i32:
 
 @ti.kernel
 def update_silk_particles(dt: ti.f32):
-    """Update silk positions, apply gravity, stick to floor"""
+    """Update silk positions, apply gravity, stick to floor
+
+    Uses free list pattern: loops over all slots, skips inactive ones.
+    Dead particles marked inactive (not compacted) for GPU parallelism.
+    """
     for idx in range(simulation.num_silk[None]):
+        # Skip inactive particles (free list pattern - no compaction needed)
+        if simulation.silk_active[idx] == 0:
+            continue
+
+        # Decrement lifetime first
+        simulation.silk_lifetime[idx] -= dt
+
+        # Mark dead particles as inactive and update counters
         if simulation.silk_lifetime[idx] <= 0:
+            # Decrement counter if it was stuck to something (moved from cleanup function)
+            if simulation.silk_stuck[idx] == 2:  # Was stuck to beetle
+                if simulation.silk_stuck_beetle[idx] == 0:
+                    ti.atomic_sub(simulation.silk_on_blue[None], 1)
+                elif simulation.silk_stuck_beetle[idx] == 1:
+                    ti.atomic_sub(simulation.silk_on_red[None], 1)
+            elif simulation.silk_stuck[idx] == 3:  # Was stuck to ball
+                ti.atomic_sub(simulation.silk_on_ball[None], 1)
+            simulation.silk_active[idx] = 0
             continue
 
         if simulation.silk_stuck[idx] == 0:  # Flying
@@ -8628,9 +8786,6 @@ def update_silk_particles(dt: ti.f32):
                     # Too close to existing silk - expire quickly
                     simulation.silk_lifetime[idx] = 0.0
 
-        # Decrement lifetime
-        simulation.silk_lifetime[idx] -= dt
-
 
 @ti.kernel
 def check_silk_beetle_collision(
@@ -8652,9 +8807,10 @@ def check_silk_beetle_collision(
     VOXEL_HIT_DIST = 1.5  # Distance to count as hit
 
     for idx in range(simulation.num_silk[None]):
-        if simulation.silk_stuck[idx] != 0:  # Only check flying silk
+        # Skip inactive particles (free list pattern)
+        if simulation.silk_active[idx] == 0:
             continue
-        if simulation.silk_lifetime[idx] <= 0:
+        if simulation.silk_stuck[idx] != 0:  # Only check flying silk
             continue
 
         pos = simulation.silk_pos[idx]
@@ -8799,6 +8955,10 @@ def update_beetle_stuck_silk_positions(
 ):
     """Update world positions of silk stuck to beetles/ball - call after beetle render"""
     for idx in range(simulation.num_silk[None]):
+        # Skip inactive particles (free list pattern)
+        if simulation.silk_active[idx] == 0:
+            continue
+
         stuck_type = simulation.silk_stuck[idx]
 
         if stuck_type == 2:  # Beetle-stuck silk
@@ -8903,6 +9063,9 @@ def count_floor_silk_under_beetles(blue_x: ti.f32, blue_z: ti.f32, red_x: ti.f32
     simulation.silk_under_ball[None] = 0
 
     for idx in range(simulation.num_silk[None]):
+        # Skip inactive particles (free list pattern)
+        if simulation.silk_active[idx] == 0:
+            continue
         if simulation.silk_stuck[idx] == 1:  # Floor silk only
             pos = simulation.silk_pos[idx]
 
@@ -8934,9 +9097,10 @@ def check_silk_ball_collision(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, ba
     STICK_RADIUS_SQ = STICK_RADIUS * STICK_RADIUS
 
     for idx in range(simulation.num_silk[None]):
-        if simulation.silk_stuck[idx] != 0:  # Only check flying silk
+        # Skip inactive particles (free list pattern)
+        if simulation.silk_active[idx] == 0:
             continue
-        if simulation.silk_lifetime[idx] <= 0:
+        if simulation.silk_stuck[idx] != 0:  # Only check flying silk
             continue
 
         pos = simulation.silk_pos[idx]
@@ -9784,6 +9948,7 @@ def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
     for i in range(16):  # 16 small particles
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
             angle = ti.random() * 6.28318
             speed = 34.0 + ti.random() * 51.0  # 70% faster spread
 
@@ -9808,11 +9973,11 @@ def check_spray_voxel_collision_kernel(target_color: ti.i32, skip_owner: ti.i32)
         # Reset hit flag
         simulation.spray_hit[idx] = 0
 
+        # Skip inactive particles (free list pattern)
+        if simulation.spray_active[idx] == 0:
+            continue
         # Skip if owned by target (don't hit own beetle)
         if simulation.spray_owner[idx] == skip_owner:
-            continue
-        # Skip dead particles
-        if simulation.spray_lifetime[idx] <= 0.0:
             continue
         # Grace period - skip very fresh particles (first ~0.05 sec)
         # Works for both spray (starts 0.6-0.9) and venom (starts 1.5-1.8)
@@ -9872,6 +10037,7 @@ def spawn_score_burst(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
         particle_i = start_index + i  # Use global index for distribution
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
             # Spherical distribution using golden angle for even spread
             golden_angle = 3.14159 * (3.0 - ti.sqrt(5.0))
             theta = golden_angle * ti.cast(particle_i, ti.f32)
@@ -10984,7 +11150,7 @@ def shortest_rotation(current, target):
     return diff
 
 # Window (resolution set via --res command line argument)
-window = ti.ui.Window("Beetle Physics", WINDOW_RESOLUTION, vsync=True)
+window = ti.ui.Window("Beetle Physics", WINDOW_RESOLUTION, vsync=VSYNC_ENABLED, pos=WINDOW_POS)
 canvas = window.get_canvas()
 scene = window.get_scene()
 
@@ -11202,7 +11368,27 @@ if referee_enabled:
 # Global state dictionary for storing inputs during network stalls
 g = {}
 
-while window.running:
+# === AUTO-JOIN FROM STEAM FRIEND INVITE ===
+# When friend clicks "Join Game" in Steam, game launches with +connect_lobby <id>
+if STEAM_CONNECT_LOBBY and NETWORK_AVAILABLE:
+    print(f"[Steam] Auto-joining lobby from friend invite: {STEAM_CONNECT_LOBBY}")
+    network_manager = NetworkManager()
+    if network_manager.init():
+        try:
+            lobby_id = int(STEAM_CONNECT_LOBBY)
+            network_manager.join_lobby(lobby_id)
+            game_state = GAME_STATE_LOBBY_CONNECTING
+            local_player_id = 1  # Joiner is red/guest
+            print(f"[Steam] Joining lobby {lobby_id}...")
+        except ValueError:
+            print(f"[Steam] Invalid lobby ID: {STEAM_CONNECT_LOBBY}")
+            network_manager = None
+    else:
+        print("[Steam] Failed to init network for auto-join")
+        network_manager = None
+
+try:
+  while window.running:
     # === START FRAME TIMING ===
     perf_monitor.start('frame_total')
 
@@ -11483,94 +11669,16 @@ while window.running:
                     print("Ball disabled via state sync")
                 beetle_ball.active = sync['ball_active']
 
-        # === DISCONNECT DETECTION (check if opponent stopped sending inputs) ===
+        # === SIMPLE DISCONNECT DETECTION ===
+        # If opponent hasn't sent inputs for 3 seconds, show "return to menu" option
         if input_buffer.frames_waited > 180:  # 3 seconds at 60fps
             if not opponent_disconnected:
                 opponent_disconnected = True
-                disconnect_timer = 0.0
-                print("[Network] Opponent disconnected - waiting for reconnect...")
-            disconnect_timer += dt
-        elif opponent_disconnected and input_buffer.frames_waited == 0:
-            # Opponent is back! They sent inputs again
+                print("[Network] Opponent not responding...")
+        elif input_buffer.frames_waited == 0 and opponent_disconnected:
+            # They're back!
             opponent_disconnected = False
-            reconnect_banner_timer = 2.0  # Show "Reconnected!" for 2 seconds
-            # Host proactively sends full state to resync guest after reconnect
-            if network_manager.is_host:
-                network_manager.pending_reconnect_request = True  # Trigger state send
             print("[Network] Opponent reconnected!")
-
-        # Decrement reconnect banner timer
-        if reconnect_banner_timer > 0:
-            reconnect_banner_timer -= dt
-
-        # === RECONNECT REQUEST HANDLING (host sends state when guest requests) ===
-        if network_manager.is_host and network_manager.pending_reconnect_request:
-            network_manager.pending_reconnect_request = False
-            # Build and send full game state
-            blue_state = {
-                'x': beetle_blue.x, 'y': beetle_blue.y, 'z': beetle_blue.z,
-                'vx': beetle_blue.vx, 'vy': beetle_blue.vy, 'vz': beetle_blue.vz,
-                'rotation': beetle_blue.rotation, 'pitch': beetle_blue.pitch, 'roll': beetle_blue.roll
-            }
-            red_state = {
-                'x': beetle_red.x, 'y': beetle_red.y, 'z': beetle_red.z,
-                'vx': beetle_red.vx, 'vy': beetle_red.vy, 'vz': beetle_red.vz,
-                'rotation': beetle_red.rotation, 'pitch': beetle_red.pitch, 'roll': beetle_red.roll
-            }
-            ball_state = {
-                'x': beetle_ball.x, 'y': beetle_ball.y, 'z': beetle_ball.z,
-                'vx': beetle_ball.vx, 'vy': beetle_ball.vy, 'vz': beetle_ball.vz,
-                'active': 1 if beetle_ball.active else 0
-            }
-            network_manager.send_reconnect_state(
-                physics_frame, blue_state, red_state, ball_state,
-                (blue_score, red_score),
-                (g['blue_respawn_timer'], g['red_respawn_timer'])
-            )
-            print("[Network] Sent full state to reconnecting guest")
-
-        # === RECONNECT STATE HANDLING (guest applies received state) ===
-        if not network_manager.is_host and network_manager.pending_reconnect_state:
-            state = network_manager.pending_reconnect_state
-            network_manager.pending_reconnect_state = None
-            # Apply beetle states
-            beetle_blue.x, beetle_blue.y, beetle_blue.z = state['blue']['x'], state['blue']['y'], state['blue']['z']
-            beetle_blue.vx, beetle_blue.vy, beetle_blue.vz = state['blue']['vx'], state['blue']['vy'], state['blue']['vz']
-            beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll = state['blue']['rotation'], state['blue']['pitch'], state['blue']['roll']
-            beetle_red.x, beetle_red.y, beetle_red.z = state['red']['x'], state['red']['y'], state['red']['z']
-            beetle_red.vx, beetle_red.vy, beetle_red.vz = state['red']['vx'], state['red']['vy'], state['red']['vz']
-            beetle_red.rotation, beetle_red.pitch, beetle_red.roll = state['red']['rotation'], state['red']['pitch'], state['red']['roll']
-            # Apply ball state
-            beetle_ball.x, beetle_ball.y, beetle_ball.z = state['ball']['x'], state['ball']['y'], state['ball']['z']
-            beetle_ball.vx, beetle_ball.vy, beetle_ball.vz = state['ball']['vx'], state['ball']['vy'], state['ball']['vz']
-            beetle_ball.active = state['ball']['active'] == 1
-            # Apply scores
-            blue_score = state['blue_score']
-            red_score = state['red_score']
-            # Apply timers
-            g['blue_respawn_timer'] = state['blue_respawn_timer']
-            g['red_respawn_timer'] = state['red_respawn_timer']
-            # Reset input buffer to match host frame
-            input_buffer.current_frame = state['frame']
-            input_buffer.local_inputs.clear()
-            input_buffer.remote_inputs.clear()
-            input_buffer.frames_waited = 0
-            print(f"[Network] Applied reconnect state: frame={state['frame']}, scores=({blue_score}, {red_score})")
-
-        # === GRACEFUL DISCONNECT HANDLING ===
-        if network_manager.pending_disconnect:
-            network_manager.pending_disconnect = False
-            print("[Network] Opponent left the match")
-            # Return to local play
-            network_manager.shutdown()
-            network_manager = None
-            game_state = GAME_STATE_LOCAL_PLAY
-            input_buffer.is_network_mode = False
-            input_buffer.delay = 0
-            input_buffer.reset()
-            opponent_disconnected = False
-            disconnect_timer = 0.0
-            reconnect_banner_timer = 0.0
 
     # Read current inputs from keyboard (will be used inside physics loop)
     if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
@@ -12369,9 +12477,8 @@ while window.running:
         if simulation.num_debris[None] > 0:
             update_debris_particles(PHYSICS_TIMESTEP)
 
-            # Cleanup dead debris every 2 frames
-            if physics_frame % 2 == 0:
-                cleanup_dead_debris()
+            # Free list pattern: dead particles marked inactive in update, no compaction needed
+            # cleanup_dead_debris() - DISABLED: using free list pattern for GPU parallelism
 
         # === SPRAY PARTICLE SYSTEM (BOMBARDIER BEETLE) ===
         # Decrement spray cooldowns
@@ -12532,9 +12639,8 @@ while window.running:
             # Check if any spray hits the ball
             check_spray_ball_collision()
 
-            # Cleanup dead spray every 2 frames
-            if physics_frame % 2 == 0:
-                cleanup_dead_spray()
+            # Free list pattern: dead particles marked inactive in update, no compaction needed
+            # cleanup_dead_spray() - DISABLED: using free list pattern for GPU parallelism
 
         # Update silk particles (physics, sticking)
         if simulation.num_silk[None] > 0:
@@ -12575,9 +12681,8 @@ while window.running:
                     beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll
                 )
 
-            # Cleanup dead silk every 5 frames (less frequent since silk persists longer)
-            if physics_frame % 5 == 0:
-                cleanup_dead_silk()
+            # Free list pattern: dead particles marked inactive in update, no compaction needed
+            # cleanup_dead_silk() - DISABLED: using free list pattern for GPU parallelism
 
             # Count floor silk under each beetle and ball for speed/friction effects
             count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,
@@ -14375,6 +14480,11 @@ while window.running:
     window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.95)
     window.GUI.text(f"FPS: {actual_fps:3.0f}")
 
+    # Fullscreen toggle button
+    fs_text = "Windowed" if is_fullscreen else "Fullscreen"
+    if window.GUI.button(fs_text):
+        toggle_fullscreen_windows()
+
     # Flying referee toggle (compact button at top)
     ref_text = "Ref: ON" if referee_enabled else "Ref: OFF"
     if window.GUI.button(ref_text):
@@ -14392,7 +14502,7 @@ while window.running:
                 game_state = GAME_STATE_LOBBY_HOST
                 network_manager = NetworkManager()
                 if network_manager.init():
-                    network_manager.create_lobby("public", 2)
+                    network_manager.create_lobby("friends", 2)  # Friends can see "Join Game" on your profile
                     network_error_msg = ""
                 else:
                     network_error_msg = "Failed to init Steam"
@@ -14577,21 +14687,27 @@ while window.running:
             window.GUI.text(f"You are: {player_color}")
             window.GUI.text(f"Ping: {network_manager.ping_ms:3d}ms" if network_manager else "")
 
-            # Show disconnect/reconnect status
+            # Show disconnect status
             if opponent_disconnected:
-                mins = int(disconnect_timer // 60)
-                secs = int(disconnect_timer % 60)
-                window.GUI.text(f"OPPONENT DISCONNECTED ({mins}:{secs:02d})")
-                window.GUI.text("Waiting for reconnect...")
-            elif reconnect_banner_timer > 0:
-                window.GUI.text("OPPONENT RECONNECTED!")
-                window.GUI.text("")  # Empty line for layout
+                window.GUI.text("OPPONENT NOT RESPONDING")
+                if window.GUI.button("Return to Menu"):
+                    # Clean up and go back to local play
+                    if network_manager:
+                        try:
+                            network_manager.send_disconnect()
+                        except:
+                            pass
+                        network_manager.shutdown()
+                        network_manager = None
+                    game_state = GAME_STATE_LOCAL_PLAY
+                    input_buffer.is_network_mode = False
+                    input_buffer.delay = 0
+                    input_buffer.reset()
+                    opponent_disconnected = False
             elif input_buffer.waiting_for_remote:
-                window.GUI.text(f"Waiting for opponent... ({input_buffer.frames_waited:4d} frames)")
-                window.GUI.text("")  # Empty line for layout
+                window.GUI.text(f"Waiting... ({input_buffer.frames_waited:4d} frames)")
             else:
-                window.GUI.text("")  # Empty lines to keep layout stable
-                window.GUI.text("")
+                window.GUI.text("")  # Empty line for layout
             window.GUI.text(f"Frame: {input_buffer.current_frame:6d} | Delay: {input_buffer.delay}")
 
             if window.GUI.button("Disconnect"):
@@ -14657,10 +14773,40 @@ while window.running:
             perf_monitor.show_detailed = not perf_monitor.show_detailed
         if window.GUI.button("Save Perf Log"):
             with open("perf_log.txt", "w") as f:
+                # System info header
+                f.write("=== SYSTEM INFO ===\n")
+                f.write(f"Backend: {simulation.BACKEND_REASON}\n")
+                f.write(f"Resolution: {WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]}\n")
+                f.write(f"Taichi version: {ti.__version__}\n")
+                # Try to get GPU info
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        gpus = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
+                        f.write(f"GPU(s): {', '.join(gpus)}\n")
+                except:
+                    f.write("GPU(s): (detection failed)\n")
+                f.write("\n")
+
+                # Main performance stats
                 f.write(f"FPS: {actual_fps:.0f}\n")
                 f.write(f"Frame count: {perf_monitor.frame_count}\n\n")
                 for line in perf_monitor.get_detailed_breakdown():
                     f.write(line + "\n")
+
+                # Particle counts
+                f.write("\n--- Particle Counts ---\n")
+                f.write(f"  debris: {simulation.num_debris[None]} / {simulation.MAX_DEBRIS}\n")
+                f.write(f"  spray: {simulation.num_spray[None]} / {simulation.MAX_SPRAY}\n")
+                f.write(f"  silk: {simulation.num_silk[None]} / {simulation.MAX_SILK}\n")
+                f.write(f"  cleanup_freq_debris: every {simulation.CLEANUP_FREQUENCY_DEBRIS} frames\n")
+                f.write(f"  cleanup_freq_spray: every {simulation.CLEANUP_FREQUENCY_SPRAY} frames\n")
+                f.write(f"  cleanup_freq_silk: every {simulation.CLEANUP_FREQUENCY_SILK} frames\n")
+
                 # Add renderer breakdown
                 rt = renderer.get_render_timing()
                 if rt:
@@ -14682,6 +14828,12 @@ while window.running:
                     f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
                     f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")
                     f.write(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms\n")
+
+                f.write("\n--- Notes ---\n")
+                f.write("scene_particles is the main bottleneck indicator:\n")
+                f.write("  <3ms = GPU backend working well (data on GPU)\n")
+                f.write("  8-15ms = CPU->GPU transfer overhead\n")
+                f.write("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)\n")
             print("Performance log saved to perf_log.txt")
 
     window.GUI.text("")
@@ -15389,6 +15541,27 @@ while window.running:
     perf_monitor.end_frame(physics_iterations=physics_iterations_this_frame)
 
     window.show()
+
+except Exception as e:
+    # Save crash log to file
+    import traceback
+    crash_time = time.strftime("%Y-%m-%d %H:%M:%S")
+    with open("crash_log.txt", "w") as f:
+        f.write(f"=== CRASH LOG ===\n")
+        f.write(f"Time: {crash_time}\n")
+        f.write(f"Backend: {simulation.BACKEND_REASON}\n")
+        f.write(f"Game State: {game_state}\n")
+        f.write(f"Network: {'Connected' if network_manager and network_manager.connected else 'Not connected'}\n")
+        f.write(f"\n=== ERROR ===\n")
+        f.write(f"{type(e).__name__}: {e}\n")
+        f.write(f"\n=== TRACEBACK ===\n")
+        f.write(traceback.format_exc())
+    print(f"\n!!! CRASH - see crash_log.txt for details !!!")
+    print(f"Error: {e}")
+    # Keep console open briefly
+    import time as time_module
+    time_module.sleep(3)
+    raise  # Re-raise so the error still shows
 
 # Print final performance summary
 print("\n" + "="*60)
