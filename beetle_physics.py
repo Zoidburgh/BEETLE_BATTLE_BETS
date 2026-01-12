@@ -7984,6 +7984,7 @@ def update_debris_particles(dt: ti.f32):
         # Mark dead particles as inactive (will be skipped next frame, slot reusable)
         if simulation.debris_lifetime[idx] <= 0.0:
             simulation.debris_active[idx] = 0
+            ti.atomic_sub(simulation.debris_active_count[None], 1)  # Track live count
             continue
 
         # Update physics (gravity + air drag + position)
@@ -8055,6 +8056,7 @@ def spawn_death_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             idx = ti.atomic_add(simulation.num_debris[None], 1)
             if idx < simulation.MAX_DEBRIS:
                 simulation.debris_active[idx] = 1  # Mark slot as active
+                ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
                 simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
                 simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
                 simulation.debris_material[idx] = particle_color
@@ -8098,6 +8100,7 @@ def spawn_ball_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             idx = ti.atomic_add(simulation.num_debris[None], 1)
             if idx < simulation.MAX_DEBRIS:
                 simulation.debris_active[idx] = 1  # Mark slot as active
+                ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
                 simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
                 simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
                 simulation.debris_material[idx] = particle_color
@@ -8141,6 +8144,7 @@ def spawn_victory_confetti(center_x: ti.f32, center_z: ti.f32, spawn_height: ti.
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1  # Mark slot as active
+            ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
             simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
             simulation.debris_material[idx] = particle_color
@@ -8162,6 +8166,7 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
+            ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
             # Stagger particles along kick direction, scaled by leg length
             # 0.7 multiplier keeps total range same as before (was 1.2 with 5 particles)
             stagger = ti.cast(i, ti.f32) * 0.7 * stagger_scale
@@ -8196,6 +8201,7 @@ def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
+            ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
             # Cluster spawn around leg tip with random spread
             spread = 1.5 * scale
             spawn_x = pos_x + (ti.random() - 0.5) * spread
@@ -8250,6 +8256,7 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             idx = ti.atomic_add(simulation.num_debris[None], 1)
             if idx < simulation.MAX_DEBRIS:
                 simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
+                ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
                 # Random angle around circle (radial spread)
                 angle = ti.random() * 2.0 * 3.14159
 
@@ -8300,6 +8307,7 @@ def spawn_spray_burst(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
         idx = ti.atomic_add(simulation.num_spray[None], 1)
         if idx < simulation.MAX_SPRAY:
             simulation.spray_active[idx] = 1  # Mark slot as active (free list pattern)
+            ti.atomic_add(simulation.spray_active_count[None], 1)  # Track live count
             # Apply angle offset to direction (rotate direction by angle_offset)
             cos_a = ti.cos(angle_offset)
             sin_a = ti.sin(angle_offset)
@@ -8348,6 +8356,7 @@ def update_spray_particles(dt: ti.f32):
         # Mark dead particles as inactive
         if simulation.spray_lifetime[idx] <= 0:
             simulation.spray_active[idx] = 0
+            ti.atomic_sub(simulation.spray_active_count[None], 1)  # Track live count
             continue
 
         simulation.spray_vel[idx].y -= 15.0 * dt  # Light gravity
@@ -8629,6 +8638,7 @@ def spawn_silk(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
     idx = ti.atomic_add(simulation.num_silk[None], 1)
     if idx < simulation.MAX_SILK:
         simulation.silk_active[idx] = 1  # Mark slot as active (free list pattern)
+        ti.atomic_add(simulation.silk_active_count[None], 1)  # Track live count
         # Tight starting spiral radius (expands via tangential velocity)
         spiral_radius = 0.3
 
@@ -8759,6 +8769,7 @@ def update_silk_particles(dt: ti.f32):
             elif simulation.silk_stuck[idx] == 3:  # Was stuck to ball
                 ti.atomic_sub(simulation.silk_on_ball[None], 1)
             simulation.silk_active[idx] = 0
+            ti.atomic_sub(simulation.silk_active_count[None], 1)  # Track live count
             continue
 
         if simulation.silk_stuck[idx] == 0:  # Flying
@@ -9949,6 +9960,7 @@ def spawn_spray_explosion(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
+            ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
             angle = ti.random() * 6.28318
             speed = 34.0 + ti.random() * 51.0  # 70% faster spread
 
@@ -10038,6 +10050,7 @@ def spawn_score_burst(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
+            ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
             # Spherical distribution using golden angle for even spread
             golden_angle = 3.14159 * (3.0 - ti.sqrt(5.0))
             theta = golden_angle * ti.cast(particle_i, ti.f32)
@@ -12480,6 +12493,10 @@ try:
             # Free list pattern: dead particles marked inactive in update, no compaction needed
             # cleanup_dead_debris() - DISABLED: using free list pattern for GPU parallelism
 
+            # High water mark reset: when all particles dead, reset index to 0
+            if simulation.debris_active_count[None] == 0:
+                simulation.num_debris[None] = 0
+
         # === SPRAY PARTICLE SYSTEM (BOMBARDIER BEETLE) ===
         # Decrement spray cooldowns
         spray_cooldown_blue = max(0.0, spray_cooldown_blue - PHYSICS_TIMESTEP)
@@ -12642,6 +12659,10 @@ try:
             # Free list pattern: dead particles marked inactive in update, no compaction needed
             # cleanup_dead_spray() - DISABLED: using free list pattern for GPU parallelism
 
+            # High water mark reset: when all particles dead, reset index to 0
+            if simulation.spray_active_count[None] == 0:
+                simulation.num_spray[None] = 0
+
         # Update silk particles (physics, sticking)
         if simulation.num_silk[None] > 0:
             build_silk_spatial_grid()  # Build O(1) lookup grid before anti-stacking check
@@ -12683,6 +12704,10 @@ try:
 
             # Free list pattern: dead particles marked inactive in update, no compaction needed
             # cleanup_dead_silk() - DISABLED: using free list pattern for GPU parallelism
+
+            # High water mark reset: when all particles dead, reset index to 0
+            if simulation.silk_active_count[None] == 0:
+                simulation.num_silk[None] = 0
 
             # Count floor silk under each beetle and ball for speed/friction effects
             count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,

@@ -98,6 +98,7 @@ debris_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_material = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)  # RGB color (0.0-1.0)
 debris_lifetime = ti.field(dtype=ti.f32, shape=MAX_DEBRIS)  # Time alive (seconds)
 debris_active = ti.field(dtype=ti.i32, shape=MAX_DEBRIS)  # 1=alive, 0=dead (for free list pattern)
+debris_active_count = ti.field(dtype=ti.i32, shape=())  # Actual live particle count (for high water mark reset)
 
 # Spray particle system (bombardier beetle acid spray)
 MAX_SPRAY = 500  # Pre-allocated pool for spray particles
@@ -110,6 +111,7 @@ spray_owner = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 0=blue, 1=red (don't hi
 spray_hit = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 1=hit beetle this frame, 0=no hit
 spray_hit_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)  # Position where hit occurred
 spray_active = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 1=alive, 0=dead (for free list pattern)
+spray_active_count = ti.field(dtype=ti.i32, shape=())  # Actual live particle count (for high water mark reset)
 
 # Spider silk particle system (separate from spray - persists longer)
 MAX_SILK = 600  # More particles since they persist longer
@@ -121,6 +123,7 @@ silk_lifetime = ti.field(dtype=ti.f32, shape=MAX_SILK)  # Time remaining (second
 silk_owner = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=blue, 1=red
 silk_stuck = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=flying, 1=stuck to floor, 2=stuck to beetle, 3=stuck to ball
 silk_active = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 1=alive, 0=dead (for free list pattern)
+silk_active_count = ti.field(dtype=ti.i32, shape=())  # Actual live particle count (for high water mark reset)
 # Beetle-sticking tracking
 silk_stuck_beetle = ti.field(dtype=ti.i32, shape=MAX_SILK)  # -1=none/floor, 0=blue, 1=red, 2=ball
 # Silk counters per beetle (for slowdown effects)
