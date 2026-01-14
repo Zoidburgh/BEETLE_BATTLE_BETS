@@ -301,7 +301,12 @@ _physics_timing = {
     'input_controls': 0.0,
     'beetle_physics': 0.0,
     'ball_physics': 0.0,
-    'debris_particles': 0.0,
+    'debris_update': 0.0,
+    'spray_update': 0.0,
+    'spray_collision': 0.0,
+    'silk_update': 0.0,
+    'silk_collision': 0.0,
+    'all_particles_total': 0.0,
     'death_explosions': 0.0,
     'respawn_timers': 0.0,
     'floor_collision': 0.0,
@@ -1634,12 +1639,21 @@ def process_spray_collisions(target_beetle, target_color, skip_owner):
     check_spray_voxel_collision_kernel(target_color, skip_owner)
 
     # Collect hits from kernel results
-    hits = []
+    # OPTIMIZATION: Batch read from GPU with to_numpy() - single sync instead of N syncs
+    # (Reading individual elements in a Python loop caused 55ms+ of GPU sync stalls!)
     num_spray = simulation.num_spray[None]
+    if num_spray == 0:
+        return []
+
+    # Single GPU->CPU transfer for all data
+    spray_hit_np = simulation.spray_hit.to_numpy()[:num_spray]
+    spray_hit_pos_np = simulation.spray_hit_pos.to_numpy()[:num_spray]
+
+    hits = []
     for idx in range(num_spray):
-        if simulation.spray_hit[idx] == 1:
-            hit_pos = simulation.spray_hit_pos[idx]
-            hits.append((idx, hit_pos[0], hit_pos[1], hit_pos[2]))
+        if spray_hit_np[idx] == 1:
+            pos = spray_hit_pos_np[idx]
+            hits.append((idx, pos[0], pos[1], pos[2]))
     return hits
 
 def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
@@ -1740,55 +1754,71 @@ def check_spray_ball_collision():
     ball_y = beetle_ball.y + RENDER_Y_OFFSET  # Convert to render space
     ball_z = beetle_ball.z
     ball_radius = beetle_ball.radius
+    hit_radius = ball_radius + 2.0
 
     num_spray = simulation.num_spray[None]
+    if num_spray == 0:
+        return
+
+    # OPTIMIZATION: Batch read from GPU with to_numpy() - single sync instead of N syncs
+    spray_active_np = simulation.spray_active.to_numpy()[:num_spray]
+    spray_lifetime_np = simulation.spray_lifetime.to_numpy()[:num_spray]
+    spray_pos_np = simulation.spray_pos.to_numpy()[:num_spray]
+    spray_vel_np = simulation.spray_vel.to_numpy()[:num_spray]
+    spray_color_np = simulation.spray_color.to_numpy()[:num_spray]
+
+    hits_to_process = []  # Collect hits, process after loop to avoid GPU writes during iteration
+
     for idx in range(num_spray):
         # Skip inactive particles (free list pattern)
-        if simulation.spray_active[idx] == 0:
+        if spray_active_np[idx] == 0:
             continue
         # Grace period - skip very fresh particles (first ~0.1 sec)
-        # Works for both spray (starts 0.6-0.9) and venom (starts 1.5-1.8)
-        if simulation.spray_lifetime[idx] > 1.7:
+        if spray_lifetime_np[idx] > 1.7:
             continue
 
-        spray_pos = simulation.spray_pos[idx]
-        spray_vel = simulation.spray_vel[idx]
+        pos = spray_pos_np[idx]
+        vel = spray_vel_np[idx]
 
         # Distance check (sphere collision)
-        dx = spray_pos[0] - ball_x
-        dy = spray_pos[1] - ball_y
-        dz = spray_pos[2] - ball_z
+        dx = pos[0] - ball_x
+        dy = pos[1] - ball_y
+        dz = pos[2] - ball_z
         dist = math.sqrt(dx*dx + dy*dy + dz*dz)
 
-        if dist < ball_radius + 2.0:  # Hit!
-            # Get spray direction for push
-            spray_speed = math.sqrt(spray_vel[0]**2 + spray_vel[1]**2 + spray_vel[2]**2)
-            if spray_speed > 0.1:
-                push_x = spray_vel[0] / spray_speed
-                push_y = spray_vel[1] / spray_speed
-                push_z = spray_vel[2] / spray_speed
+        if dist < hit_radius:  # Hit!
+            color = spray_color_np[idx]
+            hits_to_process.append((idx, pos, vel, dist, dx, dy, dz, color))
+
+    # Process hits (now safe to write to GPU)
+    for idx, pos, vel, dist, dx, dy, dz, color in hits_to_process:
+        # Get spray direction for push
+        spray_speed = math.sqrt(vel[0]**2 + vel[1]**2 + vel[2]**2)
+        if spray_speed > 0.1:
+            push_x = vel[0] / spray_speed
+            push_y = vel[1] / spray_speed
+            push_z = vel[2] / spray_speed
+        else:
+            if dist > 0.1:
+                push_x, push_y, push_z = dx / dist, dy / dist, dz / dist
             else:
-                if dist > 0.1:
-                    push_x, push_y, push_z = dx / dist, dy / dist, dz / dist
-                else:
-                    push_x, push_y, push_z = 1.0, 0.0, 0.0
+                push_x, push_y, push_z = 1.0, 0.0, 0.0
 
-            # Apply push to ball
-            push_force = SPRAY_PUSH_FORCE * 0.8  # Slightly less than beetle push
-            beetle_ball.vx += push_x * push_force
-            beetle_ball.vy += push_y * push_force * 0.3  # Less vertical
-            beetle_ball.vz += push_z * push_force
+        # Apply push to ball
+        push_force = SPRAY_PUSH_FORCE * 0.8  # Slightly less than beetle push
+        beetle_ball.vx += push_x * push_force
+        beetle_ball.vy += push_y * push_force * 0.3  # Less vertical
+        beetle_ball.vz += push_z * push_force
 
-            # Add spin from impact (consistent with beetle collision physics)
-            spin_strength = push_force * 0.1
-            beetle_ball.angular_velocity += push_z * spin_strength  # Yaw from z-push
-            beetle_ball.pitch_velocity += push_x * spin_strength    # Pitch from x-push
-            beetle_ball.roll_velocity += push_y * spin_strength     # Roll from y-push
+        # Add spin from impact (consistent with beetle collision physics)
+        spin_strength = push_force * 0.1
+        beetle_ball.angular_velocity += push_z * spin_strength  # Yaw from z-push
+        beetle_ball.pitch_velocity += push_x * spin_strength    # Pitch from x-push
+        beetle_ball.roll_velocity += push_y * spin_strength     # Roll from y-push
 
-            # Spawn explosion and kill spray (use spray's color)
-            spray_color = simulation.spray_color[idx]
-            spawn_spray_explosion(spray_pos[0], spray_pos[1], spray_pos[2], spray_color[0], spray_color[1], spray_color[2])
-            simulation.spray_lifetime[idx] = 0
+        # Spawn explosion and kill spray (use spray's color)
+        spawn_spray_explosion(pos[0], pos[1], pos[2], color[0], color[1], color[2])
+        simulation.spray_lifetime[idx] = 0
 
 # Goal celebration state (scored-on beetle explodes, then winner confetti/flash)
 goal_scored_by = None  # "BLUE" or "RED" - who scored
@@ -7968,12 +7998,17 @@ def update_debris_particles(dt: ti.f32):
 
     Uses free list pattern: loops over all slots, skips inactive ones.
     Dead particles marked inactive (not compacted) for GPU parallelism.
+    Caps iteration to MAX_DEBRIS_CHECK to prevent high water mark from tanking FPS.
     """
     gravity = 10.0  # Gravity acceleration (lighter for floaty dust arc)
     air_drag = 0.99  # Air resistance per frame (very gentle for smooth motion)
 
+    # Cap iteration to prevent performance spiral when high water mark grows
+    # (After spray attacks, num_debris can grow to 20000 but most are inactive)
+    check_count = ti.min(simulation.num_debris[None], simulation.MAX_DEBRIS_CHECK)
+
     # Update all particles in parallel - skip inactive slots (free list pattern)
-    for idx in range(simulation.num_debris[None]):
+    for idx in range(check_count):
         # Skip inactive particles (free list pattern - no compaction needed)
         if simulation.debris_active[idx] == 0:
             continue
@@ -8337,8 +8372,12 @@ def update_spray_particles(dt: ti.f32):
 
     Uses free list pattern: loops over all slots, skips inactive ones.
     Dead particles marked inactive (not compacted) for GPU parallelism.
+    Caps iteration to MAX_SPRAY_CHECK to prevent high water mark from tanking FPS.
     """
-    for idx in range(simulation.num_spray[None]):
+    # Cap iteration to prevent performance spiral when high water mark grows
+    check_count = ti.min(simulation.num_spray[None], simulation.MAX_SPRAY_CHECK)
+
+    for idx in range(check_count):
         # Skip inactive particles (free list pattern - no compaction needed)
         if simulation.spray_active[idx] == 0:
             continue
@@ -8739,8 +8778,12 @@ def update_silk_particles(dt: ti.f32):
 
     Uses free list pattern: loops over all slots, skips inactive ones.
     Dead particles marked inactive (not compacted) for GPU parallelism.
+    Caps iteration to MAX_SILK_CHECK to prevent high water mark from tanking FPS.
     """
-    for idx in range(simulation.num_silk[None]):
+    # Cap iteration to prevent performance spiral when high water mark grows
+    check_count = ti.min(simulation.num_silk[None], simulation.MAX_SILK_CHECK)
+
+    for idx in range(check_count):
         # Skip inactive particles (free list pattern - no compaction needed)
         if simulation.silk_active[idx] == 0:
             continue
@@ -11328,7 +11371,7 @@ update_spray_particles(0.016)
 check_spray_voxel_collision_kernel(0, 0)
 check_spray_voxel_collision_kernel(1, 1)  # Also warmup red beetle check
 cleanup_dead_spray()
-simulation.num_spray[None] = 0  # Clear warmup spray
+# DON'T clear spray yet - we need particles for render warmup
 spawn_spray_explosion(0.0, 0.0, -100.0, 0.2, 1.0, 0.3)
 
 # Spider silk kernels
@@ -11344,7 +11387,7 @@ check_silk_beetle_collision(
 check_silk_ball_collision(0.0, -100.0, 0.0, 4.0, 0.0, 0.0, 0.0)  # Ball silk collision warmup
 count_floor_silk_under_beetles(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
 cleanup_dead_silk()
-simulation.num_silk[None] = 0  # Clear warmup silk
+# DON'T clear silk yet - we need particles for render warmup
 
 # Referee beam warmup (prevents lag on first score)
 clear_referee_beam_voxels()
@@ -11356,6 +11399,147 @@ place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # Ladybug 
 ti.sync()
 
 print("All kernels warmed up (pre-compiled)")
+
+# === RENDER PIPELINE WARMUP ===
+# Run several actual render frames to stabilize Vulkan/GGUI performance
+# This prevents the wild FPS variance on game start (42ms vs 2ms scene_particles)
+# CRITICAL: Must warmup with representative particle counts, not 0!
+# Taichi kernels behave differently based on iteration count.
+print("Warming up render pipeline...")
+
+# Spawn representative debris count for warmup (typical gameplay has 2000-3000)
+# Position at y=-100 so they're off-screen during warmup
+print("  Spawning warmup debris particles...")
+for batch in range(10):  # 10 batches of 300 = 3000 debris particles
+    spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, batch * 300, 300, 3000)
+
+# Spawn representative spray count (typical combat has 50-200)
+print("  Spawning warmup spray particles...")
+for _ in range(5):  # 5 bursts
+    spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 50.0, 0, 1, 0.0, 0.6, 0.2, 1.0, 0.3)
+
+# Spawn representative silk count (typical gameplay has 50-200)
+print("  Spawning warmup silk particles...")
+for _ in range(5):  # 5 silk shots
+    spawn_silk(0.0, -100.0, 0.0, 1.0, 0.0, 50.0, 0.0, 0, 0.0)
+
+ti.sync()  # Make sure particles are spawned before render warmup
+print(f"  Warmup particles: debris={simulation.num_debris[None]}, spray={simulation.num_spray[None]}, silk={simulation.num_silk[None]}")
+for warmup_frame in range(30):  # 30 frames of render warmup
+    # Update physics with representative particle counts (warms up physics kernels)
+    update_debris_particles(0.016)
+    update_spray_particles(0.016)
+    update_silk_particles(0.016)
+
+    # Extract voxels and debris (warms up extraction kernels)
+    renderer.num_voxels[None] = 0
+    renderer.extract_voxels(simulation.voxel_type, simulation.n_grid)
+    renderer.extract_debris_particles()
+    renderer.extract_spray_particles()
+    renderer.extract_silk_particles()
+
+    # Set up scene with camera
+    cam = ti.ui.Camera()
+    cam.position(0, 40, -100)
+    cam.lookat(0, 0, 0)
+    cam.up(0, 1, 0)
+    scene.set_camera(cam)
+    scene.point_light(pos=(0, 100, 0), color=(0.5, 0.5, 0.5))
+    scene.ambient_light((0.2, 0.2, 0.2))
+
+    # Render particles (forces Vulkan pipeline compilation)
+    count = renderer.num_voxels[None]
+    if count > 0:
+        scene.particles(
+            renderer.voxel_positions,
+            radius=0.37,
+            per_vertex_color=renderer.voxel_colors,
+            per_vertex_radius=renderer.voxel_radii,
+            index_count=count
+        )
+
+    # Actually present the frame (forces full GPU pipeline flush)
+    canvas.scene(scene)
+    window.show()
+
+ti.sync()
+print("Render pipeline warmed up")
+
+# Clear warmup particles now that render pipeline is warmed up
+simulation.num_debris[None] = 0
+simulation.num_spray[None] = 0
+simulation.num_silk[None] = 0
+print("Warmup particles cleared")
+
+# === PERFORMANCE BENCHMARK ===
+# Measure actual render performance and warn if slow (helps diagnose switchable graphics issues)
+# CRITICAL: Must benchmark with representative particle counts for accurate measurement!
+print("Running performance benchmark...")
+
+# Spawn particles for benchmark (same as warmup)
+for batch in range(10):  # 3000 debris
+    spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, batch * 300, 300, 3000)
+ti.sync()
+print(f"  Benchmark with {simulation.num_debris[None]} debris particles")
+
+benchmark_times = []
+for bench_frame in range(20):
+    bench_start = time.perf_counter()
+
+    renderer.num_voxels[None] = 0
+    renderer.extract_voxels(simulation.voxel_type, simulation.n_grid)
+    renderer.extract_debris_particles()
+
+    cam = ti.ui.Camera()
+    cam.position(0, 40, -100)
+    cam.lookat(0, 0, 0)
+    cam.up(0, 1, 0)
+    scene.set_camera(cam)
+    scene.point_light(pos=(0, 100, 0), color=(0.5, 0.5, 0.5))
+    scene.ambient_light((0.2, 0.2, 0.2))
+
+    count = renderer.num_voxels[None]
+    if count > 0:
+        scene.particles(
+            renderer.voxel_positions,
+            radius=0.37,
+            per_vertex_color=renderer.voxel_colors,
+            per_vertex_radius=renderer.voxel_radii,
+            index_count=count
+        )
+
+    canvas.scene(scene)
+    window.show()
+
+    bench_end = time.perf_counter()
+    benchmark_times.append((bench_end - bench_start) * 1000)
+
+# Calculate benchmark results
+avg_frame_time = sum(benchmark_times) / len(benchmark_times)
+estimated_fps = 1000.0 / avg_frame_time if avg_frame_time > 0 else 0
+print(f"Benchmark: {estimated_fps:.0f} FPS (avg frame time: {avg_frame_time:.1f}ms)")
+
+# Warn if performance is bad
+if estimated_fps < 40:
+    print("")
+    print("=" * 60)
+    print("WARNING: Low FPS detected! This may be a GPU selection issue.")
+    print("")
+    print("FIX: Add Python to Windows Graphics Settings:")
+    print("  1. Open Windows Settings > System > Display > Graphics")
+    print("  2. Click 'Add an app' > Browse")
+    print("  3. Find python.exe (usually in C:\\Users\\YOU\\AppData\\Local\\Programs\\Python\\...)")
+    print("  4. Set it to 'High performance' (NVIDIA GPU)")
+    print("  5. Restart this game")
+    print("")
+    print("Or try restarting - sometimes the GPU picks correctly on retry.")
+    print("=" * 60)
+    print("")
+
+# Clear benchmark particles
+simulation.num_debris[None] = 0
+simulation.num_spray[None] = 0
+simulation.num_silk[None] = 0
 
 # Build initial floor height cache (for fast collision lookups)
 build_floor_height_cache()
@@ -12473,12 +12657,16 @@ try:
         _t_ball_end = time.perf_counter()
         _physics_timing['ball_physics'] += (_t_ball_end - _t_beetle_phys_end) * 1000
 
+        # === DEBRIS UPDATE ===
+        _t_debris_start = time.perf_counter()
         # Update debris particles (physics, aging) - skip if no debris
         if simulation.num_debris[None] > 0:
             update_debris_particles(PHYSICS_TIMESTEP)
 
-            # Free list pattern: dead particles marked inactive in update, no compaction needed
-            # cleanup_dead_debris() - DISABLED: using free list pattern for GPU parallelism
+            # NOTE: Compaction disabled - serialized loop is too slow on GPU
+            # Instead, renderer caps how many particles are drawn (see renderer.py)
+        _t_debris_only = time.perf_counter()
+        _physics_timing['debris_update'] = _physics_timing.get('debris_update', 0) + (_t_debris_only - _t_debris_start) * 1000
 
         # === SPRAY PARTICLE SYSTEM (BOMBARDIER BEETLE) ===
         # Decrement spray cooldowns
@@ -12620,8 +12808,11 @@ try:
             venom_burst_remaining_red -= particles_this_frame
 
         # Update spray particles (physics, aging)
+        _t_spray_start = time.perf_counter()
         if simulation.num_spray[None] > 0:
             update_spray_particles(PHYSICS_TIMESTEP)
+            _t_spray_update = time.perf_counter()
+            _physics_timing['spray_update'] = _physics_timing.get('spray_update', 0) + (_t_spray_update - _t_spray_start) * 1000
 
             # Spray-beetle collision detection (voxel-perfect GPU kernel)
             # Check if blue's spray hits red (target=RED=1, skip red's own spray=1)
@@ -12638,14 +12829,19 @@ try:
 
             # Check if any spray hits the ball
             check_spray_ball_collision()
+            _t_spray_collision = time.perf_counter()
+            _physics_timing['spray_collision'] = _physics_timing.get('spray_collision', 0) + (_t_spray_collision - _t_spray_update) * 1000
 
-            # Free list pattern: dead particles marked inactive in update, no compaction needed
-            # cleanup_dead_spray() - DISABLED: using free list pattern for GPU parallelism
+            # NOTE: Compaction disabled - serialized loop is too slow on GPU
+            # Instead, renderer caps how many particles are drawn (see renderer.py)
 
         # Update silk particles (physics, sticking)
+        _t_silk_start = time.perf_counter()
         if simulation.num_silk[None] > 0:
             build_silk_spatial_grid()  # Build O(1) lookup grid before anti-stacking check
             update_silk_particles(PHYSICS_TIMESTEP)
+            _t_silk_update = time.perf_counter()
+            _physics_timing['silk_update'] = _physics_timing.get('silk_update', 0) + (_t_silk_update - _t_silk_start) * 1000
 
             # Check silk collision with beetles
             # Calculate tail pitch from tail_rotation_angle (base 15 degrees + rotation)
@@ -12680,6 +12876,8 @@ try:
                     beetle_ball.radius,
                     beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll
                 )
+            _t_silk_collision = time.perf_counter()
+            _physics_timing['silk_collision'] = _physics_timing.get('silk_collision', 0) + (_t_silk_collision - _t_silk_update) * 1000
 
             # Free list pattern: dead particles marked inactive in update, no compaction needed
             # cleanup_dead_silk() - DISABLED: using free list pattern for GPU parallelism
@@ -12696,9 +12894,9 @@ try:
             simulation.silk_on_red[None] = 0
             simulation.silk_on_ball[None] = 0
 
-        # === DEBRIS PARTICLES TIMING END ===
-        _t_debris_end = time.perf_counter()
-        _physics_timing['debris_particles'] += (_t_debris_end - _t_ball_end) * 1000
+        # === ALL PARTICLES TIMING END (was mislabeled as debris_particles) ===
+        _t_particles_end = time.perf_counter()
+        _physics_timing['all_particles_total'] = _physics_timing.get('all_particles_total', 0) + (_t_particles_end - _t_ball_end) * 1000
 
         # Fall death detection - two-stage system
         POINT_OF_NO_RETURN = -5.0  # Once below this, can't recover (5 voxels below floor)
@@ -13001,7 +13199,7 @@ try:
 
         # === DEATH/EXPLOSIONS TIMING END ===
         _t_death_end = time.perf_counter()
-        _physics_timing['death_explosions'] += (_t_death_end - _t_debris_end) * 1000
+        _physics_timing['death_explosions'] += (_t_death_end - _t_particles_end) * 1000
 
         # Goal celebration - winner gets confetti/flash after ball explodes
         if g['goal_scored_by'] is not None:
@@ -14759,7 +14957,12 @@ try:
                 window.GUI.text(f"  input_controls: {pt.get('input_controls', 0):.2f}ms")
                 window.GUI.text(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms")
                 window.GUI.text(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms")
-                window.GUI.text(f"  debris_particles: {pt.get('debris_particles', 0):.2f}ms")
+                window.GUI.text(f"  debris_update: {pt.get('debris_update', 0):.2f}ms")
+                window.GUI.text(f"  spray_update: {pt.get('spray_update', 0):.2f}ms")
+                window.GUI.text(f"  spray_collision: {pt.get('spray_collision', 0):.2f}ms")
+                window.GUI.text(f"  silk_update: {pt.get('silk_update', 0):.2f}ms")
+                window.GUI.text(f"  silk_collision: {pt.get('silk_collision', 0):.2f}ms")
+                window.GUI.text(f"  all_particles: {pt.get('all_particles_total', 0):.2f}ms")
                 window.GUI.text(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms")
                 window.GUI.text(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms")
                 window.GUI.text(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms")
@@ -14823,7 +15026,12 @@ try:
                     f.write(f"  input_controls: {pt.get('input_controls', 0):.2f}ms\n")
                     f.write(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms\n")
                     f.write(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms\n")
-                    f.write(f"  debris_particles: {pt.get('debris_particles', 0):.2f}ms\n")
+                    f.write(f"  debris_update: {pt.get('debris_update', 0):.2f}ms\n")
+                    f.write(f"  spray_update: {pt.get('spray_update', 0):.2f}ms\n")
+                    f.write(f"  spray_collision: {pt.get('spray_collision', 0):.2f}ms\n")
+                    f.write(f"  silk_update: {pt.get('silk_update', 0):.2f}ms\n")
+                    f.write(f"  silk_collision: {pt.get('silk_collision', 0):.2f}ms\n")
+                    f.write(f"  all_particles_total: {pt.get('all_particles_total', 0):.2f}ms\n")
                     f.write(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms\n")
                     f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
                     f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")

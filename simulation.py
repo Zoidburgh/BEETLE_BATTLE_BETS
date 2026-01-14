@@ -1,11 +1,30 @@
 import os
-# Force Vulkan to prefer discrete GPU over integrated (may help with variance)
-os.environ['VK_ICD_FILENAMES'] = ''  # Let system choose, but set early
+import sys
+
+# Force GPU selection to prefer discrete NVIDIA over integrated AMD/Intel
+# This helps prevent the wild FPS variance on laptops with switchable graphics
+os.environ['VK_ICD_FILENAMES'] = ''  # Let system choose
 os.environ['DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1'] = '1'  # Disable AMD switchable
+os.environ['SHIM_MCCOMPAT'] = '0x800000001'  # Force discrete GPU on NVIDIA Optimus
+os.environ['NV_PRIME_RENDER_OFFLOAD'] = '1'  # Linux NVIDIA offload (doesn't hurt on Windows)
+os.environ['__GLX_VENDOR_LIBRARY_NAME'] = 'nvidia'  # Linux NVIDIA preference
+os.environ['DRI_PRIME'] = '1'  # Force discrete GPU on Linux (doesn't hurt on Windows)
+
+# Set high process priority to reduce Windows scheduling variance
+if sys.platform == 'win32':
+    try:
+        import ctypes
+        # Get current process handle
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetCurrentProcess()
+        # Set HIGH_PRIORITY_CLASS (0x80) - above normal but below realtime
+        kernel32.SetPriorityClass(handle, 0x80)
+        print("[Performance] Set process priority to HIGH")
+    except Exception as e:
+        print(f"[Performance] Could not set process priority: {e}")
 
 import taichi as ti
 import subprocess
-import sys
 
 # Backend selection: Vulkan (GPU) vs CPU
 # - Vulkan: Best for discrete GPUs (NVIDIA/AMD) - no CPU→GPU transfer overhead
@@ -62,13 +81,19 @@ CLEANUP_FREQUENCY_DEBRIS = 2 if BACKEND == 'cpu' else 30  # Every 0.5s on GPU
 CLEANUP_FREQUENCY_SPRAY = 2 if BACKEND == 'cpu' else 30
 CLEANUP_FREQUENCY_SILK = 5 if BACKEND == 'cpu' else 60
 
+# Check if user wants fresh kernel compilation (bypasses cache that might cause variance)
+FRESH_COMPILE = '--fresh' in sys.argv
+
 if BACKEND == 'cpu':
     # Pin thread count to reduce variance from Windows thread scheduling
-    ti.init(arch=ti.cpu, debug=False, offline_cache=True, cpu_max_num_threads=8)
+    ti.init(arch=ti.cpu, debug=False, offline_cache=not FRESH_COMPILE, cpu_max_num_threads=8)
 elif BACKEND == 'cuda':
-    ti.init(arch=ti.cuda, debug=False, offline_cache=True)
+    ti.init(arch=ti.cuda, debug=False, offline_cache=not FRESH_COMPILE)
 else:
-    ti.init(arch=ti.vulkan, debug=False, offline_cache=True)
+    ti.init(arch=ti.vulkan, debug=False, offline_cache=not FRESH_COMPILE)
+
+if FRESH_COMPILE:
+    print("[Taichi] Fresh compile mode - cache disabled")
 print(f"Using {BACKEND_REASON}")
 
 # Print GPU info for debugging (helps diagnose performance issues)
@@ -101,6 +126,7 @@ voxel_type = ti.field(dtype=ti.i32, shape=(n_grid, n_grid, n_grid))
 
 # Debris particle system (flying particles from destroyed voxels)
 MAX_DEBRIS = 20000  # Pre-allocated pool for performance
+MAX_DEBRIS_CHECK = 5000  # Cap physics/render iteration to prevent high water mark FPS tank
 num_debris = ti.field(dtype=ti.i32, shape=())  # High water mark (max index used)
 debris_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
@@ -110,6 +136,7 @@ debris_active = ti.field(dtype=ti.i32, shape=MAX_DEBRIS)  # 1=alive, 0=dead (for
 
 # Spray particle system (bombardier beetle acid spray)
 MAX_SPRAY = 500  # Pre-allocated pool for spray particles
+MAX_SPRAY_CHECK = 500  # Cap physics/render iteration (matches MAX_SPRAY since pool is small)
 num_spray = ti.field(dtype=ti.i32, shape=())  # High water mark (max index used)
 spray_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)
 spray_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SPRAY)
@@ -122,6 +149,7 @@ spray_active = ti.field(dtype=ti.i32, shape=MAX_SPRAY)  # 1=alive, 0=dead (for f
 
 # Spider silk particle system (separate from spray - persists longer)
 MAX_SILK = 600  # More particles since they persist longer
+MAX_SILK_CHECK = 600  # Cap physics/render iteration (matches MAX_SILK since pool is small)
 num_silk = ti.field(dtype=ti.i32, shape=())  # High water mark (max index used)
 silk_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)
 silk_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)
