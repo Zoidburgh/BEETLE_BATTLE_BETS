@@ -13317,9 +13317,9 @@ try:
     # ===== END FIXED TIMESTEP PHYSICS LOOP =====
     perf_monitor.stop('physics')
 
-    # If network stalled waiting for inputs, use last known inputs for animation
-    # This ensures dust particles and walk animations continue smoothly
-    if network_stalled and blue_inputs == 0 and red_inputs == 0:
+    # If physics loop didn't run this frame (high FPS) or network stalled,
+    # use last known inputs for animation - ensures dust particles spawn consistently
+    if blue_inputs == 0 and red_inputs == 0:
         blue_inputs = g.get('last_blue_inputs', 0)
         red_inputs = g.get('last_red_inputs', 0)
 

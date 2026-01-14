@@ -1,3 +1,8 @@
+import os
+# Force Vulkan to prefer discrete GPU over integrated (may help with variance)
+os.environ['VK_ICD_FILENAMES'] = ''  # Let system choose, but set early
+os.environ['DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1'] = '1'  # Disable AMD switchable
+
 import taichi as ti
 import subprocess
 import sys
@@ -9,9 +14,11 @@ import sys
 def detect_gpu_type():
     """Detect GPU type: 'nvidia', 'amd', or None"""
     try:
+        # Try PowerShell first (works on modern Windows)
         result = subprocess.run(
-            ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
-            capture_output=True, text=True, timeout=5
+            ['powershell', '-Command', 'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
+            capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         )
         if result.returncode == 0:
             output = result.stdout.lower()
@@ -56,7 +63,8 @@ CLEANUP_FREQUENCY_SPRAY = 2 if BACKEND == 'cpu' else 30
 CLEANUP_FREQUENCY_SILK = 5 if BACKEND == 'cpu' else 60
 
 if BACKEND == 'cpu':
-    ti.init(arch=ti.cpu, debug=False, offline_cache=True)
+    # Pin thread count to reduce variance from Windows thread scheduling
+    ti.init(arch=ti.cpu, debug=False, offline_cache=True, cpu_max_num_threads=8)
 elif BACKEND == 'cuda':
     ti.init(arch=ti.cuda, debug=False, offline_cache=True)
 else:
@@ -66,13 +74,14 @@ print(f"Using {BACKEND_REASON}")
 # Print GPU info for debugging (helps diagnose performance issues)
 def print_gpu_info():
     try:
-        # Try to get GPU info on Windows
+        # Use PowerShell (works on modern Windows, wmic is deprecated)
         result = subprocess.run(
-            ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
-            capture_output=True, text=True, timeout=5
+            ['powershell', '-Command', 'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
+            capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
         )
         if result.returncode == 0:
-            lines = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
+            lines = [l.strip() for l in result.stdout.strip().split('\n') if l.strip()]
             if lines:
                 print(f"[GPU Info] Detected: {', '.join(lines)}")
                 # Warn about potential Optimus issues
@@ -80,7 +89,7 @@ def print_gpu_info():
                 has_intel = any('intel' in l.lower() for l in lines)
                 if has_nvidia and has_intel:
                     print("[GPU Info] WARNING: Laptop has both Intel + NVIDIA (Optimus)")
-                    print("[GPU Info] If FPS is low, right-click BeetleBattle.exe -> Run with graphics processor -> NVIDIA")
+                    print("[GPU Info] If FPS is low, set Python to 'High performance' in Windows Graphics Settings")
     except Exception as e:
         print(f"[GPU Info] Could not detect GPU: {e}")
 
