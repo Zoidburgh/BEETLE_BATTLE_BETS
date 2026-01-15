@@ -31,6 +31,7 @@ a = Analysis(
     datas=[
         ('steam_api64.dll', '.'),
         ('steam_appid.txt', '.'),
+        ('beetle_physics.py', '.'),
         ('network.py', '.'),
         ('renderer.py', '.'),
         ('simulation.py', '.'),

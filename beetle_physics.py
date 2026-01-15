@@ -12493,10 +12493,6 @@ try:
             # Free list pattern: dead particles marked inactive in update, no compaction needed
             # cleanup_dead_debris() - DISABLED: using free list pattern for GPU parallelism
 
-            # High water mark reset: when all particles dead, reset index to 0
-            if simulation.debris_active_count[None] == 0:
-                simulation.num_debris[None] = 0
-
         # === SPRAY PARTICLE SYSTEM (BOMBARDIER BEETLE) ===
         # Decrement spray cooldowns
         spray_cooldown_blue = max(0.0, spray_cooldown_blue - PHYSICS_TIMESTEP)
@@ -12659,10 +12655,6 @@ try:
             # Free list pattern: dead particles marked inactive in update, no compaction needed
             # cleanup_dead_spray() - DISABLED: using free list pattern for GPU parallelism
 
-            # High water mark reset: when all particles dead, reset index to 0
-            if simulation.spray_active_count[None] == 0:
-                simulation.num_spray[None] = 0
-
         # Update silk particles (physics, sticking)
         if simulation.num_silk[None] > 0:
             build_silk_spatial_grid()  # Build O(1) lookup grid before anti-stacking check
@@ -12704,10 +12696,6 @@ try:
 
             # Free list pattern: dead particles marked inactive in update, no compaction needed
             # cleanup_dead_silk() - DISABLED: using free list pattern for GPU parallelism
-
-            # High water mark reset: when all particles dead, reset index to 0
-            if simulation.silk_active_count[None] == 0:
-                simulation.num_silk[None] = 0
 
             # Count floor silk under each beetle and ball for speed/friction effects
             count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,
