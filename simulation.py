@@ -62,15 +62,16 @@ def choose_backend():
         return 'cuda', 'CUDA (--cuda flag)'
 
     # Auto-detect based on GPU
-    # CPU backend is most consistent - Vulkan compute is slow on many NVIDIA cards
-    # GPU backends available via --vulkan or --cuda flags for testing
     gpu_type = detect_gpu_type()
 
-    # Always use CPU - it's more consistent (38+ FPS vs 12 FPS on Vulkan for some GPUs)
-    # The 12ms CPU->GPU transfer overhead is better than 50ms slow Vulkan physics
-    if gpu_type:
-        return 'cpu', f'CPU ({gpu_type.upper()} GPU detected, use --vulkan to test GPU mode)'
+    if gpu_type == 'nvidia':
+        # NVIDIA discrete GPU → use CUDA (best for NVIDIA)
+        return 'cuda', 'CUDA (NVIDIA GPU auto-detected)'
+    elif gpu_type == 'amd':
+        # AMD discrete GPU → use Vulkan (CUDA is NVIDIA-only)
+        return 'vulkan', 'Vulkan (AMD GPU auto-detected)'
     else:
+        # No discrete GPU (integrated only) → use CPU
         return 'cpu', 'CPU (no discrete GPU detected)'
 
 BACKEND, BACKEND_REASON = choose_backend()
