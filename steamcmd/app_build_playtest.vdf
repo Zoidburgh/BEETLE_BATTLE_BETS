@@ -1,0 +1,19 @@
+"AppBuild"
+{
+    "AppID" "4318480"
+    "Desc" "Beetle Battle Playtest Build"
+    "ContentRoot" "..\dist\BeetleBattle"
+    "BuildOutput" ".\output"
+    "Depots"
+    {
+        "4318481"
+        {
+            "FileMapping"
+            {
+                "LocalPath" "*"
+                "DepotPath" "."
+                "recursive" "1"
+            }
+        }
+    }
+}
