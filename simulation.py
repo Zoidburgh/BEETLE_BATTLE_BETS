@@ -127,7 +127,8 @@ voxel_type = ti.field(dtype=ti.i32, shape=(n_grid, n_grid, n_grid))
 # Debris particle system (flying particles from destroyed voxels)
 MAX_DEBRIS = 20000  # Pre-allocated pool for performance
 MAX_DEBRIS_CHECK = 5000  # Cap physics/render iteration to prevent high water mark FPS tank
-num_debris = ti.field(dtype=ti.i32, shape=())  # High water mark (max index used)
+num_debris = ti.field(dtype=ti.i32, shape=())  # Current particle count (for iteration)
+debris_write_idx = ti.field(dtype=ti.i32, shape=())  # Ring buffer write position (wraps around)
 debris_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_vel = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)
 debris_material = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)  # RGB color (0.0-1.0)

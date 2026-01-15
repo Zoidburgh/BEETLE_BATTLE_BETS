@@ -249,7 +249,6 @@ def extract_debris_particles():
     debris_count = simulation.num_debris[None]
 
     # Cap iteration to prevent performance spiral when high water mark grows
-    # (After spray attacks, num_debris can grow to 20000 but most are inactive)
     check_count = ti.min(debris_count, MAX_DEBRIS_CHECK)
 
     # Merge active debris particles into main voxel buffer

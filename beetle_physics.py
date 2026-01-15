@@ -1009,7 +1009,7 @@ class Beetle:
             # Spider has lower base speed, Scorpion is medium
             if self.horn_type_id == 6:  # Spider
                 base_forward = 6.5
-                base_backward = 4.0
+                base_backward = 6.0
             elif self.horn_type_id == 3:  # Scorpion
                 base_forward = 9.0
                 base_backward = 6.0
@@ -8036,13 +8036,14 @@ def cleanup_dead_debris():
 
     ti.loop_config(serialize=True)
     for read_idx in range(simulation.num_debris[None]):
-        if simulation.debris_lifetime[read_idx] > 0.0:
+        if simulation.debris_lifetime[read_idx] > 0.0 and simulation.debris_active[read_idx] == 1:
             # Particle still alive, keep it
             if write_idx != read_idx:
                 simulation.debris_pos[write_idx] = simulation.debris_pos[read_idx]
                 simulation.debris_vel[write_idx] = simulation.debris_vel[read_idx]
                 simulation.debris_material[write_idx] = simulation.debris_material[read_idx]
                 simulation.debris_lifetime[write_idx] = simulation.debris_lifetime[read_idx]
+                simulation.debris_active[write_idx] = 1  # Mark compacted slot as active
             write_idx += 1
 
     simulation.num_debris[None] = write_idx
@@ -8412,7 +8413,8 @@ def cleanup_dead_spray():
 
     ti.loop_config(serialize=True)
     for read_idx in range(simulation.num_spray[None]):
-        if simulation.spray_lifetime[read_idx] > 0.0:
+        # Check both lifetime AND active flag (free list pattern)
+        if simulation.spray_lifetime[read_idx] > 0.0 and simulation.spray_active[read_idx] == 1:
             # Particle still alive, keep it
             if write_idx != read_idx:
                 simulation.spray_pos[write_idx] = simulation.spray_pos[read_idx]
@@ -8420,6 +8422,7 @@ def cleanup_dead_spray():
                 simulation.spray_color[write_idx] = simulation.spray_color[read_idx]
                 simulation.spray_lifetime[write_idx] = simulation.spray_lifetime[read_idx]
                 simulation.spray_owner[write_idx] = simulation.spray_owner[read_idx]
+                simulation.spray_active[write_idx] = 1  # Mark compacted slot as active
             write_idx += 1
 
     simulation.num_spray[None] = write_idx
@@ -8872,23 +8875,24 @@ def check_silk_beetle_collision(
                 best_voxel = -1
 
                 for vi in range(blue_body_cache_size[None]):
-                    voxel_world = transform_body_voxel_to_world(
-                        vi, 1,  # is_blue = 1
-                        blue_x, blue_y, blue_z,
-                        blue_rotation, blue_pitch, blue_roll,
-                        blue_horn_pitch, blue_horn_yaw, blue_tail_pitch,
-                        blue_horn_type_id, blue_body_length, blue_back_height,
-                        blue_spray_aim, blue_spider_aim, blue_default_horn_pitch
-                    )
+                    if best_dist > 0.5:  # Early exit once close enough
+                        voxel_world = transform_body_voxel_to_world(
+                            vi, 1,  # is_blue = 1
+                            blue_x, blue_y, blue_z,
+                            blue_rotation, blue_pitch, blue_roll,
+                            blue_horn_pitch, blue_horn_yaw, blue_tail_pitch,
+                            blue_horn_type_id, blue_body_length, blue_back_height,
+                            blue_spray_aim, blue_spider_aim, blue_default_horn_pitch
+                        )
 
-                    vdx = pos.x - voxel_world.x
-                    vdy = pos.y - voxel_world.y
-                    vdz = pos.z - voxel_world.z
-                    vdist = ti.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
+                        vdx = pos.x - voxel_world.x
+                        vdy = pos.y - voxel_world.y
+                        vdz = pos.z - voxel_world.z
+                        vdist = ti.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
 
-                    if vdist < best_dist:
-                        best_dist = vdist
-                        best_voxel = vi
+                        if vdist < best_dist:
+                            best_dist = vdist
+                            best_voxel = vi
 
                 if best_dist < VOXEL_HIT_DIST and best_voxel >= 0:
                     # Check if this voxel already has silk (prevent stacking)
@@ -8932,23 +8936,24 @@ def check_silk_beetle_collision(
                 best_voxel = -1
 
                 for vi in range(red_body_cache_size[None]):
-                    voxel_world = transform_body_voxel_to_world(
-                        vi, 0,  # is_blue = 0
-                        red_x, red_y, red_z,
-                        red_rotation, red_pitch, red_roll,
-                        red_horn_pitch, red_horn_yaw, red_tail_pitch,
-                        red_horn_type_id, red_body_length, red_back_height,
-                        red_spray_aim, red_spider_aim, red_default_horn_pitch
-                    )
+                    if best_dist > 0.5:  # Early exit once close enough
+                        voxel_world = transform_body_voxel_to_world(
+                            vi, 0,  # is_blue = 0
+                            red_x, red_y, red_z,
+                            red_rotation, red_pitch, red_roll,
+                            red_horn_pitch, red_horn_yaw, red_tail_pitch,
+                            red_horn_type_id, red_body_length, red_back_height,
+                            red_spray_aim, red_spider_aim, red_default_horn_pitch
+                        )
 
-                    vdx = pos.x - voxel_world.x
-                    vdy = pos.y - voxel_world.y
-                    vdz = pos.z - voxel_world.z
-                    vdist = ti.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
+                        vdx = pos.x - voxel_world.x
+                        vdy = pos.y - voxel_world.y
+                        vdz = pos.z - voxel_world.z
+                        vdist = ti.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
 
-                    if vdist < best_dist:
-                        best_dist = vdist
-                        best_voxel = vi
+                        if vdist < best_dist:
+                            best_dist = vdist
+                            best_voxel = vi
 
                 if best_dist < VOXEL_HIT_DIST and best_voxel >= 0:
                     # Check if this voxel already has silk (prevent stacking)
@@ -9065,7 +9070,8 @@ def cleanup_dead_silk():
 
     ti.loop_config(serialize=True)
     for read_idx in range(simulation.num_silk[None]):
-        if simulation.silk_lifetime[read_idx] > 0.0:
+        # Check both lifetime AND active flag (free list pattern)
+        if simulation.silk_lifetime[read_idx] > 0.0 and simulation.silk_active[read_idx] == 1:
             if write_idx != read_idx:
                 simulation.silk_pos[write_idx] = simulation.silk_pos[read_idx]
                 simulation.silk_vel[write_idx] = simulation.silk_vel[read_idx]
@@ -9077,6 +9083,7 @@ def cleanup_dead_silk():
                 simulation.silk_stuck_beetle[write_idx] = simulation.silk_stuck_beetle[read_idx]
                 simulation.silk_stuck_voxel_idx[write_idx] = simulation.silk_stuck_voxel_idx[read_idx]
                 simulation.silk_stuck_offset[write_idx] = simulation.silk_stuck_offset[read_idx]
+                simulation.silk_active[write_idx] = 1  # Mark compacted slot as active
             write_idx += 1
         else:
             # Particle is expiring - decrement counter if it was stuck to something
@@ -10039,30 +10046,33 @@ def check_spray_voxel_collision_kernel(target_color: ti.i32, skip_owner: ti.i32)
         grid_y = int(spray_y)  # Already includes RENDER_Y_OFFSET
         grid_z = int(spray_z + n_grid / 2.0)
 
-        # Check ±1 voxel neighborhood for beetle voxels
+        # Check ±1 voxel neighborhood for beetle voxels (with early exit)
         hit = 0
         for dx in ti.static(range(-1, 2)):
-            for dy in ti.static(range(-1, 2)):
-                for dz in ti.static(range(-1, 2)):
-                    gx = grid_x + dx
-                    gy = grid_y + dy
-                    gz = grid_z + dz
-                    # Bounds check
-                    if 0 <= gx < n_grid and 0 <= gy < n_grid and 0 <= gz < n_grid:
-                        vtype = simulation.voxel_type[gx, gy, gz]
-                        # Check if voxel belongs to target beetle
-                        if target_color == 0:  # Target is BLUE
-                            if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
-                               vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
-                               vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE or \
-                               vtype == simulation.VENOM_TIP_BLUE:
-                                hit = 1
-                        else:  # Target is RED
-                            if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
-                               vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
-                               vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
-                               vtype == simulation.VENOM_TIP_RED:
-                                hit = 1
+            if hit == 0:  # Early exit at outer loop
+                for dy in ti.static(range(-1, 2)):
+                    if hit == 0:  # Early exit at middle loop
+                        for dz in ti.static(range(-1, 2)):
+                            if hit == 0:  # Early exit at inner loop
+                                gx = grid_x + dx
+                                gy = grid_y + dy
+                                gz = grid_z + dz
+                                # Bounds check
+                                if 0 <= gx < n_grid and 0 <= gy < n_grid and 0 <= gz < n_grid:
+                                    vtype = simulation.voxel_type[gx, gy, gz]
+                                    # Check if voxel belongs to target beetle
+                                    if target_color == 0:  # Target is BLUE
+                                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
+                                           vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
+                                           vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE or \
+                                           vtype == simulation.VENOM_TIP_BLUE:
+                                            hit = 1
+                                    else:  # Target is RED
+                                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
+                                           vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
+                                           vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
+                                           vtype == simulation.VENOM_TIP_RED:
+                                            hit = 1
 
         if hit == 1:
             simulation.spray_hit[idx] = 1
@@ -11197,6 +11207,36 @@ window = ti.ui.Window("Beetle Physics", WINDOW_RESOLUTION, vsync=VSYNC_ENABLED, 
 canvas = window.get_canvas()
 scene = window.get_scene()
 
+# Initialize slider values for beetle customization (needed before game loop)
+window.blue_horn_shaft_value = 12
+window.blue_horn_prong_value = 5
+window.blue_back_body_height_value = 6
+window.blue_body_length_value = 12
+window.blue_body_width_value = 7
+window.blue_leg_length_value = 8
+window.red_horn_shaft_value = 12
+window.red_horn_prong_value = 5
+window.red_back_body_height_value = 6
+window.red_body_length_value = 12
+window.red_body_width_value = 7
+window.red_leg_length_value = 8
+window.horn_shaft_value = 12
+window.horn_prong_value = 5
+window.back_body_height_value = 6
+window.body_length_value = 12
+window.body_width_value = 7
+window.leg_length_value = 8
+window.blue_body_color = (0.25, 0.55, 0.95)
+window.blue_leg_color = (0.4, 0.7, 1.0)
+window.blue_leg_tip_color = (0.0, 0.0, 0.3)
+window.blue_stripe_color = (0.6, 0.9, 1.0)
+window.blue_horn_tip_color = (0.4, 0.75, 1.0)
+window.red_body_color = (0.95, 0.25, 0.15)
+window.red_leg_color = (1.0, 0.5, 0.3)
+window.red_leg_tip_color = (0.3, 0.0, 0.0)
+window.red_stripe_color = (0.85, 0.65, 0.2)
+window.red_horn_tip_color = (0.4, 0.1, 0.1)
+
 camera = renderer.Camera()
 camera.pos_x = 0.0
 camera.pos_y = 60.0
@@ -11399,147 +11439,6 @@ place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # Ladybug 
 ti.sync()
 
 print("All kernels warmed up (pre-compiled)")
-
-# === RENDER PIPELINE WARMUP ===
-# Run several actual render frames to stabilize Vulkan/GGUI performance
-# This prevents the wild FPS variance on game start (42ms vs 2ms scene_particles)
-# CRITICAL: Must warmup with representative particle counts, not 0!
-# Taichi kernels behave differently based on iteration count.
-print("Warming up render pipeline...")
-
-# Spawn representative debris count for warmup (typical gameplay has 2000-3000)
-# Position at y=-100 so they're off-screen during warmup
-print("  Spawning warmup debris particles...")
-for batch in range(10):  # 10 batches of 300 = 3000 debris particles
-    spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, batch * 300, 300, 3000)
-
-# Spawn representative spray count (typical combat has 50-200)
-print("  Spawning warmup spray particles...")
-for _ in range(5):  # 5 bursts
-    spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 50.0, 0, 1, 0.0, 0.6, 0.2, 1.0, 0.3)
-
-# Spawn representative silk count (typical gameplay has 50-200)
-print("  Spawning warmup silk particles...")
-for _ in range(5):  # 5 silk shots
-    spawn_silk(0.0, -100.0, 0.0, 1.0, 0.0, 50.0, 0.0, 0, 0.0)
-
-ti.sync()  # Make sure particles are spawned before render warmup
-print(f"  Warmup particles: debris={simulation.num_debris[None]}, spray={simulation.num_spray[None]}, silk={simulation.num_silk[None]}")
-for warmup_frame in range(30):  # 30 frames of render warmup
-    # Update physics with representative particle counts (warms up physics kernels)
-    update_debris_particles(0.016)
-    update_spray_particles(0.016)
-    update_silk_particles(0.016)
-
-    # Extract voxels and debris (warms up extraction kernels)
-    renderer.num_voxels[None] = 0
-    renderer.extract_voxels(simulation.voxel_type, simulation.n_grid)
-    renderer.extract_debris_particles()
-    renderer.extract_spray_particles()
-    renderer.extract_silk_particles()
-
-    # Set up scene with camera
-    cam = ti.ui.Camera()
-    cam.position(0, 40, -100)
-    cam.lookat(0, 0, 0)
-    cam.up(0, 1, 0)
-    scene.set_camera(cam)
-    scene.point_light(pos=(0, 100, 0), color=(0.5, 0.5, 0.5))
-    scene.ambient_light((0.2, 0.2, 0.2))
-
-    # Render particles (forces Vulkan pipeline compilation)
-    count = renderer.num_voxels[None]
-    if count > 0:
-        scene.particles(
-            renderer.voxel_positions,
-            radius=0.37,
-            per_vertex_color=renderer.voxel_colors,
-            per_vertex_radius=renderer.voxel_radii,
-            index_count=count
-        )
-
-    # Actually present the frame (forces full GPU pipeline flush)
-    canvas.scene(scene)
-    window.show()
-
-ti.sync()
-print("Render pipeline warmed up")
-
-# Clear warmup particles now that render pipeline is warmed up
-simulation.num_debris[None] = 0
-simulation.num_spray[None] = 0
-simulation.num_silk[None] = 0
-print("Warmup particles cleared")
-
-# === PERFORMANCE BENCHMARK ===
-# Measure actual render performance and warn if slow (helps diagnose switchable graphics issues)
-# CRITICAL: Must benchmark with representative particle counts for accurate measurement!
-print("Running performance benchmark...")
-
-# Spawn particles for benchmark (same as warmup)
-for batch in range(10):  # 3000 debris
-    spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, batch * 300, 300, 3000)
-ti.sync()
-print(f"  Benchmark with {simulation.num_debris[None]} debris particles")
-
-benchmark_times = []
-for bench_frame in range(20):
-    bench_start = time.perf_counter()
-
-    renderer.num_voxels[None] = 0
-    renderer.extract_voxels(simulation.voxel_type, simulation.n_grid)
-    renderer.extract_debris_particles()
-
-    cam = ti.ui.Camera()
-    cam.position(0, 40, -100)
-    cam.lookat(0, 0, 0)
-    cam.up(0, 1, 0)
-    scene.set_camera(cam)
-    scene.point_light(pos=(0, 100, 0), color=(0.5, 0.5, 0.5))
-    scene.ambient_light((0.2, 0.2, 0.2))
-
-    count = renderer.num_voxels[None]
-    if count > 0:
-        scene.particles(
-            renderer.voxel_positions,
-            radius=0.37,
-            per_vertex_color=renderer.voxel_colors,
-            per_vertex_radius=renderer.voxel_radii,
-            index_count=count
-        )
-
-    canvas.scene(scene)
-    window.show()
-
-    bench_end = time.perf_counter()
-    benchmark_times.append((bench_end - bench_start) * 1000)
-
-# Calculate benchmark results
-avg_frame_time = sum(benchmark_times) / len(benchmark_times)
-estimated_fps = 1000.0 / avg_frame_time if avg_frame_time > 0 else 0
-print(f"Benchmark: {estimated_fps:.0f} FPS (avg frame time: {avg_frame_time:.1f}ms)")
-
-# Warn if performance is bad
-if estimated_fps < 40:
-    print("")
-    print("=" * 60)
-    print("WARNING: Low FPS detected! This may be a GPU selection issue.")
-    print("")
-    print("FIX: Add Python to Windows Graphics Settings:")
-    print("  1. Open Windows Settings > System > Display > Graphics")
-    print("  2. Click 'Add an app' > Browse")
-    print("  3. Find python.exe (usually in C:\\Users\\YOU\\AppData\\Local\\Programs\\Python\\...)")
-    print("  4. Set it to 'High performance' (NVIDIA GPU)")
-    print("  5. Restart this game")
-    print("")
-    print("Or try restarting - sometimes the GPU picks correctly on retry.")
-    print("=" * 60)
-    print("")
-
-# Clear benchmark particles
-simulation.num_debris[None] = 0
-simulation.num_spray[None] = 0
-simulation.num_silk[None] = 0
 
 # Build initial floor height cache (for fast collision lookups)
 build_floor_height_cache()
@@ -12046,7 +11945,7 @@ try:
 
                 # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
                 # Direct adjustment - holds position when keys released
-                aim_adjust_speed = 1.8 * frame_dt  # Smooth adjustment rate
+                aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
                 if blue_inputs & INPUT_HORN_LEFT:
                     spray_aim_blue = min(1.0, spray_aim_blue + aim_adjust_speed)
                 elif blue_inputs & INPUT_HORN_RIGHT:
@@ -12330,7 +12229,7 @@ try:
 
                 # N/M aim controls - adjust spray angle (tilts beetle from butt pivot)
                 # Direct adjustment - holds position when keys released
-                aim_adjust_speed = 1.8 * frame_dt  # Smooth adjustment rate
+                aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
                 if red_inputs & INPUT_HORN_LEFT:
                     spray_aim_red = min(1.0, spray_aim_red + aim_adjust_speed)
                 elif red_inputs & INPUT_HORN_RIGHT:
@@ -12663,8 +12562,10 @@ try:
         if simulation.num_debris[None] > 0:
             update_debris_particles(PHYSICS_TIMESTEP)
 
-            # NOTE: Compaction disabled - serialized loop is too slow on GPU
-            # Instead, renderer caps how many particles are drawn (see renderer.py)
+            # Compact when approaching MAX_DEBRIS_CHECK (5000) to keep particles renderable
+            # New particles spawned beyond 5000 won't be rendered or updated!
+            if simulation.num_debris[None] > 4000:
+                cleanup_dead_debris()
         _t_debris_only = time.perf_counter()
         _physics_timing['debris_update'] = _physics_timing.get('debris_update', 0) + (_t_debris_only - _t_debris_start) * 1000
 
@@ -12832,8 +12733,9 @@ try:
             _t_spray_collision = time.perf_counter()
             _physics_timing['spray_collision'] = _physics_timing.get('spray_collision', 0) + (_t_spray_collision - _t_spray_update) * 1000
 
-            # NOTE: Compaction disabled - serialized loop is too slow on GPU
-            # Instead, renderer caps how many particles are drawn (see renderer.py)
+            # Compact when approaching MAX_SPRAY (500) to keep spray spawnable
+            if simulation.num_spray[None] > 400:
+                cleanup_dead_spray()
 
         # Update silk particles (physics, sticking)
         _t_silk_start = time.perf_counter()
@@ -12879,8 +12781,10 @@ try:
             _t_silk_collision = time.perf_counter()
             _physics_timing['silk_collision'] = _physics_timing.get('silk_collision', 0) + (_t_silk_collision - _t_silk_update) * 1000
 
-            # Free list pattern: dead particles marked inactive in update, no compaction needed
-            # cleanup_dead_silk() - DISABLED: using free list pattern for GPU parallelism
+            # Compact when approaching MAX_SILK (600) to keep silk spawnable
+            # Without compaction, num_silk high water mark grows and blocks new silk!
+            if simulation.num_silk[None] > 500:
+                cleanup_dead_silk()
 
             # Count floor silk under each beetle and ball for speed/friction effects
             count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,
@@ -13060,7 +12964,7 @@ try:
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                 network_manager.send_score(1, score_type=0, death_x=beetle_blue.x, death_z=beetle_blue.z)  # Red scores, blue died
             print(f"RED SCORES!")
-            print("BLUE BEETLE EXPLOSION STARTED!")
+            print(f"BLUE BEETLE EXPLOSION STARTED! (debris: {simulation.num_debris[None]})")
 
         # Guest-side blue beetle explosion (triggered after receiving death event from host)
         if beetle_blue.guest_death_falling and not beetle_blue.has_exploded and beetle_blue.y < EXPLOSION_TRIGGER_Y:
@@ -13118,7 +13022,7 @@ try:
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                 network_manager.send_score(0, score_type=0, death_x=beetle_red.x, death_z=beetle_red.z)  # Blue scores, red died
             print(f"BLUE SCORES!")
-            print("RED BEETLE EXPLOSION STARTED!")
+            print(f"RED BEETLE EXPLOSION STARTED! (debris: {simulation.num_debris[None]})")
 
         # Guest-side red beetle explosion (triggered after receiving death event from host)
         if beetle_red.guest_death_falling and not beetle_red.has_exploded and beetle_red.y < EXPLOSION_TRIGGER_Y:
@@ -13381,6 +13285,9 @@ try:
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling
+        # Cache floor heights to avoid redundant kernel calls (used for both penetration and edge tipping)
+        floor_y_blue = -1000.0
+        floor_y_red = -1000.0
         if beetle_blue.active and not beetle_blue.is_falling:
             floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
             if floor_y_blue > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
@@ -13407,7 +13314,7 @@ try:
 
         if beetle_red.active and not beetle_red.is_falling:
             floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
-            if floor_y_red >= 0:  # Floor detected under beetle
+            if floor_y_red > -100.0:  # Floor detected under beetle
                 lowest_point_red = calculate_beetle_lowest_point(
                     beetle_red.y, beetle_red.rotation, beetle_red.pitch,
                     beetle_red.roll, beetle_red.horn_pitch
@@ -13475,9 +13382,9 @@ try:
                         beetle_ball.on_ground = False
 
         # Apply edge tipping physics (GPU-accelerated)
+        # Reuse cached floor_y values from penetration check above
         if beetle_blue.active and not beetle_blue.is_falling:
-            floor_y_blue_check = check_floor_collision(beetle_blue.x, beetle_blue.z)
-            if floor_y_blue_check <= -100.0:  # No floor support
+            if floor_y_blue <= -100.0:  # No floor support (use cached value)
                 calculate_edge_tipping_kernel(beetle_blue.x, beetle_blue.z, simulation.BEETLE_BLUE,
                                               PHYSICS_TIMESTEP, beetle_blue.pitch_inertia, beetle_blue.roll_inertia)
                 beetle_blue.vy += edge_tipping_vy[None]
@@ -13485,8 +13392,7 @@ try:
                 beetle_blue.roll_velocity += edge_tipping_roll_vel[None]
 
         if beetle_red.active and not beetle_red.is_falling:
-            floor_y_red_check = check_floor_collision(beetle_red.x, beetle_red.z)
-            if floor_y_red_check <= -100.0:  # No floor support
+            if floor_y_red <= -100.0:  # No floor support (use cached value)
                 calculate_edge_tipping_kernel(beetle_red.x, beetle_red.z, simulation.BEETLE_RED,
                                               PHYSICS_TIMESTEP, beetle_red.pitch_inertia, beetle_red.roll_inertia)
                 beetle_red.vy += edge_tipping_vy[None]
