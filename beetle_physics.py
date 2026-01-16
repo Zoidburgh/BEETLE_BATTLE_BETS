@@ -1102,6 +1102,8 @@ def reset_match():
     global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red, prev_spray_aim_blue, prev_spray_aim_red
     global spider_aim_blue, spider_aim_red, prev_spider_aim_blue, prev_spider_aim_red
     global silk_charge_blue, silk_charge_red, silk_might_exist
+    global floor_cache_blue, floor_cache_red, floor_cache_ball
+    global ball_last_render, spray_might_exist
     global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
     global venom_tip_color_blue, venom_tip_color_red
@@ -1167,6 +1169,17 @@ def reset_match():
     simulation.silk_under_red[None] = 0
     simulation.silk_under_ball[None] = 0
     silk_might_exist = False  # GPU sync optimization flag
+
+    # Reset floor collision cache (CPU optimization)
+    floor_cache_blue = (None, None, -1000.0)
+    floor_cache_red = (None, None, -1000.0)
+    floor_cache_ball = (None, None, -1000.0)
+
+    # Reset ball render cache (CPU optimization)
+    ball_last_render = (None, None, None, None, None, None)
+
+    # Reset spray existence flag (CPU optimization)
+    spray_might_exist = False
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -1453,6 +1466,22 @@ silk_charge_red = SILK_MAX_CHARGE
 # Python-side silk existence flag to avoid GPU sync when no silk
 # This prevents reading simulation.silk_on_xxx[None] every physics step
 silk_might_exist = False  # Set True on spawn, False when count confirmed 0
+
+# Floor collision cache - skip kernel calls if entity hasn't moved much
+# Each entry: (last_x, last_z, cached_floor_y)
+FLOOR_CACHE_THRESHOLD = 1.0  # Only re-check if moved more than 1 unit
+floor_cache_blue = (None, None, -1000.0)
+floor_cache_red = (None, None, -1000.0)
+floor_cache_ball = (None, None, -1000.0)
+
+# Ball render cache - skip re-render if ball hasn't moved (CPU optimization)
+# Entry: (last_x, last_y, last_z, last_rotation, last_pitch, last_roll)
+BALL_RENDER_THRESHOLD = 0.3  # Re-render if moved more than 0.3 units or rotated significantly
+BALL_ROTATION_THRESHOLD = 0.05  # ~3 degrees
+ball_last_render = (None, None, None, None, None, None)
+
+# Spray existence flag - skip GPU syncs when no spray exists (CPU optimization)
+spray_might_exist = False  # Set True on spawn, False when count confirmed 0
 
 # Scorpion venom attack state (uses same spray particle system)
 VENOM_COOLDOWN = 0.4  # Seconds between venom shots
@@ -12631,6 +12660,7 @@ try:
                               SPRAY_SPEED, 0, particles_this_frame, spray_aim_y_blue, 0.6,
                               0.2, 1.0, 0.3)  # Green
             spray_burst_remaining_blue -= particles_this_frame
+            spray_might_exist = True  # CPU optimization flag
 
         # Spawn spray burst particles for red beetle
         if spray_burst_remaining_red > 0 and beetle_red.active and beetle_red.horn_type_id == 5:
@@ -12642,6 +12672,7 @@ try:
                               SPRAY_SPEED, 1, particles_this_frame, spray_aim_y_red, 0.6,
                               0.2, 1.0, 0.3)  # Green
             spray_burst_remaining_red -= particles_this_frame
+            spray_might_exist = True  # CPU optimization flag
 
         # === SPIDER SILK EMISSION ===
         # Blue spider silk (continuous while firing) - fires BACKWARDS from spinneret
@@ -12719,6 +12750,7 @@ try:
                               VENOM_SPEED, 0, particles_this_frame, -28.0, 1.5,
                               1.0, 0.9, 0.1)  # Bright yellow
             venom_burst_remaining_blue -= particles_this_frame
+            spray_might_exist = True  # CPU optimization flag
 
         # Spawn venom burst particles for red scorpion
         if venom_burst_remaining_red > 0 and beetle_red.active and beetle_red.horn_type_id == 3:
@@ -12735,35 +12767,42 @@ try:
                               VENOM_SPEED, 1, particles_this_frame, -28.0, 1.5,
                               1.0, 0.9, 0.1)  # Bright yellow
             venom_burst_remaining_red -= particles_this_frame
+            spray_might_exist = True  # CPU optimization flag
 
         # Update spray particles (physics, aging)
+        # CPU OPTIMIZATION: Use Python flag to skip GPU read when no spray exists
         _t_spray_start = time.perf_counter()
-        if simulation.num_spray[None] > 0:
-            update_spray_particles(PHYSICS_TIMESTEP)
-            _t_spray_update = time.perf_counter()
-            _physics_timing['spray_update'] = _physics_timing.get('spray_update', 0) + (_t_spray_update - _t_spray_start) * 1000
+        if spray_might_exist:
+            actual_spray_count = simulation.num_spray[None]
+            if actual_spray_count > 0:
+                update_spray_particles(PHYSICS_TIMESTEP)
+                _t_spray_update = time.perf_counter()
+                _physics_timing['spray_update'] = _physics_timing.get('spray_update', 0) + (_t_spray_update - _t_spray_start) * 1000
 
-            # Spray-beetle collision detection (voxel-perfect GPU kernel)
-            # Check if blue's spray hits red (target=RED=1, skip red's own spray=1)
-            if beetle_red.active:
-                hits = process_spray_collisions(beetle_red, 1, 1)  # target RED, skip owner 1
-                for hit_idx, hit_x, hit_y, hit_z in hits:
-                    apply_spray_impact(beetle_red, hit_idx, hit_x, hit_y, hit_z)
+                # Spray-beetle collision detection (voxel-perfect GPU kernel)
+                # Check if blue's spray hits red (target=RED=1, skip red's own spray=1)
+                if beetle_red.active:
+                    hits = process_spray_collisions(beetle_red, 1, 1)  # target RED, skip owner 1
+                    for hit_idx, hit_x, hit_y, hit_z in hits:
+                        apply_spray_impact(beetle_red, hit_idx, hit_x, hit_y, hit_z)
 
-            # Check if red's spray hits blue (target=BLUE=0, skip blue's own spray=0)
-            if beetle_blue.active:
-                hits = process_spray_collisions(beetle_blue, 0, 0)  # target BLUE, skip owner 0
-                for hit_idx, hit_x, hit_y, hit_z in hits:
-                    apply_spray_impact(beetle_blue, hit_idx, hit_x, hit_y, hit_z)
+                # Check if red's spray hits blue (target=BLUE=0, skip blue's own spray=0)
+                if beetle_blue.active:
+                    hits = process_spray_collisions(beetle_blue, 0, 0)  # target BLUE, skip owner 0
+                    for hit_idx, hit_x, hit_y, hit_z in hits:
+                        apply_spray_impact(beetle_blue, hit_idx, hit_x, hit_y, hit_z)
 
-            # Check if any spray hits the ball
-            check_spray_ball_collision()
-            _t_spray_collision = time.perf_counter()
-            _physics_timing['spray_collision'] = _physics_timing.get('spray_collision', 0) + (_t_spray_collision - _t_spray_update) * 1000
+                # Check if any spray hits the ball
+                check_spray_ball_collision()
+                _t_spray_collision = time.perf_counter()
+                _physics_timing['spray_collision'] = _physics_timing.get('spray_collision', 0) + (_t_spray_collision - _t_spray_update) * 1000
 
-            # Compact when approaching MAX_SPRAY (500) to keep spray spawnable
-            if simulation.num_spray[None] > 400:
-                cleanup_dead_spray()
+                # Compact when approaching MAX_SPRAY (500) to keep spray spawnable
+                if actual_spray_count > 400:
+                    cleanup_dead_spray()
+            else:
+                # All spray expired - clear flag
+                spray_might_exist = False
 
         # Update silk particles (physics, sticking)
         # GPU SYNC OPTIMIZATION: Use Python flag to skip GPU read when no silk exists
@@ -13312,11 +13351,23 @@ try:
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling
-        # Cache floor heights to avoid redundant kernel calls (used for both penetration and edge tipping)
+        # CPU OPTIMIZATION: Cache floor heights to skip kernel calls if entity hasn't moved much
         floor_y_blue = -1000.0
         floor_y_red = -1000.0
         if beetle_blue.active and not beetle_blue.is_falling:
-            floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
+            # Check if we can reuse cached floor height
+            cache_x, cache_z, cache_y = floor_cache_blue
+            if cache_x is not None:
+                dx = beetle_blue.x - cache_x
+                dz = beetle_blue.z - cache_z
+                if dx*dx + dz*dz < FLOOR_CACHE_THRESHOLD * FLOOR_CACHE_THRESHOLD:
+                    floor_y_blue = cache_y  # Reuse cached value
+                else:
+                    floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
+                    floor_cache_blue = (beetle_blue.x, beetle_blue.z, floor_y_blue)
+            else:
+                floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
+                floor_cache_blue = (beetle_blue.x, beetle_blue.z, floor_y_blue)
             if floor_y_blue > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
                 # Calculate lowest point of beetle geometry after rotation
                 lowest_point_blue = calculate_beetle_lowest_point(
@@ -13340,7 +13391,19 @@ try:
                     beetle_blue.on_ground = True
 
         if beetle_red.active and not beetle_red.is_falling:
-            floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
+            # Check if we can reuse cached floor height
+            cache_x, cache_z, cache_y = floor_cache_red
+            if cache_x is not None:
+                dx = beetle_red.x - cache_x
+                dz = beetle_red.z - cache_z
+                if dx*dx + dz*dz < FLOOR_CACHE_THRESHOLD * FLOOR_CACHE_THRESHOLD:
+                    floor_y_red = cache_y  # Reuse cached value
+                else:
+                    floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
+                    floor_cache_red = (beetle_red.x, beetle_red.z, floor_y_red)
+            else:
+                floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
+                floor_cache_red = (beetle_red.x, beetle_red.z, floor_y_red)
             if floor_y_red > -100.0:  # Floor detected under beetle
                 lowest_point_red = calculate_beetle_lowest_point(
                     beetle_red.y, beetle_red.rotation, beetle_red.pitch,
@@ -13372,8 +13435,21 @@ try:
             if in_goal_pit:
                 # Ball is in goal pit - no floor collision, let it fall
                 beetle_ball.on_ground = False
+                floor_cache_ball = (None, None, -1000.0)  # Invalidate cache in goal pit
             else:
-                floor_y_ball = check_floor_collision(beetle_ball.x, beetle_ball.z)
+                # Check if we can reuse cached floor height
+                cache_x, cache_z, cache_y = floor_cache_ball
+                if cache_x is not None:
+                    dx = beetle_ball.x - cache_x
+                    dz = beetle_ball.z - cache_z
+                    if dx*dx + dz*dz < FLOOR_CACHE_THRESHOLD * FLOOR_CACHE_THRESHOLD:
+                        floor_y_ball = cache_y  # Reuse cached value
+                    else:
+                        floor_y_ball = check_floor_collision(beetle_ball.x, beetle_ball.z)
+                        floor_cache_ball = (beetle_ball.x, beetle_ball.z, floor_y_ball)
+                else:
+                    floor_y_ball = check_floor_collision(beetle_ball.x, beetle_ball.z)
+                    floor_cache_ball = (beetle_ball.x, beetle_ball.z, floor_y_ball)
                 if floor_y_ball > -100.0:  # Floor detected under ball
                     # Ball's lowest point is center Y minus radius
                     lowest_point_ball = beetle_ball.y - beetle_ball.radius
@@ -14376,8 +14452,27 @@ try:
         ball_render_roll = lerp_angle(beetle_ball.prev_roll, beetle_ball.roll, alpha)
 
         # Only render ball if it hasn't exploded - OPTIMIZED (clear+render in one call)
+        # CPU OPTIMIZATION: Skip re-render if ball hasn't moved significantly
         if not ball_has_exploded:
-            clear_and_render_ball_fast(ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
+            should_render_ball = True
+            last_x, last_y, last_z, last_rot, last_pitch, last_roll = ball_last_render
+            if last_x is not None:
+                dx = ball_render_x - last_x
+                dy = ball_render_y - last_y
+                dz = ball_render_z - last_z
+                dist_sq = dx*dx + dy*dy + dz*dz
+                # Check position change
+                if dist_sq < BALL_RENDER_THRESHOLD * BALL_RENDER_THRESHOLD:
+                    # Check rotation change
+                    drot = abs(ball_render_rotation - last_rot)
+                    dpitch = abs(ball_render_pitch - last_pitch)
+                    droll = abs(ball_render_roll - last_roll)
+                    if drot < BALL_ROTATION_THRESHOLD and dpitch < BALL_ROTATION_THRESHOLD and droll < BALL_ROTATION_THRESHOLD:
+                        should_render_ball = False  # Ball is stationary, skip render
+
+            if should_render_ball:
+                clear_and_render_ball_fast(ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
+                ball_last_render = (ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
 
             # Add shadow under ball when airborne (ball center must be high enough that bottom clears ground)
             # Ball bottom = ball_render_y - radius, so ball is airborne when bottom > ~1
