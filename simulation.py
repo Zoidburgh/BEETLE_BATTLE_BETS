@@ -54,22 +54,14 @@ def detect_gpu_type():
 def choose_backend():
     """Auto-detect best backend, with manual override flags"""
     # Manual overrides first
-    if '--cpu' in sys.argv:
-        return 'cpu', 'CPU (--cpu flag)'
     if '--vulkan' in sys.argv or '--gpu' in sys.argv:
         return 'vulkan', 'Vulkan (--gpu flag)'
     if '--cuda' in sys.argv:
         return 'cuda', 'CUDA (--cuda flag)'
 
-    # Auto-detect based on GPU
-    gpu_type = detect_gpu_type()
-
-    if gpu_type:
-        # Discrete GPU detected → use Vulkan (same API as GGUI renderer = no transfer overhead)
-        return 'vulkan', f'Vulkan ({gpu_type.upper()} GPU auto-detected)'
-    else:
-        # No discrete GPU (integrated only) → use CPU
-        return 'cpu', 'CPU (no discrete GPU detected)'
+    # Default to CPU - GPU backends (Vulkan/CUDA) have compatibility issues
+    # on many systems, causing worse performance than CPU
+    return 'cpu', 'CPU (default - use --gpu or --cuda to try GPU)'
 
 BACKEND, BACKEND_REASON = choose_backend()
 

@@ -12773,10 +12773,8 @@ try:
         # CPU OPTIMIZATION: Use Python flag to skip GPU read when no spray exists
         _t_spray_start = time.perf_counter()
         if spray_might_exist:
-            # Check ACTUAL live count, not high water mark (num_spray)
-            # This prevents running collision on dead particles
-            live_spray_count = simulation.spray_active_count[None]
-            if live_spray_count > 0:
+            actual_spray_count = simulation.num_spray[None]
+            if actual_spray_count > 0:
                 update_spray_particles(PHYSICS_TIMESTEP)
                 _t_spray_update = time.perf_counter()
                 _physics_timing['spray_update'] = _physics_timing.get('spray_update', 0) + (_t_spray_update - _t_spray_start) * 1000
@@ -12799,22 +12797,20 @@ try:
                 _t_spray_collision = time.perf_counter()
                 _physics_timing['spray_collision'] = _physics_timing.get('spray_collision', 0) + (_t_spray_collision - _t_spray_update) * 1000
 
-                # Compact when high water mark gets too high (prevents spawn failures)
-                if simulation.num_spray[None] > 400:
+                # Compact when approaching MAX_SPRAY (500) to keep spray spawnable
+                if actual_spray_count > 400:
                     cleanup_dead_spray()
             else:
-                # All spray particles dead - cleanup and clear flag
-                cleanup_dead_spray()  # Reset high water mark
+                # All spray expired - clear flag
                 spray_might_exist = False
 
         # Update silk particles (physics, sticking)
         # GPU SYNC OPTIMIZATION: Use Python flag to skip GPU read when no silk exists
         _t_silk_start = time.perf_counter()
         if silk_might_exist:
-            # Check ACTUAL live count, not high water mark (num_silk)
-            # num_silk is slots ever used, silk_active_count is actual live particles
-            live_silk_count = simulation.silk_active_count[None]
-            if live_silk_count > 0:
+            # Only read GPU count if we think silk might exist
+            actual_silk_count = simulation.num_silk[None]
+            if actual_silk_count > 0:
                 build_silk_spatial_grid()  # Build O(1) lookup grid before anti-stacking check
                 update_silk_particles(PHYSICS_TIMESTEP)
                 _t_silk_update = time.perf_counter()
@@ -12858,15 +12854,14 @@ try:
 
                 # Compact when approaching MAX_SILK (600) to keep silk spawnable
                 # Without compaction, num_silk high water mark grows and blocks new silk!
-                if live_silk_count > 500:
+                if actual_silk_count > 500:
                     cleanup_dead_silk()
 
                 # Count floor silk under each beetle and ball for speed/friction effects
                 count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,
                                                beetle_ball.x, beetle_ball.z, 1 if beetle_ball.active else 0)
             else:
-                # All silk particles dead - cleanup and clear flag
-                cleanup_dead_silk()  # Reset high water mark
+                # All silk expired - clear flag so we skip GPU reads next frame
                 silk_might_exist = False
 
         # === ALL PARTICLES TIMING END (was mislabeled as debris_particles) ===
