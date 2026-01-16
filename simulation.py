@@ -64,12 +64,9 @@ def choose_backend():
     # Auto-detect based on GPU
     gpu_type = detect_gpu_type()
 
-    if gpu_type == 'nvidia':
-        # NVIDIA discrete GPU → use CUDA (best for NVIDIA)
-        return 'cuda', 'CUDA (NVIDIA GPU auto-detected)'
-    elif gpu_type == 'amd':
-        # AMD discrete GPU → use Vulkan (CUDA is NVIDIA-only)
-        return 'vulkan', 'Vulkan (AMD GPU auto-detected)'
+    if gpu_type:
+        # Discrete GPU detected → use Vulkan (same API as GGUI renderer = no transfer overhead)
+        return 'vulkan', f'Vulkan ({gpu_type.upper()} GPU auto-detected)'
     else:
         # No discrete GPU (integrated only) → use CPU
         return 'cpu', 'CPU (no discrete GPU detected)'
