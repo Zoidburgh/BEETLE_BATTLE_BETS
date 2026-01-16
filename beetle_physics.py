@@ -9270,6 +9270,10 @@ class Ladybug:
         self.antenna_phase = 0.0  # Antenna bounce
         self.head_turn_phase = 0.0  # Independent head look-around animation
         self.visible = True
+        # Track previous position for proper voxel clearing on movement
+        self.prev_x = x
+        self.prev_y = 0.0
+        self.prev_z = z
 
 def generate_ladybug_geometry():
     """Generate ladybug body voxels (shell dome + head + spots + wings)
@@ -9707,12 +9711,18 @@ def render_ladybug(ladybug, dt):
                          ladybug.rotation, ladybug.body_tilt, ladybug.body_roll,
                          ladybug.kick_phase, ladybug.antenna_phase, head_turn)
 
+    # Save current position for next frame's clearing
+    ladybug.prev_x = ladybug.x
+    ladybug.prev_y = ladybug.y
+    ladybug.prev_z = ladybug.z
+
 def spawn_test_ladybug():
     """Spawn a test ladybug in the center of the arena for preview"""
     global test_ladybug
     # Face toward camera (roughly toward -X, -Z which is where camera usually is)
     test_ladybug = Ladybug(0.0, 0.0, rotation=math.radians(-135))
     test_ladybug.y = 15.0  # Hovering above the arena
+    test_ladybug.prev_y = 15.0  # Match initial y to prevent clearing at wrong height
     print("Test ladybug spawned hovering above arena center")
 
 def clear_test_ladybug():
@@ -9741,6 +9751,7 @@ def spawn_circle_ladybugs():
 
         ladybug = Ladybug(x, z, rotation=facing_center)
         ladybug.y = hover_height
+        ladybug.prev_y = hover_height  # Match initial y to prevent clearing at wrong height
         # Offset animation phase so they don't all sync
         ladybug.antenna_phase = (2 * math.pi * i) / num_ladybugs
         active_ladybugs.append(ladybug)
@@ -9765,6 +9776,7 @@ def toggle_referee():
     if referee_enabled:
         referee_ladybug = Ladybug(0.0, 0.0, rotation=0.0)
         referee_ladybug.y = 8.0
+        referee_ladybug.prev_y = 8.0  # Match initial y to prevent clearing at wrong height
         referee_time = 0.0
         print("Flying referee ENABLED")
     else:
@@ -11485,6 +11497,11 @@ place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # Ladybug 
 # Sync GPU to ensure all warm-up compilations complete
 ti.sync()
 
+# Clear warmup particles so they don't show in the distance on game load
+simulation.num_spray[None] = 0
+simulation.num_silk[None] = 0
+simulation.num_debris[None] = 0
+
 print("All kernels warmed up (pre-compiled)")
 
 # Build initial floor height cache (for fast collision lookups)
@@ -11494,6 +11511,7 @@ build_floor_height_cache()
 if referee_enabled:
     referee_ladybug = Ladybug(0.0, 0.0, rotation=0.0)
     referee_ladybug.y = 8.0  # Hover height
+    referee_ladybug.prev_y = 8.0  # Match initial y to prevent clearing at wrong height
 
 # Global state dictionary for storing inputs during network stalls
 g = {}
@@ -14383,20 +14401,23 @@ try:
         render_ball_assembly_fast(0.0, 57.0, 0.0, progress)
 
     # Clear and render ladybugs using bounded clearing (much faster than full grid scan)
-    # Each ladybug clears its own bounding box before redraw
+    # Each ladybug clears both previous and current positions to prevent leftover voxels on movement
 
     # Render test ladybug (if active)
     if test_ladybug is not None:
+        clear_ladybug_bounded(test_ladybug.prev_x, test_ladybug.prev_y, test_ladybug.prev_z)
         clear_ladybug_bounded(test_ladybug.x, test_ladybug.y, test_ladybug.z)
         render_ladybug(test_ladybug, frame_dt)
 
     # Render active ladybug cheerleaders
     for ladybug in active_ladybugs:
+        clear_ladybug_bounded(ladybug.prev_x, ladybug.prev_y, ladybug.prev_z)
         clear_ladybug_bounded(ladybug.x, ladybug.y, ladybug.z)
         render_ladybug(ladybug, frame_dt)
 
     # Render flying referee ladybug
     if referee_ladybug is not None and referee_enabled:
+        clear_ladybug_bounded(referee_ladybug.prev_x, referee_ladybug.prev_y, referee_ladybug.prev_z)
         clear_ladybug_bounded(referee_ladybug.x, referee_ladybug.y, referee_ladybug.z)
         render_ladybug(referee_ladybug, frame_dt)
 
