@@ -1101,7 +1101,7 @@ def reset_match():
     global stripe_color_blue, stripe_color_red
     global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red, prev_spray_aim_blue, prev_spray_aim_red
     global spider_aim_blue, spider_aim_red, prev_spider_aim_blue, prev_spider_aim_red
-    global silk_charge_blue, silk_charge_red
+    global silk_charge_blue, silk_charge_red, silk_might_exist
     global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
     global venom_tip_color_blue, venom_tip_color_red
@@ -1166,6 +1166,7 @@ def reset_match():
     simulation.silk_under_blue[None] = 0
     simulation.silk_under_red[None] = 0
     simulation.silk_under_ball[None] = 0
+    silk_might_exist = False  # GPU sync optimization flag
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -1448,6 +1449,10 @@ SILK_REGEN_RATE = 3.9        # Charge regenerated per second (20% faster)
 SILK_COST_PER_SPAWN = 0.2    # Charge cost per silk spawn (0.4 total per frame)
 silk_charge_blue = SILK_MAX_CHARGE
 silk_charge_red = SILK_MAX_CHARGE
+
+# Python-side silk existence flag to avoid GPU sync when no silk
+# This prevents reading simulation.silk_on_xxx[None] every physics step
+silk_might_exist = False  # Set True on spawn, False when count confirmed 0
 
 # Scorpion venom attack state (uses same spray particle system)
 VENOM_COOLDOWN = 0.4  # Seconds between venom shots
@@ -11888,16 +11893,18 @@ try:
 
             # Movement controls (T/G) - move in facing direction
             # Silk slowdown: 1% slower per silk particle attached to body
-            blue_silk_slowdown = max(0.0, 1.0 - 0.01 * simulation.silk_on_blue[None])
-
-            # Floor silk effect: spiders get boost, others get slowed
-            floor_silk_count = simulation.silk_under_blue[None]
-            if beetle_blue.horn_type_id == 6:  # Spider
-                blue_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
+            # GPU SYNC OPTIMIZATION: Only read silk counts if silk exists
+            if silk_might_exist:
+                blue_silk_slowdown = max(0.0, 1.0 - 0.01 * simulation.silk_on_blue[None])
+                # Floor silk effect: spiders get boost, others get slowed
+                floor_silk_count = simulation.silk_under_blue[None]
+                if beetle_blue.horn_type_id == 6:  # Spider
+                    blue_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
+                else:
+                    blue_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
+                blue_speed_mult = blue_silk_slowdown * blue_floor_modifier
             else:
-                blue_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
-
-            blue_speed_mult = blue_silk_slowdown * blue_floor_modifier
+                blue_speed_mult = 1.0  # No silk = no slowdown
             beetle_blue.silk_speed_mult = blue_speed_mult  # Set on beetle for max speed cap
 
             # Speed boost system - track hold time and calculate bonus
@@ -12172,16 +12179,18 @@ try:
 
             # Movement controls (I/K) - move in facing direction
             # Silk slowdown: 1% slower per silk particle attached to body
-            red_silk_slowdown = max(0.0, 1.0 - 0.01 * simulation.silk_on_red[None])
-
-            # Floor silk effect: spiders get boost, others get slowed
-            floor_silk_count = simulation.silk_under_red[None]
-            if beetle_red.horn_type_id == 6:  # Spider
-                red_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
+            # GPU SYNC OPTIMIZATION: Only read silk counts if silk exists
+            if silk_might_exist:
+                red_silk_slowdown = max(0.0, 1.0 - 0.01 * simulation.silk_on_red[None])
+                # Floor silk effect: spiders get boost, others get slowed
+                floor_silk_count = simulation.silk_under_red[None]
+                if beetle_red.horn_type_id == 6:  # Spider
+                    red_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
+                else:
+                    red_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
+                red_speed_mult = red_silk_slowdown * red_floor_modifier
             else:
-                red_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
-
-            red_speed_mult = red_silk_slowdown * red_floor_modifier
+                red_speed_mult = 1.0  # No silk = no slowdown
             beetle_red.silk_speed_mult = red_speed_mult  # Set on beetle for max speed cap
 
             # Speed boost system - track hold time and calculate bonus
@@ -12472,13 +12481,17 @@ try:
                 if beetle_ball.on_ground:
                     # Silk makes ball stickier - reduce friction value (more stopping power)
                     base_friction = physics_params["BALL_ROLLING_FRICTION"]
-                    # Each silk ON ball adds 4% friction (stickier ball)
-                    silk_on_friction = 0.04 * simulation.silk_on_ball[None]
-                    # Each floor silk UNDER ball adds 2% friction (sticky floor)
-                    silk_under_friction = 0.02 * simulation.silk_under_ball[None]
-                    # Cap total silk friction bonus at 60% (prevents ball from stopping instantly)
-                    total_silk_friction = min(0.60, silk_on_friction + silk_under_friction)
-                    adjusted_friction = base_friction - total_silk_friction
+                    # GPU SYNC OPTIMIZATION: Only read silk counts if silk exists
+                    if silk_might_exist:
+                        # Each silk ON ball adds 4% friction (stickier ball)
+                        silk_on_friction = 0.04 * simulation.silk_on_ball[None]
+                        # Each floor silk UNDER ball adds 2% friction (sticky floor)
+                        silk_under_friction = 0.02 * simulation.silk_under_ball[None]
+                        # Cap total silk friction bonus at 60% (prevents ball from stopping instantly)
+                        total_silk_friction = min(0.60, silk_on_friction + silk_under_friction)
+                        adjusted_friction = base_friction - total_silk_friction
+                    else:
+                        adjusted_friction = base_friction  # No silk = no extra friction
 
                     beetle_ball.vx *= adjusted_friction
                     beetle_ball.vz *= adjusted_friction
@@ -12647,6 +12660,7 @@ try:
                            silk_speed_blue, aim_y, 0, silk_spiral_phase_blue)
                 silk_spiral_phase_blue += 0.4  # Tighter spiral rotation
                 silk_charge_blue -= blue_silk_cost
+            silk_might_exist = True  # Flag for GPU sync optimization
 
         # Red spider silk - fires BACKWARDS
         red_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed_red == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
@@ -12660,6 +12674,7 @@ try:
                            silk_speed_red, aim_y, 1, silk_spiral_phase_red)
                 silk_spiral_phase_red += 0.4
                 silk_charge_red -= red_silk_cost
+            silk_might_exist = True  # Flag for GPU sync optimization
 
         # Regenerate silk charge over time (only when not firing)
         if not silk_firing_blue:
@@ -12751,65 +12766,64 @@ try:
                 cleanup_dead_spray()
 
         # Update silk particles (physics, sticking)
+        # GPU SYNC OPTIMIZATION: Use Python flag to skip GPU read when no silk exists
         _t_silk_start = time.perf_counter()
-        if simulation.num_silk[None] > 0:
-            build_silk_spatial_grid()  # Build O(1) lookup grid before anti-stacking check
-            update_silk_particles(PHYSICS_TIMESTEP)
-            _t_silk_update = time.perf_counter()
-            _physics_timing['silk_update'] = _physics_timing.get('silk_update', 0) + (_t_silk_update - _t_silk_start) * 1000
+        if silk_might_exist:
+            # Only read GPU count if we think silk might exist
+            actual_silk_count = simulation.num_silk[None]
+            if actual_silk_count > 0:
+                build_silk_spatial_grid()  # Build O(1) lookup grid before anti-stacking check
+                update_silk_particles(PHYSICS_TIMESTEP)
+                _t_silk_update = time.perf_counter()
+                _physics_timing['silk_update'] = _physics_timing.get('silk_update', 0) + (_t_silk_update - _t_silk_start) * 1000
 
-            # Check silk collision with beetles
-            # Calculate tail pitch from tail_rotation_angle (base 15 degrees + rotation)
-            blue_tail_pitch_rad = math.radians(15.0 + beetle_blue.tail_rotation_angle)
-            red_tail_pitch_rad = math.radians(15.0 + beetle_red.tail_rotation_angle)
-            # Calculate default horn pitch based on beetle type
-            blue_def_pitch = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
-                              HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[beetle_blue.horn_type_id]
-            red_def_pitch = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
-                             HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[beetle_red.horn_type_id]
-            check_silk_beetle_collision(
-                # Blue beetle state
-                beetle_blue.x, beetle_blue.y, beetle_blue.z,
-                beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll,
-                beetle_blue.horn_pitch, beetle_blue.horn_yaw, blue_tail_pitch_rad,
-                beetle_blue.horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
-                spray_aim_blue * SPRAY_AIM_MAX, spider_aim_blue * SPIDER_AIM_MAX, blue_def_pitch,
-                1 if beetle_blue.active else 0,
-                # Red beetle state
-                beetle_red.x, beetle_red.y, beetle_red.z,
-                beetle_red.rotation, beetle_red.pitch, beetle_red.roll,
-                beetle_red.horn_pitch, beetle_red.horn_yaw, red_tail_pitch_rad,
-                beetle_red.horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
-                spray_aim_red * SPRAY_AIM_MAX, spider_aim_red * SPRAY_AIM_MAX, red_def_pitch,
-                1 if beetle_red.active else 0
-            )
-
-            # Check silk-ball collision if ball mode is active
-            if beetle_ball.active:
-                check_silk_ball_collision(
-                    beetle_ball.x, beetle_ball.y + RENDER_Y_OFFSET, beetle_ball.z,
-                    beetle_ball.radius,
-                    beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll
+                # Check silk collision with beetles
+                # Calculate tail pitch from tail_rotation_angle (base 15 degrees + rotation)
+                blue_tail_pitch_rad = math.radians(15.0 + beetle_blue.tail_rotation_angle)
+                red_tail_pitch_rad = math.radians(15.0 + beetle_red.tail_rotation_angle)
+                # Calculate default horn pitch based on beetle type
+                blue_def_pitch = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
+                                  HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[beetle_blue.horn_type_id]
+                red_def_pitch = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
+                                 HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[beetle_red.horn_type_id]
+                check_silk_beetle_collision(
+                    # Blue beetle state
+                    beetle_blue.x, beetle_blue.y, beetle_blue.z,
+                    beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll,
+                    beetle_blue.horn_pitch, beetle_blue.horn_yaw, blue_tail_pitch_rad,
+                    beetle_blue.horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
+                    spray_aim_blue * SPRAY_AIM_MAX, spider_aim_blue * SPIDER_AIM_MAX, blue_def_pitch,
+                    1 if beetle_blue.active else 0,
+                    # Red beetle state
+                    beetle_red.x, beetle_red.y, beetle_red.z,
+                    beetle_red.rotation, beetle_red.pitch, beetle_red.roll,
+                    beetle_red.horn_pitch, beetle_red.horn_yaw, red_tail_pitch_rad,
+                    beetle_red.horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
+                    spray_aim_red * SPRAY_AIM_MAX, spider_aim_red * SPRAY_AIM_MAX, red_def_pitch,
+                    1 if beetle_red.active else 0
                 )
-            _t_silk_collision = time.perf_counter()
-            _physics_timing['silk_collision'] = _physics_timing.get('silk_collision', 0) + (_t_silk_collision - _t_silk_update) * 1000
 
-            # Compact when approaching MAX_SILK (600) to keep silk spawnable
-            # Without compaction, num_silk high water mark grows and blocks new silk!
-            if simulation.num_silk[None] > 500:
-                cleanup_dead_silk()
+                # Check silk-ball collision if ball mode is active
+                if beetle_ball.active:
+                    check_silk_ball_collision(
+                        beetle_ball.x, beetle_ball.y + RENDER_Y_OFFSET, beetle_ball.z,
+                        beetle_ball.radius,
+                        beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll
+                    )
+                _t_silk_collision = time.perf_counter()
+                _physics_timing['silk_collision'] = _physics_timing.get('silk_collision', 0) + (_t_silk_collision - _t_silk_update) * 1000
 
-            # Count floor silk under each beetle and ball for speed/friction effects
-            count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,
-                                           beetle_ball.x, beetle_ball.z, 1 if beetle_ball.active else 0)
-        else:
-            # No silk particles - reset floor counters so they don't stay stale
-            simulation.silk_under_blue[None] = 0
-            simulation.silk_under_red[None] = 0
-            simulation.silk_under_ball[None] = 0
-            simulation.silk_on_blue[None] = 0
-            simulation.silk_on_red[None] = 0
-            simulation.silk_on_ball[None] = 0
+                # Compact when approaching MAX_SILK (600) to keep silk spawnable
+                # Without compaction, num_silk high water mark grows and blocks new silk!
+                if actual_silk_count > 500:
+                    cleanup_dead_silk()
+
+                # Count floor silk under each beetle and ball for speed/friction effects
+                count_floor_silk_under_beetles(beetle_blue.x, beetle_blue.z, beetle_red.x, beetle_red.z,
+                                               beetle_ball.x, beetle_ball.z, 1 if beetle_ball.active else 0)
+            else:
+                # All silk expired - clear flag so we skip GPU reads next frame
+                silk_might_exist = False
 
         # === ALL PARTICLES TIMING END (was mislabeled as debris_particles) ===
         _t_particles_end = time.perf_counter()
@@ -14313,7 +14327,8 @@ try:
     perf_monitor.stop('beetle_render')
 
     # Update silk stuck to beetles/ball - positions need to match transforms
-    if simulation.num_silk[None] > 0:
+    # GPU SYNC OPTIMIZATION: Use Python flag instead of reading GPU count
+    if silk_might_exist:
         # Calculate ball render position and rotation for silk tracking
         if beetle_ball.active:
             ball_silk_x = beetle_ball.prev_x + (beetle_ball.x - beetle_ball.prev_x) * alpha
