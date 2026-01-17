@@ -11498,6 +11498,7 @@ check_silk_beetle_collision(
 check_silk_ball_collision(0.0, -100.0, 0.0, 4.0, 0.0, 0.0, 0.0)  # Ball silk collision warmup
 count_floor_silk_under_beetles(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
 cleanup_dead_silk()
+simulation.batch_silk_counts()  # Batch silk counts kernel warmup
 # DON'T clear silk yet - we need particles for render warmup
 
 # Referee beam warmup (prevents lag on first score)
@@ -11933,6 +11934,14 @@ try:
         # === INPUT/CONTROLS TIMING START ===
         _t_input_start = time.perf_counter()
 
+        # GPU SYNC OPTIMIZATION: Batch all silk counts into single GPU->CPU transfer
+        # Do this once per frame, before any beetle reads, to avoid 6 separate GPU reads
+        # Indices: 0=on_blue, 1=under_blue, 2=on_red, 3=under_red, 4=on_ball, 5=under_ball
+        silk_counts = None
+        if silk_might_exist:
+            simulation.batch_silk_counts()
+            silk_counts = simulation.silk_counts_batched.to_numpy()
+
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
         if beetle_blue.active and not beetle_blue.is_falling:
             # Rotation controls (F/H) - BLOCKED during horn collision
@@ -11952,11 +11961,11 @@ try:
 
             # Movement controls (T/G) - move in facing direction
             # Silk slowdown: 1% slower per silk particle attached to body
-            # GPU SYNC OPTIMIZATION: Only read silk counts if silk exists
+            # GPU SYNC OPTIMIZATION: Use batched silk counts (read once at frame start)
             if silk_might_exist:
-                blue_silk_slowdown = max(0.0, 1.0 - 0.01 * simulation.silk_on_blue[None])
+                blue_silk_slowdown = max(0.0, 1.0 - 0.01 * silk_counts[0])
                 # Floor silk effect: spiders get boost, others get slowed
-                floor_silk_count = simulation.silk_under_blue[None]
+                floor_silk_count = silk_counts[1]
                 if beetle_blue.horn_type_id == 6:  # Spider
                     blue_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
                 else:
@@ -12238,11 +12247,11 @@ try:
 
             # Movement controls (I/K) - move in facing direction
             # Silk slowdown: 1% slower per silk particle attached to body
-            # GPU SYNC OPTIMIZATION: Only read silk counts if silk exists
+            # GPU SYNC OPTIMIZATION: Use batched silk counts (already read for blue beetle)
             if silk_might_exist:
-                red_silk_slowdown = max(0.0, 1.0 - 0.01 * simulation.silk_on_red[None])
+                red_silk_slowdown = max(0.0, 1.0 - 0.01 * silk_counts[2])
                 # Floor silk effect: spiders get boost, others get slowed
-                floor_silk_count = simulation.silk_under_red[None]
+                floor_silk_count = silk_counts[3]
                 if beetle_red.horn_type_id == 6:  # Spider
                     red_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
                 else:
@@ -12540,12 +12549,12 @@ try:
                 if beetle_ball.on_ground:
                     # Silk makes ball stickier - reduce friction value (more stopping power)
                     base_friction = physics_params["BALL_ROLLING_FRICTION"]
-                    # GPU SYNC OPTIMIZATION: Only read silk counts if silk exists
+                    # GPU SYNC OPTIMIZATION: Use batched silk counts (already read for beetles)
                     if silk_might_exist:
                         # Each silk ON ball adds 4% friction (stickier ball)
-                        silk_on_friction = 0.04 * simulation.silk_on_ball[None]
+                        silk_on_friction = 0.04 * silk_counts[4]
                         # Each floor silk UNDER ball adds 2% friction (sticky floor)
-                        silk_under_friction = 0.02 * simulation.silk_under_ball[None]
+                        silk_under_friction = 0.02 * silk_counts[5]
                         # Cap total silk friction bonus at 60% (prevents ball from stopping instantly)
                         total_silk_friction = min(0.60, silk_on_friction + silk_under_friction)
                         adjusted_friction = base_friction - total_silk_friction
