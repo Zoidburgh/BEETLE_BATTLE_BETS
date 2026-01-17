@@ -461,11 +461,9 @@ class Camera:
         self.last_mouse_y = None
         self.mouse_captured = False
 
-        # OPTIMIZATION: Cached dynamic light positions (~2-5% speedup)
+        # OPTIMIZATION: Cached key light position (only recalculate on camera rotation)
         self.cached_yaw = None
         self.cached_key_light_pos = None
-        self.cached_fill_light_pos = None
-        self.cached_front_light_pos = (0, 40, 60)  # Default front light position
 
     def get_forward_vector(self):
         """Get forward direction based on yaw and pitch"""
@@ -533,7 +531,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         spotlight_pos: (x, y, z) tuple for spotlight position above beetles (optional)
         spotlight_strength: Intensity of spotlight (default 0.55)
         base_light_brightness: Brightness multiplier for all non-spotlight lights (default 1.0)
-        front_light_strength: Intensity of front camera light (default 0.5)
+        front_light_strength: DEPRECATED - no longer used (kept for API compatibility)
     """
     import math
     import time
@@ -571,65 +569,35 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # Set up camera
     setup_camera(camera, scene)
 
-    # Enhanced multi-point lighting setup with 360° coverage
-    # Apply brightness multiplier to all non-spotlight lights
+    # OPTIMIZED LIGHTING: Reduced from 5-6 point_light calls to 2-3
+    # Each point_light() call has ~15 FPS overhead on integrated GPUs
+    # Removed: fill light, front light. Boosted: ambient for even coverage
     b = base_light_brightness
 
-    # Overhead light - main ambient coverage from above
-    scene.point_light(pos=(0, 100, 0), color=(0.5 * b, 0.52 * b, 0.55 * b))
+    # Main overhead light - centered above arena for even coverage
+    scene.point_light(pos=(0, 120, 0), color=(0.66 * b, 0.65 * b, 0.62 * b))
 
-    # OPTIMIZATION: Key light with caching (~2-5% speedup - only recalculate on camera rotation)
+    # Secondary light - slight offset for depth, but mostly overhead to avoid uneven sides
     if dynamic_lighting:
-        # Camera-relative key light: orbits with camera angle for consistent dramatic lighting
         if camera.yaw != camera.cached_yaw:
-            # Recalculate only when camera rotates
-            key_angle = math.radians(camera.yaw) + math.radians(45)
-            key_distance = 100
-            key_height = 70
-            key_x = math.cos(key_angle) * key_distance
-            key_z = math.sin(key_angle) * key_distance
-            camera.cached_key_light_pos = (key_x, key_height, key_z)
-
-            # Also recalculate fill light at same time
-            fill_angle = math.radians(camera.yaw) + math.radians(-135)
-            fill_x = math.cos(fill_angle) * 90
-            fill_z = math.sin(fill_angle) * 90
-            camera.cached_fill_light_pos = (fill_x, 60, fill_z)
-
-            # Also recalculate front light (in front of camera)
-            front_angle = math.radians(camera.yaw)
-            front_distance = 60
-            front_height = 40
-            front_x = math.cos(front_angle) * front_distance
-            front_z = math.sin(front_angle) * front_distance
-            camera.cached_front_light_pos = (front_x, front_height, front_z)
-
+            # Gentle offset from camera angle (reduced from 100 to 30 distance, higher up)
+            key_angle = math.radians(camera.yaw) + math.radians(30)
+            key_x = math.cos(key_angle) * 30
+            key_z = math.sin(key_angle) * 30
+            camera.cached_key_light_pos = (key_x, 110, key_z)
             camera.cached_yaw = camera.yaw
 
-        scene.point_light(pos=camera.cached_key_light_pos, color=(0.7 * b, 0.65 * b, 0.5 * b))
+        scene.point_light(pos=camera.cached_key_light_pos, color=(0.36 * b, 0.34 * b, 0.30 * b))
     else:
-        scene.point_light(pos=(80, 70, -60), color=(0.7 * b, 0.65 * b, 0.5 * b))
+        scene.point_light(pos=(20, 110, -20), color=(0.36 * b, 0.34 * b, 0.30 * b))
 
-    # OPTIMIZATION: Fill light with caching (uses cached values calculated with key light)
-    if dynamic_lighting:
-        scene.point_light(pos=camera.cached_fill_light_pos, color=(0.35 * b, 0.38 * b, 0.4 * b))
-    else:
-        scene.point_light(pos=(-60, 60, 70), color=(0.35 * b, 0.38 * b, 0.4 * b))
-
-    # Front camera light - illuminates what the camera is looking at
-    if dynamic_lighting and front_light_strength > 0:
-        scene.point_light(pos=camera.cached_front_light_pos, color=(front_light_strength, front_light_strength, front_light_strength * 1.1))
-    elif front_light_strength > 0:
-        # Static front light when dynamic lighting is off
-        scene.point_light(pos=(0, 40, 60), color=(front_light_strength, front_light_strength, front_light_strength * 1.1))
-
-    # Spotlight above beetles - follows the action (NOT affected by brightness multiplier)
+    # Spotlight above beetles - follows the action (conditional, only when needed)
     if spotlight_pos is not None:
         spot_x, spot_y, spot_z = spotlight_pos
         scene.point_light(pos=(spot_x, spot_y, spot_z), color=(spotlight_strength * 1.15, spotlight_strength, spotlight_strength * 0.85))
 
-    # Enhanced ambient light for better overall visibility
-    scene.ambient_light((0.2 * b, 0.21 * b, 0.22 * b))
+    # Ambient light for even base illumination
+    scene.ambient_light((0.26 * b, 0.26 * b, 0.29 * b))
 
     _t5 = time.perf_counter()
 
