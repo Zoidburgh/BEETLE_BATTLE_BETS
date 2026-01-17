@@ -2,8 +2,10 @@ import taichi as ti
 import numpy as np
 import simulation
 
-# Maximum number of voxels to render (increased for dense citadel)
-MAX_VOXELS = 200000
+# Maximum number of voxels to render
+# Reduced from 200000 to minimize CPU->GPU transfer overhead
+# Typical usage: arena ~4000 + 2 beetles ~2400 + particles ~1000 = ~7500
+MAX_VOXELS = 20000
 
 # Particle render caps - prevents high water mark from tanking FPS
 # These cap how many particle slots we CHECK (not just render) to avoid
@@ -26,12 +28,8 @@ voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for 
 VOXEL_RADIUS = 0.37  # Standard voxel size
 DEBRIS_RADIUS = 0.25  # Smaller dust/debris particles
 
-# Projectile rendering (cannonballs)
-num_projectiles_render = ti.field(dtype=ti.i32, shape=())
-projectile_positions = ti.Vector.field(3, dtype=ti.f32, shape=10)  # Max 10 projectiles
-projectile_colors = ti.Vector.field(3, dtype=ti.f32, shape=10)
-
-# Debris is now merged into main voxel buffer with per_vertex_radius for smaller size
+# Projectiles (cannonballs) are now merged into main voxel buffer with larger radius
+# This eliminates a separate scene.particles() call, reducing CPU->GPU sync overhead
 
 # Gradient background (2 triangles forming full-screen quad)
 gradient_positions = ti.Vector.field(2, dtype=ti.f32, shape=6)
@@ -394,21 +392,23 @@ def extract_silk_particles():
 
 @ti.kernel
 def extract_projectiles():
-    """Extract active projectiles from physics simulation (runs on GPU)"""
-    # Count and copy active projectiles to render buffers
-    write_idx = 0
+    """Extract active projectiles and merge into main voxel buffer (runs on GPU)
 
-    # Loop through all projectiles and copy active ones
+    Projectiles are merged into the main voxel buffer with larger radius (0.8)
+    to reduce scene.particles() calls from 2 to 1.
+    """
+    # Projectile radius (larger than voxels for cannonball look)
+    PROJECTILE_RADIUS = 0.8
+
+    # Loop through all projectiles and merge active ones into main voxel buffer
     for idx in range(simulation.MAX_PROJECTILES):
         if simulation.projectile_active[idx] == 1:
-            if write_idx < 10:  # Max 10 projectiles to render
-                projectile_positions[write_idx] = simulation.projectile_pos[idx]
+            write_idx = ti.atomic_add(num_voxels[None], 1)
+            if write_idx < MAX_VOXELS:  # Bounds check
+                voxel_positions[write_idx] = simulation.projectile_pos[idx]
                 # Cannonballs are bright yellow
-                projectile_colors[write_idx] = ti.math.vec3(1.0, 1.0, 0.0)
-                write_idx += 1
-
-    # Set projectile count for rendering
-    num_projectiles_render[None] = write_idx
+                voxel_colors[write_idx] = ti.math.vec3(1.0, 1.0, 0.0)
+                voxel_radii[write_idx] = PROJECTILE_RADIUS
 
 @ti.kernel
 def init_gradient_background():
@@ -547,8 +547,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     _t1 = time.perf_counter()
 
     # Extract voxels from grid (GPU operation)
-    num_voxels[None] = 0  # Reset counters
-    num_projectiles_render[None] = 0
+    num_voxels[None] = 0  # Reset counter
     extract_voxels(voxel_field, n_grid)
 
     _t2 = time.perf_counter()
@@ -634,31 +633,19 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
 
     _t5 = time.perf_counter()
 
-    # Render all voxels + debris in single batched call with per-vertex radius
-    # (debris is appended to voxel buffer with smaller radius for efficiency)
+    # Render ALL particles in single batched call with per-vertex radius
+    # (voxels, debris, spray, silk, and projectiles all merged into one buffer)
     count = num_voxels[None]
     if count > 0:
         scene.particles(
             voxel_positions,
             radius=VOXEL_RADIUS,  # Fallback radius (per_vertex_radius overrides this)
             per_vertex_color=voxel_colors,
-            per_vertex_radius=voxel_radii,  # Mixed sizes: 0.37 for voxels, 0.25 for debris
+            per_vertex_radius=voxel_radii,  # Mixed sizes: 0.37 voxels, 0.25 debris/spray/silk, 0.8 projectiles
             index_count=count
         )
 
     _t6 = time.perf_counter()
-
-    # Render projectiles (cannonballs) - larger, sphere-like
-    projectile_count = num_projectiles_render[None]
-    if projectile_count > 0:
-        scene.particles(
-            projectile_positions,
-            radius=0.8,  # Larger than voxels (cannonball size)
-            per_vertex_color=projectile_colors,
-            index_count=projectile_count
-        )
-
-    _t7 = time.perf_counter()
 
     # === STORE RENDER TIMING FOR ANALYSIS ===
     # Store timing breakdown in module-level dict for access from main loop
@@ -666,11 +653,10 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     _render_timing = {
         'gradient': (_t1 - _t0) * 1000,
         'extract_voxels': (_t2 - _t1) * 1000,
-        'extract_debris': (_t3 - _t2) * 1000,
+        'extract_particles': (_t3 - _t2) * 1000,  # debris + spray + silk
         'extract_projectiles': (_t4 - _t3) * 1000,
         'lighting_setup': (_t5 - _t4) * 1000,
-        'scene_particles': (_t6 - _t5) * 1000,
-        'projectile_particles': (_t7 - _t6) * 1000,
+        'scene_particles': (_t6 - _t5) * 1000,  # Single batched call
         'voxel_count': count,
     }
 

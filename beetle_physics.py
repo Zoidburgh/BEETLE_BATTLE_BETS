@@ -4396,6 +4396,18 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
 
     print(f"Rebuilt red beetle: {len(RED_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
+# ============================================================================
+# GEOMETRY CHANGE SMOOTHING - Reset walk phase to prevent leg jitter
+# ============================================================================
+# When beetle geometry changes, legs would "pop" if mid-stride because the
+# cached leg offsets change but walk_phase continues. Resetting walk_phase
+# to 0 (neutral stance) prevents this jitter with zero performance cost.
+
+def reset_walk_phase_on_geometry_change(beetle):
+    """Reset beetle's walk phase to neutral stance when geometry changes"""
+    beetle.walk_phase = 0.0
+    beetle.prev_walk_phase = 0.0
+
 def generate_stag_pincers(shaft_length, curve_length):
     """Generate stag beetle pincers as L-shaped clubs (horizontal then 90° up)
 
@@ -15209,9 +15221,10 @@ try:
             blue_current_stinger_curvature = beetle_blue.stinger_curvature
             blue_current_tail_rotation = beetle_blue.tail_rotation_angle
 
-        # Rebuild only blue beetle
+        # Rebuild geometry and reset walk phase to prevent leg jitter
         rebuild_blue_beetle(new_blue_shaft, new_blue_prong, front_body_height, new_blue_back_body, new_blue_body_length, new_blue_body_width, new_blue_leg_length, blue_horn_type, blue_current_stinger_curvature, blue_current_tail_rotation)
-        ti.sync()
+        reset_walk_phase_on_geometry_change(beetle_blue)
+
         window.blue_horn_shaft_value = new_blue_shaft
         window.blue_horn_prong_value = new_blue_prong
         window.blue_back_body_height_value = new_blue_back_body
@@ -15301,10 +15314,7 @@ try:
             beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH
             beetle_blue.horn_yaw = 0.0
 
-        # Sync GPU before rebuild to prevent Vulkan device loss during geometry changes
-        ti.sync()
-
-        # Rebuild blue beetle with new horn type
+        # Rebuild blue beetle with new horn type and reset walk phase
         rebuild_blue_beetle(
             window.blue_horn_shaft_value,
             window.blue_horn_prong_value,
@@ -15316,7 +15326,7 @@ try:
             blue_horn_type,
             stinger_curvature=0.0
         )
-        ti.sync()
+        reset_walk_phase_on_geometry_change(beetle_blue)
         # Send config immediately when host changes blue beetle type
         if network_manager and network_manager.connected and network_manager.is_host:
             send_local_beetle_config(network_manager, is_host=True)
@@ -15414,9 +15424,10 @@ try:
             red_current_stinger_curvature = beetle_red.stinger_curvature
             red_current_tail_rotation = beetle_red.tail_rotation_angle
 
-        # Rebuild only red beetle
+        # Rebuild geometry and reset walk phase to prevent leg jitter
         rebuild_red_beetle(new_red_shaft, new_red_prong, front_body_height, new_red_back_body, new_red_body_length, new_red_body_width, new_red_leg_length, red_horn_type, red_current_stinger_curvature, red_current_tail_rotation)
-        ti.sync()
+        reset_walk_phase_on_geometry_change(beetle_red)
+
         window.red_horn_shaft_value = new_red_shaft
         window.red_horn_prong_value = new_red_prong
         window.red_back_body_height_value = new_red_back_body
@@ -15506,10 +15517,7 @@ try:
             beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
             beetle_red.horn_yaw = 0.0
 
-        # Sync GPU before rebuild to prevent Vulkan device loss during geometry changes
-        ti.sync()
-
-        # Rebuild red beetle with new horn type
+        # Rebuild red beetle with new horn type and reset walk phase
         rebuild_red_beetle(
             window.red_horn_shaft_value,
             window.red_horn_prong_value,
@@ -15521,7 +15529,7 @@ try:
             red_horn_type,
             stinger_curvature=0.0
         )
-        ti.sync()
+        reset_walk_phase_on_geometry_change(beetle_red)
         # Send config immediately when guest changes red beetle type
         if network_manager and network_manager.connected and not network_manager.is_host:
             send_local_beetle_config(network_manager, is_host=False)
