@@ -13,6 +13,17 @@ import os
 import sys
 from collections import deque
 
+# Controller support via pygame (works alongside Taichi GGUI)
+# MUST set SDL_VIDEODRIVER before importing pygame - dummy driver for controller-only input
+os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
+import pygame
+try:
+    import pygame._sdl2.controller as sdl_controller
+    CONTROLLER_SUPPORT = True
+except ImportError:
+    CONTROLLER_SUPPORT = False
+    print("[Controller] pygame._sdl2.controller not available - controller support disabled")
+
 # ============================================================================
 # RESOLUTION PRESETS (for 4K monitor performance)
 # ============================================================================
@@ -452,7 +463,88 @@ NETWORK_KEYS = {
     'horn_right': ti.GUI.RIGHT,
 }
 
-def get_local_inputs(window, player='blue', network_mode=False, horn_type_id=0):
+# ============================================================================
+# CONTROLLER SUPPORT
+# ============================================================================
+controllers = []  # List of connected Controller objects
+STICK_DEADZONE = 0.2
+TRIGGER_THRESHOLD = 0.3
+
+def init_controllers():
+    """Initialize pygame controller subsystem. Call once at startup."""
+    if not CONTROLLER_SUPPORT:
+        return
+    pygame.init()
+    sdl_controller.init()
+    _refresh_controllers()
+
+def _refresh_controllers():
+    """Rebuild controller list. Called on startup and device events."""
+    global controllers
+    # Close old controllers
+    for ctrl in controllers:
+        try:
+            ctrl.quit()
+        except:
+            pass
+    controllers = []
+    for i in range(sdl_controller.get_count()):
+        try:
+            ctrl = sdl_controller.Controller(i)
+            controllers.append(ctrl)
+            print(f"[Controller] Found: {ctrl.name} (player {len(controllers)})")
+        except:
+            pass
+    if not controllers:
+        print("[Controller] No controllers detected")
+
+def pump_controller_events():
+    """Call once per frame. Handles hot-plug via events, ~0.01ms overhead."""
+    if not CONTROLLER_SUPPORT:
+        return
+    for event in pygame.event.get():
+        if event.type == pygame.CONTROLLERDEVICEADDED:
+            print("[Controller] Device connected")
+            _refresh_controllers()
+        elif event.type == pygame.CONTROLLERDEVICEREMOVED:
+            print("[Controller] Device disconnected")
+            _refresh_controllers()
+
+def get_controller_inputs(ctrl):
+    """Read controller state and return input bitmask (same format as keyboard)."""
+    if ctrl is None:
+        return 0
+    try:
+        inputs = 0
+        # Left stick Y-axis: Forward/Backward (up = negative)
+        left_y = ctrl.get_axis(sdl_controller.CONTROLLER_AXIS_LEFTY) / 32767.0
+        if left_y < -STICK_DEADZONE:
+            inputs |= INPUT_FORWARD
+        elif left_y > STICK_DEADZONE:
+            inputs |= INPUT_BACKWARD
+        # Right stick X-axis: Turn Left/Right
+        right_x = ctrl.get_axis(sdl_controller.CONTROLLER_AXIS_RIGHTX) / 32767.0
+        if right_x < -STICK_DEADZONE:
+            inputs |= INPUT_LEFT
+        elif right_x > STICK_DEADZONE:
+            inputs |= INPUT_RIGHT
+        # Triggers: Horn Up/Down (0 to 32767)
+        left_trigger = ctrl.get_axis(sdl_controller.CONTROLLER_AXIS_TRIGGERLEFT) / 32767.0
+        right_trigger = ctrl.get_axis(sdl_controller.CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.0
+        if left_trigger > TRIGGER_THRESHOLD:
+            inputs |= INPUT_HORN_DOWN
+        if right_trigger > TRIGGER_THRESHOLD:
+            inputs |= INPUT_HORN_UP
+        # Bumpers: Horn Left/Right
+        if ctrl.get_button(sdl_controller.CONTROLLER_BUTTON_LEFTSHOULDER):
+            inputs |= INPUT_HORN_LEFT
+        if ctrl.get_button(sdl_controller.CONTROLLER_BUTTON_RIGHTSHOULDER):
+            inputs |= INPUT_HORN_RIGHT
+        return inputs
+    except:
+        return 0  # Controller disconnected mid-read
+
+def _get_keyboard_inputs(window, player='blue', network_mode=False, horn_type_id=0):
     """
     Read keyboard inputs and return 8-bit input state.
 
@@ -537,6 +629,26 @@ def get_local_inputs(window, player='blue', network_mode=False, horn_type_id=0):
             inputs |= INPUT_HORN_RIGHT
 
     return inputs
+
+
+def get_local_inputs(window, player='blue', network_mode=False, horn_type_id=0):
+    """Get inputs from controller (if available) combined with keyboard."""
+    # Get keyboard inputs (always works)
+    keyboard_inputs = _get_keyboard_inputs(window, player, network_mode, horn_type_id)
+
+    # Add controller inputs if available
+    controller_inputs = 0
+    if CONTROLLER_SUPPORT and controllers:
+        if network_mode:
+            # Network mode: first controller controls local beetle
+            controller_inputs = get_controller_inputs(controllers[0])
+        elif player == 'blue':
+            controller_inputs = get_controller_inputs(controllers[0])
+        elif player == 'red' and len(controllers) >= 2:
+            controller_inputs = get_controller_inputs(controllers[1])
+
+    # Combine both input sources (allows hybrid play)
+    return keyboard_inputs | controller_inputs
 
 
 class InputBuffer:
@@ -815,6 +927,7 @@ class Beetle:
 
         # Smoothed collision normal for stable contact resolution
         self.contact_normal_x = 0.0  # Filtered collision normal X component
+        self.contact_normal_y = 0.0  # Filtered collision normal Y component (prevents first-contact jump)
         self.contact_normal_z = 0.0  # Filtered collision normal Z component
 
         # Horn control state
@@ -10527,14 +10640,17 @@ def beetle_collision(b1, b2, params):
 
             # Apply exponential moving average to smooth collision normal (reduces jitter)
             # This prevents rapid oscillation when beetles are locked horn-to-horn
+            # Also smooths Y to prevent jarring "jump" on first contact during horn pitch
             b1.contact_normal_x += (instant_normal_x - b1.contact_normal_x) * COLLISION_NORMAL_SMOOTHING
+            b1.contact_normal_y += (instant_normal_y - b1.contact_normal_y) * COLLISION_NORMAL_SMOOTHING
             b1.contact_normal_z += (instant_normal_z - b1.contact_normal_z) * COLLISION_NORMAL_SMOOTHING
             b2.contact_normal_x += (-instant_normal_x - b2.contact_normal_x) * COLLISION_NORMAL_SMOOTHING
+            b2.contact_normal_y += (-instant_normal_y - b2.contact_normal_y) * COLLISION_NORMAL_SMOOTHING
             b2.contact_normal_z += (-instant_normal_z - b2.contact_normal_z) * COLLISION_NORMAL_SMOOTHING
 
-            # Use smoothed horizontal normal for separation forces (keeps vertical instant for horn leverage)
+            # Use smoothed normal for all collision forces (prevents first-contact jump)
             normal_x = b1.contact_normal_x
-            normal_y = instant_normal_y  # Keep instant vertical for responsive horn lift
+            normal_y = b1.contact_normal_y
             normal_z = b1.contact_normal_z
 
             # HORN LEVERAGE: Strong vertical lift when contact is high (horn collision)
@@ -11250,8 +11366,10 @@ def beetle_collision(b1, b2, params):
     else:
         # No collision - reset smoothed collision normals
         b1.contact_normal_x = 0.0
+        b1.contact_normal_y = 0.0
         b1.contact_normal_z = 0.0
         b2.contact_normal_x = 0.0
+        b2.contact_normal_y = 0.0
         b2.contact_normal_z = 0.0
 
 def normalize_angle(angle):
@@ -11335,6 +11453,9 @@ renderer.init_gradient_background()
 
 # OPTIMIZATION: Pre-compute metallic shimmer lookup table (8-12% render speedup)
 renderer.init_shimmer_lut()
+
+# Initialize controller support
+init_controllers()
 
 print("\n=== BEETLE PHYSICS ===")
 print("BLUE BEETLE (TFGH + RY) - Tank Controls:")
@@ -11552,6 +11673,9 @@ try:
   while window.running:
     # === START FRAME TIMING ===
     perf_monitor.start('frame_total')
+
+    # Poll controller events (hot-plug detection, ~0.01ms)
+    pump_controller_events()
 
     current_time = time.time()
     frame_dt = current_time - last_time
