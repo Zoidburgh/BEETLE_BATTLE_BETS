@@ -695,6 +695,12 @@ class InputBuffer:
         self.last_state_sync_frame = 0
         self.state_sync_interval = 30  # Every 30 frames (~500ms)
 
+        # Jitter buffer for handling variable ping (professional netcode technique)
+        self.ping_samples = []  # Last 60 ping samples for percentile calculation
+        self.max_ping_samples = 60  # ~1 second of samples at 60Hz
+        self.last_delay_recalc_time = 0.0  # Real time when we last recalculated delay
+        self.delay_recalc_interval = 5.0  # Recalculate delay every 5 seconds
+
     def add_local(self, inputs):
         """Store local player's inputs for current frame + delay."""
         # Store at current_frame (we'll use it when we reach that frame)
@@ -798,15 +804,77 @@ class InputBuffer:
         self.local_inputs = {k: v for k, v in self.local_inputs.items() if k > cleanup_threshold}
         self.remote_inputs = {k: v for k, v in self.remote_inputs.items() if k > cleanup_threshold}
 
+    def _get_percentile_ping(self, percentile=90):
+        """Get the Nth percentile ping from samples (jitter buffer technique).
+
+        Using 90th percentile instead of average accounts for ping spikes,
+        preventing input drops during momentary latency increases.
+        """
+        if not self.ping_samples:
+            return 60  # Default if no samples yet
+
+        sorted_samples = sorted(self.ping_samples)
+        index = int(len(sorted_samples) * percentile / 100)
+        index = min(index, len(sorted_samples) - 1)
+        return sorted_samples[index]
+
     def set_network_delay(self, ping_ms):
-        """Set input delay based on measured network latency."""
+        """Set input delay based on measured network latency.
+
+        Called at match start to set initial delay.
+        """
+        # Add to samples for jitter buffer
+        self.ping_samples.append(ping_ms)
+        if len(self.ping_samples) > self.max_ping_samples:
+            self.ping_samples.pop(0)
+
         # Convert ping to frames: delay = (ping/2) / 16.67ms per frame
         # Add 1 frame safety margin
         one_way_ms = ping_ms / 2.0
         delay_frames = int(one_way_ms / 16.67) + 1
         # Clamp between 2 and 6 frames (lower max = more responsive, but riskier)
         self.delay = max(2, min(6, delay_frames))
+        self.last_delay_recalc_time = time.time()
         print(f"[InputBuffer] Set delay to {self.delay} frames for {ping_ms:.0f}ms ping")
+
+    def update_ping_sample(self, ping_ms):
+        """Add ping sample and periodically recalculate delay.
+
+        Call this every frame during online play with current ping.
+        Uses jitter buffer (90th percentile) for stable delay calculation.
+        Limits delay changes to ±1 frame to prevent jarring shifts.
+        """
+        # Add sample to rolling buffer
+        self.ping_samples.append(ping_ms)
+        if len(self.ping_samples) > self.max_ping_samples:
+            self.ping_samples.pop(0)
+
+        # Check if it's time to recalculate delay
+        current_time = time.time()
+        if current_time - self.last_delay_recalc_time < self.delay_recalc_interval:
+            return  # Not time yet
+
+        self.last_delay_recalc_time = current_time
+
+        # Use 90th percentile to handle ping spikes
+        percentile_ping = self._get_percentile_ping(90)
+
+        # Calculate target delay
+        one_way_ms = percentile_ping / 2.0
+        target_delay = int(one_way_ms / 16.67) + 1
+        target_delay = max(2, min(6, target_delay))
+
+        # Limit change to ±1 frame per recalculation to prevent jarring shifts
+        if target_delay > self.delay:
+            new_delay = min(self.delay + 1, target_delay)
+        elif target_delay < self.delay:
+            new_delay = max(self.delay - 1, target_delay)
+        else:
+            new_delay = self.delay
+
+        if new_delay != self.delay:
+            print(f"[InputBuffer] Adjusted delay: {self.delay} -> {new_delay} frames (90th percentile ping: {percentile_ping:.0f}ms)")
+            self.delay = new_delay
 
     def reset(self):
         """Reset buffer for new match."""
@@ -818,6 +886,9 @@ class InputBuffer:
         self.remote_frame_received = -1
         self.frames_behind = 0
         self.last_state_sync_frame = 0
+        # Reset jitter buffer state for fresh match
+        self.ping_samples.clear()
+        self.last_delay_recalc_time = time.time()
 
 
 # Global input buffer instance (used by main loop)
@@ -11924,6 +11995,10 @@ try:
             # Send ping periodically for latency measurement
             if physics_frame % 60 == 0:  # Once per second
                 network_manager.send_ping()
+            # Update jitter buffer with current ping (every frame)
+            # This tracks ping samples and periodically recalculates delay
+            if network_manager.ping_ms > 0:
+                input_buffer.update_ping_sample(network_manager.ping_ms)
         except Exception as e:
             print(f"[Network] Error during polling: {e}")
             # Don't crash - just continue, disconnect detection will handle it
@@ -15311,6 +15386,10 @@ try:
                     if network_manager:
                         f.write(f"  ping: {network_manager.ping_ms}ms\n")
                         f.write(f"  input_delay: {input_buffer.delay} frames ({input_buffer.delay * 16.67:.0f}ms)\n")
+                        # Jitter buffer stats
+                        if input_buffer.ping_samples:
+                            p90_ping = input_buffer._get_percentile_ping(90)
+                            f.write(f"  jitter_buffer: {len(input_buffer.ping_samples)} samples, 90th percentile: {p90_ping:.0f}ms\n")
 
                     f.write("\n  Diagnosis:\n")
                     if game_speed < 90:
