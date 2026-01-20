@@ -12041,8 +12041,9 @@ try:
             network_manager.pending_state_sync = None  # Consume it
 
             # Always lerp toward host state - no more snapping
-            # Larger lerp factor for faster convergence since syncing more often
-            lerp_factor = 0.5
+            # Lower lerp factor = smoother corrections (less visible "pops")
+            # 0.15 takes ~20 syncs to fully converge but eliminates jitter
+            lerp_factor = 0.15
             beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
             beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
             beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
@@ -12151,13 +12152,13 @@ try:
 
             # Check if we can simulate (have both players' inputs)
             if not input_buffer.can_simulate():
-                # Waiting for opponent - don't simulate, don't advance frame
-                # Drain accumulator to prevent catch-up skipping when inputs arrive
-                # But keep last known inputs for animation (dust particles, etc.)
+                # Waiting for opponent - don't simulate this step
+                # DON'T drain accumulator - let it fill up for smooth catch-up later
+                # This prevents the "spikey" stop-start pattern that causes choppy gameplay
                 network_stalled = True
                 network_stats['accumulator_drains'] += 1  # Track for perf diagnostics
-                accumulator = 0
-                break
+                # OLD: accumulator = 0  ← caused spikey feel by stopping physics cold
+                break  # Just break, accumulator keeps its value for gradual catch-up
 
             # === GUEST FRAME ADJUSTMENT (keep frame counter aligned with host) ===
             if not network_manager.is_host and network_manager.target_frame is not None:
