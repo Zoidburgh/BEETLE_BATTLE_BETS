@@ -250,14 +250,19 @@ class NetworkManager:
             print(f"[Network] Failed to create lobby: {e}")
             return False
 
-    def _on_lobby_created(self, lobby_id):
+    def _on_lobby_created(self, *args):
         """Callback when lobby is created."""
+        print(f"[Network] _on_lobby_created callback fired with args: {args}")
+
+        # Handle different possible callback signatures
+        lobby_id = args[0] if len(args) >= 1 else None
+
         if lobby_id:
             self.lobby_id = lobby_id
             self.in_lobby = True
             print(f"[Network] Lobby created! ID: {lobby_id}")
         else:
-            print(f"[Network] Lobby creation failed")
+            print(f"[Network] Lobby creation failed - no lobby_id in args")
             self.is_host = False
 
     def join_lobby(self, lobby_id):

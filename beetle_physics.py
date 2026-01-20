@@ -11,6 +11,7 @@ import math
 import random
 import os
 import sys
+import atexit
 from collections import deque
 
 # Controller support via pygame (works alongside Taichi GGUI)
@@ -832,8 +833,8 @@ class InputBuffer:
         # Add 1 frame safety margin
         one_way_ms = ping_ms / 2.0
         delay_frames = int(one_way_ms / 16.67) + 1
-        # Clamp between 2 and 6 frames (lower max = more responsive, but riskier)
-        self.delay = max(2, min(6, delay_frames))
+        # Clamp between 2 and 8 frames (higher max handles up to ~250ms ping)
+        self.delay = max(2, min(8, delay_frames))
         self.last_delay_recalc_time = time.time()
         print(f"[InputBuffer] Set delay to {self.delay} frames for {ping_ms:.0f}ms ping")
 
@@ -862,7 +863,7 @@ class InputBuffer:
         # Calculate target delay
         one_way_ms = percentile_ping / 2.0
         target_delay = int(one_way_ms / 16.67) + 1
-        target_delay = max(2, min(6, target_delay))
+        target_delay = max(2, min(8, target_delay))
 
         # Limit change to ±1 frame per recalculation to prevent jarring shifts
         if target_delay > self.delay:
@@ -902,6 +903,24 @@ game_state = GAME_STATE_LOCAL_PLAY  # Start in local play mode (preserves curren
 local_player_id = 0             # 0 = blue/host, 1 = red/guest
 lobby_id_input = ""             # Text input for joining lobby by ID
 network_error_msg = ""          # Error message to display
+
+def cleanup_network():
+    """Clean up network resources on exit to prevent orphaned Steam sockets."""
+    global network_manager
+    if network_manager is not None:
+        print("[Network] Cleaning up on exit...")
+        try:
+            # Send disconnect message to peer if connected
+            if network_manager.connected:
+                network_manager.send_disconnect()
+            network_manager.shutdown()
+        except Exception as e:
+            print(f"[Network] Cleanup error (ignorable): {e}")
+        network_manager = None
+        print("[Network] Cleanup complete")
+
+# Register cleanup to run on exit (prevents orphaned Steam sockets)
+atexit.register(cleanup_network)
 
 # Edge tipping constants
 EDGE_TIPPING_STRENGTH = 0.45  # Force multiplier per over-edge voxel
@@ -15029,7 +15048,7 @@ try:
                 game_state = GAME_STATE_LOBBY_HOST
                 network_manager = NetworkManager()
                 if network_manager.init():
-                    network_manager.create_lobby("friends", 2)  # Friends can see "Join Game" on your profile
+                    network_manager.create_lobby("public", 2)  # Public lobby (friends-only may fail with test app ID)
                     network_error_msg = ""
                 else:
                     network_error_msg = "Failed to init Steam"
