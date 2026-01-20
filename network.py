@@ -168,12 +168,12 @@ class NetworkManager:
         self.pending_reconnect_state = None  # Guest: full state from host
         self.pending_disconnect = False  # Opponent gracefully leaving
 
-    def init(self, app_id=480):
+    def init(self, app_id=3998620):
         """
         Initialize Steam networking.
 
         Args:
-            app_id: Steam App ID (480 for testing, 3998620 for release)
+            app_id: Steam App ID (3998620 for Beetle Battle Bros)
 
         Returns:
             True if successful
