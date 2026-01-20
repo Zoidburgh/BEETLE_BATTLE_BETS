@@ -4295,6 +4295,7 @@ for leg_id, leg_tip_voxels in enumerate(RED_LEG_TIPS):
 def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild blue beetle geometry cache with new horn, body, and leg parameters"""
     global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS
+    global spray_aim_blue, spider_aim_blue
 
     # Generate new geometry
     BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
@@ -4398,12 +4399,26 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
     # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
     beetle_blue.body_pitch_offset = 0.0
 
+    # Reset horn state to neutral (prevents carrying over from previous beetle type)
+    beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
+    beetle_blue.horn_yaw = 0.0
+    beetle_blue.horn_pitch_velocity = 0.0
+    beetle_blue.horn_yaw_velocity = 0.0
+    beetle_blue.horn_pitch_damping = 0.0
+    beetle_blue.horn_yaw_damping = 0.0
+
+    # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
+    spider_aim_blue = 0.0
+    spray_aim_blue = 0.0
+    beetle_blue.tail_rotation_angle = 20.0  # Tail rests at max up position
+
     print(f"Rebuilt blue beetle: {len(BLUE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
 # Function to rebuild red beetle geometry with new parameters
 def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild red beetle geometry cache with new horn, body, and leg parameters"""
     global RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS
+    global spray_aim_red, spider_aim_red
 
     # Generate new geometry
     RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
@@ -4506,6 +4521,19 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
 
     # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
     beetle_red.body_pitch_offset = 0.0
+
+    # Reset horn state to neutral (prevents carrying over from previous beetle type)
+    beetle_red.horn_pitch = HORN_DEFAULT_PITCH
+    beetle_red.horn_yaw = 0.0
+    beetle_red.horn_pitch_velocity = 0.0
+    beetle_red.horn_yaw_velocity = 0.0
+    beetle_red.horn_pitch_damping = 0.0
+    beetle_red.horn_yaw_damping = 0.0
+
+    # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
+    spider_aim_red = 0.0
+    spray_aim_red = 0.0
+    beetle_red.tail_rotation_angle = 20.0  # Tail rests at max up position
 
     print(f"Rebuilt red beetle: {len(RED_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
@@ -11984,6 +12012,14 @@ try:
 
     MAX_PHYSICS_STEPS_PER_FRAME = 4  # Cap catch-up to prevent freeze during lag spikes
 
+    # GPU SYNC OPTIMIZATION: Fetch silk counts ONCE per frame, BEFORE physics loop
+    # This prevents GPU sync stalls on every physics iteration during network catch-up frames
+    # Indices: 0=on_blue, 1=under_blue, 2=on_red, 3=under_red, 4=on_ball, 5=under_ball
+    silk_counts = None
+    if silk_might_exist:
+        simulation.batch_silk_counts()
+        silk_counts = simulation.silk_counts_batched.to_numpy()
+
     while accumulator >= PHYSICS_TIMESTEP:
         # Cap physics iterations to prevent freeze when many frames need catch-up
         if physics_iterations_this_frame >= MAX_PHYSICS_STEPS_PER_FRAME:
@@ -12058,13 +12094,7 @@ try:
         # === INPUT/CONTROLS TIMING START ===
         _t_input_start = time.perf_counter()
 
-        # GPU SYNC OPTIMIZATION: Batch all silk counts into single GPU->CPU transfer
-        # Do this once per frame, before any beetle reads, to avoid 6 separate GPU reads
-        # Indices: 0=on_blue, 1=under_blue, 2=on_red, 3=under_red, 4=on_ball, 5=under_ball
-        silk_counts = None
-        if silk_might_exist:
-            simulation.batch_silk_counts()
-            silk_counts = simulation.silk_counts_batched.to_numpy()
+        # NOTE: silk_counts fetched ONCE per frame before physics loop (GPU sync optimization)
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
         if beetle_blue.active and not beetle_blue.is_falling:
@@ -12085,8 +12115,8 @@ try:
 
             # Movement controls (T/G) - move in facing direction
             # Silk slowdown: 1% slower per silk particle attached to body
-            # GPU SYNC OPTIMIZATION: Use batched silk counts (read once at frame start)
-            if silk_might_exist:
+            # silk_counts fetched once per frame before physics loop (GPU sync optimization)
+            if silk_might_exist and silk_counts is not None:
                 blue_silk_slowdown = max(0.0, 1.0 - 0.01 * silk_counts[0])
                 # Floor silk effect: spiders get boost, others get slowed
                 floor_silk_count = silk_counts[1]
@@ -12371,8 +12401,8 @@ try:
 
             # Movement controls (I/K) - move in facing direction
             # Silk slowdown: 1% slower per silk particle attached to body
-            # GPU SYNC OPTIMIZATION: Use batched silk counts (already read for blue beetle)
-            if silk_might_exist:
+            # silk_counts fetched once per frame before physics loop (GPU sync optimization)
+            if silk_might_exist and silk_counts is not None:
                 red_silk_slowdown = max(0.0, 1.0 - 0.01 * silk_counts[2])
                 # Floor silk effect: spiders get boost, others get slowed
                 floor_silk_count = silk_counts[3]
@@ -12673,8 +12703,8 @@ try:
                 if beetle_ball.on_ground:
                     # Silk makes ball stickier - reduce friction value (more stopping power)
                     base_friction = physics_params["BALL_ROLLING_FRICTION"]
-                    # GPU SYNC OPTIMIZATION: Use batched silk counts (already read for beetles)
-                    if silk_might_exist:
+                    # silk_counts fetched once per frame before physics loop (GPU sync optimization)
+                    if silk_might_exist and silk_counts is not None:
                         # Each silk ON ball adds 4% friction (stickier ball)
                         silk_on_friction = 0.04 * silk_counts[4]
                         # Each floor silk UNDER ball adds 2% friction (sticky floor)
