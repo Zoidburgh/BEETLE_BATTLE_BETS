@@ -804,8 +804,8 @@ class InputBuffer:
         # Add 1 frame safety margin
         one_way_ms = ping_ms / 2.0
         delay_frames = int(one_way_ms / 16.67) + 1
-        # Clamp between 2 and 8 frames
-        self.delay = max(2, min(8, delay_frames))
+        # Clamp between 2 and 6 frames (lower max = more responsive, but riskier)
+        self.delay = max(2, min(6, delay_frames))
         print(f"[InputBuffer] Set delay to {self.delay} frames for {ping_ms:.0f}ms ping")
 
     def reset(self):
@@ -11578,6 +11578,25 @@ horn_type = blue_horn_type  # Temporary compatibility alias (points to blue beet
 
 physics_frame = 0  # Frame counter for periodic cleanup
 
+# Network performance tracking (for diagnosing "slow motion" feel in online play)
+network_stats = {
+    'session_start_time': 0.0,      # Real time when online play started
+    'total_physics_frames': 0,       # Physics frames simulated this session
+    'accumulator_drains': 0,         # Times we zeroed accumulator waiting for opponent
+    'total_render_frames': 0,        # Render frames this session (for physics/render ratio)
+    'last_frame_diff': 0,            # Last known frame diff (host vs guest)
+    'total_wait_time_ms': 0.0,       # Estimated time spent waiting for opponent
+}
+
+def reset_network_stats():
+    """Reset network stats when starting online play."""
+    network_stats['session_start_time'] = time.time()
+    network_stats['total_physics_frames'] = 0
+    network_stats['accumulator_drains'] = 0
+    network_stats['total_render_frames'] = 0
+    network_stats['last_frame_diff'] = 0
+    network_stats['total_wait_time_ms'] = 0.0
+
 # Per-beetle animation state for scorpion tail
 blue_previous_stinger_curvature = 0.0  # Track blue beetle stinger curvature
 blue_previous_tail_rotation = 0.0      # Track blue beetle tail rotation
@@ -11704,6 +11723,10 @@ try:
 
     # Poll controller events (hot-plug detection, ~0.01ms)
     pump_controller_events()
+
+    # Track render frames for network performance diagnostics
+    if game_state == GAME_STATE_ONLINE_PLAY:
+        network_stats['total_render_frames'] += 1
 
     current_time = time.time()
     frame_dt = current_time - last_time
@@ -12038,6 +12061,7 @@ try:
                 # Drain accumulator to prevent catch-up skipping when inputs arrive
                 # But keep last known inputs for animation (dust particles, etc.)
                 network_stalled = True
+                network_stats['accumulator_drains'] += 1  # Track for perf diagnostics
                 accumulator = 0
                 break
 
@@ -12064,6 +12088,7 @@ try:
             if input_buffer.current_frame - input_buffer.debug_last_report >= 120:
                 role = "HOST" if network_manager.is_host else "GUEST"
                 frame_diff = input_buffer.remote_frame_received - input_buffer.current_frame
+                network_stats['last_frame_diff'] = frame_diff  # Track for perf log
                 wait_pct = (input_buffer.debug_wait_count / max(1, input_buffer.debug_total_frames + input_buffer.debug_wait_count)) * 100
                 predict_pct = (input_buffer.debug_predict_count / max(1, input_buffer.debug_total_frames)) * 100
                 print(f"[{role}] Frame:{input_buffer.current_frame} RemoteFrame:{input_buffer.remote_frame_received} Diff:{frame_diff:+d} | Waits:{input_buffer.debug_wait_count} ({wait_pct:.1f}%) Predicts:{input_buffer.debug_predict_count} ({predict_pct:.1f}%)")
@@ -13714,6 +13739,10 @@ try:
         input_buffer.advance_frame()  # Keep input buffer in sync
         physics_iterations_this_frame += 1
 
+        # Track physics frames for network performance diagnostics
+        if game_state == GAME_STATE_ONLINE_PLAY:
+            network_stats['total_physics_frames'] += 1
+
     # ===== END FIXED TIMESTEP PHYSICS LOOP =====
     perf_monitor.stop('physics')
 
@@ -15092,6 +15121,7 @@ try:
             # Check if sync is complete
             if network_manager and network_manager.is_ready_to_simulate():
                 game_state = GAME_STATE_ONLINE_PLAY
+                reset_network_stats()  # Start tracking network performance
                 print(f"[Game] Sync complete! Starting simulation.")
 
             if window.GUI.button("Cancel"):
@@ -15261,6 +15291,35 @@ try:
                     f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
                     f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")
                     f.write(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms\n")
+
+                # Network stats (only shown when in online play or after online session)
+                if game_state == GAME_STATE_ONLINE_PLAY or network_stats['total_render_frames'] > 0:
+                    f.write("\n--- Network Stats ---\n")
+                    elapsed = time.time() - network_stats['session_start_time'] if network_stats['session_start_time'] > 0 else 1
+                    expected_physics = elapsed * 60  # 60 physics frames per second expected
+                    actual_physics = network_stats['total_physics_frames']
+                    game_speed = (actual_physics / expected_physics * 100) if expected_physics > 0 else 100
+                    physics_per_render = actual_physics / max(1, network_stats['total_render_frames'])
+
+                    f.write(f"  session_time: {elapsed:.1f}s\n")
+                    f.write(f"  game_speed: {game_speed:.1f}% (100% = real-time)\n")
+                    f.write(f"  physics_frames: {actual_physics} (expected: {int(expected_physics)})\n")
+                    f.write(f"  render_frames: {network_stats['total_render_frames']}\n")
+                    f.write(f"  physics_per_render: {physics_per_render:.2f} (should be ~1.0)\n")
+                    f.write(f"  accumulator_drains: {network_stats['accumulator_drains']} (waits for opponent)\n")
+                    f.write(f"  frame_diff: {network_stats['last_frame_diff']:+d} (host vs guest sync)\n")
+                    if network_manager:
+                        f.write(f"  ping: {network_manager.ping_ms}ms\n")
+                        f.write(f"  input_delay: {input_buffer.delay} frames ({input_buffer.delay * 16.67:.0f}ms)\n")
+
+                    f.write("\n  Diagnosis:\n")
+                    if game_speed < 90:
+                        f.write(f"    WARNING: Game running at {game_speed:.0f}% speed!\n")
+                        if network_stats['accumulator_drains'] > network_stats['total_render_frames'] * 0.1:
+                            f.write(f"    CAUSE: Waiting for opponent inputs ({network_stats['accumulator_drains']} drains)\n")
+                            f.write("    FIX: Check opponent's connection, reduce input_delay, or increase buffer\n")
+                    else:
+                        f.write("    Game speed OK\n")
 
                 f.write("\n--- Notes ---\n")
                 f.write("scene_particles is the main bottleneck indicator:\n")
