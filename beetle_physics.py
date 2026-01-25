@@ -1214,7 +1214,7 @@ class Beetle:
             # Apply different speed caps based on direction (use tunable params)
             # Spider has lower base speed, Scorpion is medium
             if self.horn_type_id == 6:  # Spider
-                base_forward = 6.5
+                base_forward = 8.0
                 base_backward = 6.0
             elif self.horn_type_id == 3:  # Scorpion
                 base_forward = 9.0
