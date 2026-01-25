@@ -1314,7 +1314,7 @@ def reset_match():
     global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
-    global opponent_disconnected, disconnect_timer, reconnect_banner_timer
+    global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
     global blue_score, red_score
 
     # Sync GPU to ensure any pending operations complete before reset
@@ -1342,6 +1342,7 @@ def reset_match():
 
     # Reset network disconnect state
     opponent_disconnected = False
+    opponent_left_gracefully = False
     disconnect_timer = 0.0
     reconnect_banner_timer = 0.0
 
@@ -1589,6 +1590,7 @@ ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
 
 # Network disconnect state
 opponent_disconnected = False  # True when opponent stops sending inputs
+opponent_left_gracefully = False  # True when opponent clicked Disconnect (vs timeout)
 disconnect_timer = 0.0  # How long opponent has been disconnected
 reconnect_banner_timer = 0.0  # Timer for "Reconnected!" banner display
 
@@ -12178,14 +12180,22 @@ try:
                     print("Ball disabled via state sync")
                 beetle_ball.active = sync['ball_active']
 
-        # === SIMPLE DISCONNECT DETECTION ===
-        # If opponent hasn't sent inputs for 3 seconds, show "return to menu" option
-        if input_buffer.frames_waited > 180:  # 3 seconds at 60fps
+        # === DISCONNECT DETECTION ===
+        # Check for graceful disconnect first (opponent clicked Disconnect button)
+        if network_manager and network_manager.pending_disconnect:
             if not opponent_disconnected:
                 opponent_disconnected = True
-                print("[Network] Opponent not responding...")
-        elif input_buffer.frames_waited == 0 and opponent_disconnected:
-            # They're back!
+                opponent_left_gracefully = True
+                print("[Network] Opponent left the game")
+            network_manager.pending_disconnect = False  # Consume the flag
+        # Fallback: If opponent hasn't sent inputs for 3 seconds, connection lost
+        elif input_buffer.frames_waited > 180:  # 3 seconds at 60fps
+            if not opponent_disconnected:
+                opponent_disconnected = True
+                opponent_left_gracefully = False
+                print("[Network] Connection lost...")
+        elif input_buffer.frames_waited == 0 and opponent_disconnected and not opponent_left_gracefully:
+            # They're back! (only possible for timeout, not graceful leave)
             opponent_disconnected = False
             print("[Network] Opponent reconnected!")
 
@@ -15323,7 +15333,10 @@ try:
 
             # Show disconnect status
             if opponent_disconnected:
-                window.GUI.text("OPPONENT NOT RESPONDING")
+                if opponent_left_gracefully:
+                    window.GUI.text("OPPONENT LEFT THE GAME")
+                else:
+                    window.GUI.text("CONNECTION LOST")
                 if window.GUI.button("Return to Menu"):
                     # Clean up and go back to local play
                     if network_manager:
@@ -15338,6 +15351,7 @@ try:
                     input_buffer.delay = 0
                     input_buffer.reset()
                     opponent_disconnected = False
+                    opponent_left_gracefully = False
             elif input_buffer.waiting_for_remote:
                 window.GUI.text(f"Waiting... ({input_buffer.frames_waited:4d} frames)")
             else:
@@ -15358,6 +15372,7 @@ try:
                 input_buffer.delay = 0
                 input_buffer.reset()
                 opponent_disconnected = False
+                opponent_left_gracefully = False
                 disconnect_timer = 0.0
                 reconnect_banner_timer = 0.0
 
