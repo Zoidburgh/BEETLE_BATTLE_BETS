@@ -13225,6 +13225,11 @@ try:
                         # Start respawn timer
                         if g['blue_respawn_timer'] <= 0:
                             g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                        # Trigger winner celebration (confetti + flash) for beetle death
+                        if not red_celebrating:
+                            red_celebrating = True
+                            if not beetle_ball.active:
+                                red_pulse_timer = 0.001  # Start red's celebration
                     # Set score animation
                     g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY
                     g['red_score_pending'] = True
@@ -13251,6 +13256,11 @@ try:
                         # Start respawn timer
                         if g['red_respawn_timer'] <= 0:
                             g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                        # Trigger winner celebration (confetti + flash) for beetle death
+                        if not blue_celebrating:
+                            blue_celebrating = True
+                            if not beetle_ball.active:
+                                blue_pulse_timer = 0.001  # Start blue's celebration
                     # Set score animation
                     g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY
                     g['blue_score_pending'] = True
