@@ -662,12 +662,12 @@ class InputBuffer:
     - Frame synchronization: Both clients process same inputs at same frame
 
     For local play, delay can be set to 0.
-    For network play, delay is set based on ping (typically 3-6 frames).
+    For network play, delay is fixed at 8 frames (~133ms at 60Hz).
     """
 
-    # Input delay in frames (adjusted based on network latency)
-    # 3 frames = ~50ms at 60Hz - more responsive
-    NETWORK_INPUT_DELAY = 3
+    # Input delay in frames - fixed for consistent sync between clients
+    # 8 frames = ~133ms at 60Hz - covers most connections without desyncs
+    NETWORK_INPUT_DELAY = 8
 
     def __init__(self, delay_frames=0):
         self.delay = delay_frames
@@ -12014,10 +12014,8 @@ try:
             # Send ping periodically for latency measurement
             if physics_frame % 60 == 0:  # Once per second
                 network_manager.send_ping()
-            # Update jitter buffer with current ping (every frame)
-            # This tracks ping samples and periodically recalculates delay
-            if network_manager.ping_ms > 0:
-                input_buffer.update_ping_sample(network_manager.ping_ms)
+            # Note: Using fixed 8 frame delay now instead of dynamic adjustment
+            # Ping is still tracked for display/diagnostics but doesn't affect delay
         except Exception as e:
             print(f"[Network] Error during polling: {e}")
             # Don't crash - just continue, disconnect detection will handle it
@@ -12041,9 +12039,8 @@ try:
             network_manager.pending_state_sync = None  # Consume it
 
             # Always lerp toward host state - no more snapping
-            # Lower lerp factor = smoother corrections (less visible "pops")
-            # 0.15 takes ~20 syncs to fully converge but eliminates jitter
-            lerp_factor = 0.15
+            # Larger lerp factor for faster convergence since syncing more often
+            lerp_factor = 0.5
             beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
             beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
             beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
@@ -12152,13 +12149,13 @@ try:
 
             # Check if we can simulate (have both players' inputs)
             if not input_buffer.can_simulate():
-                # Waiting for opponent - don't simulate this step
-                # DON'T drain accumulator - let it fill up for smooth catch-up later
-                # This prevents the "spikey" stop-start pattern that causes choppy gameplay
+                # Waiting for opponent - don't simulate, don't advance frame
+                # Drain accumulator to prevent catch-up skipping when inputs arrive
+                # But keep last known inputs for animation (dust particles, etc.)
                 network_stalled = True
                 network_stats['accumulator_drains'] += 1  # Track for perf diagnostics
-                # OLD: accumulator = 0  ← caused spikey feel by stopping physics cold
-                break  # Just break, accumulator keeps its value for gradual catch-up
+                accumulator = 0
+                break
 
             # === GUEST FRAME ADJUSTMENT (keep frame counter aligned with host) ===
             if not network_manager.is_host and network_manager.target_frame is not None:
@@ -15095,15 +15092,14 @@ try:
                     # Go to syncing state - wait for guest to confirm ready
                     game_state = GAME_STATE_SYNCING
                     input_buffer.is_network_mode = True
-                    # Set delay based on measured ping (defaults to 4 if no ping yet)
-                    ping = network_manager.ping_ms if network_manager.ping_ms > 0 else 60
-                    input_buffer.set_network_delay(ping)
+                    # Fixed 8 frame delay for consistent sync between host and guest
+                    input_buffer.delay = 8
                     input_buffer.local_player_id = 0  # Host is blue
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
                     network_manager.start_match_now()  # Send START signal to guest
                     reset_match()
-                    print(f"[Game] Host sent START, waiting for guest sync... Ping: {ping}ms")
+                    print(f"[Game] Host sent START, waiting for guest sync... Delay: 8 frames")
 
             if window.GUI.button("Cancel"):
                 if network_manager:
@@ -15189,16 +15185,15 @@ try:
                 # Go to syncing state and send SYNC_READY to host
                 game_state = GAME_STATE_SYNCING
                 input_buffer.is_network_mode = True
-                # Set delay based on measured ping (defaults to 4 if no ping yet)
-                ping = network_manager.ping_ms if network_manager.ping_ms > 0 else 60
-                input_buffer.set_network_delay(ping)
+                # Fixed 8 frame delay for consistent sync between host and guest
+                input_buffer.delay = 8
                 input_buffer.local_player_id = 1  # Guest is red
                 input_buffer.reset()
                 local_player_id = 1  # Guest is red
                 reset_match()
                 # Tell host we're ready to sync
                 network_manager.send_sync_ready()
-                print(f"[Game] Guest received START, sent SYNC_READY. Ping: {ping}ms, Delay: {input_buffer.delay} frames")
+                print(f"[Game] Guest received START, sent SYNC_READY. Delay: 8 frames")
 
             if window.GUI.button("Leave"):
                 if network_manager:
