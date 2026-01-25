@@ -1315,9 +1315,14 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, disconnect_timer, reconnect_banner_timer
+    global blue_score, red_score
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
+
+    # Reset scores for new match (ensures host and guest start at 0-0)
+    blue_score = 0
+    red_score = 0
 
     # Reset input buffer and physics frame for new match (important for network sync)
     input_buffer.reset()
