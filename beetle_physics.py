@@ -971,7 +971,10 @@ BALL_TORQUE_STRENGTH = 8.0  # How much ball spins from side hits (0.0-10.0)
 BALL_GRAVITY_MULTIPLIER = 1.8  # Extra gravity for ball (multiplier, 1.0-5.0)
 
 # Bowl perimeter physics (ball mode)
-BOWL_SLIDE_STRENGTH = 1.2  # Inward push force on slippery surface (0.0-2.0)
+BOWL_SLIDE_STRENGTH = 1.5  # Base inward push force on slippery surface
+BOWL_SLIDE_EXPONENT = 2.5  # Exponential scaling (higher = stronger at far edges)
+BOWL_VELOCITY_DAMPEN = 0.85  # Dampen outward velocity on ice (0.0=full stop, 1.0=no effect)
+BOWL_MAX_DISTANCE = 12.0  # Max distance beyond arena edge before hard cap
 
 # Beetle state with physics
 class Beetle:
@@ -5198,7 +5201,12 @@ def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
 
 
 def apply_bowl_slide(entity, params):
-    """Push entity toward arena center if on slippery bowl perimeter"""
+    """Push entity toward arena center if on slippery bowl perimeter.
+
+    Uses exponential force scaling - gentle near arena, very strong at far edges.
+    Also dampens outward velocity to prevent escape.
+    Works on grounded and airborne entities.
+    """
     dist_from_center = math.sqrt(entity.x**2 + entity.z**2)
     if dist_from_center > ARENA_RADIUS:
         # Check if in goal pit area (no ice there, so no slide)
@@ -5208,22 +5216,53 @@ def apply_bowl_slide(entity, params):
         if in_goal_pit:
             return  # No slide in goal pit areas
 
-        # On the bowl - apply direct position slide (can't be resisted)
-        slide_strength = params["BOWL_SLIDE_STRENGTH"]
+        # On the bowl - apply exponential inward force
+        slide_strength = params.get("BOWL_SLIDE_STRENGTH", BOWL_SLIDE_STRENGTH)
         dist_into_bowl = dist_from_center - ARENA_RADIUS
-        # Scale force by how far into the bowl (stronger at edges)
-        force_multiplier = 1.0 + dist_into_bowl * 0.2
+
+        # Exponential force scaling - gentle near edge, very strong far out
+        # normalized_dist goes from 0 (at arena edge) to 1 (at max distance)
+        normalized_dist = min(dist_into_bowl / BOWL_MAX_DISTANCE, 1.0)
+        force_multiplier = (normalized_dist ** BOWL_SLIDE_EXPONENT) * 10.0 + 1.0
+
         # Direction toward center (normalized)
         if dist_from_center > 0.01:  # Avoid division by zero
             dir_x = -entity.x / dist_from_center
             dir_z = -entity.z / dist_from_center
-            # Direct position slide (smooth, constant pull toward center)
+
+            # Calculate outward velocity component
+            outward_vel = -(entity.vx * dir_x + entity.vz * dir_z)  # Positive = moving outward
+
+            # Dampen outward velocity (stronger dampening further out)
+            if outward_vel > 0:
+                dampen = BOWL_VELOCITY_DAMPEN ** (1.0 + normalized_dist * 2.0)
+                # Remove the outward component and add back dampened version
+                entity.vx += dir_x * outward_vel * (1.0 - dampen)
+                entity.vz += dir_z * outward_vel * (1.0 - dampen)
+
+            # Direct position slide (exponentially stronger at edges)
             slide_amount = slide_strength * force_multiplier * 0.05
             entity.x += dir_x * slide_amount
             entity.z += dir_z * slide_amount
             # Also update prev position to avoid jitter
             entity.prev_x += dir_x * slide_amount
             entity.prev_z += dir_z * slide_amount
+
+        # Hard cap - can't go beyond max distance
+        if dist_into_bowl > BOWL_MAX_DISTANCE:
+            cap_dist = ARENA_RADIUS + BOWL_MAX_DISTANCE
+            entity.x = (entity.x / dist_from_center) * cap_dist
+            entity.z = (entity.z / dist_from_center) * cap_dist
+            entity.prev_x = entity.x
+            entity.prev_z = entity.z
+            # Kill outward velocity completely at hard cap
+            if dist_from_center > 0.01:
+                dir_x = -entity.x / dist_from_center
+                dir_z = -entity.z / dist_from_center
+                outward_vel = -(entity.vx * dir_x + entity.vz * dir_z)
+                if outward_vel > 0:
+                    entity.vx += dir_x * outward_vel
+                    entity.vz += dir_z * outward_vel
 
 
 def apply_bowl_tilt(beetle):
@@ -11649,7 +11688,10 @@ physics_params = {
     "BALL_GRAVITY_MULTIPLIER": BALL_GRAVITY_MULTIPLIER,  # Extra gravity for ball (1.0-5.0)
 
     # Bowl perimeter physics (ball mode)
-    "BOWL_SLIDE_STRENGTH": BOWL_SLIDE_STRENGTH,  # Inward push force on slippery surface
+    "BOWL_SLIDE_STRENGTH": BOWL_SLIDE_STRENGTH,  # Base inward push force on slippery surface
+    "BOWL_SLIDE_EXPONENT": BOWL_SLIDE_EXPONENT,  # Exponential scaling (higher = stronger at far edges)
+    "BOWL_VELOCITY_DAMPEN": BOWL_VELOCITY_DAMPEN,  # Dampen outward velocity (0=full stop, 1=no effect)
+    "BOWL_MAX_DISTANCE": BOWL_MAX_DISTANCE,  # Max distance beyond arena edge before hard cap
 
     # Camera parameters (for auto-follow mode)
     "CAMERA_PITCH": -30.85,  # Camera pitch angle (-90=top-down, -45=side view, -30.85=default)
