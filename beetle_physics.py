@@ -971,7 +971,7 @@ BALL_TORQUE_STRENGTH = 8.0  # How much ball spins from side hits (0.0-10.0)
 BALL_GRAVITY_MULTIPLIER = 1.8  # Extra gravity for ball (multiplier, 1.0-5.0)
 
 # Bowl perimeter physics (ball mode)
-BOWL_SLIDE_STRENGTH = 1.5  # Base inward push force on slippery surface
+BOWL_SLIDE_STRENGTH = 1.0  # Base inward push force on slippery surface
 BOWL_SLIDE_EXPONENT = 2.5  # Exponential scaling (higher = stronger at far edges)
 BOWL_VELOCITY_DAMPEN = 0.85  # Dampen outward velocity on ice (0.0=full stop, 1.0=no effect)
 BOWL_MAX_DISTANCE = 12.0  # Max distance beyond arena edge before hard cap
