@@ -7038,12 +7038,28 @@ beetle_red.horn_length = initial_horn_length
 
 def calculate_horn_tip_position(beetle):
     """Calculate world position of horn tip using exact voxel placement transform chain"""
-    # Spider has fixed fangs - no rotation, simple calculation
+    # Spider - use front of prosoma/fangs for collision (wider coverage than just fang tips)
     if beetle.horn_type == "spider":
-        # Fangs extend from dx=8 to dx=11 (length 4), fixed position
-        tip_local_x = 12.0  # dx=8 + fang_length(4) = 12
-        tip_local_y = 0.0   # Fangs angle down
-        tip_local_z = 0.0   # Center between fangs
+        # Prosoma extends to dx=7, fangs to dx=11
+        # Use dx=11 for tip with Y at prosoma height for better collision coverage
+        tip_local_x = 11.0  # Front of fangs
+        tip_local_y = 2.0   # Prosoma height (not down at fang level)
+        tip_local_z = 0.0   # Center
+
+        # Apply beetle body rotation only (no horn rotation)
+        cos_rotation = math.cos(beetle.rotation)
+        sin_rotation = math.sin(beetle.rotation)
+        rotated_x = tip_local_x * cos_rotation - tip_local_z * sin_rotation
+        rotated_z = tip_local_x * sin_rotation + tip_local_z * cos_rotation
+
+        return beetle.x + rotated_x, beetle.y + tip_local_y, beetle.z + rotated_z
+
+    # Bombardier - use front of head/mandibles for collision
+    if beetle.horn_type == "bombardier":
+        # Head extends to dx=7, mandibles to dx=10
+        tip_local_x = 10.0  # Front of mandibles
+        tip_local_y = 5.0   # Head height (elevated due to tilted body)
+        tip_local_z = 0.0   # Center
 
         # Apply beetle body rotation only (no horn rotation)
         cos_rotation = math.cos(beetle.rotation)
@@ -7142,10 +7158,23 @@ def calculate_horn_shaft_base_position(beetle):
         base_local_y = 1.0
         base_local_z = 0.0
     elif beetle.horn_type == "spider":
-        # Spider fangs are fixed - no rotation, simple calculation
-        base_local_x = 8.0  # Fangs start at dx=8
-        base_local_y = 1.0
-        base_local_z = 0.0  # Center between the two fangs
+        # Spider - base at pedicel (thin waist), creates cylinder covering prosoma
+        base_local_x = 3.0   # Pedicel/start of prosoma
+        base_local_y = 2.0   # Prosoma height
+        base_local_z = 0.0   # Center
+
+        # Apply beetle body rotation only (no horn rotation)
+        cos_rotation = math.cos(beetle.rotation)
+        sin_rotation = math.sin(beetle.rotation)
+        rotated_x = base_local_x * cos_rotation - base_local_z * sin_rotation
+        rotated_z = base_local_x * sin_rotation + base_local_z * cos_rotation
+
+        return beetle.x + rotated_x, beetle.y + base_local_y, beetle.z + rotated_z
+    elif beetle.horn_type == "bombardier":
+        # Bombardier - base at neck, creates cylinder covering head
+        base_local_x = 3.0   # Neck/start of head
+        base_local_y = 5.0   # Head height (elevated body)
+        base_local_z = 0.0   # Center
 
         # Apply beetle body rotation only (no horn rotation)
         cos_rotation = math.cos(beetle.rotation)
@@ -7155,7 +7184,7 @@ def calculate_horn_shaft_base_position(beetle):
 
         return beetle.x + rotated_x, beetle.y + base_local_y, beetle.z + rotated_z
     else:
-        # Scorpion/bombardier - no shaft to check
+        # Scorpion - no forward shaft to check (tail is behind)
         return beetle.x, beetle.y, beetle.z
 
     # Step 1: Translate to horn pivot (3.0, 1, 0)
@@ -10680,16 +10709,21 @@ def beetle_collision(b1, b2, params):
         b2.predictive_push_x *= decay
         b2.predictive_push_z *= decay
 
-    # SHAFT CYLINDER COLLISION CHECK: Catch shaft/attachment collisions that voxels miss
+    # SHAFT/HEAD CYLINDER COLLISION CHECK: Catch shaft/attachment collisions that voxels miss
     # Check if opponent's body center is within a cylinder around each beetle's horn shaft
+    # For spider/bombardier, this covers their forward head/prosoma area
     # Skip for first 30 physics frames to let geometry initialize
     if not is_ball_collision and physics_frame > 30:
         shaft_cylinder_radius = params.get("SHAFT_CYLINDER_RADIUS", 6.0)
         shaft_cylinder_push = params.get("SHAFT_CYLINDER_PUSH", 0.25)
 
-        # Skip for scorpion/bombardier/spider (no forward shaft - spider has tiny fixed fangs)
-        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas")
-        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas")
+        # All beetle types except scorpion (tail is behind, not forward)
+        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier")
+        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier")
+
+        # Spider/bombardier have wider heads than horn shafts - use larger radius
+        b1_radius = shaft_cylinder_radius + 2.0 if b1.horn_type in ("spider", "bombardier") else shaft_cylinder_radius
+        b2_radius = shaft_cylinder_radius + 2.0 if b2.horn_type in ("spider", "bombardier") else shaft_cylinder_radius
 
         if b1_has_shaft or b2_has_shaft:
             # Get shaft endpoints for beetles with horns
@@ -10700,17 +10734,17 @@ def beetle_collision(b1, b2, params):
                 b2_base_x, b2_base_y, b2_base_z = calculate_horn_shaft_base_position(b2)
                 b2_tip_x, b2_tip_y, b2_tip_z = calculate_horn_tip_position(b2)
 
-            # Check b2's body against b1's shaft cylinder
+            # Check b2's body against b1's shaft/head cylinder
             if b1_has_shaft:
                 dist_to_b1_shaft = point_to_line_segment_distance(
                     b2.x, b2.y, b2.z,
                     b1_base_x, b1_base_y, b1_base_z,
                     b1_tip_x, b1_tip_y, b1_tip_z
                 )
-                if dist_to_b1_shaft < shaft_cylinder_radius:
-                    # Push b2 away from b1's shaft
+                if dist_to_b1_shaft < b1_radius:
+                    # Push b2 away from b1's shaft/head
                     # Direction: from closest point on shaft toward b2
-                    push_strength = shaft_cylinder_push * (1.0 - dist_to_b1_shaft / shaft_cylinder_radius)
+                    push_strength = shaft_cylinder_push * (1.0 - dist_to_b1_shaft / b1_radius)
                     # Use direction from b1 center to b2 center as approximation
                     dx = b2.x - b1.x
                     dz = b2.z - b1.z
@@ -10723,16 +10757,16 @@ def beetle_collision(b1, b2, params):
                         b1.x -= nx * push_strength * 0.3  # Slight counter-push
                         b1.z -= nz * push_strength * 0.3
 
-            # Check b1's body against b2's shaft cylinder
+            # Check b1's body against b2's shaft/head cylinder
             if b2_has_shaft:
                 dist_to_b2_shaft = point_to_line_segment_distance(
                     b1.x, b1.y, b1.z,
                     b2_base_x, b2_base_y, b2_base_z,
                     b2_tip_x, b2_tip_y, b2_tip_z
                 )
-                if dist_to_b2_shaft < shaft_cylinder_radius:
-                    # Push b1 away from b2's shaft
-                    push_strength = shaft_cylinder_push * (1.0 - dist_to_b2_shaft / shaft_cylinder_radius)
+                if dist_to_b2_shaft < b2_radius:
+                    # Push b1 away from b2's shaft/head
+                    push_strength = shaft_cylinder_push * (1.0 - dist_to_b2_shaft / b2_radius)
                     dx = b1.x - b2.x
                     dz = b1.z - b2.z
                     dist = math.sqrt(dx*dx + dz*dz)
