@@ -10721,9 +10721,9 @@ def beetle_collision(b1, b2, params):
         b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier")
         b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier")
 
-        # Spider/bombardier have wider heads than horn shafts - use larger radius
-        b1_radius = shaft_cylinder_radius + 2.0 if b1.horn_type in ("spider", "bombardier") else shaft_cylinder_radius
-        b2_radius = shaft_cylinder_radius + 2.0 if b2.horn_type in ("spider", "bombardier") else shaft_cylinder_radius
+        # Use same radius for all beetle types
+        b1_radius = shaft_cylinder_radius
+        b2_radius = shaft_cylinder_radius
 
         if b1_has_shaft or b2_has_shaft:
             # Get shaft endpoints for beetles with horns
