@@ -13892,16 +13892,16 @@ try:
                 # Check if beetle penetrates floor (lowest point goes into or below floor)
                 floor_surface = floor_y_blue + 0.5  # Top of floor voxel surface
                 if lowest_point_blue < floor_surface:
-                    # Penetration detected! Push beetle upward
+                    # Penetration detected - use small instant correction to prevent sinking
                     penetration_depth = floor_surface - lowest_point_blue
-                    # Clamp correction to prevent teleporting from pitch changes
-                    MAX_FLOOR_CORRECTION = 1.5  # Max voxels per frame
-                    clamped_correction = min(penetration_depth, MAX_FLOOR_CORRECTION)
-                    beetle_blue.y += clamped_correction
 
-                    # Apply bounce/resistance
-                    if beetle_blue.vy < 0:  # Moving downward
-                        beetle_blue.vy = 0.0  # Stop downward motion
+                    # Clamp correction to prevent jumps from pitch changes
+                    MAX_FLOOR_CORRECTION = 0.5  # Smaller limit = smoother
+                    beetle_blue.y += min(penetration_depth, MAX_FLOOR_CORRECTION)
+
+                    # Stop downward motion but don't add upward velocity (prevents bouncing)
+                    if beetle_blue.vy < 0:
+                        beetle_blue.vy = 0.0
 
                     beetle_blue.on_ground = True
                 elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
@@ -13929,12 +13929,14 @@ try:
 
                 floor_surface = floor_y_red + 0.5  # Top of floor voxel surface
                 if lowest_point_red < floor_surface:
+                    # Penetration detected - use small instant correction to prevent sinking
                     penetration_depth = floor_surface - lowest_point_red
-                    # Clamp correction to prevent teleporting from pitch changes
-                    MAX_FLOOR_CORRECTION = 1.5  # Max voxels per frame
-                    clamped_correction = min(penetration_depth, MAX_FLOOR_CORRECTION)
-                    beetle_red.y += clamped_correction
 
+                    # Clamp correction to prevent jumps from pitch changes
+                    MAX_FLOOR_CORRECTION = 0.5  # Smaller limit = smoother
+                    beetle_red.y += min(penetration_depth, MAX_FLOOR_CORRECTION)
+
+                    # Stop downward motion but don't add upward velocity (prevents bouncing)
                     if beetle_red.vy < 0:
                         beetle_red.vy = 0.0
 
