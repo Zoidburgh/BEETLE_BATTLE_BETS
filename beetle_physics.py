@@ -8638,7 +8638,7 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             # Kick outward at 45° angle - consistent speed for smooth motion
             particle_speed = speed * (1.1 - ti.cast(i, ti.f32) * 0.04)  # Slight falloff, more uniform
             rand_speed = particle_speed * (0.9 + ti.random() * 0.2)  # Less speed variance for smoother look
-            rand_angle = (ti.random() - 0.5) * 0.5  # ±15° horizontal spread (tighter fan)
+            rand_angle = (ti.random() - 0.5) * 1.33  # ±40° horizontal spread (cone shape)
             vx = dir_x * rand_speed + rand_angle * dir_z * rand_speed
             vz = dir_z * rand_speed - rand_angle * dir_x * rand_speed
             vy = rand_speed * upward_ratio * (0.9 + ti.random() * 0.2)  # Less vertical variance
