@@ -13894,7 +13894,10 @@ try:
                 if lowest_point_blue < floor_surface:
                     # Penetration detected! Push beetle upward
                     penetration_depth = floor_surface - lowest_point_blue
-                    beetle_blue.y += penetration_depth
+                    # Clamp correction to prevent teleporting from pitch changes
+                    MAX_FLOOR_CORRECTION = 1.5  # Max voxels per frame
+                    clamped_correction = min(penetration_depth, MAX_FLOOR_CORRECTION)
+                    beetle_blue.y += clamped_correction
 
                     # Apply bounce/resistance
                     if beetle_blue.vy < 0:  # Moving downward
@@ -13927,7 +13930,10 @@ try:
                 floor_surface = floor_y_red + 0.5  # Top of floor voxel surface
                 if lowest_point_red < floor_surface:
                     penetration_depth = floor_surface - lowest_point_red
-                    beetle_red.y += penetration_depth
+                    # Clamp correction to prevent teleporting from pitch changes
+                    MAX_FLOOR_CORRECTION = 1.5  # Max voxels per frame
+                    clamped_correction = min(penetration_depth, MAX_FLOOR_CORRECTION)
+                    beetle_red.y += clamped_correction
 
                     if beetle_red.vy < 0:
                         beetle_red.vy = 0.0
