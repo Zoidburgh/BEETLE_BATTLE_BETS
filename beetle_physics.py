@@ -468,7 +468,8 @@ NETWORK_KEYS = {
 # CONTROLLER SUPPORT
 # ============================================================================
 controllers = []  # List of connected Controller objects
-STICK_DEADZONE = 0.2
+STICK_DEADZONE = 0.4       # Forward/backward deadzone
+STICK_TURN_DEADZONE = 0.4  # Turn deadzone (larger to prevent drift when walking straight)
 TRIGGER_THRESHOLD = 0.3
 
 # SDL Controller axis/button constants (raw integers for pygame compatibility)
@@ -478,6 +479,10 @@ AXIS_RIGHTX = 2
 AXIS_RIGHTY = 3
 AXIS_TRIGGERLEFT = 4
 AXIS_TRIGGERRIGHT = 5
+BUTTON_A = 0
+BUTTON_B = 1
+BUTTON_X = 2
+BUTTON_Y = 3
 BUTTON_LEFTSHOULDER = 9
 BUTTON_RIGHTSHOULDER = 10
 
@@ -527,66 +532,70 @@ def get_controller_inputs(ctrl, horn_type_id=0):
         return 0
     try:
         inputs = 0
-        # Left stick Y-axis: Forward/Backward (up = negative)
+        # Left stick: All movement (Y = forward/back, X = turn)
         left_y = ctrl.get_axis(AXIS_LEFTY) / 32767.0
+        left_x = ctrl.get_axis(AXIS_LEFTX) / 32767.0
         if left_y < -STICK_DEADZONE:
             inputs |= INPUT_FORWARD
         elif left_y > STICK_DEADZONE:
             inputs |= INPUT_BACKWARD
-        # Right stick X-axis: Turn Left/Right
-        right_x = ctrl.get_axis(AXIS_RIGHTX) / 32767.0
-        if right_x < -STICK_DEADZONE:
+        if left_x < -STICK_TURN_DEADZONE:
             inputs |= INPUT_LEFT
-        elif right_x > STICK_DEADZONE:
+        elif left_x > STICK_TURN_DEADZONE:
             inputs |= INPUT_RIGHT
 
-        # Triggers and bumpers: beetle-specific remapping (matches keyboard arrow logic)
-        left_trigger = ctrl.get_axis(AXIS_TRIGGERLEFT) / 32767.0
-        right_trigger = ctrl.get_axis(AXIS_TRIGGERRIGHT) / 32767.0
-        left_bumper = ctrl.get_button(BUTTON_LEFTSHOULDER)
-        right_bumper = ctrl.get_button(BUTTON_RIGHTSHOULDER)
+        # Right stick: Alternative horn controls (same mapping as XYAB)
+        right_y = ctrl.get_axis(AXIS_RIGHTY) / 32767.0
+        right_x = ctrl.get_axis(AXIS_RIGHTX) / 32767.0
 
-        if horn_type_id == 0 or horn_type_id == 4:  # Rhino or Atlas: swap bumpers for intuitive yaw
-            # Triggers: up/down (same as default)
-            if left_trigger > TRIGGER_THRESHOLD:
-                inputs |= INPUT_HORN_DOWN
-            if right_trigger > TRIGGER_THRESHOLD:
+        # Face buttons + right stick: Horn controls (beetle-specific remapping)
+        # Right stick mirrors XYAB: up=Y, down=A, left=X, right=B
+        button_y = ctrl.get_button(BUTTON_Y) or (right_y < -STICK_DEADZONE)
+        button_a = ctrl.get_button(BUTTON_A) or (right_y > STICK_DEADZONE)
+        button_x = ctrl.get_button(BUTTON_X) or (right_x < -STICK_DEADZONE)
+        button_b = ctrl.get_button(BUTTON_B) or (right_x > STICK_DEADZONE)
+
+        if horn_type_id == 0 or horn_type_id == 4:  # Rhino or Atlas: swap X/B for intuitive yaw
+            # Y/A: up/down (same as default)
+            if button_y:
                 inputs |= INPUT_HORN_UP
-            # Bumpers: swapped for intuitive left/right
-            if left_bumper:
+            if button_a:
+                inputs |= INPUT_HORN_DOWN
+            # X/B: swapped for intuitive left/right sweep
+            if button_x:
                 inputs |= INPUT_HORN_RIGHT  # Swapped
-            if right_bumper:
+            if button_b:
                 inputs |= INPUT_HORN_LEFT   # Swapped
-        elif horn_type_id == 5:  # Bombardier: triggers=body, bumpers=fire
-            # Triggers: body up/down
-            if left_trigger > TRIGGER_THRESHOLD:
-                inputs |= INPUT_HORN_RIGHT  # Body down
-            if right_trigger > TRIGGER_THRESHOLD:
+        elif horn_type_id == 5:  # Bombardier: Y/A=body, X/B=fire
+            # Y/A: body up/down
+            if button_y:
                 inputs |= INPUT_HORN_LEFT   # Body up
-            # Bumpers: fire direction
-            if left_bumper:
+            if button_a:
+                inputs |= INPUT_HORN_RIGHT  # Body down
+            # X/B: fire direction
+            if button_x:
                 inputs |= INPUT_HORN_DOWN   # Fire behind
-            if right_bumper:
+            if button_b:
                 inputs |= INPUT_HORN_UP     # Fire forward
-        elif horn_type_id == 6:  # Spider: triggers=body, bumpers=silk type
-            # Triggers: body up/down
-            if left_trigger > TRIGGER_THRESHOLD:
-                inputs |= INPUT_HORN_RIGHT  # Body down
-            if right_trigger > TRIGGER_THRESHOLD:
+        elif horn_type_id == 6:  # Spider: Y/A=body, X/B=silk type
+            # Y/A: body up/down
+            if button_y:
                 inputs |= INPUT_HORN_LEFT   # Body up
-            # Bumpers: silk type
-            if left_bumper:
+            if button_a:
+                inputs |= INPUT_HORN_RIGHT  # Body down
+            # X/B: silk type
+            if button_x:
                 inputs |= INPUT_HORN_DOWN   # Normal silk
-            if right_bumper:
+            if button_b:
                 inputs |= INPUT_HORN_UP     # Fast silk
         else:  # Stag, Hercules, Scorpion - default mapping
-            if left_trigger > TRIGGER_THRESHOLD:
-                inputs |= INPUT_HORN_DOWN
-            if right_trigger > TRIGGER_THRESHOLD:
+            if button_y:
                 inputs |= INPUT_HORN_UP
-            if left_bumper:
+            if button_a:
+                inputs |= INPUT_HORN_DOWN
+            if button_x:
                 inputs |= INPUT_HORN_LEFT
-            if right_bumper:
+            if button_b:
                 inputs |= INPUT_HORN_RIGHT
         return inputs
     except:
@@ -4559,6 +4568,13 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
     spray_aim_blue = 0.0
     beetle_blue.tail_rotation_angle = 20.0  # Tail rests at max up position
 
+    # Reset speed boost state (prevents carryover from previous beetle type)
+    beetle_blue.forward_hold_time = 0.0
+    beetle_blue.backward_hold_time = 0.0
+    beetle_blue.forward_bonus = 0.0
+    beetle_blue.backward_bonus = 0.0
+    beetle_blue.silk_speed_mult = 1.0
+
     print(f"Rebuilt blue beetle: {len(BLUE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
 # Function to rebuild red beetle geometry with new parameters
@@ -4681,6 +4697,13 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
     spider_aim_red = 0.0
     spray_aim_red = 0.0
     beetle_red.tail_rotation_angle = 20.0  # Tail rests at max up position
+
+    # Reset speed boost state (prevents carryover from previous beetle type)
+    beetle_red.forward_hold_time = 0.0
+    beetle_red.backward_hold_time = 0.0
+    beetle_red.forward_bonus = 0.0
+    beetle_red.backward_bonus = 0.0
+    beetle_red.silk_speed_mult = 1.0
 
     print(f"Rebuilt red beetle: {len(RED_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
@@ -12365,10 +12388,17 @@ try:
             if not beetle_blue.in_horn_collision:
                 # Check if rotating without moving (skill-based faster turning)
                 is_moving = (blue_inputs & INPUT_FORWARD) or (blue_inputs & INPUT_BACKWARD)
-                # Speed boost turn penalty: faster you go, harder to turn (uses previous frame's bonus)
-                active_bonus = max(beetle_blue.forward_bonus, beetle_blue.backward_bonus)
-                turn_penalty = 1.0 - active_bonus  # 30% bonus = 30% slower turning
+                # Speed boost turn penalty: faster you go, harder to turn
+                # Normalize bonus so both forward (150%) and backward (80%) reach 50% turn at max
+                if beetle_blue.forward_bonus >= beetle_blue.backward_bonus:
+                    normalized_bonus = beetle_blue.forward_bonus / 1.50
+                else:
+                    normalized_bonus = beetle_blue.backward_bonus / 0.80
+                turn_penalty = max(0.5, 1.0 - normalized_bonus * 0.5)  # Scales to 50% turn speed over 3 sec
                 rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
+                # Spider gets 35% faster turning (agile hunter)
+                if beetle_blue.horn_type_id == 6:
+                    rotation_multiplier *= 1.35
 
                 if blue_inputs & INPUT_LEFT:
                     beetle_blue.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
@@ -12401,8 +12431,8 @@ try:
             else:
                 beetle_blue.backward_hold_time = 0.0
             # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
-            beetle_blue.forward_bonus = min(0.70, beetle_blue.forward_hold_time / 3.0 * 0.70)
-            beetle_blue.backward_bonus = min(0.30, beetle_blue.backward_hold_time / 3.0 * 0.30)
+            beetle_blue.forward_bonus = min(1.50, beetle_blue.forward_hold_time / 3.0 * 1.50)
+            beetle_blue.backward_bonus = min(0.80, beetle_blue.backward_hold_time / 3.0 * 0.80)
 
             if blue_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
@@ -12651,10 +12681,17 @@ try:
             if not beetle_red.in_horn_collision:
                 # Check if rotating without moving (skill-based faster turning)
                 is_moving = (red_inputs & INPUT_FORWARD) or (red_inputs & INPUT_BACKWARD)
-                # Speed boost turn penalty: faster you go, harder to turn (uses previous frame's bonus)
-                active_bonus = max(beetle_red.forward_bonus, beetle_red.backward_bonus)
-                turn_penalty = 1.0 - active_bonus  # 30% bonus = 30% slower turning
+                # Speed boost turn penalty: faster you go, harder to turn
+                # Normalize bonus so both forward (150%) and backward (80%) reach 50% turn at max
+                if beetle_red.forward_bonus >= beetle_red.backward_bonus:
+                    normalized_bonus = beetle_red.forward_bonus / 1.50
+                else:
+                    normalized_bonus = beetle_red.backward_bonus / 0.80
+                turn_penalty = max(0.5, 1.0 - normalized_bonus * 0.5)  # Scales to 50% turn speed over 3 sec
                 rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
+                # Spider gets 35% faster turning (agile hunter)
+                if beetle_red.horn_type_id == 6:
+                    rotation_multiplier *= 1.35
 
                 if red_inputs & INPUT_LEFT:
                     beetle_red.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
@@ -12687,8 +12724,8 @@ try:
             else:
                 beetle_red.backward_hold_time = 0.0
             # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
-            beetle_red.forward_bonus = min(0.70, beetle_red.forward_hold_time / 3.0 * 0.70)
-            beetle_red.backward_bonus = min(0.30, beetle_red.backward_hold_time / 3.0 * 0.30)
+            beetle_red.forward_bonus = min(1.50, beetle_red.forward_hold_time / 3.0 * 1.50)
+            beetle_red.backward_bonus = min(0.80, beetle_red.backward_hold_time / 3.0 * 0.80)
 
             if red_inputs & INPUT_FORWARD:
                 # Move forward in facing direction
@@ -13763,6 +13800,12 @@ try:
                 beetle_blue.is_falling = False
                 beetle_blue.guest_death_falling = False  # Reset guest death flag
                 beetle_blue.on_ground = False  # Will fall to ground
+                # Reset speed boost state to prevent carryover bugs
+                beetle_blue.forward_hold_time = 0.0
+                beetle_blue.backward_hold_time = 0.0
+                beetle_blue.forward_bonus = 0.0
+                beetle_blue.backward_bonus = 0.0
+                beetle_blue.silk_speed_mult = 1.0
                 # Only reset red's celebration (they scored on blue)
                 red_celebrating = False
                 red_pulse_timer = 0.0
@@ -13804,6 +13847,12 @@ try:
                 beetle_red.is_falling = False
                 beetle_red.guest_death_falling = False  # Reset guest death flag
                 beetle_red.on_ground = False  # Will fall to ground
+                # Reset speed boost state to prevent carryover bugs
+                beetle_red.forward_hold_time = 0.0
+                beetle_red.backward_hold_time = 0.0
+                beetle_red.forward_bonus = 0.0
+                beetle_red.backward_bonus = 0.0
+                beetle_red.silk_speed_mult = 1.0
                 # Only reset blue's celebration (they scored on red)
                 blue_celebrating = False
                 blue_pulse_timer = 0.0
