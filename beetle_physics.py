@@ -471,6 +471,16 @@ controllers = []  # List of connected Controller objects
 STICK_DEADZONE = 0.2
 TRIGGER_THRESHOLD = 0.3
 
+# SDL Controller axis/button constants (raw integers for pygame compatibility)
+AXIS_LEFTX = 0
+AXIS_LEFTY = 1
+AXIS_RIGHTX = 2
+AXIS_RIGHTY = 3
+AXIS_TRIGGERLEFT = 4
+AXIS_TRIGGERRIGHT = 5
+BUTTON_LEFTSHOULDER = 9
+BUTTON_RIGHTSHOULDER = 10
+
 def init_controllers():
     """Initialize pygame controller subsystem. Call once at startup."""
     if not CONTROLLER_SUPPORT:
@@ -511,39 +521,76 @@ def pump_controller_events():
             print("[Controller] Device disconnected")
             _refresh_controllers()
 
-def get_controller_inputs(ctrl):
+def get_controller_inputs(ctrl, horn_type_id=0):
     """Read controller state and return input bitmask (same format as keyboard)."""
     if ctrl is None:
         return 0
     try:
         inputs = 0
         # Left stick Y-axis: Forward/Backward (up = negative)
-        left_y = ctrl.get_axis(sdl_controller.CONTROLLER_AXIS_LEFTY) / 32767.0
+        left_y = ctrl.get_axis(AXIS_LEFTY) / 32767.0
         if left_y < -STICK_DEADZONE:
             inputs |= INPUT_FORWARD
         elif left_y > STICK_DEADZONE:
             inputs |= INPUT_BACKWARD
         # Right stick X-axis: Turn Left/Right
-        right_x = ctrl.get_axis(sdl_controller.CONTROLLER_AXIS_RIGHTX) / 32767.0
+        right_x = ctrl.get_axis(AXIS_RIGHTX) / 32767.0
         if right_x < -STICK_DEADZONE:
             inputs |= INPUT_LEFT
         elif right_x > STICK_DEADZONE:
             inputs |= INPUT_RIGHT
-        # Triggers: Horn Up/Down (0 to 32767)
-        left_trigger = ctrl.get_axis(sdl_controller.CONTROLLER_AXIS_TRIGGERLEFT) / 32767.0
-        right_trigger = ctrl.get_axis(sdl_controller.CONTROLLER_AXIS_TRIGGERRIGHT) / 32767.0
-        if left_trigger > TRIGGER_THRESHOLD:
-            inputs |= INPUT_HORN_DOWN
-        if right_trigger > TRIGGER_THRESHOLD:
-            inputs |= INPUT_HORN_UP
-        # Bumpers: Horn Left/Right
-        if ctrl.get_button(sdl_controller.CONTROLLER_BUTTON_LEFTSHOULDER):
-            inputs |= INPUT_HORN_LEFT
-        if ctrl.get_button(sdl_controller.CONTROLLER_BUTTON_RIGHTSHOULDER):
-            inputs |= INPUT_HORN_RIGHT
+
+        # Triggers and bumpers: beetle-specific remapping (matches keyboard arrow logic)
+        left_trigger = ctrl.get_axis(AXIS_TRIGGERLEFT) / 32767.0
+        right_trigger = ctrl.get_axis(AXIS_TRIGGERRIGHT) / 32767.0
+        left_bumper = ctrl.get_button(BUTTON_LEFTSHOULDER)
+        right_bumper = ctrl.get_button(BUTTON_RIGHTSHOULDER)
+
+        if horn_type_id == 0 or horn_type_id == 4:  # Rhino or Atlas: swap bumpers for intuitive yaw
+            # Triggers: up/down (same as default)
+            if left_trigger > TRIGGER_THRESHOLD:
+                inputs |= INPUT_HORN_DOWN
+            if right_trigger > TRIGGER_THRESHOLD:
+                inputs |= INPUT_HORN_UP
+            # Bumpers: swapped for intuitive left/right
+            if left_bumper:
+                inputs |= INPUT_HORN_RIGHT  # Swapped
+            if right_bumper:
+                inputs |= INPUT_HORN_LEFT   # Swapped
+        elif horn_type_id == 5:  # Bombardier: triggers=body, bumpers=fire
+            # Triggers: body up/down
+            if left_trigger > TRIGGER_THRESHOLD:
+                inputs |= INPUT_HORN_RIGHT  # Body down
+            if right_trigger > TRIGGER_THRESHOLD:
+                inputs |= INPUT_HORN_LEFT   # Body up
+            # Bumpers: fire direction
+            if left_bumper:
+                inputs |= INPUT_HORN_DOWN   # Fire behind
+            if right_bumper:
+                inputs |= INPUT_HORN_UP     # Fire forward
+        elif horn_type_id == 6:  # Spider: triggers=body, bumpers=silk type
+            # Triggers: body up/down
+            if left_trigger > TRIGGER_THRESHOLD:
+                inputs |= INPUT_HORN_RIGHT  # Body down
+            if right_trigger > TRIGGER_THRESHOLD:
+                inputs |= INPUT_HORN_LEFT   # Body up
+            # Bumpers: silk type
+            if left_bumper:
+                inputs |= INPUT_HORN_DOWN   # Normal silk
+            if right_bumper:
+                inputs |= INPUT_HORN_UP     # Fast silk
+        else:  # Stag, Hercules, Scorpion - default mapping
+            if left_trigger > TRIGGER_THRESHOLD:
+                inputs |= INPUT_HORN_DOWN
+            if right_trigger > TRIGGER_THRESHOLD:
+                inputs |= INPUT_HORN_UP
+            if left_bumper:
+                inputs |= INPUT_HORN_LEFT
+            if right_bumper:
+                inputs |= INPUT_HORN_RIGHT
         return inputs
     except:
-        return 0  # Controller disconnected mid-read
+        return 0  # Controller disconnected or error
 
 def _get_keyboard_inputs(window, player='blue', network_mode=False, horn_type_id=0):
     """
@@ -642,11 +689,11 @@ def get_local_inputs(window, player='blue', network_mode=False, horn_type_id=0):
     if CONTROLLER_SUPPORT and controllers:
         if network_mode:
             # Network mode: first controller controls local beetle
-            controller_inputs = get_controller_inputs(controllers[0])
+            controller_inputs = get_controller_inputs(controllers[0], horn_type_id)
         elif player == 'blue':
-            controller_inputs = get_controller_inputs(controllers[0])
+            controller_inputs = get_controller_inputs(controllers[0], horn_type_id)
         elif player == 'red' and len(controllers) >= 2:
-            controller_inputs = get_controller_inputs(controllers[1])
+            controller_inputs = get_controller_inputs(controllers[1], horn_type_id)
 
     # Combine both input sources (allows hybrid play)
     return keyboard_inputs | controller_inputs
@@ -11799,6 +11846,7 @@ spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
 
 # Debris/particle update kernel (triggered when particles exist)
 update_debris_particles(0.016)
+cleanup_dead_debris()  # Debris cleanup kernel (avoids JIT crash during heavy debris)
 
 # Edge tipping kernel (triggered when beetles near arena edge)
 calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_BLUE, 0.016, 1.0, 1.0)
@@ -12207,9 +12255,15 @@ try:
         else:
             current_local_inputs = get_local_inputs(window, 'red', network_mode=True, horn_type_id=beetle_red.horn_type_id)
     else:
-        # LOCAL MODE: Read both players from keyboard (split keyboard layout)
-        frame_blue_inputs = get_local_inputs(window, 'blue')
-        frame_red_inputs = get_local_inputs(window, 'red')
+        # LOCAL MODE: Read both players
+        if CONTROLLER_SUPPORT and controllers:
+            # Controller + keyboard mode: controller for blue, full keyboard for red
+            frame_blue_inputs = get_controller_inputs(controllers[0], beetle_blue.horn_type_id)
+            frame_red_inputs = _get_keyboard_inputs(window, 'red', network_mode=True, horn_type_id=beetle_red.horn_type_id)
+        else:
+            # No controller: split keyboard layout
+            frame_blue_inputs = get_local_inputs(window, 'blue')
+            frame_red_inputs = get_local_inputs(window, 'red')
 
     # Get inputs for physics (updated inside loop for network mode)
     # Also track last known inputs for animation when network stalls
@@ -15173,7 +15227,16 @@ try:
                                       capture_output=True)
                     except:
                         pass
-                window.GUI.text("(Share this with your friend)")
+                if window.GUI.button("Copy Invite Link"):
+                    try:
+                        import subprocess
+                        invite_link = f"steam://joinlobby/3998620/{network_manager.lobby_id}"
+                        subprocess.run(['powershell', '-command',
+                                      f'Set-Clipboard -Value "{invite_link}"'],
+                                      capture_output=True)
+                    except:
+                        pass
+                window.GUI.text("(Share invite link - friend clicks to join)")
             else:
                 window.GUI.text("Creating lobby...")
 
