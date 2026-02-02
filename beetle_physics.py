@@ -9,6 +9,7 @@ import renderer
 import time
 import math
 import random
+import colorsys
 import os
 import sys
 import atexit
@@ -1681,7 +1682,7 @@ SPRAY_PUSH_FORCE = 25.0  # Force applied to beetle when hit by spray
 
 # Bombardier charge system
 SPRAY_MAX_CHARGES = 3  # Maximum charges that can be stored
-SPRAY_RECHARGE_TIME = 8.0  # Seconds to recharge 1 charge
+SPRAY_RECHARGE_TIME = 4.0  # Seconds to recharge 1 charge
 spray_charges_blue = 3  # Current charges for blue (start full)
 spray_charges_red = 3   # Current charges for red (start full)
 spray_recharge_timer_blue = 0.0  # Time until next charge
@@ -1763,7 +1764,7 @@ VENOM_BURST_PARTICLES = 20  # Particles per venom burst
 VENOM_PARTICLES_PER_FRAME = 3  # Particles spawned per frame (faster drip burst)
 VENOM_SPEED = 28.0  # Venom particle velocity (slow drip, not a spray)
 VENOM_MAX_CHARGES = 3  # Maximum venom charges
-VENOM_RECHARGE_TIME = 5.0  # Seconds to recharge 1 charge
+VENOM_RECHARGE_TIME = 4.0  # Seconds to recharge 1 charge
 
 venom_cooldown_blue = 0.0  # Time until blue scorpion can shoot again
 venom_cooldown_red = 0.0   # Time until red scorpion can shoot again
@@ -10162,6 +10163,71 @@ referee_ladybug = None
 referee_enabled = True  # Enabled by default
 referee_time = 0.0  # Time accumulator for organic movement
 
+def generate_harmonious_palette():
+    """Generate a harmonious color palette for a beetle using color theory.
+    Returns dict with keys: body, legs, leg_tips, stripe, horn_tips
+    Each value is (r, g, b) tuple with values 0.0-1.0"""
+    # Pick random base hue (0.0-1.0)
+    base_hue = random.random()
+
+    # Pick a harmony scheme
+    scheme = random.choice(['analogous', 'complementary', 'triadic', 'monochromatic'])
+
+    if scheme == 'analogous':
+        # Hues within 30° of each other - warm/cohesive
+        hue_body = base_hue
+        hue_accent = (base_hue + random.uniform(0.05, 0.08)) % 1.0
+        hue_stripe = (base_hue + random.uniform(-0.08, -0.05)) % 1.0
+    elif scheme == 'complementary':
+        # Base + opposite for accent
+        hue_body = base_hue
+        hue_accent = (base_hue + 0.5 + random.uniform(-0.05, 0.05)) % 1.0
+        hue_stripe = hue_accent
+    elif scheme == 'triadic':
+        # 3 hues spaced 120° apart
+        hue_body = base_hue
+        hue_accent = (base_hue + 0.333 + random.uniform(-0.03, 0.03)) % 1.0
+        hue_stripe = (base_hue + 0.667 + random.uniform(-0.03, 0.03)) % 1.0
+    else:  # monochromatic
+        # Single hue, varied saturation/brightness
+        hue_body = base_hue
+        hue_accent = base_hue
+        hue_stripe = base_hue
+
+    # Generate each part with appropriate saturation/value ranges
+    # Body: dominant color, rich saturation, medium brightness
+    body_s = random.uniform(0.55, 0.90)
+    body_v = random.uniform(0.35, 0.70)
+    body = colorsys.hsv_to_rgb(hue_body, body_s, body_v)
+
+    # Legs: same/similar hue, darker than body
+    leg_s = random.uniform(0.40, 0.75)
+    leg_v = body_v * random.uniform(0.5, 0.75)  # Always darker than body
+    legs = colorsys.hsv_to_rgb(hue_accent, leg_s, max(0.1, leg_v))
+
+    # Leg tips: very dark, near black with slight tint
+    tip_v = random.uniform(0.05, 0.15)
+    tip_s = random.uniform(0.2, 0.5)
+    leg_tips = colorsys.hsv_to_rgb(hue_body, tip_s, tip_v)
+
+    # Stripe: accent color, brighter and more saturated for contrast
+    stripe_s = random.uniform(0.60, 0.95)
+    stripe_v = random.uniform(0.50, 0.85)
+    stripe = colorsys.hsv_to_rgb(hue_stripe, stripe_s, stripe_v)
+
+    # Horn tips: dark with slight accent tint
+    horn_v = random.uniform(0.08, 0.20)
+    horn_s = random.uniform(0.15, 0.45)
+    horn_tips = colorsys.hsv_to_rgb(hue_accent, horn_s, horn_v)
+
+    return {
+        'body': body,
+        'legs': legs,
+        'leg_tips': leg_tips,
+        'stripe': stripe,
+        'horn_tips': horn_tips,
+    }
+
 def toggle_referee():
     """Toggle flying referee on/off (local only - doesn't sync over network)"""
     global referee_ladybug, referee_enabled, referee_time, referee_beam_active
@@ -13968,7 +14034,9 @@ try:
         if beetle_ball.active:
             # Check if ball is in goal pit area (no floor there)
             goal_pit_half_width = 12
+            near_goal_margin = beetle_ball.radius  # Ball edge can be over pit while center isn't
             in_goal_pit = abs(beetle_ball.z) < goal_pit_half_width and (beetle_ball.x <= -32 or beetle_ball.x >= 32)
+            near_goal_pit = abs(beetle_ball.z) < goal_pit_half_width and (beetle_ball.x < -32 + near_goal_margin or beetle_ball.x > 32 - near_goal_margin)
 
             if in_goal_pit:
                 # Ball is in goal pit - no floor collision, let it fall
@@ -14010,10 +14078,14 @@ try:
                                                        impact_speed, beetle_ball.radius)
                                 g['ball_dust_cooldown'] = 0.1  # 0.1 second cooldown
 
-                            beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
-                            # If bounce is very small, stop bouncing and settle
-                            if abs(beetle_ball.vy) < 0.5:
+                            # Suppress bounce if ball is near goal pit edge (prevent bouncing out of goal)
+                            if near_goal_pit:
                                 beetle_ball.vy = 0.0
+                            else:
+                                beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
+                                # If bounce is very small, stop bouncing and settle
+                                if abs(beetle_ball.vy) < 0.5:
+                                    beetle_ball.vy = 0.0
 
                         beetle_ball.on_ground = True
                     elif lowest_point_ball < floor_surface + 0.5:  # Close to ground
@@ -15666,6 +15738,22 @@ try:
         new_blue_leg_length = random.randint(6, 10)
         print(f"Randomized blue beetle: shaft={new_blue_shaft}, prong={new_blue_prong}, back={new_blue_back_body}, length={new_blue_body_length}, width={new_blue_body_width}, legs={new_blue_leg_length}")
 
+    if can_edit_blue and show_full_customization and window.GUI.button("Randomize B1 Colors"):
+        palette = generate_harmonious_palette()
+        window.blue_body_color = palette['body']
+        window.blue_leg_color = palette['legs']
+        window.blue_leg_tip_color = palette['leg_tips']
+        window.blue_stripe_color = palette['stripe']
+        window.blue_horn_tip_color = palette['horn_tips']
+        simulation.blue_body_color[None] = ti.Vector(list(palette['body']))
+        simulation.blue_leg_color[None] = ti.Vector(list(palette['legs']))
+        simulation.blue_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
+        simulation.blue_stripe_color[None] = ti.Vector(list(palette['stripe']))
+        simulation.blue_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
+        if network_manager and network_manager.connected and network_manager.is_host:
+            send_local_beetle_config(network_manager, is_host=True)
+        print(f"Randomized B1 colors: {palette}")
+
     # Rebuild blue beetle geometry if sliders changed OR if scorpion tail curvature changed
     if (new_blue_shaft != window.blue_horn_shaft_value or new_blue_prong != window.blue_horn_prong_value or
         new_blue_back_body != window.blue_back_body_height_value or new_blue_body_length != window.blue_body_length_value or
@@ -15868,6 +15956,22 @@ try:
         new_red_body_width = random.randint(5, 9)
         new_red_leg_length = random.randint(6, 10)
         print(f"Randomized red beetle: shaft={new_red_shaft}, prong={new_red_prong}, back={new_red_back_body}, length={new_red_body_length}, width={new_red_body_width}, legs={new_red_leg_length}")
+
+    if can_edit_red and show_full_customization and window.GUI.button("Randomize B2 Colors"):
+        palette = generate_harmonious_palette()
+        window.red_body_color = palette['body']
+        window.red_leg_color = palette['legs']
+        window.red_leg_tip_color = palette['leg_tips']
+        window.red_stripe_color = palette['stripe']
+        window.red_horn_tip_color = palette['horn_tips']
+        simulation.red_body_color[None] = ti.Vector(list(palette['body']))
+        simulation.red_leg_color[None] = ti.Vector(list(palette['legs']))
+        simulation.red_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
+        simulation.red_stripe_color[None] = ti.Vector(list(palette['stripe']))
+        simulation.red_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
+        if network_manager and network_manager.connected and not network_manager.is_host:
+            send_local_beetle_config(network_manager, is_host=False)
+        print(f"Randomized B2 colors: {palette}")
 
     # Rebuild red beetle geometry if sliders changed OR if scorpion tail curvature changed
     if (new_red_shaft != window.red_horn_shaft_value or new_red_prong != window.red_horn_prong_value or
