@@ -8621,10 +8621,10 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                               rand_offset_x: ti.f32, rand_offset_z: ti.f32,
                               stagger_scale: ti.f32, num_particles: ti.i32,
                               height_mult: ti.f32):
-    """Spawn staggered dust particles kicked up from leg tip at ~25° angle"""
-    # 25° angle: tan(25°) ≈ 0.466, so vertical = horizontal * 0.466
+    """Spawn staggered dust particles kicked up from leg tip at ~20° angle"""
+    # 20° angle: tan(20°) ≈ 0.364, so vertical = horizontal * 0.364
     # height_mult scales vertical velocity (1.0 = normal, 1.5 = 50% higher at max speed bonus)
-    upward_ratio = 0.466 * height_mult
+    upward_ratio = 0.364 * height_mult
 
     for i in range(num_particles):
         idx = ti.atomic_add(simulation.num_debris[None], 1)
@@ -8632,8 +8632,8 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
             ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
             # Stagger particles along kick direction, scaled by leg length
-            # 0.7 multiplier keeps total range same as before (was 1.2 with 5 particles)
-            stagger = ti.cast(i, ti.f32) * 0.7 * stagger_scale
+            # Divide by num_particles so total spread stays constant regardless of particle count
+            stagger = ti.cast(i, ti.f32) * (3.0 / ti.cast(num_particles, ti.f32)) * stagger_scale
             # Add per-leg randomization (also scaled) + per-particle lateral spread
             lateral_spread = (ti.random() - 0.5) * 2.0 * stagger_scale  # Side-to-side variance
             spawn_x = pos_x + dir_x * stagger + rand_offset_x * stagger_scale + (ti.random() - 0.5) * 0.8 * stagger_scale - dir_z * lateral_spread
@@ -8644,7 +8644,8 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             # Kick outward at 45° angle - consistent speed for smooth motion
             particle_speed = speed * (1.1 - ti.cast(i, ti.f32) * 0.04)  # Slight falloff, more uniform
             rand_speed = particle_speed * (0.9 + ti.random() * 0.2)  # Less speed variance for smoother look
-            rand_angle = (ti.random() - 0.5) * 1.33  # ±40° horizontal spread (cone shape)
+            cone_mult = 1.0 + (height_mult - 1.0) * 0.08  # Gently widen cone with speed (±40° to ±80° at max)
+            rand_angle = (ti.random() - 0.5) * 1.33 * cone_mult  # Base ±40°, widens with speed
             vx = dir_x * rand_speed + rand_angle * dir_z * rand_speed
             vz = dir_z * rand_speed - rand_angle * dir_x * rand_speed
             vy = rand_speed * upward_ratio * (0.9 + ti.random() * 0.2)  # Less vertical variance
@@ -10167,58 +10168,175 @@ def generate_harmonious_palette():
     """Generate a harmonious color palette for a beetle using color theory.
     Returns dict with keys: body, legs, leg_tips, stripe, horn_tips
     Each value is (r, g, b) tuple with values 0.0-1.0"""
-    # Pick random base hue (0.0-1.0)
     base_hue = random.random()
 
-    # Pick a harmony scheme
-    scheme = random.choice(['analogous', 'complementary', 'triadic', 'monochromatic'])
+    # Pick a mood first - this drives the overall feel
+    mood = random.choice(['vivid', 'pastel', 'dark', 'earthy', 'neon', 'jewel', 'muted', 'warm', 'cool'])
 
+    # Pick a harmony scheme - wider variety
+    scheme = random.choice(['analogous', 'complementary', 'triadic', 'split_complementary',
+                            'monochromatic', 'clash', 'tetradic'])
+
+    # Generate hues based on scheme - with wider separations
     if scheme == 'analogous':
-        # Hues within 30° of each other - warm/cohesive
         hue_body = base_hue
-        hue_accent = (base_hue + random.uniform(0.05, 0.08)) % 1.0
-        hue_stripe = (base_hue + random.uniform(-0.08, -0.05)) % 1.0
+        hue_accent = (base_hue + random.uniform(0.06, 0.14)) % 1.0
+        hue_stripe = (base_hue + random.uniform(-0.14, -0.06)) % 1.0
     elif scheme == 'complementary':
-        # Base + opposite for accent
         hue_body = base_hue
-        hue_accent = (base_hue + 0.5 + random.uniform(-0.05, 0.05)) % 1.0
-        hue_stripe = hue_accent
+        hue_accent = (base_hue + 0.5 + random.uniform(-0.06, 0.06)) % 1.0
+        hue_stripe = (base_hue + random.uniform(-0.08, 0.08)) % 1.0
     elif scheme == 'triadic':
-        # 3 hues spaced 120° apart
         hue_body = base_hue
-        hue_accent = (base_hue + 0.333 + random.uniform(-0.03, 0.03)) % 1.0
-        hue_stripe = (base_hue + 0.667 + random.uniform(-0.03, 0.03)) % 1.0
+        hue_accent = (base_hue + 0.333 + random.uniform(-0.05, 0.05)) % 1.0
+        hue_stripe = (base_hue + 0.667 + random.uniform(-0.05, 0.05)) % 1.0
+    elif scheme == 'split_complementary':
+        hue_body = base_hue
+        hue_accent = (base_hue + 0.42 + random.uniform(-0.03, 0.03)) % 1.0
+        hue_stripe = (base_hue + 0.58 + random.uniform(-0.03, 0.03)) % 1.0
+    elif scheme == 'clash':
+        # Intentionally dissonant but eye-catching
+        hue_body = base_hue
+        hue_accent = (base_hue + random.uniform(0.2, 0.3)) % 1.0
+        hue_stripe = (base_hue + random.uniform(0.55, 0.7)) % 1.0
+    elif scheme == 'tetradic':
+        hue_body = base_hue
+        hue_accent = (base_hue + 0.25) % 1.0
+        hue_stripe = (base_hue + 0.5) % 1.0
     else:  # monochromatic
-        # Single hue, varied saturation/brightness
         hue_body = base_hue
         hue_accent = base_hue
         hue_stripe = base_hue
 
-    # Generate each part with appropriate saturation/value ranges
-    # Body: dominant color, rich saturation, medium brightness
-    body_s = random.uniform(0.55, 0.90)
-    body_v = random.uniform(0.35, 0.70)
-    body = colorsys.hsv_to_rgb(hue_body, body_s, body_v)
+    # Mood sets the saturation/value character
+    if mood == 'vivid':
+        body_s, body_v = random.uniform(0.75, 1.0), random.uniform(0.50, 0.80)
+        leg_s, leg_v_mult = random.uniform(0.60, 0.90), random.uniform(0.5, 0.8)
+    elif mood == 'pastel':
+        body_s, body_v = random.uniform(0.25, 0.50), random.uniform(0.70, 0.95)
+        leg_s, leg_v_mult = random.uniform(0.20, 0.45), random.uniform(0.7, 0.9)
+    elif mood == 'dark':
+        body_s, body_v = random.uniform(0.50, 0.85), random.uniform(0.15, 0.35)
+        leg_s, leg_v_mult = random.uniform(0.30, 0.70), random.uniform(0.4, 0.7)
+    elif mood == 'earthy':
+        # Push hues toward warm range (reds/oranges/yellows/browns)
+        hue_body = random.uniform(0.02, 0.12)  # Orange-brown range
+        hue_accent = (hue_body + random.uniform(-0.05, 0.08)) % 1.0
+        hue_stripe = (hue_body + random.uniform(0.03, 0.15)) % 1.0
+        body_s, body_v = random.uniform(0.40, 0.70), random.uniform(0.25, 0.55)
+        leg_s, leg_v_mult = random.uniform(0.30, 0.60), random.uniform(0.5, 0.8)
+    elif mood == 'neon':
+        body_s, body_v = random.uniform(0.85, 1.0), random.uniform(0.75, 1.0)
+        leg_s, leg_v_mult = random.uniform(0.70, 1.0), random.uniform(0.4, 0.7)
+    elif mood == 'jewel':
+        body_s, body_v = random.uniform(0.70, 0.95), random.uniform(0.35, 0.60)
+        leg_s, leg_v_mult = random.uniform(0.50, 0.80), random.uniform(0.4, 0.7)
+    elif mood == 'muted':
+        body_s, body_v = random.uniform(0.15, 0.40), random.uniform(0.35, 0.60)
+        leg_s, leg_v_mult = random.uniform(0.10, 0.35), random.uniform(0.6, 0.9)
+    elif mood == 'warm':
+        hue_body = random.uniform(0.95, 1.08) % 1.0  # Reds/oranges
+        hue_accent = (hue_body + random.uniform(0.0, 0.1)) % 1.0
+        hue_stripe = (hue_body + random.uniform(-0.05, 0.15)) % 1.0
+        body_s, body_v = random.uniform(0.55, 0.90), random.uniform(0.40, 0.75)
+        leg_s, leg_v_mult = random.uniform(0.40, 0.75), random.uniform(0.5, 0.8)
+    else:  # cool
+        hue_body = random.uniform(0.5, 0.72)  # Blues/teals/purples
+        hue_accent = (hue_body + random.uniform(-0.08, 0.12)) % 1.0
+        hue_stripe = (hue_body + random.uniform(-0.15, 0.15)) % 1.0
+        body_s, body_v = random.uniform(0.50, 0.85), random.uniform(0.35, 0.70)
+        leg_s, leg_v_mult = random.uniform(0.35, 0.70), random.uniform(0.5, 0.8)
 
-    # Legs: same/similar hue, darker than body
-    leg_s = random.uniform(0.40, 0.75)
-    leg_v = body_v * random.uniform(0.5, 0.75)  # Always darker than body
-    legs = colorsys.hsv_to_rgb(hue_accent, leg_s, max(0.1, leg_v))
+    # === BRIGHTNESS HIERARCHY ===
+    # Enforce contrast: pick 3 distinct brightness tiers, then assign parts to tiers
+    # This prevents the "everything same shade" problem
+    tier_order = random.choice([
+        'stripe_bright',   # stripe > body > tips (classic)
+        'body_bright',     # body > stripe > tips
+        'tips_pop',        # tips bright, body medium, legs dark
+        'all_bright',      # everything vivid, contrast via hue not shade
+        'all_dark',        # deep rich tones, stripe pops
+        'legs_light',      # lighter legs on dark body
+    ])
 
-    # Leg tips: very dark, near black with slight tint
-    tip_v = random.uniform(0.05, 0.15)
-    tip_s = random.uniform(0.2, 0.5)
-    leg_tips = colorsys.hsv_to_rgb(hue_body, tip_s, tip_v)
+    if tier_order == 'stripe_bright':
+        bright_v = random.uniform(0.65, 0.95)
+        mid_v = random.uniform(0.35, 0.60)
+        dark_v = random.uniform(0.05, 0.20)
+    elif tier_order == 'body_bright':
+        bright_v = random.uniform(0.60, 0.85)
+        mid_v = random.uniform(0.35, 0.55)
+        dark_v = random.uniform(0.05, 0.20)
+    elif tier_order == 'tips_pop':
+        bright_v = random.uniform(0.55, 0.85)
+        mid_v = random.uniform(0.30, 0.55)
+        dark_v = random.uniform(0.10, 0.30)
+    elif tier_order == 'all_bright':
+        bright_v = random.uniform(0.75, 1.0)
+        mid_v = random.uniform(0.60, 0.85)
+        dark_v = random.uniform(0.45, 0.65)
+    elif tier_order == 'all_dark':
+        bright_v = random.uniform(0.50, 0.70)
+        mid_v = random.uniform(0.20, 0.40)
+        dark_v = random.uniform(0.05, 0.15)
+    else:  # legs_light
+        bright_v = random.uniform(0.65, 0.90)
+        mid_v = random.uniform(0.30, 0.50)
+        dark_v = random.uniform(0.08, 0.22)
 
-    # Stripe: accent color, brighter and more saturated for contrast
-    stripe_s = random.uniform(0.60, 0.95)
-    stripe_v = random.uniform(0.50, 0.85)
-    stripe = colorsys.hsv_to_rgb(hue_stripe, stripe_s, stripe_v)
+    # Body
+    if tier_order in ('body_bright', 'all_bright'):
+        body = colorsys.hsv_to_rgb(hue_body, body_s, bright_v)
+        body_v_actual = bright_v
+    elif tier_order == 'all_dark':
+        body = colorsys.hsv_to_rgb(hue_body, body_s, mid_v)
+        body_v_actual = mid_v
+    else:
+        body = colorsys.hsv_to_rgb(hue_body, body_s, mid_v)
+        body_v_actual = mid_v
 
-    # Horn tips: dark with slight accent tint
-    horn_v = random.uniform(0.08, 0.20)
-    horn_s = random.uniform(0.15, 0.45)
-    horn_tips = colorsys.hsv_to_rgb(hue_accent, horn_s, horn_v)
+    # Legs
+    if tier_order == 'legs_light':
+        # Lighter legs on dark body
+        legs = colorsys.hsv_to_rgb(hue_accent, leg_s, bright_v)
+    elif tier_order == 'all_bright':
+        legs = colorsys.hsv_to_rgb(hue_accent, leg_s, mid_v)
+    else:
+        leg_v = body_v_actual * random.uniform(0.35, 0.65)
+        legs = colorsys.hsv_to_rgb(hue_accent, leg_s, max(0.05, leg_v))
+
+    # Leg tips
+    if tier_order == 'tips_pop':
+        leg_tips = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.6, 0.95), bright_v)
+    elif tier_order == 'all_bright':
+        tip_hue = random.choice([hue_body, hue_accent, hue_stripe])
+        leg_tips = colorsys.hsv_to_rgb(tip_hue, random.uniform(0.5, 0.9), dark_v)
+    elif tier_order == 'legs_light':
+        leg_tips = colorsys.hsv_to_rgb(hue_body, random.uniform(0.4, 0.8), dark_v)
+    else:
+        tip_hue = random.choice([hue_body, hue_accent, hue_stripe])
+        leg_tips = colorsys.hsv_to_rgb(tip_hue, random.uniform(0.3, 0.8), dark_v)
+
+    # Stripe
+    if tier_order == 'stripe_bright':
+        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.55, 1.0), bright_v)
+    elif tier_order == 'all_dark':
+        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.65, 1.0), bright_v)  # Pop on dark body
+    elif tier_order == 'all_bright':
+        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.55, 1.0), bright_v)
+    elif tier_order == 'legs_light':
+        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.55, 1.0), mid_v)
+    else:
+        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.55, 1.0), mid_v)
+
+    # Horn tips: always contrast with body
+    horn_contrast = random.choice(['darker', 'brighter', 'accent'])
+    if horn_contrast == 'darker':
+        horn_tips = colorsys.hsv_to_rgb(hue_body, random.uniform(0.3, 0.7), max(0.05, body_v_actual * random.uniform(0.15, 0.4)))
+    elif horn_contrast == 'brighter':
+        horn_tips = colorsys.hsv_to_rgb(hue_accent, random.uniform(0.5, 0.9), min(1.0, body_v_actual * random.uniform(1.3, 1.8)))
+    else:
+        horn_tips = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.5, 0.9), random.uniform(0.3, 0.6))
 
     return {
         'body': body,
@@ -11990,8 +12108,25 @@ render_referee_beam(0.0, -100.0, 0.0, 0.0, -100.0, 0.0, 0.5, 0.0, 0.0, simulatio
 clear_ladybug_bounded(0.0, -100.0, 0.0)  # Bounded ladybug clear warmup
 place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # Ladybug render warmup
 
+# Stuck silk position update kernel (first silk hit on beetle causes lag without this)
+update_beetle_stuck_silk_positions(
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0,
+    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0,
+    0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0
+)
+
 # Sync GPU to ensure all warm-up compilations complete
 ti.sync()
+
+# Warm up .to_numpy() transfer pipelines (first call allocates buffers and causes lag)
+_ = simulation.spray_hit.to_numpy()
+_ = simulation.spray_hit_pos.to_numpy()
+_ = simulation.spray_active.to_numpy()
+_ = simulation.spray_lifetime.to_numpy()
+_ = simulation.spray_pos.to_numpy()
+_ = simulation.spray_vel.to_numpy()
+_ = simulation.spray_color.to_numpy()
+_ = simulation.silk_counts_batched.to_numpy()
 
 # Clear warmup particles so they don't show in the distance on game load
 simulation.num_spray[None] = 0
@@ -12211,13 +12346,43 @@ try:
         camera.yaw += yaw_diff * lerp_factor
         camera.yaw = camera.yaw % 360.0  # Normalize to 0-360
 
-        # Update flying referee position (opposite side of camera)
-        if referee_enabled and referee_ladybug is not None:
-            update_referee_position(camera_edge_angle, mid_x, mid_z, frame_dt)
     else:
-        # Use manual camera controls
-        renderer.handle_camera_controls(camera, window, frame_dt)
-        renderer.handle_mouse_look(camera, window)
+        # Camera tracking off - smoothly move to settled starting view
+        # Same position auto-follow settles to with beetles at spawn (-20,0,0) and (20,0,0)
+        # Camera on +Z side looking south, using auto-follow height/distance/pitch
+        home_x = 0.0
+        home_z = physics_params["CAMERA_DISTANCE"]  # 76.35
+        home_y = physics_params["CAMERA_BASE_HEIGHT"]  # 74.7
+        home_pitch = physics_params["CAMERA_PITCH"]  # -30.85
+        home_yaw = 180.0
+
+        lerp_factor = 0.05 * frame_dt * 60.0
+        lerp_factor = min(1.0, lerp_factor)
+
+        camera.pos_x += (home_x - camera.pos_x) * lerp_factor
+        camera.pos_y += (home_y - camera.pos_y) * lerp_factor
+        camera.pos_z += (home_z - camera.pos_z) * lerp_factor
+        camera.pitch += (home_pitch - camera.pitch) * lerp_factor
+
+        yaw_diff = home_yaw - camera.yaw
+        if yaw_diff > 180.0:
+            yaw_diff -= 360.0
+        elif yaw_diff < -180.0:
+            yaw_diff += 360.0
+        camera.yaw += yaw_diff * lerp_factor
+        camera.yaw = camera.yaw % 360.0
+
+    # Update flying referee position (runs regardless of camera tracking)
+    if referee_enabled and referee_ladybug is not None:
+        # Compute beetle midpoint for referee
+        ref_mid_x = (beetle_blue.x + beetle_red.x) / 2.0
+        ref_mid_z = (beetle_blue.z + beetle_red.z) / 2.0
+        if auto_follow_enabled and camera_edge_angle is not None:
+            ref_angle = camera_edge_angle
+        else:
+            # Camera locked to home position (+Z side), so angle is π/2
+            ref_angle = math.pi / 2.0
+        update_referee_position(ref_angle, ref_mid_x, ref_mid_z, frame_dt)
 
     perf_monitor.stop('camera')
 
@@ -14363,7 +14528,7 @@ try:
     # Blue beetle leg dust
     blue_leg_len = getattr(window, 'blue_leg_length_value', 8)  # Default 8 if not set yet
     blue_stagger_scale = blue_leg_len / 6.0  # Scale stagger based on leg length (6 is min)
-    if beetle_blue.active and beetle_blue.y < 3.0:  # Only when on/near ground (within 3 voxels)
+    if beetle_blue.active and beetle_blue.y < 5.0:  # Only when on/near ground (within 5 voxels)
         # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
         if beetle_blue.is_moving and not beetle_blue.is_rotating_only:
             # Scale dust particles with speed bonus (more dust when going faster)
@@ -14394,6 +14559,9 @@ try:
                 touchdown = sin_prev_leg > -0.2 and sin_leg <= -0.2
                 if touchdown:
                     tip_x, tip_z = get_leg_tip_world_position(beetle_blue, leg_id, blue_leg_len)
+                    # Nudge tip forward by velocity to compensate for movement lag
+                    tip_x += beetle_blue.vx * 0.13
+                    tip_z += beetle_blue.vz * 0.13
                     # Only spawn dust if leg tip is on arena
                     tip_dist = math.sqrt(tip_x**2 + tip_z**2)
                     if tip_dist < ARENA_RADIUS:
@@ -14462,7 +14630,7 @@ try:
 
     red_leg_len = getattr(window, 'red_leg_length_value', 8)  # Default 8 if not set yet
     red_stagger_scale = red_leg_len / 6.0  # Scale stagger based on leg length (6 is min)
-    if beetle_red.active and beetle_red.y < 3.0:  # Only when on/near ground (within 3 voxels)
+    if beetle_red.active and beetle_red.y < 5.0:  # Only when on/near ground (within 5 voxels)
         # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
         if beetle_red.is_moving and not beetle_red.is_rotating_only:
             # Scale dust particles with speed bonus (more dust when going faster)
@@ -14493,6 +14661,9 @@ try:
                 touchdown = sin_prev_leg > -0.2 and sin_leg <= -0.2
                 if touchdown:
                     tip_x, tip_z = get_leg_tip_world_position(beetle_red, leg_id, red_leg_len)
+                    # Nudge tip forward by velocity to compensate for movement lag
+                    tip_x += beetle_red.vx * 0.13
+                    tip_z += beetle_red.vz * 0.13
                     # Only spawn dust if leg tip is on arena
                     tip_dist = math.sqrt(tip_x**2 + tip_z**2)
                     if tip_dist < ARENA_RADIUS:
@@ -15651,6 +15822,11 @@ try:
             if network_manager and network_manager.is_host:
                 network_manager.send_game_options(referee_enabled, beetle_ball.active)
 
+    cam_button_text = "CAMERA MOVE: ON" if auto_follow_enabled else "CAMERA MOVE: OFF"
+    if window.GUI.button(cam_button_text):
+        auto_follow_enabled = not auto_follow_enabled
+        print(f"Camera tracking: {'ON' if auto_follow_enabled else 'OFF'}")
+
     # Ball score display (only show when ball is enabled)
     if beetle_ball.active:
         # Display score
@@ -15791,6 +15967,7 @@ try:
 
     # Blue beetle horn type button - throttled during gameplay
     window.GUI.text("")
+    window.GUI.text("=== BEETLE 1 TYPE ===")
     if can_edit_blue and show_full_customization:
         if blue_horn_type == "rhino":
             blue_button_text = "B1: RHINO (click for STAG)"
@@ -16010,6 +16187,7 @@ try:
 
     # Red beetle horn type button - throttled during gameplay
     window.GUI.text("")
+    window.GUI.text("=== BEETLE 2 TYPE ===")
     if can_edit_red and show_full_customization:
         if red_horn_type == "rhino":
             red_button_text = "B2: RHINO (click for STAG)"
