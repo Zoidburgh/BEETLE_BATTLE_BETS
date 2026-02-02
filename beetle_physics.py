@@ -469,7 +469,7 @@ NETWORK_KEYS = {
 # ============================================================================
 controllers = []  # List of connected Controller objects
 STICK_DEADZONE = 0.4       # Forward/backward deadzone
-STICK_TURN_DEADZONE = 0.4  # Turn deadzone (larger to prevent drift when walking straight)
+STICK_TURN_DEADZONE = 0.32  # Turn deadzone (lower for responsive direction changes while charging)
 TRIGGER_THRESHOLD = 0.3
 
 # SDL Controller axis/button constants (raw integers for pygame compatibility)
@@ -518,13 +518,18 @@ def pump_controller_events():
     """Call once per frame. Handles hot-plug via events, ~0.01ms overhead."""
     if not CONTROLLER_SUPPORT:
         return
-    for event in pygame.event.get():
-        if event.type == pygame.CONTROLLERDEVICEADDED:
-            print("[Controller] Device connected")
-            _refresh_controllers()
-        elif event.type == pygame.CONTROLLERDEVICEREMOVED:
-            print("[Controller] Device disconnected")
-            _refresh_controllers()
+    try:
+        for event in pygame.event.get():
+            if event.type == pygame.CONTROLLERDEVICEADDED:
+                print("[Controller] Device connected")
+                _refresh_controllers()
+            elif event.type == pygame.CONTROLLERDEVICEREMOVED:
+                print("[Controller] Device disconnected")
+                _refresh_controllers()
+    except (SystemError, KeyError):
+        # pygame/SDL can throw when controller connects/disconnects mid-frame
+        print("[Controller] Hot-plug event error, refreshing controllers")
+        _refresh_controllers()
 
 def get_controller_inputs(ctrl, horn_type_id=0):
     """Read controller state and return input bitmask (same format as keyboard)."""
@@ -2132,8 +2137,8 @@ blue_score_bounce_timer = 0.0  # Timer for blue digit bounce animation
 red_score_bounce_timer = 0.0  # Timer for red digit bounce animation
 blue_score_delay_timer = 0.0  # Delay before animation/explosion starts
 red_score_delay_timer = 0.0   # Delay before animation/explosion starts
-blue_score_pending = False    # Whether blue has a pending score to add after delay
-red_score_pending = False     # Whether red has a pending score to add after delay
+blue_score_pending = 0    # Number of pending scores to add after delay
+red_score_pending = 0     # Number of pending scores to add after delay
 SCORE_ANIMATION_DELAY = 1.0   # 1 second delay before score animation and explosion
 SCORE_BOUNCE_DURATION = 0.8  # Duration of pop & squash animation (slightly longer for spring effect)
 # Score burst particle spawning over time
@@ -5900,10 +5905,10 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         base_lift = 2.5  # Normal lift height
         base_sweep = 0.5  # Normal sweep distance
 
-        # Reduce amplitude when rotating only (60% of normal)
+        # Reduce amplitude when rotating only (80% of normal)
         if is_rotating_only == 1:
-            base_lift *= 0.6
-            base_sweep *= 0.6
+            base_lift *= 0.8
+            base_sweep *= 0.8
 
         # OPTIMIZATION: Calculate trig once per leg and cache
         leg_sin = ti.sin(leg_phase)
@@ -6446,10 +6451,10 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         base_lift = 2.5  # Normal lift height
         base_sweep = 0.5  # Normal sweep distance
 
-        # Reduce amplitude when rotating only (60% of normal)
+        # Reduce amplitude when rotating only (80% of normal)
         if is_rotating_only == 1:
-            base_lift *= 0.6
-            base_sweep *= 0.6
+            base_lift *= 0.8
+            base_sweep *= 0.8
 
         # OPTIMIZATION: Calculate trig once per leg and cache
         leg_sin = ti.sin(leg_phase)
@@ -12280,9 +12285,14 @@ try:
     else:
         # LOCAL MODE: Read both players
         if CONTROLLER_SUPPORT and controllers:
-            # Controller + keyboard mode: controller for blue, full keyboard for red
+            # Controller 1 controls blue, controller 2 (if connected) controls red
             frame_blue_inputs = get_controller_inputs(controllers[0], beetle_blue.horn_type_id)
-            frame_red_inputs = _get_keyboard_inputs(window, 'red', network_mode=True, horn_type_id=beetle_red.horn_type_id)
+            if len(controllers) >= 2:
+                # Two controllers: fully controller-based local play
+                frame_red_inputs = get_controller_inputs(controllers[1], beetle_red.horn_type_id)
+            else:
+                # One controller + keyboard for red
+                frame_red_inputs = _get_keyboard_inputs(window, 'red', network_mode=True, horn_type_id=beetle_red.horn_type_id)
         else:
             # No controller: split keyboard layout
             frame_blue_inputs = get_local_inputs(window, 'blue')
@@ -12394,7 +12404,7 @@ try:
                     normalized_bonus = beetle_blue.forward_bonus / 1.50
                 else:
                     normalized_bonus = beetle_blue.backward_bonus / 0.80
-                turn_penalty = max(0.5, 1.0 - normalized_bonus * 0.5)  # Scales to 50% turn speed over 3 sec
+                turn_penalty = max(0.65, 1.0 - normalized_bonus * 0.35)  # Scales to 65% turn speed (35% penalty) over 3 sec
                 rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
                 # Spider gets 35% faster turning (agile hunter)
                 if beetle_blue.horn_type_id == 6:
@@ -12687,7 +12697,7 @@ try:
                     normalized_bonus = beetle_red.forward_bonus / 1.50
                 else:
                     normalized_bonus = beetle_red.backward_bonus / 0.80
-                turn_penalty = max(0.5, 1.0 - normalized_bonus * 0.5)  # Scales to 50% turn speed over 3 sec
+                turn_penalty = max(0.65, 1.0 - normalized_bonus * 0.35)  # Scales to 65% turn speed (35% penalty) over 3 sec
                 rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
                 # Spider gets 35% faster turning (agile hunter)
                 if beetle_red.horn_type_id == 6:
@@ -13054,8 +13064,9 @@ try:
                             g['ball_scored_this_fall'] = True
                             g['goal_scored_by'] = "RED"
                             g['goal_celebration_timer'] = 0.0
-                            g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
-                            g['red_score_pending'] = True  # Score will be added after delay
+                            if g['red_score_delay_timer'] <= 0:
+                                g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer only if not already running
+                            g['red_score_pending'] += 1  # Score will be added after delay
                             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                                 network_manager.send_score(1, score_type=1)  # Red scores (ball goal)
                             print(f"RED SCORES!")
@@ -13063,8 +13074,9 @@ try:
                             g['ball_scored_this_fall'] = True
                             g['goal_scored_by'] = "BLUE"
                             g['goal_celebration_timer'] = 0.0
-                            g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
-                            g['blue_score_pending'] = True  # Score will be added after delay
+                            if g['blue_score_delay_timer'] <= 0:
+                                g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer only if not already running
+                            g['blue_score_pending'] += 1  # Score will be added after delay
                             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                                 network_manager.send_score(0, score_type=1)  # Blue scores (ball goal)
                             print(f"BLUE SCORES!")
@@ -13412,9 +13424,10 @@ try:
                             red_celebrating = True
                             if not beetle_ball.active:
                                 red_pulse_timer = 0.001  # Start red's celebration
-                    # Set score animation
-                    g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY
-                    g['red_score_pending'] = True
+                    # Set score animation (don't reset timer if already running)
+                    if g['red_score_delay_timer'] <= 0:
+                        g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY
+                    g['red_score_pending'] += 1
                     # Ball goal state (only for ball goals, not beetle deaths)
                     if not is_beetle_death and beetle_ball.active:
                         g['ball_scored_this_fall'] = True
@@ -13443,9 +13456,10 @@ try:
                             blue_celebrating = True
                             if not beetle_ball.active:
                                 blue_pulse_timer = 0.001  # Start blue's celebration
-                    # Set score animation
-                    g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY
-                    g['blue_score_pending'] = True
+                    # Set score animation (don't reset timer if already running)
+                    if g['blue_score_delay_timer'] <= 0:
+                        g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY
+                    g['blue_score_pending'] += 1
                     # Ball goal state (only for ball goals, not beetle deaths)
                     if not is_beetle_death and beetle_ball.active:
                         g['ball_scored_this_fall'] = True
@@ -13525,8 +13539,9 @@ try:
             beetle_blue.explosion_timer = EXPLOSION_DURATION
             beetle_blue.has_exploded = True
             # Opponent scores and we start respawn timer (works in both normal and ball mode)
-            g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
-            g['red_score_pending'] = True  # Score will be added after delay
+            if g['red_score_delay_timer'] <= 0:
+                g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer only if not already running
+            g['red_score_pending'] += 1  # Score will be added after delay
             g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
             # Network mode: host sends score event to guest with death position
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
@@ -13583,8 +13598,9 @@ try:
             beetle_red.explosion_timer = EXPLOSION_DURATION
             beetle_red.has_exploded = True
             # Opponent scores and we start respawn timer (works in both normal and ball mode)
-            g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer
-            g['blue_score_pending'] = True  # Score will be added after delay
+            if g['blue_score_delay_timer'] <= 0:
+                g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer only if not already running
+            g['blue_score_pending'] += 1  # Score will be added after delay
             g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
             # Network mode: host sends score event to guest with death position
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
@@ -15028,9 +15044,9 @@ try:
             trigger_referee_beam('blue')
         if blue_score_delay_timer <= 0:
             blue_score_delay_timer = 0
-            if blue_score_pending:
-                blue_score += 1  # Now increment the score
-                blue_score_pending = False
+            if blue_score_pending > 0:
+                blue_score += blue_score_pending  # Add all pending scores
+                blue_score_pending = 0
                 print(f"Blue {blue_score} - {red_score} Red")
             blue_score_bounce_timer = SCORE_BOUNCE_DURATION  # Start bounce animation
             # Start burst timer to spawn particles over time
@@ -15045,9 +15061,9 @@ try:
             trigger_referee_beam('red')
         if red_score_delay_timer <= 0:
             red_score_delay_timer = 0
-            if red_score_pending:
-                red_score += 1  # Now increment the score
-                red_score_pending = False
+            if red_score_pending > 0:
+                red_score += red_score_pending  # Add all pending scores
+                red_score_pending = 0
                 print(f"Blue {blue_score} - {red_score} Red")
             red_score_bounce_timer = SCORE_BOUNCE_DURATION  # Start bounce animation
             # Start burst timer to spawn particles over time
@@ -15241,10 +15257,6 @@ try:
     if window.GUI.button(fs_text):
         toggle_fullscreen_windows()
 
-    # Flying referee toggle (compact button at top)
-    ref_text = "Ref: ON" if referee_enabled else "Ref: OFF"
-    if window.GUI.button(ref_text):
-        toggle_referee()
 
     # === NETWORK / ONLINE PLAY SECTION ===
     if NETWORK_AVAILABLE:
@@ -15273,7 +15285,7 @@ try:
         elif game_state == GAME_STATE_LOBBY_HOST:
             # Hosting - show lobby ID and wait for opponent
             window.GUI.text("=== HOSTING GAME ===")
-            window.GUI.text("You control: BLUE beetle")
+            window.GUI.text("You control: BEETLE 1")
             if network_manager and network_manager.lobby_id:
                 window.GUI.text(f"Lobby ID: {network_manager.lobby_id}")
                 if window.GUI.button("Copy Lobby ID"):
@@ -15390,7 +15402,7 @@ try:
         elif game_state == GAME_STATE_LOBBY_WAITING:
             # In lobby, waiting for host to start
             window.GUI.text("=== IN LOBBY ===")
-            window.GUI.text("You control: RED beetle")
+            window.GUI.text("You control: BEETLE 2")
             window.GUI.text(f"Status: {network_manager.get_status() if network_manager else 'Error'}")
             window.GUI.text("Waiting for host to start...")
 
@@ -15425,7 +15437,7 @@ try:
         elif game_state == GAME_STATE_SYNCING:
             # Countdown sync - both players wait until GO
             window.GUI.text("=== SYNCING ===")
-            player_color = "BLUE (Host)" if local_player_id == 0 else "RED (Guest)"
+            player_color = "BEETLE 1 (Host)" if local_player_id == 0 else "BEETLE 2 (Guest)"
             window.GUI.text(f"You are: {player_color}")
             window.GUI.text("Syncing with opponent...")
 
@@ -15447,7 +15459,7 @@ try:
         elif game_state == GAME_STATE_ONLINE_PLAY:
             # Playing online
             window.GUI.text("=== ONLINE MATCH ===")
-            player_color = "BLUE" if local_player_id == 0 else "RED"
+            player_color = "BEETLE 1" if local_player_id == 0 else "BEETLE 2"
             window.GUI.text(f"You are: {player_color}")
             window.GUI.text(f"Ping: {network_manager.ping_ms:3d}ms" if network_manager else "")
 
@@ -15498,201 +15510,105 @@ try:
 
         window.GUI.text("")
 
-    # === PERFORMANCE MONITORING DISPLAY ===
-    if perf_monitor.show_stats:
-        # Compact summary line
-        total_ms = perf_monitor.get_avg('frame_total')
-        physics_ms = perf_monitor.get_avg('physics')
-        render_ms = perf_monitor.get_avg('beetle_render') + perf_monitor.get_avg('scene_render')
-        window.GUI.text(f"Frame: {total_ms:.1f}ms | Phys: {physics_ms:.1f}ms | Rend: {render_ms:.1f}ms")
-
-        # Detailed breakdown toggle
-        if perf_monitor.show_detailed:
-            for line in perf_monitor.get_detailed_breakdown():
-                window.GUI.text(line)
-
-            # Renderer sub-timing breakdown
-            rt = renderer.get_render_timing()
-            if rt:
-                window.GUI.text("--- Renderer Breakdown (last frame) ---")
-                window.GUI.text(f"  extract_voxels: {rt.get('extract_voxels', 0):.2f}ms")
-                window.GUI.text(f"  extract_debris: {rt.get('extract_debris', 0):.2f}ms")
-                window.GUI.text(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms")
-                window.GUI.text(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms")
-                window.GUI.text(f"  voxel_count: {rt.get('voxel_count', 0)}")
-
-            # Physics sub-timing breakdown
-            pt = get_physics_timing()
-            if pt:
-                window.GUI.text("--- Physics Breakdown (last frame) ---")
-                window.GUI.text(f"  input_controls: {pt.get('input_controls', 0):.2f}ms")
-                window.GUI.text(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms")
-                window.GUI.text(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms")
-                window.GUI.text(f"  debris_update: {pt.get('debris_update', 0):.2f}ms")
-                window.GUI.text(f"  spray_update: {pt.get('spray_update', 0):.2f}ms")
-                window.GUI.text(f"  spray_collision: {pt.get('spray_collision', 0):.2f}ms")
-                window.GUI.text(f"  silk_update: {pt.get('silk_update', 0):.2f}ms")
-                window.GUI.text(f"  silk_collision: {pt.get('silk_collision', 0):.2f}ms")
-                window.GUI.text(f"  all_particles: {pt.get('all_particles_total', 0):.2f}ms")
-                window.GUI.text(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms")
-                window.GUI.text(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms")
-                window.GUI.text(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms")
-                window.GUI.text(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms")
-
-    # Performance display toggle buttons
-    if window.GUI.button("Toggle Perf Stats"):
-        perf_monitor.show_stats = not perf_monitor.show_stats
-    if perf_monitor.show_stats:
-        if window.GUI.button("Toggle Detailed"):
-            perf_monitor.show_detailed = not perf_monitor.show_detailed
-        if window.GUI.button("Save Perf Log"):
-            with open("perf_log.txt", "w") as f:
-                # System info header
-                f.write("=== SYSTEM INFO ===\n")
-                f.write(f"Backend: {simulation.BACKEND_REASON}\n")
-                f.write(f"Resolution: {WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]}\n")
-                f.write(f"Taichi version: {ti.__version__}\n")
-                # Try to get GPU info
-                try:
-                    import subprocess
-                    result = subprocess.run(
-                        ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0:
-                        gpus = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
-                        f.write(f"GPU(s): {', '.join(gpus)}\n")
-                except:
-                    f.write("GPU(s): (detection failed)\n")
-                f.write("\n")
-
-                # Main performance stats
-                f.write(f"FPS: {actual_fps:.0f}\n")
-                f.write(f"Frame count: {perf_monitor.frame_count}\n\n")
-                for line in perf_monitor.get_detailed_breakdown():
-                    f.write(line + "\n")
-
-                # Particle counts
-                f.write("\n--- Particle Counts ---\n")
-                f.write(f"  debris: {simulation.num_debris[None]} / {simulation.MAX_DEBRIS}\n")
-                f.write(f"  spray: {simulation.num_spray[None]} / {simulation.MAX_SPRAY}\n")
-                f.write(f"  silk: {simulation.num_silk[None]} / {simulation.MAX_SILK}\n")
-                f.write(f"  cleanup_freq_debris: every {simulation.CLEANUP_FREQUENCY_DEBRIS} frames\n")
-                f.write(f"  cleanup_freq_spray: every {simulation.CLEANUP_FREQUENCY_SPRAY} frames\n")
-                f.write(f"  cleanup_freq_silk: every {simulation.CLEANUP_FREQUENCY_SILK} frames\n")
-
-                # Add renderer breakdown
-                rt = renderer.get_render_timing()
-                if rt:
-                    f.write("\n--- Renderer Breakdown (last frame) ---\n")
-                    f.write(f"  extract_voxels: {rt.get('extract_voxels', 0):.2f}ms\n")
-                    f.write(f"  extract_debris: {rt.get('extract_debris', 0):.2f}ms\n")
-                    f.write(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms\n")
-                    f.write(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms\n")
-                    f.write(f"  voxel_count: {rt.get('voxel_count', 0)}\n")
-                # Add physics breakdown
-                pt = get_physics_timing()
-                if pt:
-                    f.write("\n--- Physics Breakdown (last frame) ---\n")
-                    f.write(f"  input_controls: {pt.get('input_controls', 0):.2f}ms\n")
-                    f.write(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms\n")
-                    f.write(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms\n")
-                    f.write(f"  debris_update: {pt.get('debris_update', 0):.2f}ms\n")
-                    f.write(f"  spray_update: {pt.get('spray_update', 0):.2f}ms\n")
-                    f.write(f"  spray_collision: {pt.get('spray_collision', 0):.2f}ms\n")
-                    f.write(f"  silk_update: {pt.get('silk_update', 0):.2f}ms\n")
-                    f.write(f"  silk_collision: {pt.get('silk_collision', 0):.2f}ms\n")
-                    f.write(f"  all_particles_total: {pt.get('all_particles_total', 0):.2f}ms\n")
-                    f.write(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms\n")
-                    f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
-                    f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")
-                    f.write(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms\n")
-
-                # Network stats (only shown when in online play or after online session)
-                if game_state == GAME_STATE_ONLINE_PLAY or network_stats['total_render_frames'] > 0:
-                    f.write("\n--- Network Stats ---\n")
-                    elapsed = time.time() - network_stats['session_start_time'] if network_stats['session_start_time'] > 0 else 1
-                    expected_physics = elapsed * 60  # 60 physics frames per second expected
-                    actual_physics = network_stats['total_physics_frames']
-                    game_speed = (actual_physics / expected_physics * 100) if expected_physics > 0 else 100
-                    physics_per_render = actual_physics / max(1, network_stats['total_render_frames'])
-
-                    f.write(f"  session_time: {elapsed:.1f}s\n")
-                    f.write(f"  game_speed: {game_speed:.1f}% (100% = real-time)\n")
-                    f.write(f"  physics_frames: {actual_physics} (expected: {int(expected_physics)})\n")
-                    f.write(f"  render_frames: {network_stats['total_render_frames']}\n")
-                    f.write(f"  physics_per_render: {physics_per_render:.2f} (should be ~1.0)\n")
-                    f.write(f"  accumulator_drains: {network_stats['accumulator_drains']} (waits for opponent)\n")
-                    f.write(f"  frame_diff: {network_stats['last_frame_diff']:+d} (host vs guest sync)\n")
-                    if network_manager:
-                        f.write(f"  ping: {network_manager.ping_ms}ms\n")
-                        f.write(f"  input_delay: {input_buffer.delay} frames ({input_buffer.delay * 16.67:.0f}ms)\n")
-                        # Jitter buffer stats
-                        if input_buffer.ping_samples:
-                            p90_ping = input_buffer._get_percentile_ping(90)
-                            f.write(f"  jitter_buffer: {len(input_buffer.ping_samples)} samples, 90th percentile: {p90_ping:.0f}ms\n")
-
-                    f.write("\n  Diagnosis:\n")
-                    if game_speed < 90:
-                        f.write(f"    WARNING: Game running at {game_speed:.0f}% speed!\n")
-                        if network_stats['accumulator_drains'] > network_stats['total_render_frames'] * 0.1:
-                            f.write(f"    CAUSE: Waiting for opponent inputs ({network_stats['accumulator_drains']} drains)\n")
-                            f.write("    FIX: Check opponent's connection, reduce input_delay, or increase buffer\n")
-                    else:
-                        f.write("    Game speed OK\n")
-
-                f.write("\n--- Notes ---\n")
-                f.write("scene_particles is the main bottleneck indicator:\n")
-                f.write("  <3ms = GPU backend working well (data on GPU)\n")
-                f.write("  8-15ms = CPU->GPU transfer overhead\n")
-                f.write("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)\n")
-            print("Performance log saved to perf_log.txt")
-
+    # Ball controls (beetle soccer)
     window.GUI.text("")
+    window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
 
-    # Blue beetle status
-    if beetle_blue.active:
-        window.GUI.text("BLUE BEETLE (TFGH + RY + VB)")
-        window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.y:.1f}, {beetle_blue.z:.1f})")
-        window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
-        window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
-        window.GUI.text(f"  Horn pitch: {math.degrees(beetle_blue.horn_pitch):.1f}°")
-        window.GUI.text(f"  Horn yaw: {math.degrees(beetle_blue.horn_yaw):.1f}°")
-        # Show spray charges for bombardier beetles
-        if blue_horn_type_id == 5:
-            charge_bar = "█" * spray_charges_blue + "░" * (SPRAY_MAX_CHARGES - spray_charges_blue)
-            window.GUI.text(f"  Spray: [{charge_bar}] {spray_charges_blue}/{SPRAY_MAX_CHARGES}")
+    # Ball toggle button (only host can toggle in online mode)
+    is_online_guest = game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host
+    if is_online_guest:
+        # Guest sees ball state but can't toggle
+        ball_status = "Ball: ON (host controls)" if beetle_ball.active else "Ball: OFF (host controls)"
+        window.GUI.text(ball_status)
     else:
-        window.GUI.text("BLUE BEETLE: FALLEN")
+        ball_button_text = "STOP BEETLE BALL" if beetle_ball.active else "PLAY BEETLE BALL"
+        if window.GUI.button(ball_button_text):
+            if beetle_ball.active:
+                # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
+                if ball_last_rendered[None] == 1:
+                    num_voxels = ball_cache_size[None]
+                    if num_voxels > 0:
+                        clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                    ball_last_rendered[None] = 0
+                else:
+                    clear_ball()  # Fallback to full clear if ball position unknown
+                simulation.clear_bowl_perimeter()
+                # Rebuild floor height cache without the ice bowl
+                build_floor_height_cache()
+                # Reset scores when leaving ball mode
+                blue_score = 0
+                red_score = 0
+            beetle_ball.active = not beetle_ball.active
+            if beetle_ball.active:
+                # Initialize ball cache for assembly animation if not already done
+                if not ball_cache_initialized:
+                    init_ball_cache(beetle_ball.radius)
+                    ball_cache_initialized = True
+                # Reset ball to center when enabling
+                beetle_ball.x = 0.0
+                beetle_ball.y = 28.0  # Drop from higher than beetles
+                beetle_ball.z = 0.0
+                beetle_ball.vx = 0.0
+                beetle_ball.vy = 0.0
+                beetle_ball.vz = 0.0
+                beetle_ball.rotation = 0.0
+                beetle_ball.angular_velocity = 0.0
+                beetle_ball.pitch = 0.0
+                beetle_ball.pitch_velocity = 0.0
+                beetle_ball.roll = 0.0
+                beetle_ball.roll_velocity = 0.0
+                # Reset prev state to avoid interpolation jump
+                beetle_ball.prev_x = beetle_ball.x
+                beetle_ball.prev_y = beetle_ball.y
+                beetle_ball.prev_z = beetle_ball.z
+                beetle_ball.prev_rotation = beetle_ball.rotation
+                beetle_ball.prev_pitch = beetle_ball.pitch
+                beetle_ball.prev_roll = beetle_ball.roll
+                # Reset scores and flags
+                blue_score = 0
+                red_score = 0
+                ball_scored_this_fall = False
+                ball_has_exploded = False
+                ball_explosion_delay = 0.0
+                ball_explosion_timer = 0.0
+                # Render the bowl perimeter for ball mode (with goal pit cutouts)
+                simulation.render_bowl_perimeter()
+                # Rebuild floor height cache to include the ice bowl
+                build_floor_height_cache()
+            # Sync to guest if we're the host
+            if network_manager and network_manager.is_host:
+                network_manager.send_game_options(referee_enabled, beetle_ball.active)
+
+    # Ball score display (only show when ball is enabled)
+    if beetle_ball.active:
+        # Display score
+        window.GUI.text(f"SCORE: B1 {blue_score} - {red_score} B2")
+
+    # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
+    # if perf_monitor.show_stats:
+    #     total_ms = perf_monitor.get_avg('frame_total')
+    #     physics_ms = perf_monitor.get_avg('physics')
+    #     render_ms = perf_monitor.get_avg('beetle_render') + perf_monitor.get_avg('scene_render')
+    #     window.GUI.text(f"Frame: {total_ms:.1f}ms | Phys: {physics_ms:.1f}ms | Rend: {render_ms:.1f}ms")
+    #     if perf_monitor.show_detailed:
+    #         for line in perf_monitor.get_detailed_breakdown():
+    #             window.GUI.text(line)
+    # if window.GUI.button("Toggle Perf Stats"):
+    #     perf_monitor.show_stats = not perf_monitor.show_stats
 
     window.GUI.text("")
 
-    # Red beetle status
-    if beetle_red.active:
-        window.GUI.text("RED BEETLE (IJKL + UO + NM)")
-        window.GUI.text(f"  Pos: ({beetle_red.x:.1f}, {beetle_red.y:.1f}, {beetle_red.z:.1f})")
-        window.GUI.text(f"  Speed: {math.sqrt(beetle_red.vx**2 + beetle_red.vz**2):.1f}")
-        window.GUI.text(f"  Facing: {math.degrees(beetle_red.rotation):.0f}°")
-        window.GUI.text(f"  Horn pitch: {math.degrees(beetle_red.horn_pitch):.1f}°")
-        window.GUI.text(f"  Horn yaw: {math.degrees(beetle_red.horn_yaw):.1f}°")
-        # Show spray charges for bombardier beetles
-        if red_horn_type_id == 5:
-            charge_bar = "█" * spray_charges_red + "░" * (SPRAY_MAX_CHARGES - spray_charges_red)
-            window.GUI.text(f"  Spray: [{charge_bar}] {spray_charges_red}/{SPRAY_MAX_CHARGES}")
-    else:
-        window.GUI.text("RED BEETLE: FALLEN")
-    window.GUI.text("")
-
-    # Distance display - only if both beetles are active
-    if beetle_blue.active and beetle_red.active:
-        dx = beetle_blue.x - beetle_red.x
-        dz = beetle_blue.z - beetle_red.z
-        distance = math.sqrt(dx**2 + dz**2)
-        window.GUI.text(f"Distance: {distance:.1f}")
-
-    # Active beetles count
-    active_count = (1 if beetle_blue.active else 0) + (1 if beetle_red.active else 0)
-    window.GUI.text(f"Active beetles: {active_count}/2")
+    # Blue/Red beetle stats (commented out - too cluttered)
+    # if beetle_blue.active:
+    #     window.GUI.text("BLUE BEETLE (TFGH + RY + VB)")
+    #     window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.y:.1f}, {beetle_blue.z:.1f})")
+    #     window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
+    #     window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
+    #     window.GUI.text(f"  Horn pitch: {math.degrees(beetle_blue.horn_pitch):.1f}°")
+    #     window.GUI.text(f"  Horn yaw: {math.degrees(beetle_blue.horn_yaw):.1f}°")
+    # if beetle_red.active:
+    #     window.GUI.text("RED BEETLE (IJKL + UO + NM)")
+    #     ...
 
     window.GUI.text("")
 
@@ -15709,9 +15625,9 @@ try:
     can_edit_red = not network_manager or not network_manager.connected or not network_manager.is_host
 
     if can_edit_blue:
-        window.GUI.text("=== BLUE BEETLE GENETICS ===")
+        window.GUI.text("=== BEETLE 1 GENETICS ===")
     else:
-        window.GUI.text("=== BLUE BEETLE (opponent) ===")
+        window.GUI.text("=== BEETLE 1 (opponent) ===")
 
     # Front body (thorax) is fixed at 4 layers
     front_body_height = 4
@@ -15741,7 +15657,7 @@ try:
         new_blue_leg_length = window.blue_leg_length_value
 
     # Random blue beetle button - only if can edit and not throttled
-    if can_edit_blue and show_full_customization and window.GUI.button("Randomize Blue Beetle"):
+    if can_edit_blue and show_full_customization and window.GUI.button("Randomize Beetle 1"):
         new_blue_shaft = random.randint(8, 15)
         new_blue_prong = random.randint(3, 6)
         new_blue_back_body = random.randint(4, 8)
@@ -15780,31 +15696,31 @@ try:
             send_local_beetle_config(network_manager, is_host=True)
 
     # Blue beetle stats
-    window.GUI.text(f"Blue Shaft: {window.blue_horn_shaft_value} voxels")
-    window.GUI.text(f"Blue Prong: {window.blue_horn_prong_value} voxels")
+    window.GUI.text(f"B1 Shaft: {window.blue_horn_shaft_value} voxels")
+    window.GUI.text(f"B1 Prong: {window.blue_horn_prong_value} voxels")
     blue_total_reach = window.blue_horn_shaft_value + window.blue_horn_prong_value
-    window.GUI.text(f"Blue Total Horn: {blue_total_reach} voxels")
+    window.GUI.text(f"B1 Total Horn: {blue_total_reach} voxels")
 
     # Blue beetle horn type button - throttled during gameplay
     window.GUI.text("")
     if can_edit_blue and show_full_customization:
         if blue_horn_type == "rhino":
-            blue_button_text = "Blue: RHINO (click for STAG)"
+            blue_button_text = "B1: RHINO (click for STAG)"
         elif blue_horn_type == "stag":
-            blue_button_text = "Blue: STAG (click for HERCULES)"
+            blue_button_text = "B1: STAG (click for HERCULES)"
         elif blue_horn_type == "hercules":
-            blue_button_text = "Blue: HERCULES (click for SCORPION)"
+            blue_button_text = "B1: HERCULES (click for SCORPION)"
         elif blue_horn_type == "scorpion":
-            blue_button_text = "Blue: SCORPION (click for ATLAS)"
+            blue_button_text = "B1: SCORPION (click for ATLAS)"
         elif blue_horn_type == "atlas":
-            blue_button_text = "Blue: ATLAS (click for BOMBARDIER)"
+            blue_button_text = "B1: ATLAS (click for BOMBARDIER)"
         elif blue_horn_type == "bombardier":
-            blue_button_text = "Blue: BOMBARDIER (click for SPIDER)"
+            blue_button_text = "B1: BOMBARDIER (click for SPIDER)"
         else:  # spider
-            blue_button_text = "Blue: SPIDER (click for RHINO)"
+            blue_button_text = "B1: SPIDER (click for RHINO)"
     else:
         # Read-only display (opponent's beetle OR throttled during gameplay)
-        window.GUI.text(f"Blue: {blue_horn_type.upper()}")
+        window.GUI.text(f"B1: {blue_horn_type.upper()}")
         blue_button_text = None
 
     if blue_button_text and window.GUI.button(blue_button_text):
@@ -15876,34 +15792,34 @@ try:
     # Blue beetle color pickers - only if can edit, throttled during gameplay
     window.GUI.text("")
     if can_edit_blue and show_full_customization:
-        window.GUI.text("=== BLUE BEETLE COLORS ===")
+        window.GUI.text("=== BEETLE 1 COLORS ===")
         blue_color_changed = False
 
-        new_blue_body_color = window.GUI.color_edit_3("Blue Body", window.blue_body_color)
+        new_blue_body_color = window.GUI.color_edit_3("B1 Body", window.blue_body_color)
         if new_blue_body_color != window.blue_body_color:
             window.blue_body_color = new_blue_body_color
             simulation.blue_body_color[None] = ti.Vector([new_blue_body_color[0], new_blue_body_color[1], new_blue_body_color[2]])
             blue_color_changed = True
 
-        new_blue_leg_color = window.GUI.color_edit_3("Blue Legs", window.blue_leg_color)
+        new_blue_leg_color = window.GUI.color_edit_3("B1 Legs", window.blue_leg_color)
         if new_blue_leg_color != window.blue_leg_color:
             window.blue_leg_color = new_blue_leg_color
             simulation.blue_leg_color[None] = ti.Vector([new_blue_leg_color[0], new_blue_leg_color[1], new_blue_leg_color[2]])
             blue_color_changed = True
 
-        new_blue_leg_tip_color = window.GUI.color_edit_3("Blue Leg Tips", window.blue_leg_tip_color)
+        new_blue_leg_tip_color = window.GUI.color_edit_3("B1 Leg Tips", window.blue_leg_tip_color)
         if new_blue_leg_tip_color != window.blue_leg_tip_color:
             window.blue_leg_tip_color = new_blue_leg_tip_color
             simulation.blue_leg_tip_color[None] = ti.Vector([new_blue_leg_tip_color[0], new_blue_leg_tip_color[1], new_blue_leg_tip_color[2]])
             blue_color_changed = True
 
-        new_blue_stripe_color = window.GUI.color_edit_3("Blue Stripe", window.blue_stripe_color)
+        new_blue_stripe_color = window.GUI.color_edit_3("B1 Stripe", window.blue_stripe_color)
         if new_blue_stripe_color != window.blue_stripe_color:
             window.blue_stripe_color = new_blue_stripe_color
             simulation.blue_stripe_color[None] = ti.Vector([new_blue_stripe_color[0], new_blue_stripe_color[1], new_blue_stripe_color[2]])
             blue_color_changed = True
 
-        new_blue_horn_tip_color = window.GUI.color_edit_3("Blue Horn Tips", window.blue_horn_tip_color)
+        new_blue_horn_tip_color = window.GUI.color_edit_3("B1 Horn Tips", window.blue_horn_tip_color)
         if new_blue_horn_tip_color != window.blue_horn_tip_color:
             window.blue_horn_tip_color = new_blue_horn_tip_color
             simulation.blue_horn_tip_color[None] = ti.Vector([new_blue_horn_tip_color[0], new_blue_horn_tip_color[1], new_blue_horn_tip_color[2]])
@@ -15915,9 +15831,9 @@ try:
 
     window.GUI.text("")
     if can_edit_red:
-        window.GUI.text("=== RED BEETLE GENETICS ===")
+        window.GUI.text("=== BEETLE 2 GENETICS ===")
     else:
-        window.GUI.text("=== RED BEETLE (opponent) ===")
+        window.GUI.text("=== BEETLE 2 (opponent) ===")
 
     # Red beetle sliders - only editable if can_edit_red, throttled during gameplay
     if can_edit_red and show_full_customization:
@@ -15944,7 +15860,7 @@ try:
         new_red_leg_length = window.red_leg_length_value
 
     # Random red beetle button - only if can edit and not throttled
-    if can_edit_red and show_full_customization and window.GUI.button("Randomize Red Beetle"):
+    if can_edit_red and show_full_customization and window.GUI.button("Randomize Beetle 2"):
         new_red_shaft = random.randint(8, 15)
         new_red_prong = random.randint(3, 6)
         new_red_back_body = random.randint(4, 8)
@@ -15983,31 +15899,31 @@ try:
             send_local_beetle_config(network_manager, is_host=False)
 
     # Red beetle stats
-    window.GUI.text(f"Red Shaft: {window.red_horn_shaft_value} voxels")
-    window.GUI.text(f"Red Prong: {window.red_horn_prong_value} voxels")
+    window.GUI.text(f"B2 Shaft: {window.red_horn_shaft_value} voxels")
+    window.GUI.text(f"B2 Prong: {window.red_horn_prong_value} voxels")
     red_total_reach = window.red_horn_shaft_value + window.red_horn_prong_value
-    window.GUI.text(f"Red Total Horn: {red_total_reach} voxels")
+    window.GUI.text(f"B2 Total Horn: {red_total_reach} voxels")
 
     # Red beetle horn type button - throttled during gameplay
     window.GUI.text("")
     if can_edit_red and show_full_customization:
         if red_horn_type == "rhino":
-            red_button_text = "Red: RHINO (click for STAG)"
+            red_button_text = "B2: RHINO (click for STAG)"
         elif red_horn_type == "stag":
-            red_button_text = "Red: STAG (click for HERCULES)"
+            red_button_text = "B2: STAG (click for HERCULES)"
         elif red_horn_type == "hercules":
-            red_button_text = "Red: HERCULES (click for SCORPION)"
+            red_button_text = "B2: HERCULES (click for SCORPION)"
         elif red_horn_type == "scorpion":
-            red_button_text = "Red: SCORPION (click for ATLAS)"
+            red_button_text = "B2: SCORPION (click for ATLAS)"
         elif red_horn_type == "atlas":
-            red_button_text = "Red: ATLAS (click for BOMBARDIER)"
+            red_button_text = "B2: ATLAS (click for BOMBARDIER)"
         elif red_horn_type == "bombardier":
-            red_button_text = "Red: BOMBARDIER (click for SPIDER)"
+            red_button_text = "B2: BOMBARDIER (click for SPIDER)"
         else:  # spider
-            red_button_text = "Red: SPIDER (click for RHINO)"
+            red_button_text = "B2: SPIDER (click for RHINO)"
     else:
         # Read-only display (opponent's beetle OR throttled during gameplay)
-        window.GUI.text(f"Red: {red_horn_type.upper()}")
+        window.GUI.text(f"B2: {red_horn_type.upper()}")
         red_button_text = None
 
     if red_button_text and window.GUI.button(red_button_text):
@@ -16079,34 +15995,34 @@ try:
     # Red beetle color pickers - only if can edit, throttled during gameplay
     window.GUI.text("")
     if can_edit_red and show_full_customization:
-        window.GUI.text("=== RED BEETLE COLORS ===")
+        window.GUI.text("=== BEETLE 2 COLORS ===")
         red_color_changed = False
 
-        new_red_body_color = window.GUI.color_edit_3("Red Body", window.red_body_color)
+        new_red_body_color = window.GUI.color_edit_3("B2 Body", window.red_body_color)
         if new_red_body_color != window.red_body_color:
             window.red_body_color = new_red_body_color
             simulation.red_body_color[None] = ti.Vector([new_red_body_color[0], new_red_body_color[1], new_red_body_color[2]])
             red_color_changed = True
 
-        new_red_leg_color = window.GUI.color_edit_3("Red Legs", window.red_leg_color)
+        new_red_leg_color = window.GUI.color_edit_3("B2 Legs", window.red_leg_color)
         if new_red_leg_color != window.red_leg_color:
             window.red_leg_color = new_red_leg_color
             simulation.red_leg_color[None] = ti.Vector([new_red_leg_color[0], new_red_leg_color[1], new_red_leg_color[2]])
             red_color_changed = True
 
-        new_red_leg_tip_color = window.GUI.color_edit_3("Red Leg Tips", window.red_leg_tip_color)
+        new_red_leg_tip_color = window.GUI.color_edit_3("B2 Leg Tips", window.red_leg_tip_color)
         if new_red_leg_tip_color != window.red_leg_tip_color:
             window.red_leg_tip_color = new_red_leg_tip_color
             simulation.red_leg_tip_color[None] = ti.Vector([new_red_leg_tip_color[0], new_red_leg_tip_color[1], new_red_leg_tip_color[2]])
             red_color_changed = True
 
-        new_red_stripe_color = window.GUI.color_edit_3("Red Stripe", window.red_stripe_color)
+        new_red_stripe_color = window.GUI.color_edit_3("B2 Stripe", window.red_stripe_color)
         if new_red_stripe_color != window.red_stripe_color:
             window.red_stripe_color = new_red_stripe_color
             simulation.red_stripe_color[None] = ti.Vector([new_red_stripe_color[0], new_red_stripe_color[1], new_red_stripe_color[2]])
             red_color_changed = True
 
-        new_red_horn_tip_color = window.GUI.color_edit_3("Red Horn Tips", window.red_horn_tip_color)
+        new_red_horn_tip_color = window.GUI.color_edit_3("B2 Horn Tips", window.red_horn_tip_color)
         if new_red_horn_tip_color != window.red_horn_tip_color:
             window.red_horn_tip_color = new_red_horn_tip_color
             simulation.red_horn_tip_color[None] = ti.Vector([new_red_horn_tip_color[0], new_red_horn_tip_color[1], new_red_horn_tip_color[2]])
@@ -16116,80 +16032,6 @@ try:
         if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
             send_local_beetle_config(network_manager, is_host=False)
 
-    # Ball controls (beetle soccer) - always visible
-    window.GUI.text("")
-    window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
-
-    # Ball toggle button (only host can toggle in online mode)
-    is_online_guest = game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host
-    if is_online_guest:
-        # Guest sees ball state but can't toggle
-        ball_status = "Ball: ON (host controls)" if beetle_ball.active else "Ball: OFF (host controls)"
-        window.GUI.text(ball_status)
-    else:
-        ball_button_text = "Disable Ball" if beetle_ball.active else "Enable Ball"
-        if window.GUI.button(ball_button_text):
-            if beetle_ball.active:
-                # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
-                if ball_last_rendered[None] == 1:
-                    num_voxels = ball_cache_size[None]
-                    if num_voxels > 0:
-                        clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                    ball_last_rendered[None] = 0
-                else:
-                    clear_ball()  # Fallback to full clear if ball position unknown
-                simulation.clear_bowl_perimeter()
-                # Rebuild floor height cache without the ice bowl
-                build_floor_height_cache()
-                # Reset scores when leaving ball mode
-                blue_score = 0
-                red_score = 0
-            beetle_ball.active = not beetle_ball.active
-            if beetle_ball.active:
-                # Initialize ball cache for assembly animation if not already done
-                if not ball_cache_initialized:
-                    init_ball_cache(beetle_ball.radius)
-                    ball_cache_initialized = True
-                # Reset ball to center when enabling
-                beetle_ball.x = 0.0
-                beetle_ball.y = 28.0  # Drop from higher than beetles
-                beetle_ball.z = 0.0
-                beetle_ball.vx = 0.0
-                beetle_ball.vy = 0.0
-                beetle_ball.vz = 0.0
-                beetle_ball.rotation = 0.0
-                beetle_ball.angular_velocity = 0.0
-                beetle_ball.pitch = 0.0
-                beetle_ball.pitch_velocity = 0.0
-                beetle_ball.roll = 0.0
-                beetle_ball.roll_velocity = 0.0
-                # Reset prev state to avoid interpolation jump
-                beetle_ball.prev_x = beetle_ball.x
-                beetle_ball.prev_y = beetle_ball.y
-                beetle_ball.prev_z = beetle_ball.z
-                beetle_ball.prev_rotation = beetle_ball.rotation
-                beetle_ball.prev_pitch = beetle_ball.pitch
-                beetle_ball.prev_roll = beetle_ball.roll
-                # Reset scores and flags
-                blue_score = 0
-                red_score = 0
-                ball_scored_this_fall = False
-                ball_has_exploded = False
-                ball_explosion_delay = 0.0
-                ball_explosion_timer = 0.0
-                # Render the bowl perimeter for ball mode (with goal pit cutouts)
-                simulation.render_bowl_perimeter()
-                # Rebuild floor height cache to include the ice bowl
-                build_floor_height_cache()
-            # Sync to guest if we're the host
-            if network_manager and network_manager.is_host:
-                network_manager.send_game_options(referee_enabled, beetle_ball.active)
-
-    # Ball score display (only show when ball is enabled)
-    if beetle_ball.active:
-        # Display score
-        window.GUI.text(f"SCORE: Blue {blue_score} - {red_score} Red")
-
     # Winner announcement and restart button
     if blue_celebrating or red_celebrating:
         window.GUI.text("")
@@ -16197,9 +16039,9 @@ try:
         if blue_celebrating and red_celebrating:
             window.GUI.text("*** DOUBLE KO! ***")
         elif blue_celebrating:
-            window.GUI.text("*** BLUE SCORES! ***")
+            window.GUI.text("*** BEETLE 1 SCORES! ***")
         else:
-            window.GUI.text("*** RED SCORES! ***")
+            window.GUI.text("*** BEETLE 2 SCORES! ***")
         window.GUI.text("="*30)
         window.GUI.text("")
         if window.GUI.button("RESTART MATCH"):
@@ -16339,6 +16181,101 @@ try:
             physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
             beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
             beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+
+    # Ladybug referee toggle (bottom of menu)
+    window.GUI.text("")
+    ref_text = "LADYBUG REF: ON" if referee_enabled else "LADYBUG REF: OFF"
+    if window.GUI.button(ref_text):
+        toggle_referee()
+
+    # Save performance log button (at bottom of menu)
+    if window.GUI.button("Save Perf Log"):
+        with open("perf_log.txt", "w") as f:
+            f.write("=== SYSTEM INFO ===\n")
+            f.write(f"Backend: {simulation.BACKEND_REASON}\n")
+            f.write(f"Resolution: {WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]}\n")
+            f.write(f"Taichi version: {ti.__version__}\n")
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
+                    capture_output=True, text=True, timeout=5
+                )
+                if result.returncode == 0:
+                    gpus = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
+                    f.write(f"GPU(s): {', '.join(gpus)}\n")
+            except:
+                f.write("GPU(s): (detection failed)\n")
+            f.write("\n")
+            f.write(f"FPS: {actual_fps:.0f}\n")
+            f.write(f"Frame count: {perf_monitor.frame_count}\n\n")
+            for line in perf_monitor.get_detailed_breakdown():
+                f.write(line + "\n")
+            f.write("\n--- Particle Counts ---\n")
+            f.write(f"  debris: {simulation.num_debris[None]} / {simulation.MAX_DEBRIS}\n")
+            f.write(f"  spray: {simulation.num_spray[None]} / {simulation.MAX_SPRAY}\n")
+            f.write(f"  silk: {simulation.num_silk[None]} / {simulation.MAX_SILK}\n")
+            f.write(f"  cleanup_freq_debris: every {simulation.CLEANUP_FREQUENCY_DEBRIS} frames\n")
+            f.write(f"  cleanup_freq_spray: every {simulation.CLEANUP_FREQUENCY_SPRAY} frames\n")
+            f.write(f"  cleanup_freq_silk: every {simulation.CLEANUP_FREQUENCY_SILK} frames\n")
+            rt = renderer.get_render_timing()
+            if rt:
+                f.write("\n--- Renderer Breakdown (last frame) ---\n")
+                f.write(f"  extract_voxels: {rt.get('extract_voxels', 0):.2f}ms\n")
+                f.write(f"  extract_debris: {rt.get('extract_debris', 0):.2f}ms\n")
+                f.write(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms\n")
+                f.write(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms\n")
+                f.write(f"  voxel_count: {rt.get('voxel_count', 0)}\n")
+            pt = get_physics_timing()
+            if pt:
+                f.write("\n--- Physics Breakdown (last frame) ---\n")
+                f.write(f"  input_controls: {pt.get('input_controls', 0):.2f}ms\n")
+                f.write(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms\n")
+                f.write(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms\n")
+                f.write(f"  debris_update: {pt.get('debris_update', 0):.2f}ms\n")
+                f.write(f"  spray_update: {pt.get('spray_update', 0):.2f}ms\n")
+                f.write(f"  spray_collision: {pt.get('spray_collision', 0):.2f}ms\n")
+                f.write(f"  silk_update: {pt.get('silk_update', 0):.2f}ms\n")
+                f.write(f"  silk_collision: {pt.get('silk_collision', 0):.2f}ms\n")
+                f.write(f"  all_particles_total: {pt.get('all_particles_total', 0):.2f}ms\n")
+                f.write(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms\n")
+                f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
+                f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")
+                f.write(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms\n")
+            if game_state == GAME_STATE_ONLINE_PLAY or network_stats['total_render_frames'] > 0:
+                f.write("\n--- Network Stats ---\n")
+                elapsed = time.time() - network_stats['session_start_time'] if network_stats['session_start_time'] > 0 else 1
+                expected_physics = elapsed * 60
+                actual_physics = network_stats['total_physics_frames']
+                game_speed = (actual_physics / expected_physics * 100) if expected_physics > 0 else 100
+                physics_per_render = actual_physics / max(1, network_stats['total_render_frames'])
+                f.write(f"  session_time: {elapsed:.1f}s\n")
+                f.write(f"  game_speed: {game_speed:.1f}% (100% = real-time)\n")
+                f.write(f"  physics_frames: {actual_physics} (expected: {int(expected_physics)})\n")
+                f.write(f"  render_frames: {network_stats['total_render_frames']}\n")
+                f.write(f"  physics_per_render: {physics_per_render:.2f} (should be ~1.0)\n")
+                f.write(f"  accumulator_drains: {network_stats['accumulator_drains']} (waits for opponent)\n")
+                f.write(f"  frame_diff: {network_stats['last_frame_diff']:+d} (host vs guest sync)\n")
+                if network_manager:
+                    f.write(f"  ping: {network_manager.ping_ms}ms\n")
+                    f.write(f"  input_delay: {input_buffer.delay} frames ({input_buffer.delay * 16.67:.0f}ms)\n")
+                    if input_buffer.ping_samples:
+                        p90_ping = input_buffer._get_percentile_ping(90)
+                        f.write(f"  jitter_buffer: {len(input_buffer.ping_samples)} samples, 90th percentile: {p90_ping:.0f}ms\n")
+                f.write("\n  Diagnosis:\n")
+                if game_speed < 90:
+                    f.write(f"    WARNING: Game running at {game_speed:.0f}% speed!\n")
+                    if network_stats['accumulator_drains'] > network_stats['total_render_frames'] * 0.1:
+                        f.write(f"    CAUSE: Waiting for opponent inputs ({network_stats['accumulator_drains']} drains)\n")
+                        f.write("    FIX: Check opponent's connection, reduce input_delay, or increase buffer\n")
+                else:
+                    f.write("    Game speed OK\n")
+            f.write("\n--- Notes ---\n")
+            f.write("scene_particles is the main bottleneck indicator:\n")
+            f.write("  <3ms = GPU backend working well (data on GPU)\n")
+            f.write("  8-15ms = CPU->GPU transfer overhead\n")
+            f.write("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)\n")
+        print("Performance log saved to perf_log.txt")
 
     window.GUI.end()
 
