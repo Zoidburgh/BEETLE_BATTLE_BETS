@@ -9526,14 +9526,8 @@ def cleanup_dead_silk():
                 simulation.silk_active[write_idx] = 1  # Mark compacted slot as active
             write_idx += 1
         else:
-            # Particle is expiring - decrement counter if it was stuck to something
-            if simulation.silk_stuck[read_idx] == 2:  # Was stuck to beetle
-                if simulation.silk_stuck_beetle[read_idx] == 0:
-                    ti.atomic_sub(simulation.silk_on_blue[None], 1)
-                elif simulation.silk_stuck_beetle[read_idx] == 1:
-                    ti.atomic_sub(simulation.silk_on_red[None], 1)
-            elif simulation.silk_stuck[read_idx] == 3:  # Was stuck to ball
-                ti.atomic_sub(simulation.silk_on_ball[None], 1)
+            # Particle is dead - counters already decremented in update_silk_particles
+            pass
 
     simulation.num_silk[None] = write_idx
 
@@ -15496,7 +15490,7 @@ try:
     window.GUI.text(f"FPS: {actual_fps:3.0f}")
 
     # Fullscreen toggle button
-    fs_text = "Windowed" if is_fullscreen else "Fullscreen"
+    fs_text = "WINDOWED" if is_fullscreen else "FULLSCREEN"
     if window.GUI.button(fs_text):
         toggle_fullscreen_windows()
 
@@ -15509,7 +15503,7 @@ try:
         if game_state == GAME_STATE_LOCAL_PLAY:
             # Local play mode - show option to go online
             window.GUI.text("=== MULTIPLAYER ===")
-            if window.GUI.button("Host Online Game"):
+            if window.GUI.button("HOST ONLINE GAME"):
                 game_state = GAME_STATE_LOBBY_HOST
                 network_manager = NetworkManager()
                 if network_manager.init():
@@ -15520,7 +15514,7 @@ try:
                     game_state = GAME_STATE_LOCAL_PLAY
                     network_manager = None
 
-            if window.GUI.button("Join Online Game"):
+            if window.GUI.button("JOIN ONLINE GAME"):
                 game_state = GAME_STATE_LOBBY_JOIN
                 lobby_id_input = ""
                 network_error_msg = ""
@@ -15531,7 +15525,7 @@ try:
             window.GUI.text("You control: BEETLE 1")
             if network_manager and network_manager.lobby_id:
                 window.GUI.text(f"Lobby ID: {network_manager.lobby_id}")
-                if window.GUI.button("Copy Lobby ID"):
+                if window.GUI.button("COPY LOBBY ID"):
                     try:
                         import subprocess
                         subprocess.run(['powershell', '-command',
@@ -15539,7 +15533,7 @@ try:
                                       capture_output=True)
                     except:
                         pass
-                if window.GUI.button("Copy Invite Link"):
+                if window.GUI.button("COPY INVITE LINK"):
                     try:
                         import subprocess
                         invite_link = f"steam://joinlobby/3998620/{network_manager.lobby_id}"
@@ -15577,7 +15571,7 @@ try:
                     reset_match()
                     print(f"[Game] Host sent START, waiting for guest sync... Delay: 8 frames")
 
-            if window.GUI.button("Cancel"):
+            if window.GUI.button("CANCEL"):
                 if network_manager:
                     network_manager.shutdown()
                     network_manager = None
@@ -15590,7 +15584,7 @@ try:
             window.GUI.text(f"> {lobby_id_input}_")
 
             # Paste from clipboard button (most reliable method)
-            if window.GUI.button("Paste from Clipboard"):
+            if window.GUI.button("PASTE FROM CLIPBOARD"):
                 try:
                     import subprocess
                     result = subprocess.run(['powershell', '-command', 'Get-Clipboard'],
@@ -15604,10 +15598,10 @@ try:
                     pass
 
             # Clear button
-            if len(lobby_id_input) > 0 and window.GUI.button("Clear"):
+            if len(lobby_id_input) > 0 and window.GUI.button("CLEAR"):
                 lobby_id_input = ""
 
-            if len(lobby_id_input) > 0 and window.GUI.button("Connect"):
+            if len(lobby_id_input) > 0 and window.GUI.button("CONNECT"):
                 try:
                     lobby_id = int(lobby_id_input)
                     network_manager = NetworkManager()
@@ -15623,7 +15617,7 @@ try:
             if network_error_msg:
                 window.GUI.text(f"Error: {network_error_msg}")
 
-            if window.GUI.button("Cancel"):
+            if window.GUI.button("CANCEL"):
                 game_state = GAME_STATE_LOCAL_PLAY
                 lobby_id_input = ""
 
@@ -15636,7 +15630,7 @@ try:
             if network_manager and network_manager.in_lobby:
                 game_state = GAME_STATE_LOBBY_WAITING
 
-            if window.GUI.button("Cancel"):
+            if window.GUI.button("CANCEL"):
                 if network_manager:
                     network_manager.shutdown()
                     network_manager = None
@@ -15671,7 +15665,7 @@ try:
                 network_manager.send_sync_ready()
                 print(f"[Game] Guest received START, sent SYNC_READY. Delay: 8 frames")
 
-            if window.GUI.button("Leave"):
+            if window.GUI.button("LEAVE"):
                 if network_manager:
                     network_manager.shutdown()
                     network_manager = None
@@ -15690,7 +15684,7 @@ try:
                 reset_network_stats()  # Start tracking network performance
                 print(f"[Game] Sync complete! Starting simulation.")
 
-            if window.GUI.button("Cancel"):
+            if window.GUI.button("CANCEL"):
                 if network_manager:
                     network_manager.shutdown()
                     network_manager = None
@@ -15712,7 +15706,7 @@ try:
                     window.GUI.text("OPPONENT LEFT THE GAME")
                 else:
                     window.GUI.text("CONNECTION LOST")
-                if window.GUI.button("Return to Menu"):
+                if window.GUI.button("RETURN TO MENU"):
                     # Clean up and go back to local play
                     if network_manager:
                         try:
@@ -15733,7 +15727,7 @@ try:
                 window.GUI.text("")  # Empty line for layout
             window.GUI.text(f"Frame: {input_buffer.current_frame:6d} | Delay: {input_buffer.delay}")
 
-            if window.GUI.button("Disconnect"):
+            if window.GUI.button("DISCONNECT"):
                 if network_manager:
                     # Send graceful disconnect message before shutting down
                     try:
@@ -15905,7 +15899,7 @@ try:
         new_blue_leg_length = window.blue_leg_length_value
 
     # Random blue beetle button - only if can edit and not throttled
-    if can_edit_blue and show_full_customization and window.GUI.button("Randomize Beetle 1"):
+    if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 1"):
         new_blue_shaft = random.randint(8, 15)
         new_blue_prong = random.randint(3, 6)
         new_blue_back_body = random.randint(4, 8)
@@ -15914,7 +15908,7 @@ try:
         new_blue_leg_length = random.randint(6, 10)
         print(f"Randomized blue beetle: shaft={new_blue_shaft}, prong={new_blue_prong}, back={new_blue_back_body}, length={new_blue_body_length}, width={new_blue_body_width}, legs={new_blue_leg_length}")
 
-    if can_edit_blue and show_full_customization and window.GUI.button("Randomize B1 Colors"):
+    if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE B1 COLORS"):
         palette = generate_harmonious_palette()
         window.blue_body_color = palette['body']
         window.blue_leg_color = palette['legs']
@@ -15970,19 +15964,19 @@ try:
     window.GUI.text("=== BEETLE 1 TYPE ===")
     if can_edit_blue and show_full_customization:
         if blue_horn_type == "rhino":
-            blue_button_text = "B1: RHINO (click for STAG)"
+            blue_button_text = "B1: RHINO (CLICK FOR STAG)"
         elif blue_horn_type == "stag":
-            blue_button_text = "B1: STAG (click for HERCULES)"
+            blue_button_text = "B1: STAG (CLICK FOR HERCULES)"
         elif blue_horn_type == "hercules":
-            blue_button_text = "B1: HERCULES (click for SCORPION)"
+            blue_button_text = "B1: HERCULES (CLICK FOR SCORPION)"
         elif blue_horn_type == "scorpion":
-            blue_button_text = "B1: SCORPION (click for ATLAS)"
+            blue_button_text = "B1: SCORPION (CLICK FOR ATLAS)"
         elif blue_horn_type == "atlas":
-            blue_button_text = "B1: ATLAS (click for BOMBARDIER)"
+            blue_button_text = "B1: ATLAS (CLICK FOR BOMBARDIER)"
         elif blue_horn_type == "bombardier":
-            blue_button_text = "B1: BOMBARDIER (click for SPIDER)"
+            blue_button_text = "B1: BOMBARDIER (CLICK FOR SPIDER)"
         else:  # spider
-            blue_button_text = "B1: SPIDER (click for RHINO)"
+            blue_button_text = "B1: SPIDER (CLICK FOR RHINO)"
     else:
         # Read-only display (opponent's beetle OR throttled during gameplay)
         window.GUI.text(f"B1: {blue_horn_type.upper()}")
@@ -16125,7 +16119,7 @@ try:
         new_red_leg_length = window.red_leg_length_value
 
     # Random red beetle button - only if can edit and not throttled
-    if can_edit_red and show_full_customization and window.GUI.button("Randomize Beetle 2"):
+    if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 2"):
         new_red_shaft = random.randint(8, 15)
         new_red_prong = random.randint(3, 6)
         new_red_back_body = random.randint(4, 8)
@@ -16134,7 +16128,7 @@ try:
         new_red_leg_length = random.randint(6, 10)
         print(f"Randomized red beetle: shaft={new_red_shaft}, prong={new_red_prong}, back={new_red_back_body}, length={new_red_body_length}, width={new_red_body_width}, legs={new_red_leg_length}")
 
-    if can_edit_red and show_full_customization and window.GUI.button("Randomize B2 Colors"):
+    if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE B2 COLORS"):
         palette = generate_harmonious_palette()
         window.red_body_color = palette['body']
         window.red_leg_color = palette['legs']
@@ -16190,19 +16184,19 @@ try:
     window.GUI.text("=== BEETLE 2 TYPE ===")
     if can_edit_red and show_full_customization:
         if red_horn_type == "rhino":
-            red_button_text = "B2: RHINO (click for STAG)"
+            red_button_text = "B2: RHINO (CLICK FOR STAG)"
         elif red_horn_type == "stag":
-            red_button_text = "B2: STAG (click for HERCULES)"
+            red_button_text = "B2: STAG (CLICK FOR HERCULES)"
         elif red_horn_type == "hercules":
-            red_button_text = "B2: HERCULES (click for SCORPION)"
+            red_button_text = "B2: HERCULES (CLICK FOR SCORPION)"
         elif red_horn_type == "scorpion":
-            red_button_text = "B2: SCORPION (click for ATLAS)"
+            red_button_text = "B2: SCORPION (CLICK FOR ATLAS)"
         elif red_horn_type == "atlas":
-            red_button_text = "B2: ATLAS (click for BOMBARDIER)"
+            red_button_text = "B2: ATLAS (CLICK FOR BOMBARDIER)"
         elif red_horn_type == "bombardier":
-            red_button_text = "B2: BOMBARDIER (click for SPIDER)"
+            red_button_text = "B2: BOMBARDIER (CLICK FOR SPIDER)"
         else:  # spider
-            red_button_text = "B2: SPIDER (click for RHINO)"
+            red_button_text = "B2: SPIDER (CLICK FOR RHINO)"
     else:
         # Read-only display (opponent's beetle OR throttled during gameplay)
         window.GUI.text(f"B2: {red_horn_type.upper()}")
@@ -16331,7 +16325,7 @@ try:
 
     # Advanced settings toggle (collapsed by default for performance - saves ~36 slider renders)
     window.GUI.text("")
-    adv_button_text = "Hide Advanced Settings" if show_advanced_settings else "Show Advanced Settings"
+    adv_button_text = "HIDE ADVANCED SETTINGS" if show_advanced_settings else "SHOW ADVANCED SETTINGS"
     if window.GUI.button(adv_button_text):
         show_advanced_settings = not show_advanced_settings
 
@@ -16437,21 +16431,21 @@ try:
         front_light_strength = window.GUI.slider_float("Front Light Strength", front_light_strength, 0.0, 1.5)
 
         # Dynamic lighting toggle
-        lighting_button_text = "Dynamic Lighting: ON" if dynamic_lighting_enabled else "Dynamic Lighting: OFF"
+        lighting_button_text = "DYNAMIC LIGHTING: ON" if dynamic_lighting_enabled else "DYNAMIC LIGHTING: OFF"
         if window.GUI.button(lighting_button_text):
             dynamic_lighting_enabled = not dynamic_lighting_enabled
 
         # Ladybug cheerleader test
         window.GUI.text("")
         window.GUI.text("=== LADYBUG CHEERLEADERS ===")
-        ladybug_button_text = "Hide Test Ladybug" if test_ladybug is not None else "Show Test Ladybug"
+        ladybug_button_text = "HIDE TEST LADYBUG" if test_ladybug is not None else "SHOW TEST LADYBUG"
         if window.GUI.button(ladybug_button_text):
             if test_ladybug is not None:
                 clear_test_ladybug()
             else:
                 spawn_test_ladybug()
 
-        circle_button_text = "Hide Circle Ladybugs" if len(active_ladybugs) > 0 else "Show Circle Ladybugs"
+        circle_button_text = "HIDE CIRCLE LADYBUGS" if len(active_ladybugs) > 0 else "SHOW CIRCLE LADYBUGS"
         if window.GUI.button(circle_button_text):
             if len(active_ladybugs) > 0:
                 clear_circle_ladybugs()
@@ -16471,7 +16465,7 @@ try:
         toggle_referee()
 
     # Save performance log button (at bottom of menu)
-    if window.GUI.button("Save Perf Log"):
+    if window.GUI.button("SAVE PERF LOG"):
         with open("perf_log.txt", "w") as f:
             f.write("=== SYSTEM INFO ===\n")
             f.write(f"Backend: {simulation.BACKEND_REASON}\n")
