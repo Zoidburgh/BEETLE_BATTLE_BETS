@@ -12508,20 +12508,21 @@ try:
         else:
             current_local_inputs = get_local_inputs(window, 'red', network_mode=True, horn_type_id=beetle_red.horn_type_id)
     else:
-        # LOCAL MODE: Read both players
+        # LOCAL MODE: Keyboard (WASD+arrows) always controls blue
+        # Controllers control red (1 controller) or blue+red (2 controllers)
         if CONTROLLER_SUPPORT and controllers:
-            # Controller 1 controls blue, controller 2 (if connected) controls red
-            frame_blue_inputs = get_controller_inputs(controllers[0], beetle_blue.horn_type_id)
             if len(controllers) >= 2:
-                # Two controllers: fully controller-based local play
+                # Two controllers: keyboard OR controller 1 for blue, controller 2 for red
+                frame_blue_inputs = _get_keyboard_inputs(window, 'blue', network_mode=True, horn_type_id=beetle_blue.horn_type_id) | get_controller_inputs(controllers[0], beetle_blue.horn_type_id)
                 frame_red_inputs = get_controller_inputs(controllers[1], beetle_red.horn_type_id)
             else:
-                # One controller + keyboard for red
-                frame_red_inputs = _get_keyboard_inputs(window, 'red', network_mode=True, horn_type_id=beetle_red.horn_type_id)
+                # One controller: keyboard for blue, controller for red
+                frame_blue_inputs = _get_keyboard_inputs(window, 'blue', network_mode=True, horn_type_id=beetle_blue.horn_type_id)
+                frame_red_inputs = get_controller_inputs(controllers[0], beetle_red.horn_type_id)
         else:
-            # No controller: split keyboard layout
-            frame_blue_inputs = get_local_inputs(window, 'blue')
-            frame_red_inputs = get_local_inputs(window, 'red')
+            # No controller: keyboard for blue, red uncontrolled (practice mode)
+            frame_blue_inputs = _get_keyboard_inputs(window, 'blue', network_mode=True, horn_type_id=beetle_blue.horn_type_id)
+            frame_red_inputs = 0
 
     # Get inputs for physics (updated inside loop for network mode)
     # Also track last known inputs for animation when network stalls
