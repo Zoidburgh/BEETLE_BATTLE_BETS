@@ -1572,6 +1572,16 @@ def apply_remote_beetle_config(network_mgr):
     # player_id 0 = host = blue beetle, player_id 1 = guest = red beetle
     if config['player_id'] == 0:
         # Opponent is host, so update BLUE beetle (opponent's beetle)
+        # Check if geometry changed (only rebuild if shape parameters changed, not just colors)
+        geometry_changed = (
+            blue_horn_type != horn_type or
+            window.blue_horn_shaft_value != config['shaft'] or
+            window.blue_horn_prong_value != config['prong'] or
+            window.blue_back_body_height_value != config['back_body'] or
+            window.blue_body_length_value != config['body_len'] or
+            window.blue_body_width_value != config['body_width'] or
+            window.blue_leg_length_value != config['leg_len']
+        )
         blue_horn_type = horn_type
         window.blue_horn_shaft_value = config['shaft']
         window.blue_horn_prong_value = config['prong']
@@ -1579,7 +1589,7 @@ def apply_remote_beetle_config(network_mgr):
         window.blue_body_length_value = config['body_len']
         window.blue_body_width_value = config['body_width']
         window.blue_leg_length_value = config['leg_len']
-        # Apply colors if present
+        # Apply colors if present (always update colors, no rebuild needed)
         if 'body_color' in config:
             window.blue_body_color = config['body_color']
             window.blue_leg_color = config['leg_color']
@@ -1592,15 +1602,28 @@ def apply_remote_beetle_config(network_mgr):
             simulation.blue_leg_tip_color[None] = ti.Vector([config['leg_tip_color'][0], config['leg_tip_color'][1], config['leg_tip_color'][2]])
             simulation.blue_stripe_color[None] = ti.Vector([config['stripe_color'][0], config['stripe_color'][1], config['stripe_color'][2]])
             simulation.blue_horn_tip_color[None] = ti.Vector([config['horn_tip_color'][0], config['horn_tip_color'][1], config['horn_tip_color'][2]])
-        # Rebuild blue beetle with new settings
-        rebuild_blue_beetle(
-            config['shaft'], config['prong'], 4, config['back_body'],
-            config['body_len'], config['body_width'], config['leg_len'],
-            horn_type
-        )
-        print(f"[Config] Applied opponent's BLUE beetle: {horn_type}")
+        # Only rebuild geometry if shape parameters changed (prevents jumping when only colors change)
+        if geometry_changed:
+            rebuild_blue_beetle(
+                config['shaft'], config['prong'], 4, config['back_body'],
+                config['body_len'], config['body_width'], config['leg_len'],
+                horn_type
+            )
+            print(f"[Config] Applied opponent's BLUE beetle geometry: {horn_type}")
+        else:
+            print(f"[Config] Applied opponent's BLUE beetle colors (no geometry change)")
     else:
         # Opponent is guest, so update RED beetle (opponent's beetle)
+        # Check if geometry changed (only rebuild if shape parameters changed, not just colors)
+        geometry_changed = (
+            red_horn_type != horn_type or
+            window.red_horn_shaft_value != config['shaft'] or
+            window.red_horn_prong_value != config['prong'] or
+            window.red_back_body_height_value != config['back_body'] or
+            window.red_body_length_value != config['body_len'] or
+            window.red_body_width_value != config['body_width'] or
+            window.red_leg_length_value != config['leg_len']
+        )
         red_horn_type = horn_type
         window.red_horn_shaft_value = config['shaft']
         window.red_horn_prong_value = config['prong']
@@ -1608,7 +1631,7 @@ def apply_remote_beetle_config(network_mgr):
         window.red_body_length_value = config['body_len']
         window.red_body_width_value = config['body_width']
         window.red_leg_length_value = config['leg_len']
-        # Apply colors if present
+        # Apply colors if present (always update colors, no rebuild needed)
         if 'body_color' in config:
             window.red_body_color = config['body_color']
             window.red_leg_color = config['leg_color']
@@ -1621,13 +1644,16 @@ def apply_remote_beetle_config(network_mgr):
             simulation.red_leg_tip_color[None] = ti.Vector([config['leg_tip_color'][0], config['leg_tip_color'][1], config['leg_tip_color'][2]])
             simulation.red_stripe_color[None] = ti.Vector([config['stripe_color'][0], config['stripe_color'][1], config['stripe_color'][2]])
             simulation.red_horn_tip_color[None] = ti.Vector([config['horn_tip_color'][0], config['horn_tip_color'][1], config['horn_tip_color'][2]])
-        # Rebuild red beetle with new settings
-        rebuild_red_beetle(
-            config['shaft'], config['prong'], 4, config['back_body'],
-            config['body_len'], config['body_width'], config['leg_len'],
-            horn_type
-        )
-        print(f"[Config] Applied opponent's RED beetle: {horn_type}")
+        # Only rebuild geometry if shape parameters changed (prevents jumping when only colors change)
+        if geometry_changed:
+            rebuild_red_beetle(
+                config['shaft'], config['prong'], 4, config['back_body'],
+                config['body_len'], config['body_width'], config['leg_len'],
+                horn_type
+            )
+            print(f"[Config] Applied opponent's RED beetle geometry: {horn_type}")
+        else:
+            print(f"[Config] Applied opponent's RED beetle colors (no geometry change)")
 
     return True
 
@@ -16414,22 +16440,6 @@ try:
             new_blue_leg_length = random.randint(6, 10)
             print(f"Randomized blue beetle: shaft={new_blue_shaft}, prong={new_blue_prong}, back={new_blue_back_body}, length={new_blue_body_length}, width={new_blue_body_width}, legs={new_blue_leg_length}")
 
-        if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE B1 COLORS"):
-            palette = generate_harmonious_palette()
-            window.blue_body_color = palette['body']
-            window.blue_leg_color = palette['legs']
-            window.blue_leg_tip_color = palette['leg_tips']
-            window.blue_stripe_color = palette['stripe']
-            window.blue_horn_tip_color = palette['horn_tips']
-            simulation.blue_body_color[None] = ti.Vector(list(palette['body']))
-            simulation.blue_leg_color[None] = ti.Vector(list(palette['legs']))
-            simulation.blue_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
-            simulation.blue_stripe_color[None] = ti.Vector(list(palette['stripe']))
-            simulation.blue_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
-            if network_manager and network_manager.connected and network_manager.is_host:
-                send_local_beetle_config(network_manager, is_host=True)
-            print(f"Randomized B1 colors: {palette}")
-
         # Rebuild blue beetle geometry if sliders changed OR if scorpion tail curvature changed
         if (new_blue_shaft != window.blue_horn_shaft_value or new_blue_prong != window.blue_horn_prong_value or
             new_blue_back_body != window.blue_back_body_height_value or new_blue_body_length != window.blue_body_length_value or
@@ -16594,6 +16604,23 @@ try:
             if blue_color_changed and network_manager and network_manager.connected and network_manager.is_host:
                 send_local_beetle_config(network_manager, is_host=True)
 
+            # Randomize B1 colors button - under color pickers
+            if window.GUI.button("RANDOMIZE B1 COLORS"):
+                palette = generate_harmonious_palette()
+                window.blue_body_color = palette['body']
+                window.blue_leg_color = palette['legs']
+                window.blue_leg_tip_color = palette['leg_tips']
+                window.blue_stripe_color = palette['stripe']
+                window.blue_horn_tip_color = palette['horn_tips']
+                simulation.blue_body_color[None] = ti.Vector(list(palette['body']))
+                simulation.blue_leg_color[None] = ti.Vector(list(palette['legs']))
+                simulation.blue_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
+                simulation.blue_stripe_color[None] = ti.Vector(list(palette['stripe']))
+                simulation.blue_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
+                if network_manager and network_manager.connected and network_manager.is_host:
+                    send_local_beetle_config(network_manager, is_host=True)
+                print(f"Randomized B1 colors: {palette}")
+
         window.GUI.text("")
         if can_edit_red:
             window.GUI.text("=== BEETLE 2 GENETICS ===")
@@ -16633,22 +16660,6 @@ try:
             new_red_body_width = random.randint(5, 9)
             new_red_leg_length = random.randint(6, 10)
             print(f"Randomized red beetle: shaft={new_red_shaft}, prong={new_red_prong}, back={new_red_back_body}, length={new_red_body_length}, width={new_red_body_width}, legs={new_red_leg_length}")
-
-        if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE B2 COLORS"):
-            palette = generate_harmonious_palette()
-            window.red_body_color = palette['body']
-            window.red_leg_color = palette['legs']
-            window.red_leg_tip_color = palette['leg_tips']
-            window.red_stripe_color = palette['stripe']
-            window.red_horn_tip_color = palette['horn_tips']
-            simulation.red_body_color[None] = ti.Vector(list(palette['body']))
-            simulation.red_leg_color[None] = ti.Vector(list(palette['legs']))
-            simulation.red_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
-            simulation.red_stripe_color[None] = ti.Vector(list(palette['stripe']))
-            simulation.red_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
-            if network_manager and network_manager.connected and not network_manager.is_host:
-                send_local_beetle_config(network_manager, is_host=False)
-            print(f"Randomized B2 colors: {palette}")
 
         # Rebuild red beetle geometry if sliders changed OR if scorpion tail curvature changed
         if (new_red_shaft != window.red_horn_shaft_value or new_red_prong != window.red_horn_prong_value or
@@ -16813,6 +16824,23 @@ try:
             # Send config immediately when guest changes red beetle colors
             if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
                 send_local_beetle_config(network_manager, is_host=False)
+
+            # Randomize B2 colors button - under color pickers
+            if window.GUI.button("RANDOMIZE B2 COLORS"):
+                palette = generate_harmonious_palette()
+                window.red_body_color = palette['body']
+                window.red_leg_color = palette['legs']
+                window.red_leg_tip_color = palette['leg_tips']
+                window.red_stripe_color = palette['stripe']
+                window.red_horn_tip_color = palette['horn_tips']
+                simulation.red_body_color[None] = ti.Vector(list(palette['body']))
+                simulation.red_leg_color[None] = ti.Vector(list(palette['legs']))
+                simulation.red_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
+                simulation.red_stripe_color[None] = ti.Vector(list(palette['stripe']))
+                simulation.red_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
+                if network_manager and network_manager.connected and not network_manager.is_host:
+                    send_local_beetle_config(network_manager, is_host=False)
+                print(f"Randomized B2 colors: {palette}")
 
         # Winner announcement and restart button
         if blue_celebrating or red_celebrating:
