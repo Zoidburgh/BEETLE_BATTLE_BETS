@@ -190,6 +190,22 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 39:  # LADYBUG_WINGS - translucent amber/gold
         color = ti.math.vec3(0.95, 0.85, 0.6)
 
+    # Title screen text colors (with flash effect)
+    elif voxel_type == 40:  # TITLE_BLUE - "BEETLE" text
+        flash = simulation.title_flash[None]
+        color = ti.math.vec3(0.3 * flash, 0.6 * flash, 1.0 * flash)
+    elif voxel_type == 41:  # TITLE_RED - "BATTLE" text
+        flash = simulation.title_flash[None]
+        color = ti.math.vec3(1.0 * flash, 0.3 * flash, 0.2 * flash)
+    elif voxel_type == 42:  # TITLE_GOLD - "BROS" text
+        flash = simulation.title_flash[None]
+        color = ti.math.vec3(0.9 * flash, 0.75 * flash, 0.3 * flash)
+    elif voxel_type == 43:  # TITLE_WHITE - controls text
+        color = ti.math.vec3(0.9, 0.9, 0.85)
+    elif voxel_type == 44:  # TITLE_PINK - "SPACE/A/START" text (with flash)
+        flash = simulation.title_flash[None]
+        color = ti.math.vec3(1.0 * flash, 0.4 * flash, 0.7 * flash)  # Nice pink
+
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
     if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34 or voxel_type == 35:  # All beetle/ladybug shell parts
         shimmer = get_shimmer_from_lut(world_x, world_z)

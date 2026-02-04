@@ -177,6 +177,8 @@ except ImportError:
 # ============================================================================
 # GAME STATES (for menu, lobby, and online play)
 # ============================================================================
+GAME_STATE_TITLE = "title"                  # Title screen - press space to start
+GAME_STATE_TITLE_TRANSITION = "title_trans" # Transitioning from title to game
 GAME_STATE_MENU = "menu"                    # Main menu
 GAME_STATE_LOCAL_PLAY = "local_play"        # Local 2-player (current default)
 GAME_STATE_LOBBY_HOST = "lobby_host"        # Hosting, waiting for opponent
@@ -961,8 +963,11 @@ input_buffer = InputBuffer(delay_frames=0)  # 0 delay for local play
 # NETWORK STATE (for online play)
 # ============================================================================
 network_manager = None          # NetworkManager instance (created when hosting/joining)
-game_state = GAME_STATE_LOCAL_PLAY  # Start in local play mode (preserves current behavior)
+game_state = GAME_STATE_TITLE   # Start at title screen
 local_player_id = 0             # 0 = blue/host, 1 = red/guest
+title_transition_timer = 0.0    # Timer for title-to-game camera transition
+arena_lights_timer = 0.0        # Timer for dramatic arena lights turn-on effect
+ARENA_LIGHTS_FADEIN = 0.8       # Duration for lights to fade in (seconds)
 lobby_id_input = ""             # Text input for joining lobby by ID
 network_error_msg = ""          # Error message to display
 
@@ -2198,13 +2203,78 @@ DIGIT_PATTERNS = [
     [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
 ]
 
+# Letter patterns for A-Z (5 wide x 7 tall, same format as digits)
+# Index 0=A, 1=B, 2=C, ... 25=Z
+LETTER_PATTERNS = [
+    # A
+    [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+    # B
+    [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+    # C
+    [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+    # D
+    [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+    # E
+    [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+    # F
+    [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+    # G
+    [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+    # H
+    [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+    # I
+    [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+    # J
+    [0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100],
+    # K
+    [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+    # L
+    [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+    # M
+    [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+    # N
+    [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+    # O
+    [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+    # P
+    [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+    # Q
+    [0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101],
+    # R
+    [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+    # S
+    [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
+    # T
+    [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+    # U
+    [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+    # V
+    [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
+    # W
+    [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
+    # X
+    [0b10001, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, 0b10001],
+    # Y
+    [0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100],
+    # Z
+    [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111],
+]
+
 # Store digit patterns in Taichi field for kernel access (10 digits, 7 rows)
 digit_pattern_field = ti.field(dtype=ti.i32, shape=(10, 7))
+
+# Store letter patterns in Taichi field for kernel access (26 letters, 7 rows)
+letter_pattern_field = ti.field(dtype=ti.i32, shape=(26, 7))
 
 # Initialize digit patterns into Taichi field
 for d in range(10):
     for r in range(7):
         digit_pattern_field[d, r] = DIGIT_PATTERNS[d][r]
+
+# Initialize letter patterns into Taichi field
+for l in range(26):
+    for r in range(7):
+        letter_pattern_field[l, r] = LETTER_PATTERNS[l][r]
 
 @ti.kernel
 def render_score_digit(digit: ti.i32, base_x: ti.f32, base_y: ti.f32, base_z: ti.f32,
@@ -2292,6 +2362,254 @@ def clear_score_digits():
         if simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_BLUE or \
            simulation.voxel_type[i, j, k] == simulation.SCORE_DIGIT_RED:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+# ============================================================================
+# TITLE SCREEN RENDERING
+# ============================================================================
+
+@ti.kernel
+def render_title_letter(letter_idx: ti.i32, base_x: ti.f32, base_y: ti.f32, base_z: ti.f32,
+                        voxel_type: ti.i32, scale: ti.f32, depth: ti.i32):
+    """Render a single letter (A-Z) as 3D extruded voxels facing +Z direction.
+
+    Args:
+        letter_idx: 0-25 for A-Z
+        base_x, base_y, base_z: bottom-left corner of letter in grid coords
+        voxel_type: TITLE_BLUE, TITLE_RED, TITLE_GOLD, etc.
+        scale: size multiplier (1.0 = 5x7 voxels, 2.0 = 10x14 voxels)
+        depth: extrusion depth in voxels
+    """
+
+    for row in range(7):
+        row_pattern = letter_pattern_field[letter_idx, row]
+        for col in range(5):
+            if (row_pattern >> (4 - col)) & 1:  # Check if bit is set
+                # Scale the position
+                local_x = col * scale
+                local_y = (6 - row) * scale  # Flip so row 0 is at bottom
+
+                # Fill scaled voxel block
+                for sx in range(ti.cast(scale, ti.i32)):
+                    for sy in range(ti.cast(scale, ti.i32)):
+                        for d in range(depth):
+                            vx = ti.cast(base_x + local_x + sx, ti.i32)
+                            vy = ti.cast(base_y + local_y + sy, ti.i32)
+                            vz = ti.cast(base_z + d, ti.i32)
+
+                            if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
+                                simulation.voxel_type[vx, vy, vz] = voxel_type
+
+
+def render_title_text(text: str, base_x: float, base_y: float, base_z: float,
+                      voxel_type: int, scale: float = 2.0, depth: int = 2):
+    """Render a string of text as 3D voxels.
+
+    Args:
+        text: String to render (A-Z and space only)
+        base_x, base_y, base_z: bottom-left corner of first letter
+        voxel_type: voxel type for all letters
+        scale: size multiplier
+        depth: extrusion depth in voxels (default 2)
+    """
+    char_width = 5 * scale + scale  # Letter width + spacing
+    cursor_x = base_x
+
+    for char in text.upper():
+        if char == ' ':
+            cursor_x += char_width * 0.6  # Narrower space
+        elif 'A' <= char <= 'Z':
+            letter_idx = ord(char) - ord('A')
+            render_title_letter(letter_idx, cursor_x, base_y, base_z, voxel_type, scale, depth)
+            cursor_x += char_width
+
+
+def get_text_width(text: str, scale: float = 2.0) -> float:
+    """Calculate the width of a text string in grid units."""
+    char_width = 5 * scale + scale  # Letter width + spacing
+    width = 0.0
+    for char in text.upper():
+        if char == ' ':
+            width += char_width * 0.6
+        elif 'A' <= char <= 'Z':
+            width += char_width
+    return width - scale  # Remove trailing space
+
+
+# Title screen state
+title_screen_active = True
+title_transition_progress = 0.0  # 0.0 = title view, 1.0 = game view
+
+# Title camera position (looking at title wall)
+TITLE_CAM_X = 0.0
+TITLE_CAM_Y = 45.0  # Lower
+TITLE_CAM_Z = 130.0  # Much further back
+TITLE_CAM_PITCH = -5.0  # Tilted up more
+TITLE_CAM_YAW = 180.0
+
+# Title text positions (grid coordinates)
+TITLE_TEXT_Y = 58  # Height of title text
+TITLE_TEXT_Z = 100  # In front of arena (between camera and arena)
+
+
+def setup_title_screen():
+    """Render the title screen text into the voxel grid."""
+    scale = 1.0  # Title text scale
+    center_x = 64  # Grid center
+
+    line_height = 8  # Fixed line height for all text
+
+    # Title all on one line: "BEETLE BATTLE BROS" with different colors
+    y_pos = TITLE_TEXT_Y
+    space_width = (5 * scale + scale) * 0.6  # Space between words
+
+    beetle_width = get_text_width("BEETLE", scale)
+    battle_width = get_text_width("BATTLE", scale)
+    bros_width = get_text_width("BROS", scale)
+
+    total_width = beetle_width + space_width + battle_width + space_width + bros_width
+    start_x = center_x - total_width / 2
+
+    # "BEETLE" - blue
+    render_title_text("BEETLE", start_x, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_BLUE, scale)
+
+    # "BATTLE" - red
+    render_title_text("BATTLE", start_x + beetle_width + space_width, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_RED, scale)
+
+    # "BROS" - gold
+    render_title_text("BROS", start_x + beetle_width + space_width + battle_width + space_width, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_GOLD, scale)
+
+    # Controls text - gap below title (1 voxel depth for info text)
+    y_pos -= line_height + 27
+    wasd_width = get_text_width("WASD ARROWS TO MOVE", scale)
+    render_title_text("WASD ARROWS TO MOVE", center_x - wasd_width / 2, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_WHITE, scale, depth=1)
+
+    y_pos -= line_height + 1
+    ctrl_width = get_text_width("CONTROLLER OK", scale)
+    render_title_text("CONTROLLER OK", center_x - ctrl_width / 2, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_WHITE, scale, depth=1)
+
+    y_pos -= line_height + 1
+    # Render "SPACE OR A TO START" with SPACE/A/START flashing, OR/TO not flashing
+    full_width = get_text_width("SPACE OR A TO START", scale)
+    space_gap = (5 * scale + scale) * 0.6  # Width of a space character
+
+    x_pos = center_x - full_width / 2
+
+    # "SPACE" - flashing cyan
+    render_title_text("SPACE", x_pos, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_CYAN, scale, depth=1)
+    x_pos += get_text_width("SPACE", scale) + space_gap
+
+    # "OR" - non-flashing white
+    render_title_text("OR", x_pos, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_WHITE, scale, depth=1)
+    x_pos += get_text_width("OR", scale) + space_gap
+
+    # "A" - flashing cyan
+    render_title_text("A", x_pos, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_CYAN, scale, depth=1)
+    x_pos += get_text_width("A", scale) + space_gap
+
+    # "TO" - non-flashing white
+    render_title_text("TO", x_pos, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_WHITE, scale, depth=1)
+    x_pos += get_text_width("TO", scale) + space_gap
+
+    # "START" - flashing cyan
+    render_title_text("START", x_pos, y_pos, TITLE_TEXT_Z,
+                      simulation.TITLE_CYAN, scale, depth=1)
+
+    print("Title screen rendered")
+
+
+@ti.kernel
+def clear_title_screen():
+    """Clear all title screen voxels from the grid."""
+    # Title area spans roughly x=20-108, y=35-90, z=98-105
+    for i, j, k in ti.ndrange((15, 113), (30, 95), (97, 106)):
+        vt = simulation.voxel_type[i, j, k]
+        if vt == simulation.TITLE_BLUE or vt == simulation.TITLE_RED or \
+           vt == simulation.TITLE_GOLD or vt == simulation.TITLE_WHITE or \
+           vt == simulation.TITLE_CYAN:
+            simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+
+@ti.kernel
+def explode_title_screen():
+    """Explode all title screen voxels - each becomes a debris particle flying outward."""
+    # Title center in grid coords
+    center_x = 64.0
+    center_y = 45.0
+    center_z = 100.0
+
+    # Title area - expanded to catch ALL text including widest line "SPACE OR A TO START"
+    # X: 0-128 to catch all characters (longest line ~114 voxels centered at 64)
+    # Y: 0-80 to catch title and info text below
+    # Z: 98-105 for 2-layer depth title and 1-layer info text
+    for i, j, k in ti.ndrange((0, 128), (0, 80), (98, 105)):
+        vt = simulation.voxel_type[i, j, k]
+        if vt == simulation.TITLE_BLUE or vt == simulation.TITLE_RED or \
+           vt == simulation.TITLE_GOLD or vt == simulation.TITLE_WHITE or \
+           vt == simulation.TITLE_CYAN:
+
+            # Get color based on voxel type
+            color_r, color_g, color_b = 1.0, 1.0, 1.0
+            if vt == simulation.TITLE_BLUE:
+                color_r, color_g, color_b = 0.3, 0.6, 1.0
+            elif vt == simulation.TITLE_RED:
+                color_r, color_g, color_b = 1.0, 0.3, 0.2
+            elif vt == simulation.TITLE_GOLD:
+                color_r, color_g, color_b = 0.9, 0.75, 0.3
+            elif vt == simulation.TITLE_WHITE:
+                color_r, color_g, color_b = 0.9, 0.9, 0.85
+            elif vt == simulation.TITLE_CYAN:
+                color_r, color_g, color_b = 0.6, 0.9, 1.0
+
+            # Convert to world coords
+            world_x = float(i) - 64.0
+            world_y = float(j)
+            world_z = float(k) - 64.0
+
+            # Spawn 3 debris particles per voxel for bigger explosion
+            for p in range(3):
+                idx = ti.atomic_add(simulation.num_debris[None], 1)
+                if idx < simulation.MAX_DEBRIS:
+                    simulation.debris_active[idx] = 1
+                    ti.atomic_add(simulation.debris_active_count[None], 1)
+
+                    # Direction from center (outward explosion)
+                    dir_x = float(i) - center_x
+                    dir_y = float(j) - center_y
+                    dir_z = float(k) - center_z
+                    dist = ti.sqrt(dir_x*dir_x + dir_y*dir_y + dir_z*dir_z) + 0.1
+
+                    # Normalize and add speed with more variation
+                    speed = 15.0 + ti.random() * 40.0
+                    vel_x = (dir_x / dist) * speed + (ti.random() - 0.5) * 20.0
+                    vel_y = (dir_y / dist) * speed + ti.random() * 20.0  # Upward bias
+                    vel_z = (dir_z / dist) * speed + (ti.random() - 0.5) * 20.0
+
+                    # Slight position offset for each particle
+                    offset_x = (ti.random() - 0.5) * 0.5
+                    offset_y = (ti.random() - 0.5) * 0.5
+                    offset_z = (ti.random() - 0.5) * 0.5
+
+                    simulation.debris_pos[idx] = ti.math.vec3(world_x + offset_x, world_y + offset_y, world_z + offset_z)
+                    simulation.debris_vel[idx] = ti.math.vec3(vel_x, vel_y, vel_z)
+
+                    # Slight color variation
+                    color_var = 0.7 + ti.random() * 0.3
+                    simulation.debris_material[idx] = ti.math.vec3(
+                        color_r * color_var, color_g * color_var, color_b * color_var)
+                    simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.6  # 0.4-1.0s
+
+            # Clear the voxel
+            simulation.voxel_type[i, j, k] = simulation.EMPTY
+
 
 # Assembly animation voxel types (temporary, for clearing)
 ASSEMBLY_VOXEL_BLUE = 25
@@ -11878,11 +12196,12 @@ window.red_stripe_color = (0.85, 0.65, 0.2)
 window.red_horn_tip_color = (0.4, 0.1, 0.1)
 
 camera = renderer.Camera()
-camera.pos_x = 0.0
-camera.pos_y = 60.0
-camera.pos_z = 0.0
-camera.pitch = -70.0
-camera.yaw = 180.0  # Start facing correct direction for CAMERA_FLIP_VIEW = True
+# Start camera at title screen position (will transition to game view on start)
+camera.pos_x = TITLE_CAM_X
+camera.pos_y = TITLE_CAM_Y
+camera.pos_z = TITLE_CAM_Z
+camera.pitch = TITLE_CAM_PITCH
+camera.yaw = TITLE_CAM_YAW
 
 # Auto-follow camera toggle
 auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to toggle)
@@ -11898,6 +12217,7 @@ dynamic_lighting_enabled = False  # Camera-relative lighting for cinematic effec
 
 # Advanced settings panel (collapsed by default for performance)
 show_advanced_settings = False
+show_settings_panel = False  # Hide settings panel until game starts
 
 # Initialize gradient background for forest atmosphere
 renderer.init_gradient_background()
@@ -11907,6 +12227,9 @@ renderer.init_shimmer_lut()
 
 # Initialize controller support
 init_controllers()
+
+# Setup title screen (renders text into voxel grid)
+setup_title_screen()
 
 print("\n=== BEETLE PHYSICS ===")
 print("BLUE BEETLE (TFGH + RY) - Tank Controls:")
@@ -12199,20 +12522,86 @@ try:
     if network_manager and game_state in [GAME_STATE_LOBBY_HOST, GAME_STATE_LOBBY_CONNECTING, GAME_STATE_LOBBY_WAITING, GAME_STATE_SYNCING]:
         network_manager.poll_messages(None)  # No input buffer during lobby/sync
 
+    # === TITLE SCREEN HANDLING ===
+    if game_state == GAME_STATE_TITLE:
+        # Animate title flash (pulsing glow)
+        flash_speed = 1.0  # Pulses per second
+        flash_min = 1.1
+        flash_max = 1.5
+        flash_range = (flash_max - flash_min) / 2
+        flash_mid = (flash_max + flash_min) / 2
+        simulation.title_flash[None] = flash_mid + math.sin(current_time * flash_speed * 2 * math.pi) * flash_range
+
+        # Check for SPACE key or controller A button to start
+        space_pressed = window.is_pressed(ti.GUI.SPACE)
+        a_button_pressed = False
+        if CONTROLLER_SUPPORT and controllers:
+            # Check A button (button 0) on any controller
+            for ctrl in controllers:
+                try:
+                    if ctrl.get_button(0):  # A button
+                        a_button_pressed = True
+                        break
+                except:
+                    pass
+
+        if space_pressed or a_button_pressed:
+            # Start transition to game - explode title immediately
+            explode_title_screen()
+            game_state = GAME_STATE_TITLE_TRANSITION
+            title_transition_timer = 0.0
+            simulation.title_flash[None] = 1.0  # Reset flash
+            print("Starting game...")
+
+    elif game_state == GAME_STATE_TITLE_TRANSITION:
+        # Animate camera from title position to game position
+        PAN_DELAY = 0.2  # Delay before pan starts (watch explosion)
+        TRANSITION_DURATION = 1.0  # 1 second quick pan
+        title_transition_timer += frame_dt
+
+        # Lerp progress (0 to 1) - only start after delay
+        pan_time = max(0.0, title_transition_timer - PAN_DELAY)
+        t = min(1.0, pan_time / TRANSITION_DURATION)
+        # Smooth easing (ease-in-out smoothstep) - gentle start and end
+        t = t * t * (3.0 - 2.0 * t)
+
+        # Target game camera position (from physics_params or defaults)
+        game_cam_x = 0.0
+        game_cam_y = physics_params.get("CAMERA_BASE_HEIGHT", 74.7)
+        game_cam_z = physics_params.get("CAMERA_DISTANCE", 76.35)
+        game_cam_pitch = physics_params.get("CAMERA_PITCH", -30.85)
+        game_cam_yaw = 180.0
+
+        # Interpolate camera position
+        camera.pos_x = TITLE_CAM_X + (game_cam_x - TITLE_CAM_X) * t
+        camera.pos_y = TITLE_CAM_Y + (game_cam_y - TITLE_CAM_Y) * t
+        camera.pos_z = TITLE_CAM_Z + (game_cam_z - TITLE_CAM_Z) * t
+        camera.pitch = TITLE_CAM_PITCH + (game_cam_pitch - TITLE_CAM_PITCH) * t
+        camera.yaw = TITLE_CAM_YAW + (game_cam_yaw - TITLE_CAM_YAW) * t
+
+        if title_transition_timer >= PAN_DELAY + TRANSITION_DURATION:
+            # Transition complete - start game and show settings
+            game_state = GAME_STATE_LOCAL_PLAY
+            show_settings_panel = True
+            arena_lights_timer = 0.0  # Start dramatic lights fade-in
+            print("Game started!")
+
     # === CAMERA TIMING ===
     perf_monitor.start('camera')
 
     # Camera (runs every frame at frame rate)
-    # Toggle auto-follow camera with C key
-    if window.is_pressed('c'):
-        if not hasattr(window, 'c_key_was_pressed') or not window.c_key_was_pressed:
-            auto_follow_enabled = not auto_follow_enabled
-            print(f"Auto-follow camera: {'ENABLED' if auto_follow_enabled else 'DISABLED'}")
-        window.c_key_was_pressed = True
-    else:
-        window.c_key_was_pressed = False
+    # Skip camera controls during title screen states
+    if game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
+        # Toggle auto-follow camera with C key
+        if window.is_pressed('c'):
+            if not hasattr(window, 'c_key_was_pressed') or not window.c_key_was_pressed:
+                auto_follow_enabled = not auto_follow_enabled
+                print(f"Auto-follow camera: {'ENABLED' if auto_follow_enabled else 'DISABLED'}")
+            window.c_key_was_pressed = True
+        else:
+            window.c_key_was_pressed = False
 
-    if auto_follow_enabled:
+    if auto_follow_enabled and game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
         # Edge-aware auto-follow camera: track beetles AND nearest arena edge
         # Detect if beetles have fallen off the platform
         FALL_HEIGHT_THRESHOLD = -10.0  # Y position below which beetle is considered fallen
@@ -12340,7 +12729,7 @@ try:
         camera.yaw += yaw_diff * lerp_factor
         camera.yaw = camera.yaw % 360.0  # Normalize to 0-360
 
-    else:
+    elif game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
         # Camera tracking off - smoothly move to settled starting view
         # Same position auto-follow settles to with beetles at spawn (-20,0,0) and (20,0,0)
         # Camera on +Z side looking south, using auto-follow height/distance/pitch
@@ -12365,6 +12754,7 @@ try:
             yaw_diff += 360.0
         camera.yaw += yaw_diff * lerp_factor
         camera.yaw = camera.yaw % 360.0
+    # else: In title states, camera position is controlled by title screen logic
 
     # Update flying referee position (runs regardless of camera tracking)
     if referee_enabled and referee_ladybug is not None:
@@ -12501,7 +12891,11 @@ try:
             print("[Network] Opponent reconnected!")
 
     # Read current inputs from keyboard (will be used inside physics loop)
-    if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
+    # During title screen, no beetle controls
+    if game_state in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
+        frame_blue_inputs = 0
+        frame_red_inputs = 0
+    elif game_state == GAME_STATE_ONLINE_PLAY and network_manager:
         # ONLINE MODE: Use WASD + arrow keys with beetle-specific remapping
         if local_player_id == 0:
             current_local_inputs = get_local_inputs(window, 'blue', network_mode=True, horn_type_id=beetle_blue.horn_type_id)
@@ -15467,18 +15861,72 @@ try:
     # === SCENE RENDER TIMING ===
     perf_monitor.start('scene_render')
 
-    # Calculate spotlight position above beetles midpoint
-    spotlight_mid_x = (blue_render_x + red_render_x) / 2.0
-    spotlight_mid_y = max(blue_render_y, red_render_y) + spotlight_height  # Height above highest beetle (higher = bigger/softer, lower = smaller/focused)
-    spotlight_mid_z = (blue_render_z + red_render_z) / 2.0
+    # Title screen uses special lighting aimed at title text
+    if game_state in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
+        # Calculate fade factor for transition (1.0 = full, 0.0 = off)
+        if game_state == GAME_STATE_TITLE_TRANSITION:
+            fade = max(0.0, 1.0 - (title_transition_timer / 1.0))  # Fade over 1 second
+        else:
+            fade = 1.0
+
+        # Two orbiting lights around the title for dynamic effect
+        orbit_speed = 0.15  # Rotations per second (slow gentle movement)
+        orbit_radius = 40.0
+        orbit_height = TITLE_TEXT_Y + 20
+        title_center_z = TITLE_TEXT_Z - 64  # World coords
+
+        angle1 = current_time * orbit_speed * 2 * math.pi
+        angle2 = angle1 + math.pi  # Opposite side
+
+        light1_x = math.cos(angle1) * orbit_radius
+        light1_z = title_center_z + math.sin(angle1) * orbit_radius * 0.5
+        light2_x = math.cos(angle2) * orbit_radius
+        light2_z = title_center_z + math.sin(angle2) * orbit_radius * 0.5
+
+        # Add orbiting lights to scene directly (fade during transition)
+        scene.point_light(pos=(light1_x, orbit_height, light1_z), color=(0.8 * fade, 0.7 * fade, 0.5 * fade))
+        scene.point_light(pos=(light2_x, orbit_height, light2_z), color=(0.5 * fade, 0.6 * fade, 0.8 * fade))
+
+        render_spotlight_pos = None  # No main spotlight
+        render_spotlight_strength = 0.0
+        render_base_brightness = 1.0 + 0.2 * fade  # Fade from 1.2 to 1.0
+        render_front_strength = 0.3 * fade
+    else:
+        # Normal gameplay lighting - spotlight above beetles
+        # Dramatic lights fade-in effect when game starts
+        arena_lights_timer += frame_dt
+        if arena_lights_timer < ARENA_LIGHTS_FADEIN:
+            # Ease-in curve for dramatic effect (starts slow, accelerates)
+            t = arena_lights_timer / ARENA_LIGHTS_FADEIN
+            # Use ease-in-out for smooth dramatic turn-on
+            if t < 0.5:
+                light_factor = 2 * t * t  # Ease-in for first half
+            else:
+                light_factor = 1 - pow(-2 * t + 2, 2) / 2  # Ease-out for second half
+            # Add slight overshoot "flash" near the end for extra drama
+            if t > 0.7:
+                flash_t = (t - 0.7) / 0.3  # 0 to 1 in last 30%
+                flash = 0.2 * math.sin(flash_t * math.pi)  # Peaks at 0.2 extra
+                light_factor = min(1.2, light_factor + flash)
+        else:
+            light_factor = 1.0  # Full brightness after fade-in complete
+
+        spotlight_mid_x = (blue_render_x + red_render_x) / 2.0
+        spotlight_mid_y = max(blue_render_y, red_render_y) + spotlight_height
+        spotlight_mid_z = (blue_render_z + red_render_z) / 2.0
+        render_spotlight_pos = (spotlight_mid_x, spotlight_mid_y, spotlight_mid_z)
+        render_spotlight_strength = spotlight_strength * light_factor  # Spotlight fades in from 0
+        # Base brightness: start at 1.0 (same as end of title transition), fade to full gameplay brightness
+        render_base_brightness = 1.0 + (base_light_brightness - 1.0) * light_factor
+        render_front_strength = front_light_strength * light_factor
 
     canvas.set_background_color((0.18, 0.40, 0.22))  # Lighter forest green
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid,
                     dynamic_lighting=dynamic_lighting_enabled,
-                    spotlight_pos=(spotlight_mid_x, spotlight_mid_y, spotlight_mid_z),
-                    spotlight_strength=spotlight_strength,
-                    base_light_brightness=base_light_brightness,
-                    front_light_strength=front_light_strength)
+                    spotlight_pos=render_spotlight_pos,
+                    spotlight_strength=render_spotlight_strength,
+                    base_light_brightness=render_base_brightness,
+                    front_light_strength=render_front_strength)
     canvas.scene(scene)
 
     perf_monitor.stop('scene_render')
@@ -15486,18 +15934,24 @@ try:
     # === GUI TIMING ===
     perf_monitor.start('gui')
 
-    # HUD
-    window.GUI.begin("Beetle Physics", 0.01, 0.01, 0.35, 0.95)
-    window.GUI.text(f"FPS: {actual_fps:3.0f}")
+    # HUD - small during title, full size after game starts
+    gui_skip_content = game_state in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]
+    if gui_skip_content:
+        window.GUI.begin(" ", 0.01, 0.01, 0.10, 0.04)
+        window.GUI.text(f"FPS: {actual_fps:3.0f}")
+        window.GUI.end()
+    else:
+        window.GUI.begin("SETTINGS AND NETWORKING", 0.01, 0.01, 0.35, 0.95)
+        window.GUI.text(f"FPS: {actual_fps:3.0f}")
 
-    # Fullscreen toggle button
-    fs_text = "WINDOWED" if is_fullscreen else "FULLSCREEN"
-    if window.GUI.button(fs_text):
-        toggle_fullscreen_windows()
+        # Fullscreen toggle button
+        fs_text = "WINDOWED" if is_fullscreen else "FULLSCREEN"
+        if window.GUI.button(fs_text):
+            toggle_fullscreen_windows()
 
 
     # === NETWORK / ONLINE PLAY SECTION ===
-    if NETWORK_AVAILABLE:
+    if NETWORK_AVAILABLE and not gui_skip_content:
         window.GUI.text("")
 
         # Show different UI based on game state
@@ -15748,813 +16202,814 @@ try:
 
         window.GUI.text("")
 
-    # Ball controls (beetle soccer)
-    window.GUI.text("")
-    window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
-
-    # Ball toggle button (only host can toggle in online mode)
-    is_online_guest = game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host
-    if is_online_guest:
-        # Guest sees ball state but can't toggle
-        ball_status = "Ball: ON (host controls)" if beetle_ball.active else "Ball: OFF (host controls)"
-        window.GUI.text(ball_status)
-    else:
-        ball_button_text = "STOP BEETLE BALL" if beetle_ball.active else "PLAY BEETLE BALL"
-        if window.GUI.button(ball_button_text):
-            if beetle_ball.active:
-                # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
-                if ball_last_rendered[None] == 1:
-                    num_voxels = ball_cache_size[None]
-                    if num_voxels > 0:
-                        clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                    ball_last_rendered[None] = 0
-                else:
-                    clear_ball()  # Fallback to full clear if ball position unknown
-                simulation.clear_bowl_perimeter()
-                # Rebuild floor height cache without the ice bowl
-                build_floor_height_cache()
-                # Reset scores when leaving ball mode
-                blue_score = 0
-                red_score = 0
-            beetle_ball.active = not beetle_ball.active
-            if beetle_ball.active:
-                # Initialize ball cache for assembly animation if not already done
-                if not ball_cache_initialized:
-                    init_ball_cache(beetle_ball.radius)
-                    ball_cache_initialized = True
-                # Reset ball to center when enabling
-                beetle_ball.x = 0.0
-                beetle_ball.y = 28.0  # Drop from higher than beetles
-                beetle_ball.z = 0.0
-                beetle_ball.vx = 0.0
-                beetle_ball.vy = 0.0
-                beetle_ball.vz = 0.0
-                beetle_ball.rotation = 0.0
-                beetle_ball.angular_velocity = 0.0
-                beetle_ball.pitch = 0.0
-                beetle_ball.pitch_velocity = 0.0
-                beetle_ball.roll = 0.0
-                beetle_ball.roll_velocity = 0.0
-                # Reset prev state to avoid interpolation jump
-                beetle_ball.prev_x = beetle_ball.x
-                beetle_ball.prev_y = beetle_ball.y
-                beetle_ball.prev_z = beetle_ball.z
-                beetle_ball.prev_rotation = beetle_ball.rotation
-                beetle_ball.prev_pitch = beetle_ball.pitch
-                beetle_ball.prev_roll = beetle_ball.roll
-                # Reset scores and flags
-                blue_score = 0
-                red_score = 0
-                ball_scored_this_fall = False
-                ball_has_exploded = False
-                ball_explosion_delay = 0.0
-                ball_explosion_timer = 0.0
-                # Render the bowl perimeter for ball mode (with goal pit cutouts)
-                simulation.render_bowl_perimeter()
-                # Rebuild floor height cache to include the ice bowl
-                build_floor_height_cache()
-            # Sync to guest if we're the host
-            if network_manager and network_manager.is_host:
-                network_manager.send_game_options(referee_enabled, beetle_ball.active)
-
-    cam_button_text = "CAMERA MOVE: ON" if auto_follow_enabled else "CAMERA MOVE: OFF"
-    if window.GUI.button(cam_button_text):
-        auto_follow_enabled = not auto_follow_enabled
-        print(f"Camera tracking: {'ON' if auto_follow_enabled else 'OFF'}")
-
-    # Ball score display (only show when ball is enabled)
-    if beetle_ball.active:
-        # Display score
-        window.GUI.text(f"SCORE: B1 {blue_score} - {red_score} B2")
-
-    # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
-    # if perf_monitor.show_stats:
-    #     total_ms = perf_monitor.get_avg('frame_total')
-    #     physics_ms = perf_monitor.get_avg('physics')
-    #     render_ms = perf_monitor.get_avg('beetle_render') + perf_monitor.get_avg('scene_render')
-    #     window.GUI.text(f"Frame: {total_ms:.1f}ms | Phys: {physics_ms:.1f}ms | Rend: {render_ms:.1f}ms")
-    #     if perf_monitor.show_detailed:
-    #         for line in perf_monitor.get_detailed_breakdown():
-    #             window.GUI.text(line)
-    # if window.GUI.button("Toggle Perf Stats"):
-    #     perf_monitor.show_stats = not perf_monitor.show_stats
-
-    window.GUI.text("")
-
-    # Blue/Red beetle stats (commented out - too cluttered)
-    # if beetle_blue.active:
-    #     window.GUI.text("BLUE BEETLE (TFGH + RY + VB)")
-    #     window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.y:.1f}, {beetle_blue.z:.1f})")
-    #     window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
-    #     window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
-    #     window.GUI.text(f"  Horn pitch: {math.degrees(beetle_blue.horn_pitch):.1f}°")
-    #     window.GUI.text(f"  Horn yaw: {math.degrees(beetle_blue.horn_yaw):.1f}°")
-    # if beetle_red.active:
-    #     window.GUI.text("RED BEETLE (IJKL + UO + NM)")
-    #     ...
-
-    window.GUI.text("")
-
-    # Throttle beetle customization GUI during active LOCAL gameplay for performance
-    # Only show full sliders every 6 frames during local play, always show full in network mode
-    gui_frame_counter = physics_frame % 6
-    is_local_play = not network_manager or not network_manager.connected
-    in_active_gameplay = game_state == GAME_STATE_ONLINE_PLAY and beetle_blue.active and beetle_red.active and is_local_play
-    show_full_customization = (gui_frame_counter == 0) or not in_active_gameplay
-
-    # Determine which beetle this player can edit in network mode
-    # Host edits BLUE, Guest edits RED, Local mode can edit both
-    can_edit_blue = not network_manager or not network_manager.connected or network_manager.is_host
-    can_edit_red = not network_manager or not network_manager.connected or not network_manager.is_host
-
-    if can_edit_blue:
-        window.GUI.text("=== BEETLE 1 GENETICS ===")
-    else:
-        window.GUI.text("=== BEETLE 1 (opponent) ===")
-
-    # Front body (thorax) is fixed at 4 layers
-    front_body_height = 4
-
-    # Blue beetle sliders - only editable if can_edit_blue, throttled during gameplay
-    if can_edit_blue and show_full_customization:
-        new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 8, 15)
-        new_blue_prong = window.GUI.slider_int("Blue Horn Prong", window.blue_horn_prong_value, 3, 6)
-        new_blue_back_body = window.GUI.slider_int("Blue Back Body", window.blue_back_body_height_value, 4, 8)
-        new_blue_body_length = window.GUI.slider_int("Blue Body Length", window.blue_body_length_value, 9, 14)
-        new_blue_body_width = window.GUI.slider_int("Blue Body Width", window.blue_body_width_value, 5, 9)
-        new_blue_leg_length = window.GUI.slider_int("Blue Leg Length", window.blue_leg_length_value, 6, 10)
-    else:
-        # Show read-only values (opponent's beetle OR throttled during gameplay)
-        window.GUI.text(f"Horn Shaft: {window.blue_horn_shaft_value}")
-        window.GUI.text(f"Horn Prong: {window.blue_horn_prong_value}")
-        window.GUI.text(f"Back Body: {window.blue_back_body_height_value}")
-        window.GUI.text(f"Body Length: {window.blue_body_length_value}")
-        window.GUI.text(f"Body Width: {window.blue_body_width_value}")
-        window.GUI.text(f"Leg Length: {window.blue_leg_length_value}")
-        # Keep values unchanged
-        new_blue_shaft = window.blue_horn_shaft_value
-        new_blue_prong = window.blue_horn_prong_value
-        new_blue_back_body = window.blue_back_body_height_value
-        new_blue_body_length = window.blue_body_length_value
-        new_blue_body_width = window.blue_body_width_value
-        new_blue_leg_length = window.blue_leg_length_value
-
-    # Random blue beetle button - only if can edit and not throttled
-    if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 1"):
-        new_blue_shaft = random.randint(8, 15)
-        new_blue_prong = random.randint(3, 6)
-        new_blue_back_body = random.randint(4, 8)
-        new_blue_body_length = random.randint(9, 14)
-        new_blue_body_width = random.randint(5, 9)
-        new_blue_leg_length = random.randint(6, 10)
-        print(f"Randomized blue beetle: shaft={new_blue_shaft}, prong={new_blue_prong}, back={new_blue_back_body}, length={new_blue_body_length}, width={new_blue_body_width}, legs={new_blue_leg_length}")
-
-    if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE B1 COLORS"):
-        palette = generate_harmonious_palette()
-        window.blue_body_color = palette['body']
-        window.blue_leg_color = palette['legs']
-        window.blue_leg_tip_color = palette['leg_tips']
-        window.blue_stripe_color = palette['stripe']
-        window.blue_horn_tip_color = palette['horn_tips']
-        simulation.blue_body_color[None] = ti.Vector(list(palette['body']))
-        simulation.blue_leg_color[None] = ti.Vector(list(palette['legs']))
-        simulation.blue_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
-        simulation.blue_stripe_color[None] = ti.Vector(list(palette['stripe']))
-        simulation.blue_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
-        if network_manager and network_manager.connected and network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=True)
-        print(f"Randomized B1 colors: {palette}")
-
-    # Rebuild blue beetle geometry if sliders changed OR if scorpion tail curvature changed
-    if (new_blue_shaft != window.blue_horn_shaft_value or new_blue_prong != window.blue_horn_prong_value or
-        new_blue_back_body != window.blue_back_body_height_value or new_blue_body_length != window.blue_body_length_value or
-        new_blue_body_width != window.blue_body_width_value or new_blue_leg_length != window.blue_leg_length_value or
-        (blue_horn_type == "scorpion" and abs(beetle_blue.stinger_curvature - blue_previous_stinger_curvature) > 0.01)):
-
-        # For scorpion type, use blue beetle's current animation values
-        blue_current_stinger_curvature = 0.0
-        blue_current_tail_rotation = 0.0
-        if blue_horn_type == "scorpion":
-            blue_current_stinger_curvature = beetle_blue.stinger_curvature
-            blue_current_tail_rotation = beetle_blue.tail_rotation_angle
-
-        # Rebuild geometry and reset walk phase to prevent leg jitter
-        rebuild_blue_beetle(new_blue_shaft, new_blue_prong, front_body_height, new_blue_back_body, new_blue_body_length, new_blue_body_width, new_blue_leg_length, blue_horn_type, blue_current_stinger_curvature, blue_current_tail_rotation)
-        reset_walk_phase_on_geometry_change(beetle_blue)
-
-        window.blue_horn_shaft_value = new_blue_shaft
-        window.blue_horn_prong_value = new_blue_prong
-        window.blue_back_body_height_value = new_blue_back_body
-        window.blue_body_length_value = new_blue_body_length
-        window.blue_body_width_value = new_blue_body_width
-        window.blue_leg_length_value = new_blue_leg_length
-        blue_previous_stinger_curvature = blue_current_stinger_curvature
-        blue_previous_tail_rotation = blue_current_tail_rotation
-        # Send config immediately when host changes blue beetle
-        if network_manager and network_manager.connected and network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=True)
-
-    # Blue beetle stats
-    window.GUI.text(f"B1 Shaft: {window.blue_horn_shaft_value} voxels")
-    window.GUI.text(f"B1 Prong: {window.blue_horn_prong_value} voxels")
-    blue_total_reach = window.blue_horn_shaft_value + window.blue_horn_prong_value
-    window.GUI.text(f"B1 Total Horn: {blue_total_reach} voxels")
-
-    # Blue beetle horn type button - throttled during gameplay
-    window.GUI.text("")
-    window.GUI.text("=== BEETLE 1 TYPE ===")
-    if can_edit_blue and show_full_customization:
-        if blue_horn_type == "rhino":
-            blue_button_text = "B1: RHINO (CLICK FOR STAG)"
-        elif blue_horn_type == "stag":
-            blue_button_text = "B1: STAG (CLICK FOR HERCULES)"
-        elif blue_horn_type == "hercules":
-            blue_button_text = "B1: HERCULES (CLICK FOR SCORPION)"
-        elif blue_horn_type == "scorpion":
-            blue_button_text = "B1: SCORPION (CLICK FOR ATLAS)"
-        elif blue_horn_type == "atlas":
-            blue_button_text = "B1: ATLAS (CLICK FOR BOMBARDIER)"
-        elif blue_horn_type == "bombardier":
-            blue_button_text = "B1: BOMBARDIER (CLICK FOR SPIDER)"
-        else:  # spider
-            blue_button_text = "B1: SPIDER (CLICK FOR RHINO)"
-    else:
-        # Read-only display (opponent's beetle OR throttled during gameplay)
-        window.GUI.text(f"B1: {blue_horn_type.upper()}")
-        blue_button_text = None
-
-    if blue_button_text and window.GUI.button(blue_button_text):
-        # Cycle blue beetle horn type
-        if blue_horn_type == "rhino":
-            blue_horn_type = "stag"
-        elif blue_horn_type == "stag":
-            blue_horn_type = "hercules"
-        elif blue_horn_type == "hercules":
-            blue_horn_type = "scorpion"
-        elif blue_horn_type == "scorpion":
-            blue_horn_type = "atlas"
-        elif blue_horn_type == "atlas":
-            blue_horn_type = "bombardier"
-        elif blue_horn_type == "bombardier":
-            blue_horn_type = "spider"
-        else:
-            blue_horn_type = "rhino"
-
-        print(f"Blue beetle switching to {blue_horn_type.upper()}...")
-
-        # Update blue beetle horn pitch and yaw defaults
-        if blue_horn_type == "scorpion":
-            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-            beetle_blue.horn_yaw = 0.0
-        elif blue_horn_type == "stag":
-            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_STAG
-            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
-            beetle_blue.horn_yaw = HORN_DEFAULT_YAW_STAG  # Stag pincers start more open
-        elif blue_horn_type == "hercules":
-            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-            beetle_blue.horn_yaw = 0.0
-        elif blue_horn_type == "atlas":
-            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-            beetle_blue.horn_yaw = 0.0
-        elif blue_horn_type == "bombardier":
-            beetle_blue.horn_pitch = 0.0  # No horn - firing controls instead
-            beetle_blue.prev_horn_pitch = 0.0
-            beetle_blue.horn_yaw = 0.0
-        elif blue_horn_type == "spider":
-            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION  # Fangs similar to scorpion
-            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-            beetle_blue.horn_yaw = 0.0
-        else:  # rhino
-            beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
-            beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH
-            beetle_blue.horn_yaw = 0.0
-
-        # Rebuild blue beetle with new horn type and reset walk phase
-        rebuild_blue_beetle(
-            window.blue_horn_shaft_value,
-            window.blue_horn_prong_value,
-            front_body_height,
-            window.blue_back_body_height_value,
-            window.blue_body_length_value,
-            window.blue_body_width_value,
-            window.blue_leg_length_value,
-            blue_horn_type,
-            stinger_curvature=0.0
-        )
-        reset_walk_phase_on_geometry_change(beetle_blue)
-        # Send config immediately when host changes blue beetle type
-        if network_manager and network_manager.connected and network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=True)
-
-    # Blue beetle color pickers - only if can edit, throttled during gameplay
-    window.GUI.text("")
-    if can_edit_blue and show_full_customization:
-        window.GUI.text("=== BEETLE 1 COLORS ===")
-        blue_color_changed = False
-
-        new_blue_body_color = window.GUI.color_edit_3("B1 Body", window.blue_body_color)
-        if new_blue_body_color != window.blue_body_color:
-            window.blue_body_color = new_blue_body_color
-            simulation.blue_body_color[None] = ti.Vector([new_blue_body_color[0], new_blue_body_color[1], new_blue_body_color[2]])
-            blue_color_changed = True
-
-        new_blue_leg_color = window.GUI.color_edit_3("B1 Legs", window.blue_leg_color)
-        if new_blue_leg_color != window.blue_leg_color:
-            window.blue_leg_color = new_blue_leg_color
-            simulation.blue_leg_color[None] = ti.Vector([new_blue_leg_color[0], new_blue_leg_color[1], new_blue_leg_color[2]])
-            blue_color_changed = True
-
-        new_blue_leg_tip_color = window.GUI.color_edit_3("B1 Leg Tips", window.blue_leg_tip_color)
-        if new_blue_leg_tip_color != window.blue_leg_tip_color:
-            window.blue_leg_tip_color = new_blue_leg_tip_color
-            simulation.blue_leg_tip_color[None] = ti.Vector([new_blue_leg_tip_color[0], new_blue_leg_tip_color[1], new_blue_leg_tip_color[2]])
-            blue_color_changed = True
-
-        new_blue_stripe_color = window.GUI.color_edit_3("B1 Stripe", window.blue_stripe_color)
-        if new_blue_stripe_color != window.blue_stripe_color:
-            window.blue_stripe_color = new_blue_stripe_color
-            simulation.blue_stripe_color[None] = ti.Vector([new_blue_stripe_color[0], new_blue_stripe_color[1], new_blue_stripe_color[2]])
-            blue_color_changed = True
-
-        new_blue_horn_tip_color = window.GUI.color_edit_3("B1 Horn Tips", window.blue_horn_tip_color)
-        if new_blue_horn_tip_color != window.blue_horn_tip_color:
-            window.blue_horn_tip_color = new_blue_horn_tip_color
-            simulation.blue_horn_tip_color[None] = ti.Vector([new_blue_horn_tip_color[0], new_blue_horn_tip_color[1], new_blue_horn_tip_color[2]])
-            blue_color_changed = True
-
-        # Send config immediately when host changes blue beetle colors
-        if blue_color_changed and network_manager and network_manager.connected and network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=True)
-
-    window.GUI.text("")
-    if can_edit_red:
-        window.GUI.text("=== BEETLE 2 GENETICS ===")
-    else:
-        window.GUI.text("=== BEETLE 2 (opponent) ===")
-
-    # Red beetle sliders - only editable if can_edit_red, throttled during gameplay
-    if can_edit_red and show_full_customization:
-        new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 8, 15)
-        new_red_prong = window.GUI.slider_int("Red Horn Prong", window.red_horn_prong_value, 3, 6)
-        new_red_back_body = window.GUI.slider_int("Red Back Body", window.red_back_body_height_value, 4, 8)
-        new_red_body_length = window.GUI.slider_int("Red Body Length", window.red_body_length_value, 9, 14)
-        new_red_body_width = window.GUI.slider_int("Red Body Width", window.red_body_width_value, 5, 9)
-        new_red_leg_length = window.GUI.slider_int("Red Leg Length", window.red_leg_length_value, 6, 10)
-    else:
-        # Show read-only values (opponent's beetle OR throttled during gameplay)
-        window.GUI.text(f"Horn Shaft: {window.red_horn_shaft_value}")
-        window.GUI.text(f"Horn Prong: {window.red_horn_prong_value}")
-        window.GUI.text(f"Back Body: {window.red_back_body_height_value}")
-        window.GUI.text(f"Body Length: {window.red_body_length_value}")
-        window.GUI.text(f"Body Width: {window.red_body_width_value}")
-        window.GUI.text(f"Leg Length: {window.red_leg_length_value}")
-        # Keep values unchanged
-        new_red_shaft = window.red_horn_shaft_value
-        new_red_prong = window.red_horn_prong_value
-        new_red_back_body = window.red_back_body_height_value
-        new_red_body_length = window.red_body_length_value
-        new_red_body_width = window.red_body_width_value
-        new_red_leg_length = window.red_leg_length_value
-
-    # Random red beetle button - only if can edit and not throttled
-    if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 2"):
-        new_red_shaft = random.randint(8, 15)
-        new_red_prong = random.randint(3, 6)
-        new_red_back_body = random.randint(4, 8)
-        new_red_body_length = random.randint(9, 14)
-        new_red_body_width = random.randint(5, 9)
-        new_red_leg_length = random.randint(6, 10)
-        print(f"Randomized red beetle: shaft={new_red_shaft}, prong={new_red_prong}, back={new_red_back_body}, length={new_red_body_length}, width={new_red_body_width}, legs={new_red_leg_length}")
-
-    if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE B2 COLORS"):
-        palette = generate_harmonious_palette()
-        window.red_body_color = palette['body']
-        window.red_leg_color = palette['legs']
-        window.red_leg_tip_color = palette['leg_tips']
-        window.red_stripe_color = palette['stripe']
-        window.red_horn_tip_color = palette['horn_tips']
-        simulation.red_body_color[None] = ti.Vector(list(palette['body']))
-        simulation.red_leg_color[None] = ti.Vector(list(palette['legs']))
-        simulation.red_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
-        simulation.red_stripe_color[None] = ti.Vector(list(palette['stripe']))
-        simulation.red_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
-        if network_manager and network_manager.connected and not network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=False)
-        print(f"Randomized B2 colors: {palette}")
-
-    # Rebuild red beetle geometry if sliders changed OR if scorpion tail curvature changed
-    if (new_red_shaft != window.red_horn_shaft_value or new_red_prong != window.red_horn_prong_value or
-        new_red_back_body != window.red_back_body_height_value or new_red_body_length != window.red_body_length_value or
-        new_red_body_width != window.red_body_width_value or new_red_leg_length != window.red_leg_length_value or
-        (red_horn_type == "scorpion" and abs(beetle_red.stinger_curvature - red_previous_stinger_curvature) > 0.01)):
-
-        # For scorpion type, use red beetle's current animation values
-        red_current_stinger_curvature = 0.0
-        red_current_tail_rotation = 0.0
-        if red_horn_type == "scorpion":
-            red_current_stinger_curvature = beetle_red.stinger_curvature
-            red_current_tail_rotation = beetle_red.tail_rotation_angle
-
-        # Rebuild geometry and reset walk phase to prevent leg jitter
-        rebuild_red_beetle(new_red_shaft, new_red_prong, front_body_height, new_red_back_body, new_red_body_length, new_red_body_width, new_red_leg_length, red_horn_type, red_current_stinger_curvature, red_current_tail_rotation)
-        reset_walk_phase_on_geometry_change(beetle_red)
-
-        window.red_horn_shaft_value = new_red_shaft
-        window.red_horn_prong_value = new_red_prong
-        window.red_back_body_height_value = new_red_back_body
-        window.red_body_length_value = new_red_body_length
-        window.red_body_width_value = new_red_body_width
-        window.red_leg_length_value = new_red_leg_length
-        red_previous_stinger_curvature = red_current_stinger_curvature
-        red_previous_tail_rotation = red_current_tail_rotation
-        # Send config immediately when guest changes red beetle
-        if network_manager and network_manager.connected and not network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=False)
-
-    # Red beetle stats
-    window.GUI.text(f"B2 Shaft: {window.red_horn_shaft_value} voxels")
-    window.GUI.text(f"B2 Prong: {window.red_horn_prong_value} voxels")
-    red_total_reach = window.red_horn_shaft_value + window.red_horn_prong_value
-    window.GUI.text(f"B2 Total Horn: {red_total_reach} voxels")
-
-    # Red beetle horn type button - throttled during gameplay
-    window.GUI.text("")
-    window.GUI.text("=== BEETLE 2 TYPE ===")
-    if can_edit_red and show_full_customization:
-        if red_horn_type == "rhino":
-            red_button_text = "B2: RHINO (CLICK FOR STAG)"
-        elif red_horn_type == "stag":
-            red_button_text = "B2: STAG (CLICK FOR HERCULES)"
-        elif red_horn_type == "hercules":
-            red_button_text = "B2: HERCULES (CLICK FOR SCORPION)"
-        elif red_horn_type == "scorpion":
-            red_button_text = "B2: SCORPION (CLICK FOR ATLAS)"
-        elif red_horn_type == "atlas":
-            red_button_text = "B2: ATLAS (CLICK FOR BOMBARDIER)"
-        elif red_horn_type == "bombardier":
-            red_button_text = "B2: BOMBARDIER (CLICK FOR SPIDER)"
-        else:  # spider
-            red_button_text = "B2: SPIDER (CLICK FOR RHINO)"
-    else:
-        # Read-only display (opponent's beetle OR throttled during gameplay)
-        window.GUI.text(f"B2: {red_horn_type.upper()}")
-        red_button_text = None
-
-    if red_button_text and window.GUI.button(red_button_text):
-        # Cycle red beetle horn type
-        if red_horn_type == "rhino":
-            red_horn_type = "stag"
-        elif red_horn_type == "stag":
-            red_horn_type = "hercules"
-        elif red_horn_type == "hercules":
-            red_horn_type = "scorpion"
-        elif red_horn_type == "scorpion":
-            red_horn_type = "atlas"
-        elif red_horn_type == "atlas":
-            red_horn_type = "bombardier"
-        elif red_horn_type == "bombardier":
-            red_horn_type = "spider"
-        else:
-            red_horn_type = "rhino"
-
-        print(f"Red beetle switching to {red_horn_type.upper()}...")
-
-        # Update red beetle horn pitch and yaw defaults
-        if red_horn_type == "scorpion":
-            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-            beetle_red.horn_yaw = 0.0
-        elif red_horn_type == "stag":
-            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_STAG
-            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
-            beetle_red.horn_yaw = HORN_DEFAULT_YAW_STAG  # Stag pincers start more open
-        elif red_horn_type == "hercules":
-            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-            beetle_red.horn_yaw = 0.0
-        elif red_horn_type == "atlas":
-            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-            beetle_red.horn_yaw = 0.0
-        elif red_horn_type == "bombardier":
-            beetle_red.horn_pitch = 0.0  # No horn - firing controls instead
-            beetle_red.prev_horn_pitch = 0.0
-            beetle_red.horn_yaw = 0.0
-        elif red_horn_type == "spider":
-            beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION  # Fangs similar to scorpion
-            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-            beetle_red.horn_yaw = 0.0
-        else:  # rhino
-            beetle_red.horn_pitch = HORN_DEFAULT_PITCH
-            beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
-            beetle_red.horn_yaw = 0.0
-
-        # Rebuild red beetle with new horn type and reset walk phase
-        rebuild_red_beetle(
-            window.red_horn_shaft_value,
-            window.red_horn_prong_value,
-            front_body_height,
-            window.red_back_body_height_value,
-            window.red_body_length_value,
-            window.red_body_width_value,
-            window.red_leg_length_value,
-            red_horn_type,
-            stinger_curvature=0.0
-        )
-        reset_walk_phase_on_geometry_change(beetle_red)
-        # Send config immediately when guest changes red beetle type
-        if network_manager and network_manager.connected and not network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=False)
-
-    # Red beetle color pickers - only if can edit, throttled during gameplay
-    window.GUI.text("")
-    if can_edit_red and show_full_customization:
-        window.GUI.text("=== BEETLE 2 COLORS ===")
-        red_color_changed = False
-
-        new_red_body_color = window.GUI.color_edit_3("B2 Body", window.red_body_color)
-        if new_red_body_color != window.red_body_color:
-            window.red_body_color = new_red_body_color
-            simulation.red_body_color[None] = ti.Vector([new_red_body_color[0], new_red_body_color[1], new_red_body_color[2]])
-            red_color_changed = True
-
-        new_red_leg_color = window.GUI.color_edit_3("B2 Legs", window.red_leg_color)
-        if new_red_leg_color != window.red_leg_color:
-            window.red_leg_color = new_red_leg_color
-            simulation.red_leg_color[None] = ti.Vector([new_red_leg_color[0], new_red_leg_color[1], new_red_leg_color[2]])
-            red_color_changed = True
-
-        new_red_leg_tip_color = window.GUI.color_edit_3("B2 Leg Tips", window.red_leg_tip_color)
-        if new_red_leg_tip_color != window.red_leg_tip_color:
-            window.red_leg_tip_color = new_red_leg_tip_color
-            simulation.red_leg_tip_color[None] = ti.Vector([new_red_leg_tip_color[0], new_red_leg_tip_color[1], new_red_leg_tip_color[2]])
-            red_color_changed = True
-
-        new_red_stripe_color = window.GUI.color_edit_3("B2 Stripe", window.red_stripe_color)
-        if new_red_stripe_color != window.red_stripe_color:
-            window.red_stripe_color = new_red_stripe_color
-            simulation.red_stripe_color[None] = ti.Vector([new_red_stripe_color[0], new_red_stripe_color[1], new_red_stripe_color[2]])
-            red_color_changed = True
-
-        new_red_horn_tip_color = window.GUI.color_edit_3("B2 Horn Tips", window.red_horn_tip_color)
-        if new_red_horn_tip_color != window.red_horn_tip_color:
-            window.red_horn_tip_color = new_red_horn_tip_color
-            simulation.red_horn_tip_color[None] = ti.Vector([new_red_horn_tip_color[0], new_red_horn_tip_color[1], new_red_horn_tip_color[2]])
-            red_color_changed = True
-
-        # Send config immediately when guest changes red beetle colors
-        if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
-            send_local_beetle_config(network_manager, is_host=False)
-
-    # Winner announcement and restart button
-    if blue_celebrating or red_celebrating:
+    # Ball controls (beetle soccer) - skip during title screen
+    if not gui_skip_content:
         window.GUI.text("")
-        window.GUI.text("="*30)
-        if blue_celebrating and red_celebrating:
-            window.GUI.text("*** DOUBLE KO! ***")
-        elif blue_celebrating:
-            window.GUI.text("*** BEETLE 1 SCORES! ***")
+        window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
+
+        # Ball toggle button (only host can toggle in online mode)
+        is_online_guest = game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host
+        if is_online_guest:
+            # Guest sees ball state but can't toggle
+            ball_status = "Ball: ON (host controls)" if beetle_ball.active else "Ball: OFF (host controls)"
+            window.GUI.text(ball_status)
         else:
-            window.GUI.text("*** BEETLE 2 SCORES! ***")
-        window.GUI.text("="*30)
-        window.GUI.text("")
-        if window.GUI.button("RESTART MATCH"):
-            reset_match()
+            ball_button_text = "STOP BEETLE BALL" if beetle_ball.active else "PLAY BEETLE BALL"
+            if window.GUI.button(ball_button_text):
+                if beetle_ball.active:
+                    # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
+                    if ball_last_rendered[None] == 1:
+                        num_voxels = ball_cache_size[None]
+                        if num_voxels > 0:
+                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                        ball_last_rendered[None] = 0
+                    else:
+                        clear_ball()  # Fallback to full clear if ball position unknown
+                    simulation.clear_bowl_perimeter()
+                    # Rebuild floor height cache without the ice bowl
+                    build_floor_height_cache()
+                    # Reset scores when leaving ball mode
+                    blue_score = 0
+                    red_score = 0
+                beetle_ball.active = not beetle_ball.active
+                if beetle_ball.active:
+                    # Initialize ball cache for assembly animation if not already done
+                    if not ball_cache_initialized:
+                        init_ball_cache(beetle_ball.radius)
+                        ball_cache_initialized = True
+                    # Reset ball to center when enabling
+                    beetle_ball.x = 0.0
+                    beetle_ball.y = 28.0  # Drop from higher than beetles
+                    beetle_ball.z = 0.0
+                    beetle_ball.vx = 0.0
+                    beetle_ball.vy = 0.0
+                    beetle_ball.vz = 0.0
+                    beetle_ball.rotation = 0.0
+                    beetle_ball.angular_velocity = 0.0
+                    beetle_ball.pitch = 0.0
+                    beetle_ball.pitch_velocity = 0.0
+                    beetle_ball.roll = 0.0
+                    beetle_ball.roll_velocity = 0.0
+                    # Reset prev state to avoid interpolation jump
+                    beetle_ball.prev_x = beetle_ball.x
+                    beetle_ball.prev_y = beetle_ball.y
+                    beetle_ball.prev_z = beetle_ball.z
+                    beetle_ball.prev_rotation = beetle_ball.rotation
+                    beetle_ball.prev_pitch = beetle_ball.pitch
+                    beetle_ball.prev_roll = beetle_ball.roll
+                    # Reset scores and flags
+                    blue_score = 0
+                    red_score = 0
+                    ball_scored_this_fall = False
+                    ball_has_exploded = False
+                    ball_explosion_delay = 0.0
+                    ball_explosion_timer = 0.0
+                    # Render the bowl perimeter for ball mode (with goal pit cutouts)
+                    simulation.render_bowl_perimeter()
+                    # Rebuild floor height cache to include the ice bowl
+                    build_floor_height_cache()
+                # Sync to guest if we're the host
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active)
 
-    # Advanced settings toggle (collapsed by default for performance - saves ~36 slider renders)
-    window.GUI.text("")
-    adv_button_text = "HIDE ADVANCED SETTINGS" if show_advanced_settings else "SHOW ADVANCED SETTINGS"
-    if window.GUI.button(adv_button_text):
-        show_advanced_settings = not show_advanced_settings
+        cam_button_text = "CAMERA MOVE: ON" if auto_follow_enabled else "CAMERA MOVE: OFF"
+        if window.GUI.button(cam_button_text):
+            auto_follow_enabled = not auto_follow_enabled
+            print(f"Camera tracking: {'ON' if auto_follow_enabled else 'OFF'}")
 
-    if show_advanced_settings:
-        # Horn combat physics tuning
-        window.GUI.text("")
-        window.GUI.text("=== HORN COMBAT PHYSICS ===")
-
-        new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 2.0)
-        if new_horn_lift != physics_params["HORN_LIFT_STRENGTH"]:
-            physics_params["HORN_LIFT_STRENGTH"] = new_horn_lift
-
-        new_horn_tip = window.GUI.slider_float("Horn Tip Strength", physics_params["HORN_TIP_STRENGTH"], 0.5, 5.0)
-        if new_horn_tip != physics_params["HORN_TIP_STRENGTH"]:
-            physics_params["HORN_TIP_STRENGTH"] = new_horn_tip
-
-        # Ball physics sliders (only when ball is active)
+        # Ball score display (only show when ball is enabled)
         if beetle_ball.active:
-            window.GUI.text("")
-            window.GUI.text("=== BALL PHYSICS ===")
-            new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
-            if new_ball_radius != int(beetle_ball.radius):
-                beetle_ball.radius = float(new_ball_radius)
-                init_ball_cache(beetle_ball.radius)
-            window.GUI.text(f"Ball Position: ({beetle_ball.x:.1f}, {beetle_ball.y:.1f}, {beetle_ball.z:.1f})")
-            window.GUI.text(f"Ball Velocity: ({beetle_ball.vx:.1f}, {beetle_ball.vy:.1f}, {beetle_ball.vz:.1f})")
+            # Display score
+            window.GUI.text(f"SCORE: B1 {blue_score} - {red_score} B2")
 
-            window.GUI.text("")
-            window.GUI.text("--- Ball Physics Tuning ---")
-            new_separation = window.GUI.slider_float("Separation Force", physics_params["BALL_SEPARATION_FORCE"], 0.1, 2.0)
-            if new_separation != physics_params["BALL_SEPARATION_FORCE"]:
-                physics_params["BALL_SEPARATION_FORCE"] = new_separation
-            new_momentum = window.GUI.slider_float("Momentum Transfer", physics_params["BALL_MOMENTUM_TRANSFER"], 0.0, 2.0)
-            if new_momentum != physics_params["BALL_MOMENTUM_TRANSFER"]:
-                physics_params["BALL_MOMENTUM_TRANSFER"] = new_momentum
-            new_restitution = window.GUI.slider_float("Restitution (Bounce)", physics_params["BALL_RESTITUTION"], 0.0, 1.0)
-            if new_restitution != physics_params["BALL_RESTITUTION"]:
-                physics_params["BALL_RESTITUTION"] = new_restitution
-            new_friction = window.GUI.slider_float("Rolling Friction", physics_params["BALL_ROLLING_FRICTION"], 0.80, 0.99)
-            if new_friction != physics_params["BALL_ROLLING_FRICTION"]:
-                physics_params["BALL_ROLLING_FRICTION"] = new_friction
-            new_ground_bounce = window.GUI.slider_float("Ground Bounce", physics_params["BALL_GROUND_BOUNCE"], 0.0, 0.8)
-            if new_ground_bounce != physics_params["BALL_GROUND_BOUNCE"]:
-                physics_params["BALL_GROUND_BOUNCE"] = new_ground_bounce
+        # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
+        # if perf_monitor.show_stats:
+        #     total_ms = perf_monitor.get_avg('frame_total')
+        #     physics_ms = perf_monitor.get_avg('physics')
+        #     render_ms = perf_monitor.get_avg('beetle_render') + perf_monitor.get_avg('scene_render')
+        #     window.GUI.text(f"Frame: {total_ms:.1f}ms | Phys: {physics_ms:.1f}ms | Rend: {render_ms:.1f}ms")
+        #     if perf_monitor.show_detailed:
+        #         for line in perf_monitor.get_detailed_breakdown():
+        #             window.GUI.text(line)
+        # if window.GUI.button("Toggle Perf Stats"):
+        #     perf_monitor.show_stats = not perf_monitor.show_stats
 
-            window.GUI.text("")
-            window.GUI.text("--- Ball Contact Physics ---")
-            new_lift = window.GUI.slider_float("Scoop Lift", physics_params["BALL_LIFT_STRENGTH"], 0.0, 10.0)
-            if new_lift != physics_params["BALL_LIFT_STRENGTH"]:
-                physics_params["BALL_LIFT_STRENGTH"] = new_lift
-            new_passive_lift = window.GUI.slider_float("Passive Lift", physics_params["BALL_PASSIVE_LIFT_STRENGTH"], 0.0, 10.0)
-            if new_passive_lift != physics_params["BALL_PASSIVE_LIFT_STRENGTH"]:
-                physics_params["BALL_PASSIVE_LIFT_STRENGTH"] = new_passive_lift
-            new_tip = window.GUI.slider_float("Tip Strength", physics_params["BALL_TIP_STRENGTH"], 0.0, 5.0)
-            if new_tip != physics_params["BALL_TIP_STRENGTH"]:
-                physics_params["BALL_TIP_STRENGTH"] = new_tip
-            new_torque = window.GUI.slider_float("Torque Strength", physics_params["BALL_TORQUE_STRENGTH"], 0.0, 10.0)
-            if new_torque != physics_params["BALL_TORQUE_STRENGTH"]:
-                physics_params["BALL_TORQUE_STRENGTH"] = new_torque
-            new_grav = window.GUI.slider_float("Gravity Multiplier", physics_params["BALL_GRAVITY_MULTIPLIER"], 1.0, 5.0)
-            if new_grav != physics_params["BALL_GRAVITY_MULTIPLIER"]:
-                physics_params["BALL_GRAVITY_MULTIPLIER"] = new_grav
-
-            window.GUI.text("")
-            window.GUI.text("--- Ball Feel (Mass/Spin) ---")
-            new_push = window.GUI.slider_float("Push Ease", physics_params["BALL_PUSH_MULTIPLIER"], 0.5, 4.0)
-            if new_push != physics_params["BALL_PUSH_MULTIPLIER"]:
-                physics_params["BALL_PUSH_MULTIPLIER"] = new_push
-            new_spin = window.GUI.slider_float("Spin Ease", physics_params["BALL_SPIN_MULTIPLIER"], 0.5, 5.0)
-            if new_spin != physics_params["BALL_SPIN_MULTIPLIER"]:
-                physics_params["BALL_SPIN_MULTIPLIER"] = new_spin
-            new_ang_fric = window.GUI.slider_float("Spin Retain", physics_params["BALL_ANGULAR_FRICTION"], 0.90, 0.995)
-            if new_ang_fric != physics_params["BALL_ANGULAR_FRICTION"]:
-                physics_params["BALL_ANGULAR_FRICTION"] = new_ang_fric
-
-        # Physics parameter sliders
         window.GUI.text("")
-        window.GUI.text("=== PHYSICS TUNING ===")
-        physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 60.0)
-        physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 4.0)
-        physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
-        physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
-        physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
-        physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
-        physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
-        new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
 
-        window.GUI.text("--- Airborne Tumbling ---")
-        physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
-        physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
-        physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
-        physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 5.0)
-        physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
-        physics_params["WEAK_RESTORING"] = window.GUI.slider_float("Restoring (Bouncing)", physics_params["WEAK_RESTORING"], 5.0, 50.0)
+        # Blue/Red beetle stats (commented out - too cluttered)
+        # if beetle_blue.active:
+        #     window.GUI.text("BLUE BEETLE (TFGH + RY + VB)")
+        #     window.GUI.text(f"  Pos: ({beetle_blue.x:.1f}, {beetle_blue.y:.1f}, {beetle_blue.z:.1f})")
+        #     window.GUI.text(f"  Speed: {math.sqrt(beetle_blue.vx**2 + beetle_blue.vz**2):.1f}")
+        #     window.GUI.text(f"  Facing: {math.degrees(beetle_blue.rotation):.0f}°")
+        #     window.GUI.text(f"  Horn pitch: {math.degrees(beetle_blue.horn_pitch):.1f}°")
+        #     window.GUI.text(f"  Horn yaw: {math.degrees(beetle_blue.horn_yaw):.1f}°")
+        # if beetle_red.active:
+        #     window.GUI.text("RED BEETLE (IJKL + UO + NM)")
+        #     ...
 
-        window.GUI.text("--- Auto-Follow Camera ---")
-        physics_params["CAMERA_PITCH"] = window.GUI.slider_float("Camera Angle", physics_params["CAMERA_PITCH"], -90.0, -30.0)
-        physics_params["CAMERA_BASE_HEIGHT"] = window.GUI.slider_float("Camera Height", physics_params["CAMERA_BASE_HEIGHT"], 20.0, 120.0)
-        physics_params["CAMERA_DISTANCE"] = window.GUI.slider_float("Camera Distance", physics_params["CAMERA_DISTANCE"], 10.0, 80.0)
-        spotlight_strength = window.GUI.slider_float("Spotlight Strength", spotlight_strength, 0.0, 1.5)
-        spotlight_height = window.GUI.slider_float("Spotlight Size", spotlight_height, 10.0, 100.0)
-        base_light_brightness = window.GUI.slider_float("Base Light Brightness", base_light_brightness, 0.0, 2.0)
-        front_light_strength = window.GUI.slider_float("Front Light Strength", front_light_strength, 0.0, 1.5)
-
-        # Dynamic lighting toggle
-        lighting_button_text = "DYNAMIC LIGHTING: ON" if dynamic_lighting_enabled else "DYNAMIC LIGHTING: OFF"
-        if window.GUI.button(lighting_button_text):
-            dynamic_lighting_enabled = not dynamic_lighting_enabled
-
-        # Ladybug cheerleader test
         window.GUI.text("")
-        window.GUI.text("=== LADYBUG CHEERLEADERS ===")
-        ladybug_button_text = "HIDE TEST LADYBUG" if test_ladybug is not None else "SHOW TEST LADYBUG"
-        if window.GUI.button(ladybug_button_text):
-            if test_ladybug is not None:
-                clear_test_ladybug()
+
+        # Throttle beetle customization GUI during active LOCAL gameplay for performance
+        # Only show full sliders every 6 frames during local play, always show full in network mode
+        gui_frame_counter = physics_frame % 6
+        is_local_play = not network_manager or not network_manager.connected
+        in_active_gameplay = game_state == GAME_STATE_ONLINE_PLAY and beetle_blue.active and beetle_red.active and is_local_play
+        show_full_customization = (gui_frame_counter == 0) or not in_active_gameplay
+
+        # Determine which beetle this player can edit in network mode
+        # Host edits BLUE, Guest edits RED, Local mode can edit both
+        can_edit_blue = not network_manager or not network_manager.connected or network_manager.is_host
+        can_edit_red = not network_manager or not network_manager.connected or not network_manager.is_host
+
+        if can_edit_blue:
+            window.GUI.text("=== BEETLE 1 GENETICS ===")
+        else:
+            window.GUI.text("=== BEETLE 1 (opponent) ===")
+
+        # Front body (thorax) is fixed at 4 layers
+        front_body_height = 4
+
+        # Blue beetle sliders - only editable if can_edit_blue, throttled during gameplay
+        if can_edit_blue and show_full_customization:
+            new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 8, 15)
+            new_blue_prong = window.GUI.slider_int("Blue Horn Prong", window.blue_horn_prong_value, 3, 6)
+            new_blue_back_body = window.GUI.slider_int("Blue Back Body", window.blue_back_body_height_value, 4, 8)
+            new_blue_body_length = window.GUI.slider_int("Blue Body Length", window.blue_body_length_value, 9, 14)
+            new_blue_body_width = window.GUI.slider_int("Blue Body Width", window.blue_body_width_value, 5, 9)
+            new_blue_leg_length = window.GUI.slider_int("Blue Leg Length", window.blue_leg_length_value, 6, 10)
+        else:
+            # Show read-only values (opponent's beetle OR throttled during gameplay)
+            window.GUI.text(f"Horn Shaft: {window.blue_horn_shaft_value}")
+            window.GUI.text(f"Horn Prong: {window.blue_horn_prong_value}")
+            window.GUI.text(f"Back Body: {window.blue_back_body_height_value}")
+            window.GUI.text(f"Body Length: {window.blue_body_length_value}")
+            window.GUI.text(f"Body Width: {window.blue_body_width_value}")
+            window.GUI.text(f"Leg Length: {window.blue_leg_length_value}")
+            # Keep values unchanged
+            new_blue_shaft = window.blue_horn_shaft_value
+            new_blue_prong = window.blue_horn_prong_value
+            new_blue_back_body = window.blue_back_body_height_value
+            new_blue_body_length = window.blue_body_length_value
+            new_blue_body_width = window.blue_body_width_value
+            new_blue_leg_length = window.blue_leg_length_value
+
+        # Random blue beetle button - only if can edit and not throttled
+        if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 1"):
+            new_blue_shaft = random.randint(8, 15)
+            new_blue_prong = random.randint(3, 6)
+            new_blue_back_body = random.randint(4, 8)
+            new_blue_body_length = random.randint(9, 14)
+            new_blue_body_width = random.randint(5, 9)
+            new_blue_leg_length = random.randint(6, 10)
+            print(f"Randomized blue beetle: shaft={new_blue_shaft}, prong={new_blue_prong}, back={new_blue_back_body}, length={new_blue_body_length}, width={new_blue_body_width}, legs={new_blue_leg_length}")
+
+        if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE B1 COLORS"):
+            palette = generate_harmonious_palette()
+            window.blue_body_color = palette['body']
+            window.blue_leg_color = palette['legs']
+            window.blue_leg_tip_color = palette['leg_tips']
+            window.blue_stripe_color = palette['stripe']
+            window.blue_horn_tip_color = palette['horn_tips']
+            simulation.blue_body_color[None] = ti.Vector(list(palette['body']))
+            simulation.blue_leg_color[None] = ti.Vector(list(palette['legs']))
+            simulation.blue_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
+            simulation.blue_stripe_color[None] = ti.Vector(list(palette['stripe']))
+            simulation.blue_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
+            if network_manager and network_manager.connected and network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=True)
+            print(f"Randomized B1 colors: {palette}")
+
+        # Rebuild blue beetle geometry if sliders changed OR if scorpion tail curvature changed
+        if (new_blue_shaft != window.blue_horn_shaft_value or new_blue_prong != window.blue_horn_prong_value or
+            new_blue_back_body != window.blue_back_body_height_value or new_blue_body_length != window.blue_body_length_value or
+            new_blue_body_width != window.blue_body_width_value or new_blue_leg_length != window.blue_leg_length_value or
+            (blue_horn_type == "scorpion" and abs(beetle_blue.stinger_curvature - blue_previous_stinger_curvature) > 0.01)):
+
+            # For scorpion type, use blue beetle's current animation values
+            blue_current_stinger_curvature = 0.0
+            blue_current_tail_rotation = 0.0
+            if blue_horn_type == "scorpion":
+                blue_current_stinger_curvature = beetle_blue.stinger_curvature
+                blue_current_tail_rotation = beetle_blue.tail_rotation_angle
+
+            # Rebuild geometry and reset walk phase to prevent leg jitter
+            rebuild_blue_beetle(new_blue_shaft, new_blue_prong, front_body_height, new_blue_back_body, new_blue_body_length, new_blue_body_width, new_blue_leg_length, blue_horn_type, blue_current_stinger_curvature, blue_current_tail_rotation)
+            reset_walk_phase_on_geometry_change(beetle_blue)
+
+            window.blue_horn_shaft_value = new_blue_shaft
+            window.blue_horn_prong_value = new_blue_prong
+            window.blue_back_body_height_value = new_blue_back_body
+            window.blue_body_length_value = new_blue_body_length
+            window.blue_body_width_value = new_blue_body_width
+            window.blue_leg_length_value = new_blue_leg_length
+            blue_previous_stinger_curvature = blue_current_stinger_curvature
+            blue_previous_tail_rotation = blue_current_tail_rotation
+            # Send config immediately when host changes blue beetle
+            if network_manager and network_manager.connected and network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=True)
+
+        # Blue beetle stats
+        window.GUI.text(f"B1 Shaft: {window.blue_horn_shaft_value} voxels")
+        window.GUI.text(f"B1 Prong: {window.blue_horn_prong_value} voxels")
+        blue_total_reach = window.blue_horn_shaft_value + window.blue_horn_prong_value
+        window.GUI.text(f"B1 Total Horn: {blue_total_reach} voxels")
+
+        # Blue beetle horn type button - throttled during gameplay
+        window.GUI.text("")
+        window.GUI.text("=== BEETLE 1 TYPE ===")
+        if can_edit_blue and show_full_customization:
+            if blue_horn_type == "rhino":
+                blue_button_text = "B1: RHINO (CLICK FOR STAG)"
+            elif blue_horn_type == "stag":
+                blue_button_text = "B1: STAG (CLICK FOR HERCULES)"
+            elif blue_horn_type == "hercules":
+                blue_button_text = "B1: HERCULES (CLICK FOR SCORPION)"
+            elif blue_horn_type == "scorpion":
+                blue_button_text = "B1: SCORPION (CLICK FOR ATLAS)"
+            elif blue_horn_type == "atlas":
+                blue_button_text = "B1: ATLAS (CLICK FOR BOMBARDIER)"
+            elif blue_horn_type == "bombardier":
+                blue_button_text = "B1: BOMBARDIER (CLICK FOR SPIDER)"
+            else:  # spider
+                blue_button_text = "B1: SPIDER (CLICK FOR RHINO)"
+        else:
+            # Read-only display (opponent's beetle OR throttled during gameplay)
+            window.GUI.text(f"B1: {blue_horn_type.upper()}")
+            blue_button_text = None
+
+        if blue_button_text and window.GUI.button(blue_button_text):
+            # Cycle blue beetle horn type
+            if blue_horn_type == "rhino":
+                blue_horn_type = "stag"
+            elif blue_horn_type == "stag":
+                blue_horn_type = "hercules"
+            elif blue_horn_type == "hercules":
+                blue_horn_type = "scorpion"
+            elif blue_horn_type == "scorpion":
+                blue_horn_type = "atlas"
+            elif blue_horn_type == "atlas":
+                blue_horn_type = "bombardier"
+            elif blue_horn_type == "bombardier":
+                blue_horn_type = "spider"
             else:
-                spawn_test_ladybug()
+                blue_horn_type = "rhino"
 
-        circle_button_text = "HIDE CIRCLE LADYBUGS" if len(active_ladybugs) > 0 else "SHOW CIRCLE LADYBUGS"
-        if window.GUI.button(circle_button_text):
-            if len(active_ladybugs) > 0:
-                clear_circle_ladybugs()
+            print(f"Blue beetle switching to {blue_horn_type.upper()}...")
+
+            # Update blue beetle horn pitch and yaw defaults
+            if blue_horn_type == "scorpion":
+                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+                beetle_blue.horn_yaw = 0.0
+            elif blue_horn_type == "stag":
+                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_STAG
+                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
+                beetle_blue.horn_yaw = HORN_DEFAULT_YAW_STAG  # Stag pincers start more open
+            elif blue_horn_type == "hercules":
+                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+                beetle_blue.horn_yaw = 0.0
+            elif blue_horn_type == "atlas":
+                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+                beetle_blue.horn_yaw = 0.0
+            elif blue_horn_type == "bombardier":
+                beetle_blue.horn_pitch = 0.0  # No horn - firing controls instead
+                beetle_blue.prev_horn_pitch = 0.0
+                beetle_blue.horn_yaw = 0.0
+            elif blue_horn_type == "spider":
+                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION  # Fangs similar to scorpion
+                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+                beetle_blue.horn_yaw = 0.0
+            else:  # rhino
+                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
+                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH
+                beetle_blue.horn_yaw = 0.0
+
+            # Rebuild blue beetle with new horn type and reset walk phase
+            rebuild_blue_beetle(
+                window.blue_horn_shaft_value,
+                window.blue_horn_prong_value,
+                front_body_height,
+                window.blue_back_body_height_value,
+                window.blue_body_length_value,
+                window.blue_body_width_value,
+                window.blue_leg_length_value,
+                blue_horn_type,
+                stinger_curvature=0.0
+            )
+            reset_walk_phase_on_geometry_change(beetle_blue)
+            # Send config immediately when host changes blue beetle type
+            if network_manager and network_manager.connected and network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=True)
+
+        # Blue beetle color pickers - only if can edit, throttled during gameplay
+        window.GUI.text("")
+        if can_edit_blue and show_full_customization:
+            window.GUI.text("=== BEETLE 1 COLORS ===")
+            blue_color_changed = False
+
+            new_blue_body_color = window.GUI.color_edit_3("B1 Body", window.blue_body_color)
+            if new_blue_body_color != window.blue_body_color:
+                window.blue_body_color = new_blue_body_color
+                simulation.blue_body_color[None] = ti.Vector([new_blue_body_color[0], new_blue_body_color[1], new_blue_body_color[2]])
+                blue_color_changed = True
+
+            new_blue_leg_color = window.GUI.color_edit_3("B1 Legs", window.blue_leg_color)
+            if new_blue_leg_color != window.blue_leg_color:
+                window.blue_leg_color = new_blue_leg_color
+                simulation.blue_leg_color[None] = ti.Vector([new_blue_leg_color[0], new_blue_leg_color[1], new_blue_leg_color[2]])
+                blue_color_changed = True
+
+            new_blue_leg_tip_color = window.GUI.color_edit_3("B1 Leg Tips", window.blue_leg_tip_color)
+            if new_blue_leg_tip_color != window.blue_leg_tip_color:
+                window.blue_leg_tip_color = new_blue_leg_tip_color
+                simulation.blue_leg_tip_color[None] = ti.Vector([new_blue_leg_tip_color[0], new_blue_leg_tip_color[1], new_blue_leg_tip_color[2]])
+                blue_color_changed = True
+
+            new_blue_stripe_color = window.GUI.color_edit_3("B1 Stripe", window.blue_stripe_color)
+            if new_blue_stripe_color != window.blue_stripe_color:
+                window.blue_stripe_color = new_blue_stripe_color
+                simulation.blue_stripe_color[None] = ti.Vector([new_blue_stripe_color[0], new_blue_stripe_color[1], new_blue_stripe_color[2]])
+                blue_color_changed = True
+
+            new_blue_horn_tip_color = window.GUI.color_edit_3("B1 Horn Tips", window.blue_horn_tip_color)
+            if new_blue_horn_tip_color != window.blue_horn_tip_color:
+                window.blue_horn_tip_color = new_blue_horn_tip_color
+                simulation.blue_horn_tip_color[None] = ti.Vector([new_blue_horn_tip_color[0], new_blue_horn_tip_color[1], new_blue_horn_tip_color[2]])
+                blue_color_changed = True
+
+            # Send config immediately when host changes blue beetle colors
+            if blue_color_changed and network_manager and network_manager.connected and network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=True)
+
+        window.GUI.text("")
+        if can_edit_red:
+            window.GUI.text("=== BEETLE 2 GENETICS ===")
+        else:
+            window.GUI.text("=== BEETLE 2 (opponent) ===")
+
+        # Red beetle sliders - only editable if can_edit_red, throttled during gameplay
+        if can_edit_red and show_full_customization:
+            new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 8, 15)
+            new_red_prong = window.GUI.slider_int("Red Horn Prong", window.red_horn_prong_value, 3, 6)
+            new_red_back_body = window.GUI.slider_int("Red Back Body", window.red_back_body_height_value, 4, 8)
+            new_red_body_length = window.GUI.slider_int("Red Body Length", window.red_body_length_value, 9, 14)
+            new_red_body_width = window.GUI.slider_int("Red Body Width", window.red_body_width_value, 5, 9)
+            new_red_leg_length = window.GUI.slider_int("Red Leg Length", window.red_leg_length_value, 6, 10)
+        else:
+            # Show read-only values (opponent's beetle OR throttled during gameplay)
+            window.GUI.text(f"Horn Shaft: {window.red_horn_shaft_value}")
+            window.GUI.text(f"Horn Prong: {window.red_horn_prong_value}")
+            window.GUI.text(f"Back Body: {window.red_back_body_height_value}")
+            window.GUI.text(f"Body Length: {window.red_body_length_value}")
+            window.GUI.text(f"Body Width: {window.red_body_width_value}")
+            window.GUI.text(f"Leg Length: {window.red_leg_length_value}")
+            # Keep values unchanged
+            new_red_shaft = window.red_horn_shaft_value
+            new_red_prong = window.red_horn_prong_value
+            new_red_back_body = window.red_back_body_height_value
+            new_red_body_length = window.red_body_length_value
+            new_red_body_width = window.red_body_width_value
+            new_red_leg_length = window.red_leg_length_value
+
+        # Random red beetle button - only if can edit and not throttled
+        if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 2"):
+            new_red_shaft = random.randint(8, 15)
+            new_red_prong = random.randint(3, 6)
+            new_red_back_body = random.randint(4, 8)
+            new_red_body_length = random.randint(9, 14)
+            new_red_body_width = random.randint(5, 9)
+            new_red_leg_length = random.randint(6, 10)
+            print(f"Randomized red beetle: shaft={new_red_shaft}, prong={new_red_prong}, back={new_red_back_body}, length={new_red_body_length}, width={new_red_body_width}, legs={new_red_leg_length}")
+
+        if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE B2 COLORS"):
+            palette = generate_harmonious_palette()
+            window.red_body_color = palette['body']
+            window.red_leg_color = palette['legs']
+            window.red_leg_tip_color = palette['leg_tips']
+            window.red_stripe_color = palette['stripe']
+            window.red_horn_tip_color = palette['horn_tips']
+            simulation.red_body_color[None] = ti.Vector(list(palette['body']))
+            simulation.red_leg_color[None] = ti.Vector(list(palette['legs']))
+            simulation.red_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
+            simulation.red_stripe_color[None] = ti.Vector(list(palette['stripe']))
+            simulation.red_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
+            if network_manager and network_manager.connected and not network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=False)
+            print(f"Randomized B2 colors: {palette}")
+
+        # Rebuild red beetle geometry if sliders changed OR if scorpion tail curvature changed
+        if (new_red_shaft != window.red_horn_shaft_value or new_red_prong != window.red_horn_prong_value or
+            new_red_back_body != window.red_back_body_height_value or new_red_body_length != window.red_body_length_value or
+            new_red_body_width != window.red_body_width_value or new_red_leg_length != window.red_leg_length_value or
+            (red_horn_type == "scorpion" and abs(beetle_red.stinger_curvature - red_previous_stinger_curvature) > 0.01)):
+
+            # For scorpion type, use red beetle's current animation values
+            red_current_stinger_curvature = 0.0
+            red_current_tail_rotation = 0.0
+            if red_horn_type == "scorpion":
+                red_current_stinger_curvature = beetle_red.stinger_curvature
+                red_current_tail_rotation = beetle_red.tail_rotation_angle
+
+            # Rebuild geometry and reset walk phase to prevent leg jitter
+            rebuild_red_beetle(new_red_shaft, new_red_prong, front_body_height, new_red_back_body, new_red_body_length, new_red_body_width, new_red_leg_length, red_horn_type, red_current_stinger_curvature, red_current_tail_rotation)
+            reset_walk_phase_on_geometry_change(beetle_red)
+
+            window.red_horn_shaft_value = new_red_shaft
+            window.red_horn_prong_value = new_red_prong
+            window.red_back_body_height_value = new_red_back_body
+            window.red_body_length_value = new_red_body_length
+            window.red_body_width_value = new_red_body_width
+            window.red_leg_length_value = new_red_leg_length
+            red_previous_stinger_curvature = red_current_stinger_curvature
+            red_previous_tail_rotation = red_current_tail_rotation
+            # Send config immediately when guest changes red beetle
+            if network_manager and network_manager.connected and not network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=False)
+
+        # Red beetle stats
+        window.GUI.text(f"B2 Shaft: {window.red_horn_shaft_value} voxels")
+        window.GUI.text(f"B2 Prong: {window.red_horn_prong_value} voxels")
+        red_total_reach = window.red_horn_shaft_value + window.red_horn_prong_value
+        window.GUI.text(f"B2 Total Horn: {red_total_reach} voxels")
+
+        # Red beetle horn type button - throttled during gameplay
+        window.GUI.text("")
+        window.GUI.text("=== BEETLE 2 TYPE ===")
+        if can_edit_red and show_full_customization:
+            if red_horn_type == "rhino":
+                red_button_text = "B2: RHINO (CLICK FOR STAG)"
+            elif red_horn_type == "stag":
+                red_button_text = "B2: STAG (CLICK FOR HERCULES)"
+            elif red_horn_type == "hercules":
+                red_button_text = "B2: HERCULES (CLICK FOR SCORPION)"
+            elif red_horn_type == "scorpion":
+                red_button_text = "B2: SCORPION (CLICK FOR ATLAS)"
+            elif red_horn_type == "atlas":
+                red_button_text = "B2: ATLAS (CLICK FOR BOMBARDIER)"
+            elif red_horn_type == "bombardier":
+                red_button_text = "B2: BOMBARDIER (CLICK FOR SPIDER)"
+            else:  # spider
+                red_button_text = "B2: SPIDER (CLICK FOR RHINO)"
+        else:
+            # Read-only display (opponent's beetle OR throttled during gameplay)
+            window.GUI.text(f"B2: {red_horn_type.upper()}")
+            red_button_text = None
+
+        if red_button_text and window.GUI.button(red_button_text):
+            # Cycle red beetle horn type
+            if red_horn_type == "rhino":
+                red_horn_type = "stag"
+            elif red_horn_type == "stag":
+                red_horn_type = "hercules"
+            elif red_horn_type == "hercules":
+                red_horn_type = "scorpion"
+            elif red_horn_type == "scorpion":
+                red_horn_type = "atlas"
+            elif red_horn_type == "atlas":
+                red_horn_type = "bombardier"
+            elif red_horn_type == "bombardier":
+                red_horn_type = "spider"
             else:
-                spawn_circle_ladybugs()
+                red_horn_type = "rhino"
 
-        # Update beetle inertia if factor changed
-        if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
-            physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
-            beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
-            beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+            print(f"Red beetle switching to {red_horn_type.upper()}...")
 
-    # Ladybug referee toggle (bottom of menu)
-    window.GUI.text("")
-    ref_text = "LADYBUG REF: ON" if referee_enabled else "LADYBUG REF: OFF"
-    if window.GUI.button(ref_text):
-        toggle_referee()
+            # Update red beetle horn pitch and yaw defaults
+            if red_horn_type == "scorpion":
+                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+                beetle_red.horn_yaw = 0.0
+            elif red_horn_type == "stag":
+                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_STAG
+                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
+                beetle_red.horn_yaw = HORN_DEFAULT_YAW_STAG  # Stag pincers start more open
+            elif red_horn_type == "hercules":
+                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+                beetle_red.horn_yaw = 0.0
+            elif red_horn_type == "atlas":
+                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+                beetle_red.horn_yaw = 0.0
+            elif red_horn_type == "bombardier":
+                beetle_red.horn_pitch = 0.0  # No horn - firing controls instead
+                beetle_red.prev_horn_pitch = 0.0
+                beetle_red.horn_yaw = 0.0
+            elif red_horn_type == "spider":
+                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION  # Fangs similar to scorpion
+                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+                beetle_red.horn_yaw = 0.0
+            else:  # rhino
+                beetle_red.horn_pitch = HORN_DEFAULT_PITCH
+                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
+                beetle_red.horn_yaw = 0.0
 
-    # Save performance log button (at bottom of menu)
-    if window.GUI.button("SAVE PERF LOG"):
-        with open("perf_log.txt", "w") as f:
-            f.write("=== SYSTEM INFO ===\n")
-            f.write(f"Backend: {simulation.BACKEND_REASON}\n")
-            f.write(f"Resolution: {WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]}\n")
-            f.write(f"Taichi version: {ti.__version__}\n")
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
-                    capture_output=True, text=True, timeout=5
-                )
-                if result.returncode == 0:
-                    gpus = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
-                    f.write(f"GPU(s): {', '.join(gpus)}\n")
-            except:
-                f.write("GPU(s): (detection failed)\n")
-            f.write("\n")
-            f.write(f"FPS: {actual_fps:.0f}\n")
-            f.write(f"Frame count: {perf_monitor.frame_count}\n\n")
-            for line in perf_monitor.get_detailed_breakdown():
-                f.write(line + "\n")
-            f.write("\n--- Particle Counts ---\n")
-            f.write(f"  debris: {simulation.num_debris[None]} / {simulation.MAX_DEBRIS}\n")
-            f.write(f"  spray: {simulation.num_spray[None]} / {simulation.MAX_SPRAY}\n")
-            f.write(f"  silk: {simulation.num_silk[None]} / {simulation.MAX_SILK}\n")
-            f.write(f"  cleanup_freq_debris: every {simulation.CLEANUP_FREQUENCY_DEBRIS} frames\n")
-            f.write(f"  cleanup_freq_spray: every {simulation.CLEANUP_FREQUENCY_SPRAY} frames\n")
-            f.write(f"  cleanup_freq_silk: every {simulation.CLEANUP_FREQUENCY_SILK} frames\n")
-            rt = renderer.get_render_timing()
-            if rt:
-                f.write("\n--- Renderer Breakdown (last frame) ---\n")
-                f.write(f"  extract_voxels: {rt.get('extract_voxels', 0):.2f}ms\n")
-                f.write(f"  extract_debris: {rt.get('extract_debris', 0):.2f}ms\n")
-                f.write(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms\n")
-                f.write(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms\n")
-                f.write(f"  voxel_count: {rt.get('voxel_count', 0)}\n")
-            pt = get_physics_timing()
-            if pt:
-                f.write("\n--- Physics Breakdown (last frame) ---\n")
-                f.write(f"  input_controls: {pt.get('input_controls', 0):.2f}ms\n")
-                f.write(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms\n")
-                f.write(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms\n")
-                f.write(f"  debris_update: {pt.get('debris_update', 0):.2f}ms\n")
-                f.write(f"  spray_update: {pt.get('spray_update', 0):.2f}ms\n")
-                f.write(f"  spray_collision: {pt.get('spray_collision', 0):.2f}ms\n")
-                f.write(f"  silk_update: {pt.get('silk_update', 0):.2f}ms\n")
-                f.write(f"  silk_collision: {pt.get('silk_collision', 0):.2f}ms\n")
-                f.write(f"  all_particles_total: {pt.get('all_particles_total', 0):.2f}ms\n")
-                f.write(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms\n")
-                f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
-                f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")
-                f.write(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms\n")
-            if game_state == GAME_STATE_ONLINE_PLAY or network_stats['total_render_frames'] > 0:
-                f.write("\n--- Network Stats ---\n")
-                elapsed = time.time() - network_stats['session_start_time'] if network_stats['session_start_time'] > 0 else 1
-                expected_physics = elapsed * 60
-                actual_physics = network_stats['total_physics_frames']
-                game_speed = (actual_physics / expected_physics * 100) if expected_physics > 0 else 100
-                physics_per_render = actual_physics / max(1, network_stats['total_render_frames'])
-                f.write(f"  session_time: {elapsed:.1f}s\n")
-                f.write(f"  game_speed: {game_speed:.1f}% (100% = real-time)\n")
-                f.write(f"  physics_frames: {actual_physics} (expected: {int(expected_physics)})\n")
-                f.write(f"  render_frames: {network_stats['total_render_frames']}\n")
-                f.write(f"  physics_per_render: {physics_per_render:.2f} (should be ~1.0)\n")
-                f.write(f"  accumulator_drains: {network_stats['accumulator_drains']} (waits for opponent)\n")
-                f.write(f"  frame_diff: {network_stats['last_frame_diff']:+d} (host vs guest sync)\n")
-                if network_manager:
-                    f.write(f"  ping: {network_manager.ping_ms}ms\n")
-                    f.write(f"  input_delay: {input_buffer.delay} frames ({input_buffer.delay * 16.67:.0f}ms)\n")
-                    if input_buffer.ping_samples:
-                        p90_ping = input_buffer._get_percentile_ping(90)
-                        f.write(f"  jitter_buffer: {len(input_buffer.ping_samples)} samples, 90th percentile: {p90_ping:.0f}ms\n")
-                f.write("\n  Diagnosis:\n")
-                if game_speed < 90:
-                    f.write(f"    WARNING: Game running at {game_speed:.0f}% speed!\n")
-                    if network_stats['accumulator_drains'] > network_stats['total_render_frames'] * 0.1:
-                        f.write(f"    CAUSE: Waiting for opponent inputs ({network_stats['accumulator_drains']} drains)\n")
-                        f.write("    FIX: Check opponent's connection, reduce input_delay, or increase buffer\n")
+            # Rebuild red beetle with new horn type and reset walk phase
+            rebuild_red_beetle(
+                window.red_horn_shaft_value,
+                window.red_horn_prong_value,
+                front_body_height,
+                window.red_back_body_height_value,
+                window.red_body_length_value,
+                window.red_body_width_value,
+                window.red_leg_length_value,
+                red_horn_type,
+                stinger_curvature=0.0
+            )
+            reset_walk_phase_on_geometry_change(beetle_red)
+            # Send config immediately when guest changes red beetle type
+            if network_manager and network_manager.connected and not network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=False)
+
+        # Red beetle color pickers - only if can edit, throttled during gameplay
+        window.GUI.text("")
+        if can_edit_red and show_full_customization:
+            window.GUI.text("=== BEETLE 2 COLORS ===")
+            red_color_changed = False
+
+            new_red_body_color = window.GUI.color_edit_3("B2 Body", window.red_body_color)
+            if new_red_body_color != window.red_body_color:
+                window.red_body_color = new_red_body_color
+                simulation.red_body_color[None] = ti.Vector([new_red_body_color[0], new_red_body_color[1], new_red_body_color[2]])
+                red_color_changed = True
+
+            new_red_leg_color = window.GUI.color_edit_3("B2 Legs", window.red_leg_color)
+            if new_red_leg_color != window.red_leg_color:
+                window.red_leg_color = new_red_leg_color
+                simulation.red_leg_color[None] = ti.Vector([new_red_leg_color[0], new_red_leg_color[1], new_red_leg_color[2]])
+                red_color_changed = True
+
+            new_red_leg_tip_color = window.GUI.color_edit_3("B2 Leg Tips", window.red_leg_tip_color)
+            if new_red_leg_tip_color != window.red_leg_tip_color:
+                window.red_leg_tip_color = new_red_leg_tip_color
+                simulation.red_leg_tip_color[None] = ti.Vector([new_red_leg_tip_color[0], new_red_leg_tip_color[1], new_red_leg_tip_color[2]])
+                red_color_changed = True
+
+            new_red_stripe_color = window.GUI.color_edit_3("B2 Stripe", window.red_stripe_color)
+            if new_red_stripe_color != window.red_stripe_color:
+                window.red_stripe_color = new_red_stripe_color
+                simulation.red_stripe_color[None] = ti.Vector([new_red_stripe_color[0], new_red_stripe_color[1], new_red_stripe_color[2]])
+                red_color_changed = True
+
+            new_red_horn_tip_color = window.GUI.color_edit_3("B2 Horn Tips", window.red_horn_tip_color)
+            if new_red_horn_tip_color != window.red_horn_tip_color:
+                window.red_horn_tip_color = new_red_horn_tip_color
+                simulation.red_horn_tip_color[None] = ti.Vector([new_red_horn_tip_color[0], new_red_horn_tip_color[1], new_red_horn_tip_color[2]])
+                red_color_changed = True
+
+            # Send config immediately when guest changes red beetle colors
+            if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=False)
+
+        # Winner announcement and restart button
+        if blue_celebrating or red_celebrating:
+            window.GUI.text("")
+            window.GUI.text("="*30)
+            if blue_celebrating and red_celebrating:
+                window.GUI.text("*** DOUBLE KO! ***")
+            elif blue_celebrating:
+                window.GUI.text("*** BEETLE 1 SCORES! ***")
+            else:
+                window.GUI.text("*** BEETLE 2 SCORES! ***")
+            window.GUI.text("="*30)
+            window.GUI.text("")
+            if window.GUI.button("RESTART MATCH"):
+                reset_match()
+
+        # Advanced settings toggle (collapsed by default for performance - saves ~36 slider renders)
+        window.GUI.text("")
+        adv_button_text = "HIDE ADVANCED SETTINGS" if show_advanced_settings else "SHOW ADVANCED SETTINGS"
+        if window.GUI.button(adv_button_text):
+            show_advanced_settings = not show_advanced_settings
+
+        if show_advanced_settings:
+            # Horn combat physics tuning
+            window.GUI.text("")
+            window.GUI.text("=== HORN COMBAT PHYSICS ===")
+
+            new_horn_lift = window.GUI.slider_float("Horn Lift Strength", physics_params["HORN_LIFT_STRENGTH"], 0.05, 2.0)
+            if new_horn_lift != physics_params["HORN_LIFT_STRENGTH"]:
+                physics_params["HORN_LIFT_STRENGTH"] = new_horn_lift
+
+            new_horn_tip = window.GUI.slider_float("Horn Tip Strength", physics_params["HORN_TIP_STRENGTH"], 0.5, 5.0)
+            if new_horn_tip != physics_params["HORN_TIP_STRENGTH"]:
+                physics_params["HORN_TIP_STRENGTH"] = new_horn_tip
+
+            # Ball physics sliders (only when ball is active)
+            if beetle_ball.active:
+                window.GUI.text("")
+                window.GUI.text("=== BALL PHYSICS ===")
+                new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
+                if new_ball_radius != int(beetle_ball.radius):
+                    beetle_ball.radius = float(new_ball_radius)
+                    init_ball_cache(beetle_ball.radius)
+                window.GUI.text(f"Ball Position: ({beetle_ball.x:.1f}, {beetle_ball.y:.1f}, {beetle_ball.z:.1f})")
+                window.GUI.text(f"Ball Velocity: ({beetle_ball.vx:.1f}, {beetle_ball.vy:.1f}, {beetle_ball.vz:.1f})")
+
+                window.GUI.text("")
+                window.GUI.text("--- Ball Physics Tuning ---")
+                new_separation = window.GUI.slider_float("Separation Force", physics_params["BALL_SEPARATION_FORCE"], 0.1, 2.0)
+                if new_separation != physics_params["BALL_SEPARATION_FORCE"]:
+                    physics_params["BALL_SEPARATION_FORCE"] = new_separation
+                new_momentum = window.GUI.slider_float("Momentum Transfer", physics_params["BALL_MOMENTUM_TRANSFER"], 0.0, 2.0)
+                if new_momentum != physics_params["BALL_MOMENTUM_TRANSFER"]:
+                    physics_params["BALL_MOMENTUM_TRANSFER"] = new_momentum
+                new_restitution = window.GUI.slider_float("Restitution (Bounce)", physics_params["BALL_RESTITUTION"], 0.0, 1.0)
+                if new_restitution != physics_params["BALL_RESTITUTION"]:
+                    physics_params["BALL_RESTITUTION"] = new_restitution
+                new_friction = window.GUI.slider_float("Rolling Friction", physics_params["BALL_ROLLING_FRICTION"], 0.80, 0.99)
+                if new_friction != physics_params["BALL_ROLLING_FRICTION"]:
+                    physics_params["BALL_ROLLING_FRICTION"] = new_friction
+                new_ground_bounce = window.GUI.slider_float("Ground Bounce", physics_params["BALL_GROUND_BOUNCE"], 0.0, 0.8)
+                if new_ground_bounce != physics_params["BALL_GROUND_BOUNCE"]:
+                    physics_params["BALL_GROUND_BOUNCE"] = new_ground_bounce
+
+                window.GUI.text("")
+                window.GUI.text("--- Ball Contact Physics ---")
+                new_lift = window.GUI.slider_float("Scoop Lift", physics_params["BALL_LIFT_STRENGTH"], 0.0, 10.0)
+                if new_lift != physics_params["BALL_LIFT_STRENGTH"]:
+                    physics_params["BALL_LIFT_STRENGTH"] = new_lift
+                new_passive_lift = window.GUI.slider_float("Passive Lift", physics_params["BALL_PASSIVE_LIFT_STRENGTH"], 0.0, 10.0)
+                if new_passive_lift != physics_params["BALL_PASSIVE_LIFT_STRENGTH"]:
+                    physics_params["BALL_PASSIVE_LIFT_STRENGTH"] = new_passive_lift
+                new_tip = window.GUI.slider_float("Tip Strength", physics_params["BALL_TIP_STRENGTH"], 0.0, 5.0)
+                if new_tip != physics_params["BALL_TIP_STRENGTH"]:
+                    physics_params["BALL_TIP_STRENGTH"] = new_tip
+                new_torque = window.GUI.slider_float("Torque Strength", physics_params["BALL_TORQUE_STRENGTH"], 0.0, 10.0)
+                if new_torque != physics_params["BALL_TORQUE_STRENGTH"]:
+                    physics_params["BALL_TORQUE_STRENGTH"] = new_torque
+                new_grav = window.GUI.slider_float("Gravity Multiplier", physics_params["BALL_GRAVITY_MULTIPLIER"], 1.0, 5.0)
+                if new_grav != physics_params["BALL_GRAVITY_MULTIPLIER"]:
+                    physics_params["BALL_GRAVITY_MULTIPLIER"] = new_grav
+
+                window.GUI.text("")
+                window.GUI.text("--- Ball Feel (Mass/Spin) ---")
+                new_push = window.GUI.slider_float("Push Ease", physics_params["BALL_PUSH_MULTIPLIER"], 0.5, 4.0)
+                if new_push != physics_params["BALL_PUSH_MULTIPLIER"]:
+                    physics_params["BALL_PUSH_MULTIPLIER"] = new_push
+                new_spin = window.GUI.slider_float("Spin Ease", physics_params["BALL_SPIN_MULTIPLIER"], 0.5, 5.0)
+                if new_spin != physics_params["BALL_SPIN_MULTIPLIER"]:
+                    physics_params["BALL_SPIN_MULTIPLIER"] = new_spin
+                new_ang_fric = window.GUI.slider_float("Spin Retain", physics_params["BALL_ANGULAR_FRICTION"], 0.90, 0.995)
+                if new_ang_fric != physics_params["BALL_ANGULAR_FRICTION"]:
+                    physics_params["BALL_ANGULAR_FRICTION"] = new_ang_fric
+
+            # Physics parameter sliders
+            window.GUI.text("")
+            window.GUI.text("=== PHYSICS TUNING ===")
+            physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 60.0)
+            physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 4.0)
+            physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
+            physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
+            physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
+            physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
+            physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
+            new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
+
+            window.GUI.text("--- Airborne Tumbling ---")
+            physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
+            physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
+            physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
+            physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 5.0)
+            physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
+            physics_params["WEAK_RESTORING"] = window.GUI.slider_float("Restoring (Bouncing)", physics_params["WEAK_RESTORING"], 5.0, 50.0)
+
+            window.GUI.text("--- Auto-Follow Camera ---")
+            physics_params["CAMERA_PITCH"] = window.GUI.slider_float("Camera Angle", physics_params["CAMERA_PITCH"], -90.0, -30.0)
+            physics_params["CAMERA_BASE_HEIGHT"] = window.GUI.slider_float("Camera Height", physics_params["CAMERA_BASE_HEIGHT"], 20.0, 120.0)
+            physics_params["CAMERA_DISTANCE"] = window.GUI.slider_float("Camera Distance", physics_params["CAMERA_DISTANCE"], 10.0, 80.0)
+            spotlight_strength = window.GUI.slider_float("Spotlight Strength", spotlight_strength, 0.0, 1.5)
+            spotlight_height = window.GUI.slider_float("Spotlight Size", spotlight_height, 10.0, 100.0)
+            base_light_brightness = window.GUI.slider_float("Base Light Brightness", base_light_brightness, 0.0, 2.0)
+            front_light_strength = window.GUI.slider_float("Front Light Strength", front_light_strength, 0.0, 1.5)
+
+            # Dynamic lighting toggle
+            lighting_button_text = "DYNAMIC LIGHTING: ON" if dynamic_lighting_enabled else "DYNAMIC LIGHTING: OFF"
+            if window.GUI.button(lighting_button_text):
+                dynamic_lighting_enabled = not dynamic_lighting_enabled
+
+            # Ladybug cheerleader test
+            window.GUI.text("")
+            window.GUI.text("=== LADYBUG CHEERLEADERS ===")
+            ladybug_button_text = "HIDE TEST LADYBUG" if test_ladybug is not None else "SHOW TEST LADYBUG"
+            if window.GUI.button(ladybug_button_text):
+                if test_ladybug is not None:
+                    clear_test_ladybug()
                 else:
-                    f.write("    Game speed OK\n")
-            f.write("\n--- Notes ---\n")
-            f.write("scene_particles is the main bottleneck indicator:\n")
-            f.write("  <3ms = GPU backend working well (data on GPU)\n")
-            f.write("  8-15ms = CPU->GPU transfer overhead\n")
-            f.write("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)\n")
-        print("Performance log saved to perf_log.txt")
+                    spawn_test_ladybug()
 
-    window.GUI.end()
+            circle_button_text = "HIDE CIRCLE LADYBUGS" if len(active_ladybugs) > 0 else "SHOW CIRCLE LADYBUGS"
+            if window.GUI.button(circle_button_text):
+                if len(active_ladybugs) > 0:
+                    clear_circle_ladybugs()
+                else:
+                    spawn_circle_ladybugs()
+
+            # Update beetle inertia if factor changed
+            if abs(new_inertia_factor - physics_params["MOMENT_OF_INERTIA_FACTOR"]) > 0.001:
+                physics_params["MOMENT_OF_INERTIA_FACTOR"] = new_inertia_factor
+                beetle_blue.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+                beetle_red.moment_of_inertia = BEETLE_RADIUS * physics_params["MOMENT_OF_INERTIA_FACTOR"]
+
+        # Ladybug referee toggle (bottom of menu)
+        window.GUI.text("")
+        ref_text = "LADYBUG REF: ON" if referee_enabled else "LADYBUG REF: OFF"
+        if window.GUI.button(ref_text):
+            toggle_referee()
+
+        # Save performance log button (at bottom of menu)
+        if window.GUI.button("SAVE PERF LOG"):
+            with open("perf_log.txt", "w") as f:
+                f.write("=== SYSTEM INFO ===\n")
+                f.write(f"Backend: {simulation.BACKEND_REASON}\n")
+                f.write(f"Resolution: {WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]}\n")
+                f.write(f"Taichi version: {ti.__version__}\n")
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
+                        capture_output=True, text=True, timeout=5
+                    )
+                    if result.returncode == 0:
+                        gpus = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
+                        f.write(f"GPU(s): {', '.join(gpus)}\n")
+                except:
+                    f.write("GPU(s): (detection failed)\n")
+                f.write("\n")
+                f.write(f"FPS: {actual_fps:.0f}\n")
+                f.write(f"Frame count: {perf_monitor.frame_count}\n\n")
+                for line in perf_monitor.get_detailed_breakdown():
+                    f.write(line + "\n")
+                f.write("\n--- Particle Counts ---\n")
+                f.write(f"  debris: {simulation.num_debris[None]} / {simulation.MAX_DEBRIS}\n")
+                f.write(f"  spray: {simulation.num_spray[None]} / {simulation.MAX_SPRAY}\n")
+                f.write(f"  silk: {simulation.num_silk[None]} / {simulation.MAX_SILK}\n")
+                f.write(f"  cleanup_freq_debris: every {simulation.CLEANUP_FREQUENCY_DEBRIS} frames\n")
+                f.write(f"  cleanup_freq_spray: every {simulation.CLEANUP_FREQUENCY_SPRAY} frames\n")
+                f.write(f"  cleanup_freq_silk: every {simulation.CLEANUP_FREQUENCY_SILK} frames\n")
+                rt = renderer.get_render_timing()
+                if rt:
+                    f.write("\n--- Renderer Breakdown (last frame) ---\n")
+                    f.write(f"  extract_voxels: {rt.get('extract_voxels', 0):.2f}ms\n")
+                    f.write(f"  extract_debris: {rt.get('extract_debris', 0):.2f}ms\n")
+                    f.write(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms\n")
+                    f.write(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms\n")
+                    f.write(f"  voxel_count: {rt.get('voxel_count', 0)}\n")
+                pt = get_physics_timing()
+                if pt:
+                    f.write("\n--- Physics Breakdown (last frame) ---\n")
+                    f.write(f"  input_controls: {pt.get('input_controls', 0):.2f}ms\n")
+                    f.write(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms\n")
+                    f.write(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms\n")
+                    f.write(f"  debris_update: {pt.get('debris_update', 0):.2f}ms\n")
+                    f.write(f"  spray_update: {pt.get('spray_update', 0):.2f}ms\n")
+                    f.write(f"  spray_collision: {pt.get('spray_collision', 0):.2f}ms\n")
+                    f.write(f"  silk_update: {pt.get('silk_update', 0):.2f}ms\n")
+                    f.write(f"  silk_collision: {pt.get('silk_collision', 0):.2f}ms\n")
+                    f.write(f"  all_particles_total: {pt.get('all_particles_total', 0):.2f}ms\n")
+                    f.write(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms\n")
+                    f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
+                    f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")
+                    f.write(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms\n")
+                if game_state == GAME_STATE_ONLINE_PLAY or network_stats['total_render_frames'] > 0:
+                    f.write("\n--- Network Stats ---\n")
+                    elapsed = time.time() - network_stats['session_start_time'] if network_stats['session_start_time'] > 0 else 1
+                    expected_physics = elapsed * 60
+                    actual_physics = network_stats['total_physics_frames']
+                    game_speed = (actual_physics / expected_physics * 100) if expected_physics > 0 else 100
+                    physics_per_render = actual_physics / max(1, network_stats['total_render_frames'])
+                    f.write(f"  session_time: {elapsed:.1f}s\n")
+                    f.write(f"  game_speed: {game_speed:.1f}% (100% = real-time)\n")
+                    f.write(f"  physics_frames: {actual_physics} (expected: {int(expected_physics)})\n")
+                    f.write(f"  render_frames: {network_stats['total_render_frames']}\n")
+                    f.write(f"  physics_per_render: {physics_per_render:.2f} (should be ~1.0)\n")
+                    f.write(f"  accumulator_drains: {network_stats['accumulator_drains']} (waits for opponent)\n")
+                    f.write(f"  frame_diff: {network_stats['last_frame_diff']:+d} (host vs guest sync)\n")
+                    if network_manager:
+                        f.write(f"  ping: {network_manager.ping_ms}ms\n")
+                        f.write(f"  input_delay: {input_buffer.delay} frames ({input_buffer.delay * 16.67:.0f}ms)\n")
+                        if input_buffer.ping_samples:
+                            p90_ping = input_buffer._get_percentile_ping(90)
+                            f.write(f"  jitter_buffer: {len(input_buffer.ping_samples)} samples, 90th percentile: {p90_ping:.0f}ms\n")
+                    f.write("\n  Diagnosis:\n")
+                    if game_speed < 90:
+                        f.write(f"    WARNING: Game running at {game_speed:.0f}% speed!\n")
+                        if network_stats['accumulator_drains'] > network_stats['total_render_frames'] * 0.1:
+                            f.write(f"    CAUSE: Waiting for opponent inputs ({network_stats['accumulator_drains']} drains)\n")
+                            f.write("    FIX: Check opponent's connection, reduce input_delay, or increase buffer\n")
+                    else:
+                        f.write("    Game speed OK\n")
+                f.write("\n--- Notes ---\n")
+                f.write("scene_particles is the main bottleneck indicator:\n")
+                f.write("  <3ms = GPU backend working well (data on GPU)\n")
+                f.write("  8-15ms = CPU->GPU transfer overhead\n")
+                f.write("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)\n")
+            print("Performance log saved to perf_log.txt")
+
+        window.GUI.end()
 
     perf_monitor.stop('gui')
 

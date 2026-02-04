@@ -225,9 +225,20 @@ LADYBUG_HEAD = 37   # Black head
 LADYBUG_LEGS = 38   # Black legs
 LADYBUG_WINGS = 39  # Translucent/light wings
 
+# Title screen voxel types
+TITLE_BLUE = 40     # "BEETLE" text - blue team color
+TITLE_RED = 41      # "BATTLE" text - red team color
+TITLE_GOLD = 42     # "BROS" text - gold/amber accent
+TITLE_WHITE = 43    # Controls text - soft white/cream
+TITLE_CYAN = 44     # "PRESS SPACE" text - cyan highlight
+
 # Score digit flash brightness (1.0 = normal, >1.0 = bright flash)
 blue_score_flash = ti.field(dtype=ti.f32, shape=())
 red_score_flash = ti.field(dtype=ti.f32, shape=())
+
+# Title screen flash (pulsing glow effect)
+title_flash = ti.field(dtype=ti.f32, shape=())
+title_flash[None] = 1.0
 
 # Customizable beetle colors (RGB values in range 0.0-1.0)
 # Blue beetle colors
