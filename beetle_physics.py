@@ -12802,8 +12802,8 @@ try:
         if network_manager.is_host and physics_frame % 5 == 0:  # Every ~83ms (12 syncs/sec)
             network_manager.send_state_sync(
                 physics_frame,
-                beetle_blue.x, beetle_blue.z, beetle_blue.rotation,
-                beetle_red.x, beetle_red.z, beetle_red.rotation,
+                beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_blue.rotation,
+                beetle_red.x, beetle_red.y, beetle_red.z, beetle_red.rotation,
                 beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.active
             )
 
@@ -12819,6 +12819,12 @@ try:
             beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
             beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
             beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
+
+            # Sync beetle Y positions (prevents death desync near edges/pits)
+            if 'blue_y' in sync:
+                beetle_blue.y += (sync['blue_y'] - beetle_blue.y) * lerp_factor
+            if 'red_y' in sync:
+                beetle_red.y += (sync['red_y'] - beetle_red.y) * lerp_factor
 
             # Rotation lerp with angle wrapping (shortest path)
             # This prevents beetles from spinning the wrong way when angles wrap around 0/2π
@@ -14268,8 +14274,9 @@ try:
                                                batch_offset, batch_size, TOTAL_PARTICLES)
 
         # Ball explosion - trigger when ball falls to same level as beetles
+        # Host-authoritative: only host detects, then sends to guest
         g = globals()
-        if beetle_ball.active and not g['ball_has_exploded'] and beetle_ball.y < EXPLOSION_TRIGGER_Y:
+        if is_host_or_local and beetle_ball.active and not g['ball_has_exploded'] and beetle_ball.y < EXPLOSION_TRIGGER_Y:
             # Start ball explosion - store position
             g['ball_explosion_pos_x'] = beetle_ball.x
             g['ball_explosion_pos_y'] = beetle_ball.y + 30.0  # Same offset as beetles
@@ -14277,7 +14284,24 @@ try:
             g['ball_explosion_delay'] = 0.02  # Slightly shorter delay than beetles
             g['ball_explosion_timer'] = EXPLOSION_DURATION
             g['ball_has_exploded'] = True
+            # Network mode: host sends ball explode event to guest
+            if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
+                network_manager.send_ball_explode(g['ball_explosion_pos_x'], g['ball_explosion_pos_y'], g['ball_explosion_pos_z'])
             print("BALL EXPLOSION!")
+
+        # Guest-side ball explosion (triggered after receiving explode event from host)
+        if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.pending_ball_explode:
+            explode = network_manager.pending_ball_explode
+            network_manager.pending_ball_explode = None  # Consume it
+            if beetle_ball.active and not g['ball_has_exploded']:
+                # Use position from host
+                g['ball_explosion_pos_x'] = explode['x']
+                g['ball_explosion_pos_y'] = explode['y']
+                g['ball_explosion_pos_z'] = explode['z']
+                g['ball_explosion_delay'] = 0.02
+                g['ball_explosion_timer'] = EXPLOSION_DURATION
+                g['ball_has_exploded'] = True
+                print("BALL EXPLOSION (from host)!")
 
         # Continue spawning ball particles during explosion (after delay)
         if g['ball_has_exploded']:
@@ -16023,6 +16047,19 @@ try:
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
                     network_manager.start_match_now()  # Send START signal to guest
+                    # Reset beetle ball mode to OFF when starting network match (prevents desync)
+                    if beetle_ball.active:
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        build_floor_height_cache()
+                        beetle_ball.active = False
+                        print("[Game] Beetle ball mode disabled for network sync")
                     reset_match()
                     print(f"[Game] Host sent START, waiting for guest sync... Delay: 8 frames")
 
@@ -16115,6 +16152,19 @@ try:
                 input_buffer.local_player_id = 1  # Guest is red
                 input_buffer.reset()
                 local_player_id = 1  # Guest is red
+                # Reset beetle ball mode to OFF when starting network match (prevents desync)
+                if beetle_ball.active:
+                    if ball_last_rendered[None] == 1:
+                        num_voxels = ball_cache_size[None]
+                        if num_voxels > 0:
+                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                        ball_last_rendered[None] = 0
+                    else:
+                        clear_ball()
+                    simulation.clear_bowl_perimeter()
+                    build_floor_height_cache()
+                    beetle_ball.active = False
+                    print("[Game] Beetle ball mode disabled for network sync")
                 reset_match()
                 # Tell host we're ready to sync
                 network_manager.send_sync_ready()

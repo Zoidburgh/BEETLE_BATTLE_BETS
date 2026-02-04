@@ -53,6 +53,7 @@ MSG_GAME_OPTIONS = 0x0E   # Game options (referee enabled, ball active)
 MSG_RECONNECT_REQUEST = 0x0F  # Guest requests full state after reconnecting
 MSG_RECONNECT_STATE = 0x10    # Host sends full game state snapshot
 MSG_DISCONNECT = 0x11         # Player intentionally leaving (graceful exit)
+MSG_BALL_EXPLODE = 0x12       # Host tells guest ball has exploded (with position)
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -167,6 +168,9 @@ class NetworkManager:
         self.pending_reconnect_request = False  # Host: guest requesting full state
         self.pending_reconnect_state = None  # Guest: full state from host
         self.pending_disconnect = False  # Opponent gracefully leaving
+
+        # Ball explosion sync (host-authoritative)
+        self.pending_ball_explode = None  # Guest: ball explosion event from host
 
     def init(self, app_id=3998620):
         """
@@ -466,20 +470,21 @@ class NetworkManager:
         """Request a rematch."""
         self._send_packet(struct.pack('>B', MSG_REMATCH), reliable=True)
 
-    def send_state_sync(self, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot,
+    def send_state_sync(self, frame, blue_x, blue_y, blue_z, blue_rot, red_x, red_y, red_z, red_rot,
                         ball_x=0.0, ball_y=0.0, ball_z=0.0, ball_active=False):
         """
         Host sends authoritative state to guest.
-        Packet format: [type:1][frame:4][blue_x:4][blue_z:4][blue_rot:4][red_x:4][red_z:4][red_rot:4]
-                       [ball_x:4][ball_y:4][ball_z:4][ball_active:1] = 42 bytes
+        Packet format: [type:1][frame:4][blue_x:4][blue_y:4][blue_z:4][blue_rot:4]
+                       [red_x:4][red_y:4][red_z:4][red_rot:4]
+                       [ball_x:4][ball_y:4][ball_z:4][ball_active:1] = 50 bytes
         """
         if not self.is_host or not self.connected:
             return
 
-        data = struct.pack('>BIfffffffffB',
+        data = struct.pack('>BIfffffffffffB',
                            MSG_STATE_SYNC, frame,
-                           blue_x, blue_z, blue_rot,
-                           red_x, red_z, red_rot,
+                           blue_x, blue_y, blue_z, blue_rot,
+                           red_x, red_y, red_z, red_rot,
                            ball_x, ball_y, ball_z, 1 if ball_active else 0)
         self._send_packet(data, reliable=False)  # Unreliable is fine for periodic sync
 
@@ -571,6 +576,17 @@ class NetworkManager:
                           1 if referee_enabled else 0,
                           1 if ball_active else 0)
         self._send_packet(data, reliable=True)
+
+    def send_ball_explode(self, pos_x, pos_y, pos_z):
+        """
+        Host tells guest the ball has exploded (host-authoritative).
+        Packet format: [type:1][x:4][y:4][z:4] = 13 bytes
+        """
+        if not self.is_host or not self.connected:
+            return
+        data = struct.pack('>Bfff', MSG_BALL_EXPLODE, pos_x, pos_y, pos_z)
+        self._send_packet(data, reliable=True)
+        print(f"[Network] Sent ball explode at ({pos_x:.1f}, {pos_y:.1f}, {pos_z:.1f})")
 
     def send_reconnect_request(self):
         """
@@ -819,10 +835,19 @@ class NetworkManager:
                     self.ping_ms = (0xFFFFFFFF - sent_time) + now
 
         elif msg_type == MSG_STATE_SYNC:
-            # Host state sync: [type:1][frame:4][beetles:24][ball:13] = 42 bytes
-            if len(data) >= 42 and not self.is_host:
-                _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot, ball_x, ball_y, ball_z, ball_active = struct.unpack('>BIfffffffffB', data[:42])
+            # Host state sync: [type:1][frame:4][beetles:32][ball:13] = 50 bytes (new format with Y)
+            if len(data) >= 50 and not self.is_host:
+                _, frame, blue_x, blue_y, blue_z, blue_rot, red_x, red_y, red_z, red_rot, ball_x, ball_y, ball_z, ball_active = struct.unpack('>BIfffffffffffB', data[:50])
                 # Store for guest to apply
+                self.pending_state_sync = {
+                    'frame': frame,
+                    'blue_x': blue_x, 'blue_y': blue_y, 'blue_z': blue_z, 'blue_rot': blue_rot,
+                    'red_x': red_x, 'red_y': red_y, 'red_z': red_z, 'red_rot': red_rot,
+                    'ball_x': ball_x, 'ball_y': ball_y, 'ball_z': ball_z, 'ball_active': ball_active == 1
+                }
+            elif len(data) >= 42 and not self.is_host:
+                # Backwards compatibility with old 42-byte format (no beetle Y)
+                _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot, ball_x, ball_y, ball_z, ball_active = struct.unpack('>BIfffffffffB', data[:42])
                 self.pending_state_sync = {
                     'frame': frame,
                     'blue_x': blue_x, 'blue_z': blue_z, 'blue_rot': blue_rot,
@@ -830,7 +855,7 @@ class NetworkManager:
                     'ball_x': ball_x, 'ball_y': ball_y, 'ball_z': ball_z, 'ball_active': ball_active == 1
                 }
             elif len(data) >= 29 and not self.is_host:
-                # Backwards compatibility with old 29-byte format (no ball)
+                # Backwards compatibility with old 29-byte format (no ball, no Y)
                 _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot = struct.unpack('>BIffffff', data[:29])
                 self.pending_state_sync = {
                     'frame': frame,
@@ -965,6 +990,13 @@ class NetworkManager:
             # Opponent is leaving gracefully
             self.pending_disconnect = True
             print("[Network] Received disconnect message - opponent leaving")
+
+        elif msg_type == MSG_BALL_EXPLODE:
+            # Host says ball exploded (guest receives)
+            if len(data) >= 13 and not self.is_host:
+                _, pos_x, pos_y, pos_z = struct.unpack('>Bfff', data[:13])
+                self.pending_ball_explode = {'x': pos_x, 'y': pos_y, 'z': pos_z}
+                print(f"[Network] Received ball explode at ({pos_x:.1f}, {pos_y:.1f}, {pos_z:.1f})")
 
     # =========================================================================
     # CONNECTION STATE
