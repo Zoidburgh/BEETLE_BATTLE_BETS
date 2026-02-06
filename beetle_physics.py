@@ -12399,6 +12399,12 @@ calculate_collision_point_kernel(0)
 # Death explosion kernel
 spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 1)
 
+# Ball explosion kernel (first ball death causes lag without this)
+spawn_ball_explosion_batch(0.0, -100.0, 0.0, 0, 1, 1)
+
+# Ball bounce dust kernel (first ball bounce causes lag without this)
+spawn_ball_bounce_dust(0.0, -100.0, 0.0, 10.0, 4.0)
+
 # Debris/particle update kernel (triggered when particles exist)
 update_debris_particles(0.016)
 cleanup_dead_debris()  # Debris cleanup kernel (avoids JIT crash during heavy debris)
@@ -16038,16 +16044,17 @@ try:
                                       capture_output=True)
                     except:
                         pass
-                if window.GUI.button("COPY INVITE LINK"):
-                    try:
-                        import subprocess
-                        invite_link = f"steam://joinlobby/3998620/{network_manager.lobby_id}"
-                        subprocess.run(['powershell', '-command',
-                                      f'Set-Clipboard -Value "{invite_link}"'],
-                                      capture_output=True)
-                    except:
-                        pass
-                window.GUI.text("(Share invite link - friend clicks to join)")
+                # TODO: Re-enable copy link once it works smoothly
+                # if window.GUI.button("COPY INVITE LINK"):
+                #     try:
+                #         import subprocess
+                #         invite_link = f"steam://joinlobby/3998620/{network_manager.lobby_id}"
+                #         subprocess.run(['powershell', '-command',
+                #                       f'Set-Clipboard -Value "{invite_link}"'],
+                #                       capture_output=True)
+                #     except:
+                #         pass
+                # window.GUI.text("(Share invite link - friend clicks to join)")
             else:
                 window.GUI.text("Creating lobby...")
 
