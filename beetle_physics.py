@@ -2172,7 +2172,7 @@ red_score_delay_timer = 0.0   # Delay before animation/explosion starts
 blue_score_pending = 0    # Number of pending scores to add after delay
 red_score_pending = 0     # Number of pending scores to add after delay
 SCORE_ANIMATION_DELAY = 1.0   # 1 second delay before score animation and explosion
-SCORE_BOUNCE_DURATION = 0.8  # Duration of pop & squash animation (slightly longer for spring effect)
+SCORE_BOUNCE_DURATION = 0.4  # Duration of pop & squash animation
 # Score burst particle spawning over time
 blue_burst_timer = 0.0        # Timer for spawning blue burst particles over time
 red_burst_timer = 0.0         # Timer for spawning red burst particles over time
@@ -2305,13 +2305,14 @@ for l in range(26):
 @ti.kernel
 def render_score_digit(digit: ti.i32, base_x: ti.f32, base_y: ti.f32, base_z: ti.f32,
                        voxel_type: ti.i32, scale_x: ti.f32, scale_y: ti.f32,
-                       cam_x: ti.f32, cam_z: ti.f32):
+                       cam_x: ti.f32, cam_z: ti.f32, reveal_rows: ti.i32):
     """Render a single digit (0-9) as 3D extruded voxels with billboarding (always faces camera)
     base_x, base_y, base_z: center of digit in grid coords
     voxel_type: SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
     scale_x: horizontal scale (>1.0 = wider, <1.0 = narrower)
     scale_y: vertical scale (>1.0 = taller, <1.0 = squashed)
     cam_x, cam_z: camera position in world coords (for billboarding)
+    reveal_rows: number of rows to show from top (0-7), used for top-down reveal animation
     """
     # Convert digit grid position to world coords (grid center is 64)
     digit_world_x = base_x - 64.0
@@ -2342,13 +2343,18 @@ def render_score_digit(digit: ti.i32, base_x: ti.f32, base_y: ti.f32, base_z: ti
     depth = 3
 
     for row in range(7):
+        # Only render rows that are revealed (top-down reveal: row 0 is top)
+        if row >= reveal_rows:
+            continue
+
         row_pattern = digit_pattern_field[digit, row]
         for col in range(5):
             if (row_pattern >> (4 - col)) & 1:  # Check if bit is set (reversed for correct orientation)
                 # Calculate scaled position from center (horizontal offset)
                 local_h = (col - 2) * scale_x  # Horizontal offset in digit's local space
-                # Flip row so 0 is at bottom, scale from bottom (y offset adjusted)
-                local_y = (6 - row) * scale_y
+                # Flip row so 0 is at bottom, scale from CENTER (row 3 is middle)
+                # This makes squash/stretch look natural instead of sticking to bottom
+                local_y = ((6 - row) - 3) * scale_y + 3  # Center at row 3, scale around it
 
                 # Rotate horizontal offset to face camera
                 base_offset_x = local_h * right_x
@@ -2459,6 +2465,200 @@ def get_text_width(text: str, scale: float = 2.0) -> float:
         elif 'A' <= char <= 'Z':
             width += char_width
     return width - scale  # Remove trailing space
+
+
+# ============== LOADING SCREEN ==============
+# Loading screen constants
+LOADING_TEXT_Y = 58  # Same height as title text
+LOADING_TEXT_Z = 100  # Same Z as title text
+LOADING_BAR_Y = 46  # Below the text
+LOADING_BAR_WIDTH = 52  # Width in voxels (slightly wider)
+LOADING_BAR_HEIGHT = 4  # Height in voxels (taller)
+LOADING_BAR_DEPTH = 2  # Depth in voxels
+LOADING_BORDER_COLOR = simulation.TITLE_WHITE  # Border color
+LOADING_BG_COLOR = (0.18, 0.40, 0.22)  # Forest green background (same as game)
+
+def render_loading_screen():
+    """Render 'LOADING' text centered on screen with decorative elements."""
+    scale = 1.0
+    center_x = 64
+
+    # Main "LOADING" text in blue (matches "BEETLE" from title)
+    text = "LOADING"
+    text_width = get_text_width(text, scale)
+    start_x = center_x - text_width / 2
+    render_title_text(text, start_x, LOADING_TEXT_Y, LOADING_TEXT_Z,
+                      simulation.TITLE_BLUE, scale, depth=2)
+
+    # Add decorative dots on each side of text (· LOADING ·)
+    dot_y = LOADING_TEXT_Y + 3  # Middle of text height
+    dot_left_x = int(start_x - 4)
+    dot_right_x = int(start_x + text_width + 2)
+    for dy in range(2):
+        for dz in range(2):
+            # Left dot
+            if 0 <= dot_left_x < 128:
+                simulation.voxel_type[dot_left_x, dot_y + dy, LOADING_TEXT_Z + dz] = simulation.TITLE_GOLD
+                simulation.voxel_type[dot_left_x + 1, dot_y + dy, LOADING_TEXT_Z + dz] = simulation.TITLE_GOLD
+            # Right dot
+            if 0 <= dot_right_x < 128:
+                simulation.voxel_type[dot_right_x, dot_y + dy, LOADING_TEXT_Z + dz] = simulation.TITLE_GOLD
+                simulation.voxel_type[dot_right_x + 1, dot_y + dy, LOADING_TEXT_Z + dz] = simulation.TITLE_GOLD
+
+    # Render progress bar border/frame
+    bar_start_x = int(center_x - LOADING_BAR_WIDTH / 2) - 1
+    bar_end_x = int(center_x + LOADING_BAR_WIDTH / 2) + 1
+
+    # Top and bottom borders
+    for x in range(bar_start_x, bar_end_x + 1):
+        for z in range(LOADING_BAR_DEPTH):
+            if 0 <= x < 128:
+                # Top border
+                simulation.voxel_type[x, LOADING_BAR_Y + LOADING_BAR_HEIGHT, LOADING_TEXT_Z + z] = LOADING_BORDER_COLOR
+                # Bottom border
+                simulation.voxel_type[x, LOADING_BAR_Y - 1, LOADING_TEXT_Z + z] = LOADING_BORDER_COLOR
+
+    # Left and right borders
+    for y in range(LOADING_BAR_Y - 1, LOADING_BAR_Y + LOADING_BAR_HEIGHT + 1):
+        for z in range(LOADING_BAR_DEPTH):
+            # Left border
+            simulation.voxel_type[bar_start_x, y, LOADING_TEXT_Z + z] = LOADING_BORDER_COLOR
+            # Right border
+            simulation.voxel_type[bar_end_x, y, LOADING_TEXT_Z + z] = LOADING_BORDER_COLOR
+
+def render_progress_bar(progress: float):
+    """Render a voxel progress bar. progress is 0.0 to 1.0."""
+    center_x = 64
+    bar_start_x = int(center_x - LOADING_BAR_WIDTH / 2)
+    filled_width = int(LOADING_BAR_WIDTH * min(1.0, max(0.0, progress)))
+
+    # Render filled portion (bright cyan/blue gradient effect)
+    for x in range(filled_width):
+        for y in range(LOADING_BAR_HEIGHT):
+            for z in range(LOADING_BAR_DEPTH):
+                vx = bar_start_x + x
+                vy = LOADING_BAR_Y + y
+                vz = LOADING_TEXT_Z + z
+                if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
+                    # Alternate colors for visual interest (blue/cyan stripes)
+                    if (x % 4) < 2:
+                        simulation.voxel_type[vx, vy, vz] = simulation.TITLE_BLUE
+                    else:
+                        simulation.voxel_type[vx, vy, vz] = simulation.TITLE_CYAN
+
+    # Render empty portion (dark, subtle)
+    for x in range(filled_width, LOADING_BAR_WIDTH):
+        for y in range(LOADING_BAR_HEIGHT):
+            for z in range(LOADING_BAR_DEPTH):
+                vx = bar_start_x + x
+                vy = LOADING_BAR_Y + y
+                vz = LOADING_TEXT_Z + z
+                if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
+                    simulation.voxel_type[vx, vy, vz] = simulation.CONCRETE
+
+def clear_loading_screen():
+    """Clear the loading screen voxels."""
+    center_x = 64
+    # Clear loading text area (wider to catch all letters and decorations)
+    for x in range(center_x - 35, center_x + 35):
+        for y in range(LOADING_BAR_Y - 3, LOADING_TEXT_Y + 12):
+            for z in range(LOADING_TEXT_Z - 1, LOADING_TEXT_Z + 4):
+                if 0 <= x < 128 and 0 <= y < 128 and 0 <= z < 128:
+                    vtype = simulation.voxel_type[x, y, z]
+                    if vtype in (simulation.TITLE_WHITE, simulation.TITLE_BLUE, simulation.TITLE_CYAN,
+                                 simulation.TITLE_GOLD, simulation.CONCRETE):
+                        simulation.voxel_type[x, y, z] = 0
+
+
+@ti.kernel
+def explode_loading_screen():
+    """Explode all loading screen voxels - each becomes a debris particle flying outward."""
+    # Loading screen center in grid coords
+    center_x = 64.0
+    center_y = 52.0  # Between bar and text
+    center_z = 100.0
+
+    # Loading area - text and progress bar
+    for i, j, k in ti.ndrange((29, 99), (LOADING_BAR_Y - 3, LOADING_TEXT_Y + 12), (LOADING_TEXT_Z - 1, LOADING_TEXT_Z + 4)):
+        vt = simulation.voxel_type[i, j, k]
+        if vt == simulation.TITLE_BLUE or vt == simulation.TITLE_WHITE or \
+           vt == simulation.TITLE_GOLD or vt == simulation.TITLE_CYAN or \
+           vt == simulation.CONCRETE:
+
+            # Get color based on voxel type
+            color_r, color_g, color_b = 1.0, 1.0, 1.0
+            if vt == simulation.TITLE_BLUE:
+                color_r, color_g, color_b = 0.3, 0.6, 1.0
+            elif vt == simulation.TITLE_GOLD:
+                color_r, color_g, color_b = 0.9, 0.75, 0.3
+            elif vt == simulation.TITLE_WHITE:
+                color_r, color_g, color_b = 0.9, 0.9, 0.85
+            elif vt == simulation.TITLE_CYAN:
+                color_r, color_g, color_b = 0.6, 0.9, 1.0
+            elif vt == simulation.CONCRETE:
+                color_r, color_g, color_b = 0.4, 0.4, 0.4
+
+            # Convert to world coords
+            world_x = float(i) - 64.0
+            world_y = float(j)
+            world_z = float(k) - 64.0
+
+            # Spawn 3 debris particles per voxel for bigger explosion
+            for p in range(3):
+                idx = ti.atomic_add(simulation.num_debris[None], 1)
+                if idx < simulation.MAX_DEBRIS:
+                    simulation.debris_active[idx] = 1
+                    ti.atomic_add(simulation.debris_active_count[None], 1)
+
+                    # Direction from center (outward explosion)
+                    dir_x = float(i) - center_x
+                    dir_y = float(j) - center_y
+                    dir_z = float(k) - center_z
+                    dist = ti.sqrt(dir_x*dir_x + dir_y*dir_y + dir_z*dir_z) + 0.1
+
+                    # Normalize and add speed with more variation
+                    speed = 20.0 + ti.random() * 50.0
+                    vel_x = (dir_x / dist) * speed + (ti.random() - 0.5) * 25.0
+                    vel_y = (dir_y / dist) * speed + ti.random() * 25.0  # Upward bias
+                    vel_z = (dir_z / dist) * speed + (ti.random() - 0.5) * 25.0
+
+                    # Slight position offset for each particle
+                    offset_x = (ti.random() - 0.5) * 0.5
+                    offset_y = (ti.random() - 0.5) * 0.5
+                    offset_z = (ti.random() - 0.5) * 0.5
+
+                    simulation.debris_pos[idx] = ti.math.vec3(world_x + offset_x, world_y + offset_y, world_z + offset_z)
+                    simulation.debris_vel[idx] = ti.math.vec3(vel_x, vel_y, vel_z)
+
+                    # Slight color variation
+                    color_var = 0.7 + ti.random() * 0.3
+                    simulation.debris_material[idx] = ti.math.vec3(
+                        color_r * color_var, color_g * color_var, color_b * color_var)
+                    simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.8  # 0.5-1.3s
+
+            # Clear the voxel
+            simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+def show_loading_frame(window, canvas, scene, camera, progress: float):
+    """Render a single loading screen frame with progress bar."""
+    render_progress_bar(progress)
+
+    # Set forest green background (same as game)
+    canvas.set_background_color(LOADING_BG_COLOR)
+
+    # Bright flash for loading text to pop
+    simulation.title_flash[None] = 1.8
+
+    # Render the frame
+    renderer.render(
+        camera, canvas, scene, simulation.voxel_type, 128,
+        dynamic_lighting=False,
+        spotlight_pos=None,
+        spotlight_strength=0.0,
+        base_light_brightness=1.5  # Brighter for loading screen visibility
+    )
+    canvas.scene(scene)
+    window.show()
 
 
 # Title screen state
@@ -10813,7 +11013,8 @@ def get_referee_antenna_tips():
 referee_beam_active = False
 referee_beam_timer = 0.0
 referee_beam_target = None  # 'blue' or 'red'
-REFEREE_BEAM_DURATION = 0.375  # Duration of beam effect (50% longer)
+referee_beam_hit_target = False  # True when beam head first reaches the score digit
+REFEREE_BEAM_DURATION = 0.75  # Duration of beam effect (2x length)
 
 @ti.kernel
 def clear_referee_beam_voxels():
@@ -10881,16 +11082,17 @@ def render_referee_beam(start_x: ti.f32, start_y: ti.f32, start_z: ti.f32,
 
 def trigger_referee_beam(target):
     """Start the referee beam effect toward a score"""
-    global referee_beam_active, referee_beam_timer, referee_beam_target
+    global referee_beam_active, referee_beam_timer, referee_beam_target, referee_beam_hit_target
     if referee_ladybug is None or not referee_enabled:
         return
     referee_beam_active = True
     referee_beam_timer = REFEREE_BEAM_DURATION
     referee_beam_target = target
+    referee_beam_hit_target = False  # Reset hit flag when beam starts
 
 def update_and_render_referee_beam(dt):
-    """Update beam timer and render if active"""
-    global referee_beam_active, referee_beam_timer, referee_time
+    """Update beam timer and render if active. Returns True if beam just hit target this frame."""
+    global referee_beam_active, referee_beam_timer, referee_time, referee_beam_hit_target
 
     # Skip entirely if referee is disabled and beam is not active
     if not referee_enabled and not referee_beam_active:
@@ -10947,6 +11149,10 @@ def update_and_render_referee_beam(dt):
     # Tail follows behind, delayed by ~40% of the beam length
     tail_progress = max(0.0, (raw_progress - 0.3) * 1.5)
     tail_progress = min(1.0, tail_progress)
+
+    # Detect when beam head first hits the target (triggers score explosion)
+    if head_progress >= 1.0 and not referee_beam_hit_target:
+        referee_beam_hit_target = True
 
     # Spiral phase for animation
     spiral_phase = referee_time * 15.0
@@ -12254,8 +12460,7 @@ renderer.init_shimmer_lut()
 # Initialize controller support
 init_controllers()
 
-# Setup title screen (renders text into voxel grid)
-setup_title_screen()
+# DON'T set up title screen yet - we'll show loading screen first during warmup
 
 print("\n=== BEETLE PHYSICS ===")
 print("BLUE BEETLE (TFGH + RY) - Tank Controls:")
@@ -12384,90 +12589,150 @@ previous_tail_rotation = blue_previous_tail_rotation
 
 # Ball state now handled by beetle_ball Beetle object (created at line ~318)
 
-# Warm up kernels to avoid first-time JIT compilation stutter
-# Call with dummy data during initialization to pre-compile GPU kernels
+# ============== WARMUP WITH LOADING SCREEN ==============
 print("Warming up kernels...")
 
-# Collision detection kernels (these cause the first-collision stutter)
+# PHASE 0: Warm up renderer first so we can show loading screen
+# Place temporary voxels to warm up explode_loading_screen with actual work
+for x in range(50, 78):
+    for y in range(LOADING_BAR_Y, LOADING_TEXT_Y + 8):
+        for z in range(LOADING_TEXT_Z, LOADING_TEXT_Z + 2):
+            simulation.voxel_type[x, y, z] = simulation.TITLE_BLUE
+
+# Explode them to warm up the kernel with actual particle spawning
+explode_loading_screen()
+
+# Render with debris to warm up renderer debris paths
+renderer.render(
+    camera, canvas, scene, simulation.voxel_type, 128,
+    dynamic_lighting=False,
+    spotlight_pos=None,
+    spotlight_strength=0.0,
+    base_light_brightness=1.5
+)
+canvas.scene(scene)
+window.show()
+ti.sync()
+
+# Clear warmup debris
+simulation.num_debris[None] = 0
+simulation.debris_active_count[None] = 0
+
+# Render "LOADING" text into voxel grid
+render_loading_screen()
+
+# Set forest green background (same as game)
+canvas.set_background_color(LOADING_BG_COLOR)
+
+# Warm up the extract_all_particles kernel by rendering first frame
+renderer.render(
+    camera, canvas, scene, simulation.voxel_type, 128,
+    dynamic_lighting=False,
+    spotlight_pos=None,
+    spotlight_strength=0.0,
+    base_light_brightness=1.5  # Brighter for loading screen visibility
+)
+canvas.scene(scene)
+window.show()
+ti.sync()
+
+# Now we can show loading progress!
+TOTAL_WARMUP_PHASES = 10
+
+def update_loading(phase):
+    """Update loading screen with current progress."""
+    progress = phase / TOTAL_WARMUP_PHASES
+    show_loading_frame(window, canvas, scene, camera, progress)
+    ti.sync()
+
+# Show initial loading bar (empty)
+update_loading(0)
+
+# PHASE 1: Collision detection kernels
 check_collision_kernel(0.0, 0.0, 0.0, 100.0, 100.0, 0.0, simulation.BEETLE_BLUE, simulation.BEETLE_RED)
 calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_BLUE,
                                  beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
 calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_RED,
                                  beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
 calculate_collision_point_kernel(0)
+update_loading(1)
 
-# Death explosion kernel
+# PHASE 2: Death/explosion kernels
 spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 1)
-
-# Ball explosion kernel (first ball death causes lag without this)
 spawn_ball_explosion_batch(0.0, -100.0, 0.0, 0, 1, 1)
-
-# Ball bounce dust kernel (first ball bounce causes lag without this)
 spawn_ball_bounce_dust(0.0, -100.0, 0.0, 10.0, 4.0)
+update_loading(2)
 
-# Debris/particle update kernel (triggered when particles exist)
+# PHASE 3: Debris/particle kernels - render with debris to warm up renderer's debris code paths
 update_debris_particles(0.016)
-cleanup_dead_debris()  # Debris cleanup kernel (avoids JIT crash during heavy debris)
+renderer.render(
+    camera, canvas, scene, simulation.voxel_type, 128,
+    dynamic_lighting=False,
+    spotlight_pos=None,
+    spotlight_strength=0.0,
+    base_light_brightness=1.5
+)
+canvas.scene(scene)
+window.show()
+ti.sync()
+cleanup_dead_debris()
+simulation.num_debris[None] = 0  # Clear debris after warmup render
+update_loading(3)
 
-# Edge tipping kernel (triggered when beetles near arena edge)
+# PHASE 4: Edge tipping and beetle clear kernels
 calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_BLUE, 0.016, 1.0, 1.0)
 calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_RED, 0.016, 1.0, 1.0)
-
-# Clear beetles kernels (used during reset and rendering)
 clear_beetles()
 clear_beetles_bounded(0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
+update_loading(4)
 
-# Shadow kernels (triggered when beetles are airborne)
+# PHASE 5: Shadow kernels
 clear_shadow_layer(int(RENDER_Y_OFFSET), 0)
 place_shadow_kernel(0.0, 0.0, 3.0, int(RENDER_Y_OFFSET))
-clear_shadow_layer(int(RENDER_Y_OFFSET), 0)  # Clear the warm-up shadow so it doesn't show on load
-
-# Victory confetti kernel (triggered on match win)
+clear_shadow_layer(int(RENDER_Y_OFFSET), 0)
 spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
+update_loading(5)
 
-# Spray/venom kernels (bombardier and scorpion attacks)
-spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 50.0, 0, 1, 0.0, 0.6, 0.2, 1.0, 0.3)  # Spray warmup
-spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 28.0, 0, 3, -28.0, 1.5, 1.0, 0.9, 0.1)  # Venom warmup
+# PHASE 6: Spray/venom kernels
+spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 50.0, 0, 1, 0.0, 0.6, 0.2, 1.0, 0.3)
+spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 28.0, 0, 3, -28.0, 1.5, 1.0, 0.9, 0.1)
 update_spray_particles(0.016)
 check_spray_voxel_collision_kernel(0, 0)
-check_spray_voxel_collision_kernel(1, 1)  # Also warmup red beetle check
+check_spray_voxel_collision_kernel(1, 1)
 cleanup_dead_spray()
-# DON'T clear spray yet - we need particles for render warmup
 spawn_spray_explosion(0.0, 0.0, -100.0, 0.2, 1.0, 0.3)
+update_loading(6)
 
-# Spider silk kernels
+# PHASE 7: Spider silk kernels
 spawn_silk(0.0, -100.0, 0.0, 1.0, 0.0, 50.0, 0.0, 0, 0.0)
 build_silk_spatial_grid()
 update_silk_particles(0.016)
 check_silk_beetle_collision(
-    # Blue beetle state (dummy values)
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1,
-    # Red beetle state (dummy values)
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1
 )
-check_silk_ball_collision(0.0, -100.0, 0.0, 4.0, 0.0, 0.0, 0.0)  # Ball silk collision warmup
+check_silk_ball_collision(0.0, -100.0, 0.0, 4.0, 0.0, 0.0, 0.0)
 count_floor_silk_under_beetles(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
 cleanup_dead_silk()
-simulation.batch_silk_counts()  # Batch silk counts kernel warmup
-# DON'T clear silk yet - we need particles for render warmup
+simulation.batch_silk_counts()
+update_loading(7)
 
-# Referee beam warmup (prevents lag on first score)
+# PHASE 8: Referee, score digits, and ladybug kernels
 clear_referee_beam_voxels()
 render_referee_beam(0.0, -100.0, 0.0, 0.0, -100.0, 0.0, 0.5, 0.0, 0.0, simulation.SCORE_DIGIT_BLUE)
-clear_ladybug_bounded(0.0, -100.0, 0.0)  # Bounded ladybug clear warmup
-place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)  # Ladybug render warmup
-
-# Stuck silk position update kernel (first silk hit on beetle causes lag without this)
+render_score_digit(0, 0.0, -100.0, 0.0, simulation.SCORE_DIGIT_BLUE, 1.0, 1.0, 0.0, 0.0, 7)  # Score digit warmup
+clear_score_digits()  # Clear score digits warmup
+clear_ladybug_bounded(0.0, -100.0, 0.0)
+place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 update_beetle_stuck_silk_positions(
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0,
     0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0,
     0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0
 )
+update_loading(8)
 
-# Sync GPU to ensure all warm-up compilations complete
+# PHASE 9: GPU sync and .to_numpy() warmup
 ti.sync()
-
-# Warm up .to_numpy() transfer pipelines (first call allocates buffers and causes lag)
 _ = simulation.spray_hit.to_numpy()
 _ = simulation.spray_hit_pos.to_numpy()
 _ = simulation.spray_active.to_numpy()
@@ -12476,11 +12741,18 @@ _ = simulation.spray_pos.to_numpy()
 _ = simulation.spray_vel.to_numpy()
 _ = simulation.spray_color.to_numpy()
 _ = simulation.silk_counts_batched.to_numpy()
+update_loading(9)
 
-# Clear warmup particles so they don't show in the distance on game load
+# PHASE 10: Final cleanup
 simulation.num_spray[None] = 0
 simulation.num_silk[None] = 0
 simulation.num_debris[None] = 0
+update_loading(10)  # Show full bar briefly
+
+# Explode loading screen and immediately show title
+# (explosion particles will render naturally during title screen loop)
+explode_loading_screen()
+setup_title_screen()
 
 print("All kernels warmed up (pre-compiled)")
 
@@ -12494,7 +12766,22 @@ if referee_enabled:
     referee_ladybug.prev_y = 8.0  # Match initial y to prevent clearing at wrong height
 
 # Global state dictionary for storing inputs during network stalls
-g = {}
+g = {
+    'blue_score_delay_timer': 0.0,
+    'red_score_delay_timer': 0.0,
+    'blue_score_pending': 0,
+    'red_score_pending': 0,
+    'ball_scored_this_fall': False,
+    'goal_scored_by': None,
+    'ball_explosion_delay': 0.0,
+    'ball_explosion_timer': 0.0,
+    'ball_explosion_pos_x': 0.0,
+    'ball_explosion_pos_y': 0.0,
+    'ball_explosion_pos_z': 0.0,
+    'ball_has_exploded': False,
+    'blue_respawn_timer': 0.0,
+    'red_respawn_timer': 0.0,
+}
 
 # === AUTO-JOIN FROM STEAM FRIEND INVITE ===
 # When friend clicks "Join Game" in Steam, game launches with +connect_lobby <id>
@@ -14754,6 +15041,12 @@ try:
         blue_inputs = g.get('last_blue_inputs', 0)
         red_inputs = g.get('last_red_inputs', 0)
 
+    # Sync score state from physics loop (g dict) to globals for render processing
+    blue_score_delay_timer = g.get('blue_score_delay_timer', 0.0)
+    red_score_delay_timer = g.get('red_score_delay_timer', 0.0)
+    blue_score_pending = g.get('blue_score_pending', 0)
+    red_score_pending = g.get('red_score_pending', 0)
+
     # Calculate interpolation alpha for smooth rendering between physics states
     alpha = accumulator / PHYSICS_TIMESTEP
 
@@ -15723,40 +16016,71 @@ try:
     # Render floating score digits above goal pits (always visible, not just in ball mode)
     clear_score_digits()
 
-    # Update delay timers - when they hit zero, trigger animation, explosion, and score increment
+    # Update delay timers and trigger referee beam
     if blue_score_delay_timer > 0:
         prev_blue_delay = blue_score_delay_timer
         blue_score_delay_timer -= 1.0 / 60.0
-        # Trigger referee beam when timer crosses 0.25 threshold
-        if prev_blue_delay > 0.25 and blue_score_delay_timer <= 0.25:
+        # Trigger referee beam when timer crosses threshold
+        if prev_blue_delay > 0.15 and blue_score_delay_timer <= 0.15:
             trigger_referee_beam('blue')
         if blue_score_delay_timer <= 0:
             blue_score_delay_timer = 0
-            if blue_score_pending > 0:
-                blue_score += blue_score_pending  # Add all pending scores
-                blue_score_pending = 0
-                print(f"Blue {blue_score} - {red_score} Red")
-            blue_score_bounce_timer = SCORE_BOUNCE_DURATION  # Start bounce animation
-            # Start burst timer to spawn particles over time
-            blue_burst_timer = SCORE_BURST_DURATION
-            blue_burst_spawned = 0
 
     if red_score_delay_timer > 0:
         prev_red_delay = red_score_delay_timer
         red_score_delay_timer -= 1.0 / 60.0
-        # Trigger referee beam when timer crosses 0.25 threshold
-        if prev_red_delay > 0.25 and red_score_delay_timer <= 0.25:
+        # Trigger referee beam when timer crosses threshold
+        if prev_red_delay > 0.15 and red_score_delay_timer <= 0.15:
             trigger_referee_beam('red')
         if red_score_delay_timer <= 0:
             red_score_delay_timer = 0
-            if red_score_pending > 0:
-                red_score += red_score_pending  # Add all pending scores
-                red_score_pending = 0
-                print(f"Blue {blue_score} - {red_score} Red")
-            red_score_bounce_timer = SCORE_BOUNCE_DURATION  # Start bounce animation
-            # Start burst timer to spawn particles over time
-            red_burst_timer = SCORE_BURST_DURATION
-            red_burst_spawned = 0
+
+    # Score explosion triggers when beam hits the digit (not on fixed timer)
+    if referee_beam_hit_target and referee_beam_target == 'blue':
+        if blue_score_pending > 0:
+            blue_score += blue_score_pending
+            blue_score_pending = 0
+            print(f"Blue {blue_score} - {red_score} Red")
+        blue_score_bounce_timer = SCORE_BOUNCE_DURATION
+        blue_burst_timer = SCORE_BURST_DURATION
+        blue_burst_spawned = 0
+        referee_beam_hit_target = False  # Reset so it only triggers once
+
+    if referee_beam_hit_target and referee_beam_target == 'red':
+        if red_score_pending > 0:
+            red_score += red_score_pending
+            red_score_pending = 0
+            print(f"Blue {blue_score} - {red_score} Red")
+        red_score_bounce_timer = SCORE_BOUNCE_DURATION
+        red_burst_timer = SCORE_BURST_DURATION
+        red_burst_spawned = 0
+        referee_beam_hit_target = False  # Reset so it only triggers once
+
+    # FALLBACK: Process pending scores if delay expired but beam didn't handle them
+    # This handles: referee disabled, multiple simultaneous deaths, beam targeting other team
+    if blue_score_pending > 0 and blue_score_delay_timer <= 0:
+        # Beam didn't process this score (maybe targeting red or referee disabled)
+        blue_score += blue_score_pending
+        blue_score_pending = 0
+        print(f"Blue {blue_score} - {red_score} Red (fallback)")
+        blue_score_bounce_timer = SCORE_BOUNCE_DURATION
+        blue_burst_timer = SCORE_BURST_DURATION
+        blue_burst_spawned = 0
+
+    if red_score_pending > 0 and red_score_delay_timer <= 0:
+        # Beam didn't process this score (maybe targeting blue or referee disabled)
+        red_score += red_score_pending
+        red_score_pending = 0
+        print(f"Blue {blue_score} - {red_score} Red (fallback)")
+        red_score_bounce_timer = SCORE_BOUNCE_DURATION
+        red_burst_timer = SCORE_BURST_DURATION
+        red_burst_spawned = 0
+
+    # Sync score state back to g dict for next physics frame
+    g['blue_score_delay_timer'] = blue_score_delay_timer
+    g['red_score_delay_timer'] = red_score_delay_timer
+    g['blue_score_pending'] = blue_score_pending
+    g['red_score_pending'] = red_score_pending
 
     # Update bounce timers
     if blue_score_bounce_timer > 0:
@@ -15839,46 +16163,35 @@ try:
                                   r_tip[0], r_tip[1], r_tip[2],
                                   remaining, red_burst_spawned, SCORE_BURST_PARTICLES)
 
-    # Pop & Squash animation using damped spring physics
-    # Phases: 1) Initial squash (flat & wide), 2) Spring up tall & thin, 3) Oscillate and settle
+    # Simple pop-in animation - scale from 0 to 1
     def get_pop_squash_scales(timer):
         if timer <= 0:
             return 1.0, 1.0  # scale_x, scale_y
 
-        # Normalize timer: 1.0 at start, 0.0 at end
-        t = 1.0 - (timer / SCORE_BOUNCE_DURATION)  # t goes 0 -> 1 as animation progresses
+        # t goes 0 -> 1 as animation progresses
+        t = 1.0 - (timer / SCORE_BOUNCE_DURATION)
 
-        # Damped spring parameters - DRAMATIC BUT SMOOTH
-        frequency = 3.5  # Oscillation frequency
-        damping = 2.5    # Damping for smooth settling
+        # Ease-out curve for snappy pop-in
+        scale = 1.0 - (1.0 - t) * (1.0 - t)
 
-        # Use a single continuous spring formula with offset to start from squashed
-        # Spring starts from squashed state (scale_y=0.2) and overshoots to tall
-        decay = math.exp(-damping * t)
-
-        # Phase-shifted sine so it starts at negative (squashed) and goes positive (tall)
-        # sin(-pi/2) = -1 (squashed), rises through 0 (normal), peaks positive (tall)
-        phase_offset = -math.pi * 0.5
-        oscillation = math.sin(frequency * math.pi * t + phase_offset)
-
-        # Amplitude starts high and decays
-        amplitude_y = 1.8 * decay + 0.8 * (1.0 - t)  # Extra amplitude at start
-        amplitude_x = 0.6 * decay + 0.3 * (1.0 - t)
-
-        # Scale Y: oscillates from squashed (-) through normal to tall (+) and settles
-        scale_y = 1.0 + amplitude_y * oscillation
-
-        # Scale X: inverse of Y for volume preservation
-        scale_x = 1.0 - amplitude_x * oscillation
-
-        # Clamp to reasonable values
-        scale_x = max(0.15, min(2.5, scale_x))
-        scale_y = max(0.15, min(3.0, scale_y))
-
-        return scale_x, scale_y
+        return scale, scale
 
     blue_scale_x, blue_scale_y = get_pop_squash_scales(blue_score_bounce_timer)
     red_scale_x, red_scale_y = get_pop_squash_scales(red_score_bounce_timer)
+
+    # Calculate reveal rows (top-down reveal during animation)
+    def get_reveal_rows(timer):
+        if timer <= 0:
+            return 7  # Fully revealed
+        # Reveal all 7 rows over first 40% of animation
+        t = 1.0 - (timer / SCORE_BOUNCE_DURATION)  # 0 -> 1
+        if t < 0.4:
+            # Reveal progressively: 0 rows at t=0, 7 rows at t=0.4
+            return int((t / 0.4) * 7) + 1  # +1 so at least 1 row shows immediately
+        return 7  # Fully revealed
+
+    blue_reveal = get_reveal_rows(blue_score_bounce_timer)
+    red_reveal = get_reveal_rows(red_score_bounce_timer)
 
     # Calculate flash brightness (bright at start, fades quickly)
     def get_flash_brightness(timer):
@@ -15906,13 +16219,13 @@ try:
     blue_digit_x = 96.0  # Center over red goal pit
     render_score_digit(blue_score % 10, blue_digit_x, float(digit_y), 64.0,
                       simulation.SCORE_DIGIT_BLUE,
-                      blue_scale_x, blue_scale_y, camera.pos_x, camera.pos_z)
+                      blue_scale_x, blue_scale_y, camera.pos_x, camera.pos_z, blue_reveal)
 
     # Red score digit above blue goal (west)
     red_digit_x = 32.0  # Center over blue goal pit
     render_score_digit(red_score % 10, red_digit_x, float(digit_y), 64.0,
                       simulation.SCORE_DIGIT_RED,
-                      red_scale_x, red_scale_y, camera.pos_x, camera.pos_z)
+                      red_scale_x, red_scale_y, camera.pos_x, camera.pos_z, red_reveal)
 
     # === SCENE RENDER TIMING ===
     perf_monitor.start('scene_render')

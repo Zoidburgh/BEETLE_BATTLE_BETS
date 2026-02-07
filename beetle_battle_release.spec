@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec file for Beetle Battle
+# PyInstaller spec file for Beetle Battle - RELEASE BUILD (no console)
 
 import sys
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -59,7 +59,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    console=True,  # Console for dev builds (use beetle_battle_release.spec for no console)
+    console=False,  # NO CONSOLE for release/Steam builds
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

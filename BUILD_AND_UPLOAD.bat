@@ -6,8 +6,8 @@ echo.
 
 cd /d "%~dp0"
 
-echo [1/3] Building with PyInstaller...
-pyinstaller --clean -y beetle_battle.spec
+echo [1/3] Building with PyInstaller (RELEASE - no console)...
+pyinstaller --clean -y beetle_battle_release.spec
 if errorlevel 1 (
     echo BUILD FAILED!
     pause
