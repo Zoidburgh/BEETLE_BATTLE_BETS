@@ -1382,7 +1382,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score
+    global blue_score, red_score, donut_mode
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1395,8 +1395,11 @@ def reset_match():
     input_buffer.reset()
     physics_frame = 0
 
-    beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)
-    beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)
+    # Get spawn positions based on arena mode (is_initial=True for game start)
+    blue_x, blue_z, blue_rot = get_spawn_position(for_blue=True, is_initial=True)
+    red_x, red_z, red_rot = get_spawn_position(for_blue=False, is_initial=True)
+    beetle_blue = Beetle(blue_x, blue_z, blue_rot, simulation.BEETLE_BLUE)
+    beetle_red = Beetle(red_x, red_z, red_rot, simulation.BEETLE_RED)
     match_winner = None
     blue_celebrating = False
     red_celebrating = False
@@ -1680,6 +1683,44 @@ ball_explosion_pos_x = 0.0
 ball_explosion_pos_y = 0.0
 ball_explosion_pos_z = 0.0
 ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
+
+# Donut arena mode (hole in the middle)
+donut_mode = False
+
+# Donut arena constants
+DONUT_INNER_RADIUS = 10  # Must match simulation.py
+DONUT_OUTER_RADIUS = 32  # Arena radius
+
+def get_spawn_position(for_blue=True, is_initial=False):
+    """Get a valid spawn position based on current arena mode.
+    Returns (x, z, rotation) tuple.
+    is_initial=True for game start positions, False for respawns."""
+    import random
+
+    if donut_mode:
+        # Spawn on the donut ring - pick random angle and distance
+        angle = random.uniform(0, 2 * math.pi)
+        # Spawn in middle of the ring (between inner and outer radius)
+        spawn_radius = (DONUT_INNER_RADIUS + DONUT_OUTER_RADIUS) / 2
+        x = math.cos(angle) * spawn_radius
+        z = math.sin(angle) * spawn_radius
+        # Face toward center (or opposite beetle)
+        rotation = angle + math.pi  # Face inward
+        return (x, z, rotation)
+    else:
+        # Normal arena
+        if is_initial:
+            # Initial game start positions (spread apart)
+            if for_blue:
+                return (-20.0, 0.0, 0.0)  # Blue on left, facing right
+            else:
+                return (20.0, 0.0, math.pi)  # Red on right, facing left
+        else:
+            # Respawn at center
+            if for_blue:
+                return (0.0, 0.0, 0.0)  # Center, facing right
+            else:
+                return (0.0, 0.0, math.pi)  # Center, facing left
 
 # Network disconnect state
 opponent_disconnected = False  # True when opponent stops sending inputs
@@ -2195,6 +2236,11 @@ red_assembly_timer = 0.0
 ASSEMBLY_DURATION = 3.0  # Time for voxels to assemble (slower, more dramatic)
 ASSEMBLY_START_TIME = 1.0  # When assembly starts during respawn delay (earlier to compensate)
 
+# Hover-to-spawn animation state (beetle flies from center to safe spawn point)
+HOVER_DURATION = 1.2  # Time to fly from center to spawn point
+HOVER_HEIGHT = 20.0   # Height during hover flight
+HOVER_SPIN_SPEED = 1.5  # Goofy spinning speed (radians/sec) - gentle lazy spin
+
 # Ball assembly animation state (voxel rain effect)
 ball_assembling = False
 ball_assembly_timer = 0.0
@@ -2507,7 +2553,7 @@ def render_loading_screen():
 
     # Render progress bar border/frame
     bar_start_x = int(center_x - LOADING_BAR_WIDTH / 2) - 1
-    bar_end_x = int(center_x + LOADING_BAR_WIDTH / 2) + 1
+    bar_end_x = int(center_x + LOADING_BAR_WIDTH / 2)
 
     # Top and bottom borders
     for x in range(bar_start_x, bar_end_x + 1):
@@ -12783,6 +12829,22 @@ g = {
     'red_respawn_timer': 0.0,
 }
 
+# Hover-to-spawn state (beetle flies from center to safe spawn point in donut mode)
+blue_hovering = False
+blue_hover_timer = 0.0
+blue_hover_start_x = 0.0
+blue_hover_start_z = 0.0
+blue_hover_target_x = 0.0
+blue_hover_target_z = 0.0
+blue_hover_target_rot = 0.0
+red_hovering = False
+red_hover_timer = 0.0
+red_hover_start_x = 0.0
+red_hover_start_z = 0.0
+red_hover_target_x = 0.0
+red_hover_target_z = 0.0
+red_hover_target_rot = 0.0
+
 # === AUTO-JOIN FROM STEAM FRIEND INVITE ===
 # When friend clicks "Join Game" in Steam, game launches with +connect_lobby <id>
 if STEAM_CONNECT_LOBBY and NETWORK_AVAILABLE:
@@ -13337,7 +13399,7 @@ try:
         # NOTE: silk_counts fetched ONCE per frame before physics loop (GPU sync optimization)
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
-        if beetle_blue.active and not beetle_blue.is_falling:
+        if beetle_blue.active and not beetle_blue.is_falling and not blue_hovering:
             # Rotation controls (F/H) - BLOCKED during horn collision
             # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_blue.in_horn_collision:
@@ -13630,7 +13692,7 @@ try:
             beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
 
         # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
-        if beetle_red.active and not beetle_red.is_falling:
+        if beetle_red.active and not beetle_red.is_falling and not red_hovering:
             # Rotation controls (J/L) - BLOCKED during horn collision
             # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_red.in_horn_collision:
@@ -13926,9 +13988,11 @@ try:
         _t_input_end = time.perf_counter()
         _physics_timing['input_controls'] += (_t_input_end - _t_input_start) * 1000
 
-        # Physics update
-        beetle_blue.update_physics(PHYSICS_TIMESTEP)
-        beetle_red.update_physics(PHYSICS_TIMESTEP)
+        # Physics update (skip if hovering to spawn point)
+        if not blue_hovering:
+            beetle_blue.update_physics(PHYSICS_TIMESTEP)
+        if not red_hovering:
+            beetle_red.update_physics(PHYSICS_TIMESTEP)
 
         # Apply bowl slide physics when ball mode is active (slippery perimeter)
         if beetle_ball.active:
@@ -14469,6 +14533,18 @@ try:
                         g['red_score'] = 0
                     print(f"Ball mode: {opts['ball_active']} (from host)")
 
+                # Apply donut mode state
+                if opts.get('donut_mode', False) != donut_mode:
+                    donut_mode = opts.get('donut_mode', False)
+                    if donut_mode:
+                        simulation.init_donut_arena()
+                        build_floor_height_cache()
+                        print("DONUT ARENA ENABLED (from host)")
+                    else:
+                        simulation.init_beetle_arena()
+                        build_floor_height_cache()
+                        print("Normal arena restored (from host)")
+
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
         # Local mode: always detect locally
@@ -14756,30 +14832,113 @@ try:
             # Update assembly timer
             if g['blue_assembling']:
                 g['blue_assembly_timer'] += PHYSICS_TIMESTEP
-            # Complete respawn when timer hits 0
-            if g['blue_respawn_timer'] <= 0:
+            # Complete respawn when timer hits 0 - start hover phase in donut mode
+            if g['blue_respawn_timer'] <= 0 and not blue_hovering:
                 g['blue_respawn_timer'] = 0
                 g['blue_assembling'] = False
                 g['blue_assembly_timer'] = 0.0
-                # Respawn blue beetle at center (drop from above)
-                beetle_blue.x = 0.0   # Center
-                beetle_blue.y = 15.0  # Drop from above
-                beetle_blue.z = 0.0
-                beetle_blue.vx = 0.0
-                beetle_blue.vy = 0.0
-                beetle_blue.vz = 0.0
-                beetle_blue.rotation = 0.0  # Facing east
+
+                # Get spawn position
+                spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
+
+                if donut_mode:
+                    # Start hover phase - beetle flies from center to spawn point
+                    blue_hovering = True
+                    blue_hover_timer = 0.0
+                    blue_hover_start_x = 0.0
+                    blue_hover_start_z = 0.0
+                    blue_hover_target_x = spawn_x
+                    blue_hover_target_z = spawn_z
+                    blue_hover_target_rot = spawn_rot
+                    # Place beetle at center, hovering
+                    beetle_blue.x = 0.0
+                    beetle_blue.y = HOVER_HEIGHT
+                    beetle_blue.z = 0.0
+                    beetle_blue.vx = 0.0
+                    beetle_blue.vy = 0.0
+                    beetle_blue.vz = 0.0
+                    beetle_blue.rotation = 0.0
+                    beetle_blue.pitch = 0.0
+                    beetle_blue.roll = 0.0
+                    beetle_blue.angular_velocity = 0.0  # Manual spin in hover section
+                    beetle_blue.pitch_velocity = 0.0
+                    beetle_blue.roll_velocity = 0.0
+                    beetle_blue.active = True
+                    beetle_blue.has_exploded = False
+                    beetle_blue.is_falling = False
+                    beetle_blue.on_ground = False
+                    print("Blue beetle hovering to spawn point!")
+                else:
+                    # Normal mode - spawn directly
+                    beetle_blue.x = spawn_x
+                    beetle_blue.y = 15.0  # Drop from above
+                    beetle_blue.z = spawn_z
+                    beetle_blue.vx = 0.0
+                    beetle_blue.vy = 0.0
+                    beetle_blue.vz = 0.0
+                    beetle_blue.rotation = spawn_rot
+                    beetle_blue.pitch = 0.0
+                    beetle_blue.roll = 0.0
+                    beetle_blue.angular_velocity = 0.0
+                    beetle_blue.pitch_velocity = 0.0
+                    beetle_blue.roll_velocity = 0.0
+                    beetle_blue.active = True
+                    beetle_blue.has_exploded = False
+                    beetle_blue.is_falling = False
+                    beetle_blue.guest_death_falling = False
+                    beetle_blue.on_ground = False
+                    beetle_blue.forward_hold_time = 0.0
+                    beetle_blue.backward_hold_time = 0.0
+                    beetle_blue.forward_bonus = 0.0
+                    beetle_blue.backward_bonus = 0.0
+                    beetle_blue.silk_speed_mult = 1.0
+                    red_celebrating = False
+                    red_pulse_timer = 0.0
+                    red_confetti_timer = 0.0
+                    print("Blue beetle respawned!")
+
+        # Blue beetle hover phase (flying to spawn point with goofy spinning)
+        if blue_hovering:
+            blue_hover_timer += PHYSICS_TIMESTEP
+            progress = min(1.0, blue_hover_timer / HOVER_DURATION)
+
+            # Smooth easing (ease-in-out)
+            smooth_progress = progress * progress * (3.0 - 2.0 * progress)
+
+            # Lerp position from center to target
+            beetle_blue.x = blue_hover_start_x + (blue_hover_target_x - blue_hover_start_x) * smooth_progress
+            beetle_blue.z = blue_hover_start_z + (blue_hover_target_z - blue_hover_start_z) * smooth_progress
+            beetle_blue.y = HOVER_HEIGHT  # Stay at hover height
+
+            # Goofy spinning - slow down and blend toward target rotation
+            spin_factor = 1.0 - smooth_progress
+            beetle_blue.rotation += HOVER_SPIN_SPEED * spin_factor * PHYSICS_TIMESTEP
+            # Blend rotation toward target as we approach (prevents snap at end)
+            rotation_blend = smooth_progress * smooth_progress  # Accelerating blend
+            beetle_blue.rotation = beetle_blue.rotation * (1.0 - rotation_blend) + blue_hover_target_rot * rotation_blend
+
+            # Add some wobble that fades out
+            wobble = math.sin(blue_hover_timer * 10.0) * 0.15 * spin_factor
+            beetle_blue.pitch = wobble
+            beetle_blue.roll = math.cos(blue_hover_timer * 8.0) * 0.1 * spin_factor
+
+            # Complete hover when done
+            if progress >= 1.0:
+                blue_hovering = False
+                blue_hover_timer = 0.0
+                # Now drop the beetle - rotation already blended, just finalize
+                beetle_blue.x = blue_hover_target_x
+                beetle_blue.z = blue_hover_target_z
+                beetle_blue.y = 15.0  # Drop height
+                # Rotation is already at target from blending
                 beetle_blue.pitch = 0.0
                 beetle_blue.roll = 0.0
                 beetle_blue.angular_velocity = 0.0
                 beetle_blue.pitch_velocity = 0.0
                 beetle_blue.roll_velocity = 0.0
-                beetle_blue.active = True
-                beetle_blue.has_exploded = False
-                beetle_blue.is_falling = False
-                beetle_blue.guest_death_falling = False  # Reset guest death flag
-                beetle_blue.on_ground = False  # Will fall to ground
-                # Reset speed boost state to prevent carryover bugs
+                beetle_blue.guest_death_falling = False
+                beetle_blue.on_ground = False
+                # Reset speed boost state
                 beetle_blue.forward_hold_time = 0.0
                 beetle_blue.backward_hold_time = 0.0
                 beetle_blue.forward_bonus = 0.0
@@ -14803,30 +14962,113 @@ try:
             # Update assembly timer
             if g['red_assembling']:
                 g['red_assembly_timer'] += PHYSICS_TIMESTEP
-            # Complete respawn when timer hits 0
-            if g['red_respawn_timer'] <= 0:
+            # Complete respawn when timer hits 0 - start hover phase in donut mode
+            if g['red_respawn_timer'] <= 0 and not red_hovering:
                 g['red_respawn_timer'] = 0
                 g['red_assembling'] = False
                 g['red_assembly_timer'] = 0.0
-                # Respawn red beetle at center (drop from above)
-                beetle_red.x = 0.0    # Center
-                beetle_red.y = 15.0   # Drop from above
-                beetle_red.z = 0.0
-                beetle_red.vx = 0.0
-                beetle_red.vy = 0.0
-                beetle_red.vz = 0.0
-                beetle_red.rotation = math.pi  # Facing west
+
+                # Get spawn position
+                spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
+
+                if donut_mode:
+                    # Start hover phase - beetle flies from center to spawn point
+                    red_hovering = True
+                    red_hover_timer = 0.0
+                    red_hover_start_x = 0.0
+                    red_hover_start_z = 0.0
+                    red_hover_target_x = spawn_x
+                    red_hover_target_z = spawn_z
+                    red_hover_target_rot = spawn_rot
+                    # Place beetle at center, hovering
+                    beetle_red.x = 0.0
+                    beetle_red.y = HOVER_HEIGHT
+                    beetle_red.z = 0.0
+                    beetle_red.vx = 0.0
+                    beetle_red.vy = 0.0
+                    beetle_red.vz = 0.0
+                    beetle_red.rotation = 0.0
+                    beetle_red.pitch = 0.0
+                    beetle_red.roll = 0.0
+                    beetle_red.angular_velocity = 0.0  # Manual spin in hover section
+                    beetle_red.pitch_velocity = 0.0
+                    beetle_red.roll_velocity = 0.0
+                    beetle_red.active = True
+                    beetle_red.has_exploded = False
+                    beetle_red.is_falling = False
+                    beetle_red.on_ground = False
+                    print("Red beetle hovering to spawn point!")
+                else:
+                    # Normal mode - spawn directly
+                    beetle_red.x = spawn_x
+                    beetle_red.y = 15.0  # Drop from above
+                    beetle_red.z = spawn_z
+                    beetle_red.vx = 0.0
+                    beetle_red.vy = 0.0
+                    beetle_red.vz = 0.0
+                    beetle_red.rotation = spawn_rot
+                    beetle_red.pitch = 0.0
+                    beetle_red.roll = 0.0
+                    beetle_red.angular_velocity = 0.0
+                    beetle_red.pitch_velocity = 0.0
+                    beetle_red.roll_velocity = 0.0
+                    beetle_red.active = True
+                    beetle_red.has_exploded = False
+                    beetle_red.is_falling = False
+                    beetle_red.guest_death_falling = False
+                    beetle_red.on_ground = False
+                    beetle_red.forward_hold_time = 0.0
+                    beetle_red.backward_hold_time = 0.0
+                    beetle_red.forward_bonus = 0.0
+                    beetle_red.backward_bonus = 0.0
+                    beetle_red.silk_speed_mult = 1.0
+                    blue_celebrating = False
+                    blue_pulse_timer = 0.0
+                    blue_confetti_timer = 0.0
+                    print("Red beetle respawned!")
+
+        # Red beetle hover phase (flying to spawn point with goofy spinning)
+        if red_hovering:
+            red_hover_timer += PHYSICS_TIMESTEP
+            progress = min(1.0, red_hover_timer / HOVER_DURATION)
+
+            # Smooth easing (ease-in-out)
+            smooth_progress = progress * progress * (3.0 - 2.0 * progress)
+
+            # Lerp position from center to target
+            beetle_red.x = red_hover_start_x + (red_hover_target_x - red_hover_start_x) * smooth_progress
+            beetle_red.z = red_hover_start_z + (red_hover_target_z - red_hover_start_z) * smooth_progress
+            beetle_red.y = HOVER_HEIGHT  # Stay at hover height
+
+            # Goofy spinning - slow down and blend toward target rotation (opposite direction)
+            spin_factor = 1.0 - smooth_progress
+            beetle_red.rotation -= HOVER_SPIN_SPEED * spin_factor * PHYSICS_TIMESTEP
+            # Blend rotation toward target as we approach (prevents snap at end)
+            rotation_blend = smooth_progress * smooth_progress  # Accelerating blend
+            beetle_red.rotation = beetle_red.rotation * (1.0 - rotation_blend) + red_hover_target_rot * rotation_blend
+
+            # Add some wobble that fades out (different phase than blue)
+            wobble = math.sin(red_hover_timer * 10.0 + 1.5) * 0.15 * spin_factor
+            beetle_red.pitch = wobble
+            beetle_red.roll = math.cos(red_hover_timer * 8.0 + 2.0) * 0.1 * spin_factor
+
+            # Complete hover when done
+            if progress >= 1.0:
+                red_hovering = False
+                red_hover_timer = 0.0
+                # Now drop the beetle - rotation already blended, just finalize
+                beetle_red.x = red_hover_target_x
+                beetle_red.z = red_hover_target_z
+                beetle_red.y = 15.0  # Drop height
+                # Rotation is already at target from blending
                 beetle_red.pitch = 0.0
                 beetle_red.roll = 0.0
                 beetle_red.angular_velocity = 0.0
                 beetle_red.pitch_velocity = 0.0
                 beetle_red.roll_velocity = 0.0
-                beetle_red.active = True
-                beetle_red.has_exploded = False
-                beetle_red.is_falling = False
-                beetle_red.guest_death_falling = False  # Reset guest death flag
-                beetle_red.on_ground = False  # Will fall to ground
-                # Reset speed boost state to prevent carryover bugs
+                beetle_red.guest_death_falling = False
+                beetle_red.on_ground = False
+                # Reset speed boost state
                 beetle_red.forward_hold_time = 0.0
                 beetle_red.backward_hold_time = 0.0
                 beetle_red.forward_bonus = 0.0
@@ -14843,11 +15085,11 @@ try:
         _physics_timing['respawn_timers'] += (_t_respawn_end - _t_death_end) * 1000
 
         # Floor collision - prevent penetration by pushing beetles upward
-        # Don't check floor collision if beetle is falling
+        # Don't check floor collision if beetle is falling or hovering
         # CPU OPTIMIZATION: Cache floor heights to skip kernel calls if entity hasn't moved much
         floor_y_blue = -1000.0
         floor_y_red = -1000.0
-        if beetle_blue.active and not beetle_blue.is_falling:
+        if beetle_blue.active and not beetle_blue.is_falling and not blue_hovering:
             # Check if we can reuse cached floor height
             cache_x, cache_z, cache_y = floor_cache_blue
             if cache_x is not None:
@@ -14886,7 +15128,7 @@ try:
                 elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
                     beetle_blue.on_ground = True
 
-        if beetle_red.active and not beetle_red.is_falling:
+        if beetle_red.active and not beetle_red.is_falling and not red_hovering:
             # Check if we can reuse cached floor height
             cache_x, cache_z, cache_y = floor_cache_red
             if cache_x is not None:
@@ -15013,9 +15255,12 @@ try:
         _t_floor_end = time.perf_counter()
         _physics_timing['floor_collision'] += (_t_floor_end - _t_respawn_end) * 1000
 
-        # Beetle collision (voxel-perfect) - only if both beetles are active and neither is falling
+        # Beetle collision (voxel-perfect) - only if both beetles are active, not falling, and not hovering
         # Skip first 30 frames to let geometry fully initialize (prevents startup skipping)
-        if beetle_blue.active and beetle_red.active and not beetle_blue.is_falling and not beetle_red.is_falling and physics_frame > 30:
+        if (beetle_blue.active and beetle_red.active and
+            not beetle_blue.is_falling and not beetle_red.is_falling and
+            not blue_hovering and not red_hovering and
+            physics_frame > 30):
             beetle_collision(beetle_blue, beetle_red, physics_params)
 
         # === BEETLE COLLISION TIMING END ===
@@ -16610,63 +16855,67 @@ try:
             ball_status = "Ball: ON (host controls)" if beetle_ball.active else "Ball: OFF (host controls)"
             window.GUI.text(ball_status)
         else:
-            ball_button_text = "STOP BEETLE BALL" if beetle_ball.active else "PLAY BEETLE BALL"
-            if window.GUI.button(ball_button_text):
-                if beetle_ball.active:
-                    # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
-                    if ball_last_rendered[None] == 1:
-                        num_voxels = ball_cache_size[None]
-                        if num_voxels > 0:
-                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                        ball_last_rendered[None] = 0
-                    else:
-                        clear_ball()  # Fallback to full clear if ball position unknown
-                    simulation.clear_bowl_perimeter()
-                    # Rebuild floor height cache without the ice bowl
-                    build_floor_height_cache()
-                    # Reset scores when leaving ball mode
-                    blue_score = 0
-                    red_score = 0
-                beetle_ball.active = not beetle_ball.active
-                if beetle_ball.active:
-                    # Initialize ball cache for assembly animation if not already done
-                    if not ball_cache_initialized:
-                        init_ball_cache(beetle_ball.radius)
-                        ball_cache_initialized = True
-                    # Reset ball to center when enabling
-                    beetle_ball.x = 0.0
-                    beetle_ball.y = 28.0  # Drop from higher than beetles
-                    beetle_ball.z = 0.0
-                    beetle_ball.vx = 0.0
-                    beetle_ball.vy = 0.0
-                    beetle_ball.vz = 0.0
-                    beetle_ball.rotation = 0.0
-                    beetle_ball.angular_velocity = 0.0
-                    beetle_ball.pitch = 0.0
-                    beetle_ball.pitch_velocity = 0.0
-                    beetle_ball.roll = 0.0
-                    beetle_ball.roll_velocity = 0.0
-                    # Reset prev state to avoid interpolation jump
-                    beetle_ball.prev_x = beetle_ball.x
-                    beetle_ball.prev_y = beetle_ball.y
-                    beetle_ball.prev_z = beetle_ball.z
-                    beetle_ball.prev_rotation = beetle_ball.rotation
-                    beetle_ball.prev_pitch = beetle_ball.pitch
-                    beetle_ball.prev_roll = beetle_ball.roll
-                    # Reset scores and flags
-                    blue_score = 0
-                    red_score = 0
-                    ball_scored_this_fall = False
-                    ball_has_exploded = False
-                    ball_explosion_delay = 0.0
-                    ball_explosion_timer = 0.0
-                    # Render the bowl perimeter for ball mode (with goal pit cutouts)
-                    simulation.render_bowl_perimeter()
-                    # Rebuild floor height cache to include the ice bowl
-                    build_floor_height_cache()
-                # Sync to guest if we're the host
-                if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active)
+            # Can't activate ball mode while donut mode is on
+            if donut_mode and not beetle_ball.active:
+                window.GUI.text("Ball: OFF (disable Donut first)")
+            else:
+                ball_button_text = "STOP BEETLE BALL" if beetle_ball.active else "PLAY BEETLE BALL"
+                if window.GUI.button(ball_button_text):
+                    if beetle_ball.active:
+                        # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()  # Fallback to full clear if ball position unknown
+                        simulation.clear_bowl_perimeter()
+                        # Rebuild floor height cache without the ice bowl
+                        build_floor_height_cache()
+                        # Reset scores when leaving ball mode
+                        blue_score = 0
+                        red_score = 0
+                    beetle_ball.active = not beetle_ball.active
+                    if beetle_ball.active:
+                        # Initialize ball cache for assembly animation if not already done
+                        if not ball_cache_initialized:
+                            init_ball_cache(beetle_ball.radius)
+                            ball_cache_initialized = True
+                        # Reset ball to center when enabling
+                        beetle_ball.x = 0.0
+                        beetle_ball.y = 28.0  # Drop from higher than beetles
+                        beetle_ball.z = 0.0
+                        beetle_ball.vx = 0.0
+                        beetle_ball.vy = 0.0
+                        beetle_ball.vz = 0.0
+                        beetle_ball.rotation = 0.0
+                        beetle_ball.angular_velocity = 0.0
+                        beetle_ball.pitch = 0.0
+                        beetle_ball.pitch_velocity = 0.0
+                        beetle_ball.roll = 0.0
+                        beetle_ball.roll_velocity = 0.0
+                        # Reset prev state to avoid interpolation jump
+                        beetle_ball.prev_x = beetle_ball.x
+                        beetle_ball.prev_y = beetle_ball.y
+                        beetle_ball.prev_z = beetle_ball.z
+                        beetle_ball.prev_rotation = beetle_ball.rotation
+                        beetle_ball.prev_pitch = beetle_ball.pitch
+                        beetle_ball.prev_roll = beetle_ball.roll
+                        # Reset scores and flags
+                        blue_score = 0
+                        red_score = 0
+                        ball_scored_this_fall = False
+                        ball_has_exploded = False
+                        ball_explosion_delay = 0.0
+                        ball_explosion_timer = 0.0
+                        # Render the bowl perimeter for ball mode (with goal pit cutouts)
+                        simulation.render_bowl_perimeter()
+                        # Rebuild floor height cache to include the ice bowl
+                        build_floor_height_cache()
+                    # Sync to guest if we're the host
+                    if network_manager and network_manager.is_host:
+                        network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode)
 
         cam_button_text = "CAMERA MOVE: ON" if auto_follow_enabled else "CAMERA MOVE: OFF"
         if window.GUI.button(cam_button_text):
@@ -16677,6 +16926,36 @@ try:
         if beetle_ball.active:
             # Display score
             window.GUI.text(f"SCORE: B1 {blue_score} - {red_score} B2")
+
+        # === DONUT ARENA MODE ===
+        window.GUI.text("")
+        window.GUI.text("=== DONUT ARENA (PIT IN MIDDLE) ===")
+
+        if is_online_guest:
+            # Guest sees donut state but can't toggle
+            donut_status = "Donut: ON (host controls)" if donut_mode else "Donut: OFF (host controls)"
+            window.GUI.text(donut_status)
+        else:
+            # Can't activate donut mode while ball mode is on
+            if beetle_ball.active and not donut_mode:
+                window.GUI.text("Donut: OFF (disable Ball first)")
+            else:
+                donut_button_text = "DISABLE DONUT ARENA" if donut_mode else "ENABLE DONUT ARENA"
+                if window.GUI.button(donut_button_text):
+                    donut_mode = not donut_mode
+                    if donut_mode:
+                        # Switch to donut arena
+                        simulation.init_donut_arena()
+                        build_floor_height_cache()
+                        print("DONUT ARENA ENABLED - watch the center pit!")
+                    else:
+                        # Switch back to normal arena
+                        simulation.init_beetle_arena()
+                        build_floor_height_cache()
+                        print("Normal arena restored")
+                    # Sync to guest if we're the host
+                    if network_manager and network_manager.is_host:
+                        network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode)
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:

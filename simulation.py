@@ -548,6 +548,38 @@ def init_beetle_arena():
     print(f"Two beetles placed: blue (center-west) and red (center-east)")
 
 @ti.kernel
+def init_donut_arena():
+    """
+    DONUT ARENA - Circular fighting pit with hole in the middle
+    """
+    # Clear everything first
+    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    # Arena center (updated for 128 grid)
+    center_x = 64
+    center_z = 64
+
+    # Arena dimensions
+    arena_radius = 32
+    inner_radius = 10  # Hole in the middle
+    floor_y_offset = 33  # Offset to match RENDER_Y_OFFSET in beetle_physics.py
+
+    # Build donut floor - ring shape with hole in middle
+    for i in range(center_x - arena_radius - 5, center_x + arena_radius + 5):
+        for k in range(center_z - arena_radius - 5, center_z + arena_radius + 5):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+            dist = ti.sqrt(dx * dx + dz * dz)
+
+            # Donut: outside inner radius AND inside outer radius
+            if dist <= arena_radius and dist > inner_radius:
+                voxel_type[i, floor_y_offset, k] = CONCRETE  # Floor at offset height
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY  # Clear space above floor
+
+    print(f"DONUT ARENA constructed - outer radius {arena_radius}m, inner hole {inner_radius}m")
+
+@ti.kernel
 def render_bowl_perimeter():
     """
     Render slippery bowl perimeter around arena (for ball mode)

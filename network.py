@@ -565,16 +565,17 @@ class NetworkManager:
         type_str = "death" if score_type == 0 else "ball goal"
         print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str}) at ({death_x:.1f}, {death_z:.1f})")
 
-    def send_game_options(self, referee_enabled, ball_active):
+    def send_game_options(self, referee_enabled, ball_active, donut_mode=False):
         """
         Host sends game options to guest.
-        Packet format: [type:1][referee:1][ball:1] = 3 bytes
+        Packet format: [type:1][referee:1][ball:1][donut:1] = 4 bytes
         """
         if not self.is_host or not self.connected:
             return
-        data = struct.pack('>BBB', MSG_GAME_OPTIONS,
+        data = struct.pack('>BBBB', MSG_GAME_OPTIONS,
                           1 if referee_enabled else 0,
-                          1 if ball_active else 0)
+                          1 if ball_active else 0,
+                          1 if donut_mode else 0)
         self._send_packet(data, reliable=True)
 
     def send_ball_explode(self, pos_x, pos_y, pos_z):
@@ -944,13 +945,14 @@ class NetworkManager:
 
         elif msg_type == MSG_GAME_OPTIONS:
             # Host sends game options (guest receives)
-            if len(data) >= 3 and not self.is_host:
-                _, referee_enabled, ball_active = struct.unpack('>BBB', data[:3])
+            if len(data) >= 4 and not self.is_host:
+                _, referee_enabled, ball_active, donut_mode = struct.unpack('>BBBB', data[:4])
                 self.pending_game_options = {
                     'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1
+                    'ball_active': ball_active == 1,
+                    'donut_mode': donut_mode == 1
                 }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}")
+                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}")
 
         elif msg_type == MSG_RECONNECT_REQUEST:
             # Guest is reconnecting and requesting full state (host receives)
