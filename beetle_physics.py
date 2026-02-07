@@ -1688,7 +1688,7 @@ ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
 donut_mode = False
 
 # Donut arena constants
-DONUT_INNER_RADIUS = 10  # Must match simulation.py
+DONUT_INNER_RADIUS = 11  # Must match simulation.py
 DONUT_OUTER_RADIUS = 32  # Arena radius
 
 def get_spawn_position(for_blue=True, is_initial=False):
@@ -4945,6 +4945,10 @@ collision_spatial_hash = ti.field(dtype=ti.i32, shape=(128, 128))
 edge_tipping_vy = ti.field(ti.f32, shape=())  # Downward velocity to apply
 edge_tipping_pitch_vel = ti.field(ti.f32, shape=())  # Pitch angular velocity
 edge_tipping_roll_vel = ti.field(ti.f32, shape=())  # Roll angular velocity
+
+# Donut mode state for GPU kernels (inner edge tipping)
+donut_mode_active = ti.field(ti.i32, shape=())  # 1 if donut mode, 0 otherwise
+DONUT_INNER_EDGE_RADIUS = 11.0  # Inner pit radius for tipping detection
 
 # Dirty voxel tracking for efficient clearing
 # Instead of scanning 250K voxels, track only the ~600 voxels we actually place
@@ -8946,7 +8950,12 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
 
                         dist_from_center = ti.sqrt((world_x_v - arena_center_x)**2 + (world_z_v - arena_center_z)**2)
 
-                        if dist_from_center > ARENA_EDGE_RADIUS:
+                        # Check outer edge OR inner edge (donut pit)
+                        is_over_edge = dist_from_center > ARENA_EDGE_RADIUS
+                        if donut_mode_active[None] == 1 and dist_from_center < DONUT_INNER_EDGE_RADIUS:
+                            is_over_edge = 1
+
+                        if is_over_edge:
                             over_edge_count += 1
                             lever_x = world_x_v - cog_x
                             lever_z = world_z_v - cog_z
@@ -14536,6 +14545,7 @@ try:
                 # Apply donut mode state
                 if opts.get('donut_mode', False) != donut_mode:
                     donut_mode = opts.get('donut_mode', False)
+                    donut_mode_active[None] = 1 if donut_mode else 0
                     if donut_mode:
                         simulation.init_donut_arena()
                         build_floor_height_cache()
@@ -16943,6 +16953,7 @@ try:
                 donut_button_text = "DISABLE DONUT ARENA" if donut_mode else "ENABLE DONUT ARENA"
                 if window.GUI.button(donut_button_text):
                     donut_mode = not donut_mode
+                    donut_mode_active[None] = 1 if donut_mode else 0
                     if donut_mode:
                         # Switch to donut arena
                         simulation.init_donut_arena()
