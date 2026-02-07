@@ -580,6 +580,41 @@ def init_donut_arena():
     print(f"DONUT ARENA constructed - outer radius {arena_radius}m, inner hole {inner_radius}m")
 
 @ti.kernel
+def init_x_stage_arena():
+    """
+    X STAGE ARENA - Circle with 4 corner wedges cut out (plus shape)
+    Arms extend in cardinal directions (N/S/E/W)
+    Beetles fall off if they walk into the cut-out corner wedges
+    """
+    # Clear everything first
+    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    center_x = 64
+    center_z = 64
+    arena_radius = 32
+    floor_y_offset = 33
+    arm_half_width = 12  # Width of each arm (24 voxels total, covers center well)
+
+    # Build plus-shaped floor
+    for i in range(center_x - arena_radius - 5, center_x + arena_radius + 5):
+        for k in range(center_z - arena_radius - 5, center_z + arena_radius + 5):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+            dist = ti.sqrt(dx * dx + dz * dz)
+
+            # Check if within circle AND within one of the 4 arms
+            # Arms extend in cardinal directions (N/S/E/W)
+            in_ns_arm = abs(dx) <= arm_half_width  # North-South arm (vertical)
+            in_ew_arm = abs(dz) <= arm_half_width  # East-West arm (horizontal)
+
+            if dist <= arena_radius and (in_ns_arm or in_ew_arm):
+                voxel_type[i, floor_y_offset, k] = CONCRETE
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY  # Clear space above floor
+
+    print(f"X STAGE ARENA constructed - plus shape with {arm_half_width * 2} voxel wide arms")
+
+@ti.kernel
 def render_bowl_perimeter():
     """
     Render slippery bowl perimeter around arena (for ball mode)

@@ -1382,7 +1382,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score, donut_mode
+    global blue_score, red_score, donut_mode, x_stage_mode
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1687,9 +1687,15 @@ ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
 # Donut arena mode (hole in the middle)
 donut_mode = False
 
+# X stage arena mode (plus shape with corners cut out)
+x_stage_mode = False
+
 # Donut arena constants
 DONUT_INNER_RADIUS = 11  # Must match simulation.py
 DONUT_OUTER_RADIUS = 32  # Arena radius
+
+# X stage arena constants
+X_STAGE_ARM_HALF_WIDTH = 12.0  # Half-width of each arm (must match simulation.py)
 
 def get_spawn_position(for_blue=True, is_initial=False):
     """Get a valid spawn position based on current arena mode.
@@ -4949,6 +4955,10 @@ edge_tipping_roll_vel = ti.field(ti.f32, shape=())  # Roll angular velocity
 # Donut mode state for GPU kernels (inner edge tipping)
 donut_mode_active = ti.field(ti.i32, shape=())  # 1 if donut mode, 0 otherwise
 DONUT_INNER_EDGE_RADIUS = 11.0  # Inner pit radius for tipping detection
+
+# X stage mode state for GPU kernels (corner tipping)
+x_stage_mode_active = ti.field(ti.i32, shape=())  # 1 if x stage mode, 0 otherwise
+X_STAGE_ARM_HALF_WIDTH_GPU = 12.0  # Half-width of each arm for edge detection
 
 # Dirty voxel tracking for efficient clearing
 # Instead of scanning 250K voxels, track only the ~600 voxels we actually place
@@ -8950,10 +8960,19 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
 
                         dist_from_center = ti.sqrt((world_x_v - arena_center_x)**2 + (world_z_v - arena_center_z)**2)
 
-                        # Check outer edge OR inner edge (donut pit)
+                        # Check outer edge OR inner edge (donut pit) OR corner (X stage)
                         is_over_edge = dist_from_center > ARENA_EDGE_RADIUS
                         if donut_mode_active[None] == 1 and dist_from_center < DONUT_INNER_EDGE_RADIUS:
                             is_over_edge = 1
+                        # X stage: check if in corner (not in N/S or E/W arm)
+                        if x_stage_mode_active[None] == 1:
+                            rel_x = world_x_v - arena_center_x
+                            rel_z = world_z_v - arena_center_z
+                            in_ns_arm = ti.abs(rel_x) <= X_STAGE_ARM_HALF_WIDTH_GPU
+                            in_ew_arm = ti.abs(rel_z) <= X_STAGE_ARM_HALF_WIDTH_GPU
+                            # In corner if within arena radius but NOT in either arm
+                            if dist_from_center <= ARENA_EDGE_RADIUS and not in_ns_arm and not in_ew_arm:
+                                is_over_edge = 1
 
                         if is_over_edge:
                             over_edge_count += 1
@@ -12807,6 +12826,13 @@ update_loading(10)  # Show full bar briefly
 # Explode loading screen and immediately show title
 # (explosion particles will render naturally during title screen loop)
 explode_loading_screen()
+
+# Warm up arena mode kernels (after explosion so loading text isn't cleared early)
+# These clear the voxel grid, so must happen after explode but before title setup
+simulation.init_donut_arena()
+simulation.init_x_stage_arena()
+simulation.init_beetle_arena()  # Restore normal arena
+
 setup_title_screen()
 
 print("All kernels warmed up (pre-compiled)")
@@ -14551,9 +14577,26 @@ try:
                         build_floor_height_cache()
                         print("DONUT ARENA ENABLED (from host)")
                     else:
-                        simulation.init_beetle_arena()
+                        # Only restore normal if x_stage isn't on
+                        if not opts.get('x_stage_mode', False):
+                            simulation.init_beetle_arena()
+                            build_floor_height_cache()
+                            print("Normal arena restored (from host)")
+
+                # Apply x_stage mode state
+                if opts.get('x_stage_mode', False) != x_stage_mode:
+                    x_stage_mode = opts.get('x_stage_mode', False)
+                    x_stage_mode_active[None] = 1 if x_stage_mode else 0
+                    if x_stage_mode:
+                        simulation.init_x_stage_arena()
                         build_floor_height_cache()
-                        print("Normal arena restored (from host)")
+                        print("X STAGE ARENA ENABLED (from host)")
+                    else:
+                        # Only restore normal if donut isn't on
+                        if not opts.get('donut_mode', False):
+                            simulation.init_beetle_arena()
+                            build_floor_height_cache()
+                            print("Normal arena restored (from host)")
 
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
@@ -16856,76 +16899,160 @@ try:
     # Ball controls (beetle soccer) - skip during title screen
     if not gui_skip_content:
         window.GUI.text("")
-        window.GUI.text("=== BEETLE BALL (SOCCER MODE) ===")
+        window.GUI.text("=== ARENA MODES ===")
 
-        # Ball toggle button (only host can toggle in online mode)
+        # Mode toggle buttons (only host can toggle in online mode)
         is_online_guest = game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host
         if is_online_guest:
-            # Guest sees ball state but can't toggle
-            ball_status = "Ball: ON (host controls)" if beetle_ball.active else "Ball: OFF (host controls)"
-            window.GUI.text(ball_status)
+            # Guest sees mode states but can't toggle
+            current_mode = "Normal"
+            if beetle_ball.active:
+                current_mode = "Ball"
+            elif donut_mode:
+                current_mode = "Donut"
+            elif x_stage_mode:
+                current_mode = "X Stage"
+            window.GUI.text(f"Arena: {current_mode} (host controls)")
         else:
-            # Can't activate ball mode while donut mode is on
-            if donut_mode and not beetle_ball.active:
-                window.GUI.text("Ball: OFF (disable Donut first)")
-            else:
-                ball_button_text = "STOP BEETLE BALL" if beetle_ball.active else "PLAY BEETLE BALL"
-                if window.GUI.button(ball_button_text):
+            # === BALL MODE ===
+            ball_button_text = "BALL: ON" if beetle_ball.active else "BALL: OFF"
+            if window.GUI.button(ball_button_text):
+                if beetle_ball.active:
+                    # Disabling ball - clear voxels and bowl perimeter
+                    if ball_last_rendered[None] == 1:
+                        num_voxels = ball_cache_size[None]
+                        if num_voxels > 0:
+                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                        ball_last_rendered[None] = 0
+                    else:
+                        clear_ball()
+                    simulation.clear_bowl_perimeter()
+                    blue_score = 0
+                    red_score = 0
+                    beetle_ball.active = False
+                    # Restore appropriate arena (normal, donut, or x_stage)
+                    if donut_mode:
+                        simulation.init_donut_arena()
+                    elif x_stage_mode:
+                        simulation.init_x_stage_arena()
+                    else:
+                        simulation.init_beetle_arena()
+                    build_floor_height_cache()
+                else:
+                    # Enabling ball - disable other arena modes first
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    # Initialize ball
+                    if not ball_cache_initialized:
+                        init_ball_cache(beetle_ball.radius)
+                        ball_cache_initialized = True
+                    beetle_ball.x = 0.0
+                    beetle_ball.y = 28.0
+                    beetle_ball.z = 0.0
+                    beetle_ball.vx = 0.0
+                    beetle_ball.vy = 0.0
+                    beetle_ball.vz = 0.0
+                    beetle_ball.rotation = 0.0
+                    beetle_ball.angular_velocity = 0.0
+                    beetle_ball.pitch = 0.0
+                    beetle_ball.pitch_velocity = 0.0
+                    beetle_ball.roll = 0.0
+                    beetle_ball.roll_velocity = 0.0
+                    beetle_ball.prev_x = beetle_ball.x
+                    beetle_ball.prev_y = beetle_ball.y
+                    beetle_ball.prev_z = beetle_ball.z
+                    beetle_ball.prev_rotation = beetle_ball.rotation
+                    beetle_ball.prev_pitch = beetle_ball.pitch
+                    beetle_ball.prev_roll = beetle_ball.roll
+                    blue_score = 0
+                    red_score = 0
+                    ball_scored_this_fall = False
+                    ball_has_exploded = False
+                    ball_explosion_delay = 0.0
+                    ball_explosion_timer = 0.0
+                    beetle_ball.active = True
+                    simulation.init_beetle_arena()
+                    simulation.render_bowl_perimeter()
+                    build_floor_height_cache()
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode)
+
+            # === DONUT MODE ===
+            donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
+            if window.GUI.button(donut_button_text):
+                if donut_mode:
+                    # Disabling donut
+                    donut_mode = False
+                    donut_mode_active[None] = 0
+                    simulation.init_beetle_arena()
+                    build_floor_height_cache()
+                    print("Normal arena restored")
+                else:
+                    # Enabling donut - disable other arena modes first
                     if beetle_ball.active:
-                        # Disabling ball - clear voxels and bowl perimeter (use fast clear if ball was rendered)
                         if ball_last_rendered[None] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
                                 clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
                             ball_last_rendered[None] = 0
                         else:
-                            clear_ball()  # Fallback to full clear if ball position unknown
+                            clear_ball()
                         simulation.clear_bowl_perimeter()
-                        # Rebuild floor height cache without the ice bowl
-                        build_floor_height_cache()
-                        # Reset scores when leaving ball mode
+                        beetle_ball.active = False
                         blue_score = 0
                         red_score = 0
-                    beetle_ball.active = not beetle_ball.active
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    donut_mode = True
+                    donut_mode_active[None] = 1
+                    simulation.init_donut_arena()
+                    build_floor_height_cache()
+                    print("DONUT ARENA ENABLED - watch the center pit!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode)
+
+            # === X STAGE MODE ===
+            x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
+            if window.GUI.button(x_stage_button_text):
+                if x_stage_mode:
+                    # Disabling x stage
+                    x_stage_mode = False
+                    x_stage_mode_active[None] = 0
+                    simulation.init_beetle_arena()
+                    build_floor_height_cache()
+                    print("Normal arena restored")
+                else:
+                    # Enabling x stage - disable other arena modes first
                     if beetle_ball.active:
-                        # Initialize ball cache for assembly animation if not already done
-                        if not ball_cache_initialized:
-                            init_ball_cache(beetle_ball.radius)
-                            ball_cache_initialized = True
-                        # Reset ball to center when enabling
-                        beetle_ball.x = 0.0
-                        beetle_ball.y = 28.0  # Drop from higher than beetles
-                        beetle_ball.z = 0.0
-                        beetle_ball.vx = 0.0
-                        beetle_ball.vy = 0.0
-                        beetle_ball.vz = 0.0
-                        beetle_ball.rotation = 0.0
-                        beetle_ball.angular_velocity = 0.0
-                        beetle_ball.pitch = 0.0
-                        beetle_ball.pitch_velocity = 0.0
-                        beetle_ball.roll = 0.0
-                        beetle_ball.roll_velocity = 0.0
-                        # Reset prev state to avoid interpolation jump
-                        beetle_ball.prev_x = beetle_ball.x
-                        beetle_ball.prev_y = beetle_ball.y
-                        beetle_ball.prev_z = beetle_ball.z
-                        beetle_ball.prev_rotation = beetle_ball.rotation
-                        beetle_ball.prev_pitch = beetle_ball.pitch
-                        beetle_ball.prev_roll = beetle_ball.roll
-                        # Reset scores and flags
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        beetle_ball.active = False
                         blue_score = 0
                         red_score = 0
-                        ball_scored_this_fall = False
-                        ball_has_exploded = False
-                        ball_explosion_delay = 0.0
-                        ball_explosion_timer = 0.0
-                        # Render the bowl perimeter for ball mode (with goal pit cutouts)
-                        simulation.render_bowl_perimeter()
-                        # Rebuild floor height cache to include the ice bowl
-                        build_floor_height_cache()
-                    # Sync to guest if we're the host
-                    if network_manager and network_manager.is_host:
-                        network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode)
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    x_stage_mode = True
+                    x_stage_mode_active[None] = 1
+                    simulation.init_x_stage_arena()
+                    build_floor_height_cache()
+                    print("X STAGE ARENA ENABLED - watch the corners!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode)
 
         cam_button_text = "CAMERA MOVE: ON" if auto_follow_enabled else "CAMERA MOVE: OFF"
         if window.GUI.button(cam_button_text):
@@ -16936,37 +17063,6 @@ try:
         if beetle_ball.active:
             # Display score
             window.GUI.text(f"SCORE: B1 {blue_score} - {red_score} B2")
-
-        # === DONUT ARENA MODE ===
-        window.GUI.text("")
-        window.GUI.text("=== DONUT ARENA (PIT IN MIDDLE) ===")
-
-        if is_online_guest:
-            # Guest sees donut state but can't toggle
-            donut_status = "Donut: ON (host controls)" if donut_mode else "Donut: OFF (host controls)"
-            window.GUI.text(donut_status)
-        else:
-            # Can't activate donut mode while ball mode is on
-            if beetle_ball.active and not donut_mode:
-                window.GUI.text("Donut: OFF (disable Ball first)")
-            else:
-                donut_button_text = "DISABLE DONUT ARENA" if donut_mode else "ENABLE DONUT ARENA"
-                if window.GUI.button(donut_button_text):
-                    donut_mode = not donut_mode
-                    donut_mode_active[None] = 1 if donut_mode else 0
-                    if donut_mode:
-                        # Switch to donut arena
-                        simulation.init_donut_arena()
-                        build_floor_height_cache()
-                        print("DONUT ARENA ENABLED - watch the center pit!")
-                    else:
-                        # Switch back to normal arena
-                        simulation.init_beetle_arena()
-                        build_floor_height_cache()
-                        print("Normal arena restored")
-                    # Sync to guest if we're the host
-                    if network_manager and network_manager.is_host:
-                        network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode)
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:
