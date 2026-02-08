@@ -9472,10 +9472,11 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
 def spawn_arena_transition_ring(ring_radius: ti.f32, ring_width: ti.f32, num_particles: ti.i32):
     """Spawn debris particles in a ring pattern for arena transition effect.
     Deterministic based on ring_radius for network sync."""
-    # Arena floor color (brownish-gray concrete)
-    color_r = 0.55
-    color_g = 0.50
-    color_b = 0.45
+    # Use board color with brightness boost for better visibility
+    board_col = simulation.board_color[None]
+    color_r = board_col[0] * 1.3
+    color_g = board_col[1] * 1.3
+    color_b = board_col[2] * 1.3
 
     for i in range(num_particles):
         # Deterministic angle based on particle index
@@ -12747,6 +12748,10 @@ window.red_leg_color = (1.0, 0.5, 0.3)
 window.red_leg_tip_color = (0.3, 0.0, 0.0)
 window.red_stripe_color = (0.85, 0.65, 0.2)
 window.red_horn_tip_color = (0.4, 0.1, 0.1)
+
+# Personal visual settings (not networked - each player sees their own)
+window.background_color = (0.18, 0.40, 0.22)  # Forest green default
+window.board_color = (0.41, 0.39, 0.37)  # Brownish gray default
 
 camera = renderer.Camera()
 # Start camera at title screen position (will transition to game view on start)
@@ -16867,7 +16872,7 @@ try:
         render_base_brightness = 1.0 + (base_light_brightness - 1.0) * light_factor
         render_front_strength = front_light_strength * light_factor
 
-    canvas.set_background_color((0.18, 0.40, 0.22))  # Lighter forest green
+    canvas.set_background_color(window.background_color)
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid,
                     dynamic_lighting=dynamic_lighting_enabled,
                     spotlight_pos=render_spotlight_pos,
@@ -17459,6 +17464,21 @@ try:
                 # Sync to guest
                 if network_manager and network_manager.is_host:
                     network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
+
+        # === ARENA COLORS (personal settings, not networked) ===
+        window.GUI.text("")
+        window.GUI.text("=== ARENA COLORS ===")
+
+        # Background color picker
+        new_bg_color = window.GUI.color_edit_3("Background", window.background_color)
+        if new_bg_color != window.background_color:
+            window.background_color = new_bg_color
+
+        # Board color picker
+        new_board_color = window.GUI.color_edit_3("Board", window.board_color)
+        if new_board_color != window.board_color:
+            window.board_color = new_board_color
+            simulation.board_color[None] = ti.Vector([new_board_color[0], new_board_color[1], new_board_color[2]])
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:

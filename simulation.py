@@ -282,6 +282,10 @@ ball_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
 ball_color[None] = ti.Vector([0.65, 0.45, 0.25])  # Light brown dung color
 ball_stripe_color[None] = ti.Vector([0.35, 0.22, 0.1])  # Darker brown stripe
 
+# Arena board color (customizable, not networked)
+board_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+board_color[None] = ti.Vector([0.41, 0.39, 0.37])  # Default brownish gray
+
 # Material property functions (for physics calculations)
 @ti.func
 def get_material_hardness(voxel_type: ti.i32) -> ti.f32:

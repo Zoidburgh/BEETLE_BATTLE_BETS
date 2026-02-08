@@ -67,9 +67,9 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     if voxel_type == 1:  # STEEL
         color = ti.math.vec3(0.6, 0.65, 0.7)
 
-    # Concrete - darker harmonious gray for arena floor
+    # Concrete - customizable arena floor color
     elif voxel_type == 2:  # CONCRETE
-        color = ti.math.vec3(0.41, 0.39, 0.37)
+        color = simulation.board_color[None]
 
     # Molten voxels are bright orange (flowing metal)
     elif voxel_type == 3:  # MOLTEN
