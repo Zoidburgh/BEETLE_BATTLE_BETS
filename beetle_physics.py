@@ -1696,6 +1696,9 @@ figure8_mode = False
 # Yin-Yang arena mode (hollow ring with S-curved bridge)
 yinyang_mode = False
 
+# Hourglass arena mode (two triangles meeting at narrow waist)
+hourglass_mode = False
+
 # Arena transition effect
 arena_transition_active = False
 arena_transition_timer = 0.0
@@ -1756,6 +1759,13 @@ def get_spawn_position(for_blue=True, is_initial=False):
             return (-ring_spawn_radius, 0.0, 0.0)  # West side, face right
         else:
             return (ring_spawn_radius, 0.0, math.pi)  # East side, face left
+    elif hourglass_mode:
+        # Spawn at the wide ends of the hourglass
+        spawn_x = 25.0  # Near the tips
+        if for_blue:
+            return (-spawn_x, 0.0, 0.0)  # Left tip, face right
+        else:
+            return (spawn_x, 0.0, math.pi)  # Right tip, face left
     else:
         # Normal arena
         if is_initial:
@@ -5016,6 +5026,13 @@ YINYANG_OUTER_RADIUS_GPU = 38.0
 YINYANG_INNER_RADIUS_GPU = 26.0
 YINYANG_BRIDGE_HALF_WIDTH_GPU = 5.0
 YINYANG_CURVE_RADIUS_GPU = YINYANG_INNER_RADIUS_GPU * 0.8  # 20.8 - wider, gentler arcs
+
+# Hourglass mode state for GPU kernels
+hourglass_mode_active = ti.field(ti.i32, shape=())  # 1 if hourglass mode, 0 otherwise
+HOURGLASS_LENGTH_GPU = 32.0  # Half-length from center to tip
+HOURGLASS_WAIST_GPU = 6.0  # Half-width at the narrow center
+HOURGLASS_TIP_GPU = 24.0  # Half-width at the wide ends
+HOURGLASS_SLOPE_GPU = (HOURGLASS_TIP_GPU - HOURGLASS_WAIST_GPU) / HOURGLASS_LENGTH_GPU
 
 # Dirty voxel tracking for efficient clearing
 # Instead of scanning 250K voxels, track only the ~600 voxels we actually place
@@ -9077,6 +9094,22 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                             else:
                                 is_over_edge = 0  # Override normal arena check for yin-yang
 
+                        # Hourglass: two triangles meeting at narrow waist
+                        if hourglass_mode_active[None] == 1:
+                            rel_x = world_x_v - arena_center_x
+                            rel_z = world_z_v - arena_center_z
+                            dist_x = ti.abs(rel_x)
+                            # Check if within arena length
+                            if dist_x <= HOURGLASS_LENGTH_GPU:
+                                # Calculate allowed width at this x position
+                                allowed_width = HOURGLASS_WAIST_GPU + HOURGLASS_SLOPE_GPU * dist_x
+                                if ti.abs(rel_z) <= allowed_width:
+                                    is_over_edge = 0  # Inside hourglass
+                                else:
+                                    is_over_edge = 1  # Outside hourglass width
+                            else:
+                                is_over_edge = 1  # Beyond hourglass length
+
                         if is_over_edge:
                             over_edge_count += 1
                             lever_x = world_x_v - cog_x
@@ -9550,7 +9583,7 @@ def update_arena_transition(dt):
 
 def update_pending_arena_switch(dt):
     """Update delayed arena switch - counts down timer and executes switch."""
-    global pending_arena_switch, donut_mode, x_stage_mode, figure8_mode, yinyang_mode
+    global pending_arena_switch, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode
 
     if pending_arena_switch is None:
         return
@@ -9577,6 +9610,9 @@ def update_pending_arena_switch(dt):
         elif mode_name == 'yinyang':
             simulation.init_yinyang_arena()
             build_floor_height_cache()
+        elif mode_name == 'hourglass':
+            simulation.init_hourglass_arena()
+            build_floor_height_cache()
         elif mode_name == 'ball':
             simulation.init_beetle_arena()
             simulation.render_bowl_perimeter()
@@ -9591,6 +9627,8 @@ def update_pending_arena_switch(dt):
                 simulation.init_figure8_arena()
             elif yinyang_mode:
                 simulation.init_yinyang_arena()
+            elif hourglass_mode:
+                simulation.init_hourglass_arena()
             else:
                 simulation.init_beetle_arena()
             build_floor_height_cache()
@@ -14840,7 +14878,7 @@ try:
                         print("DONUT ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
+                        if not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -14853,7 +14891,7 @@ try:
                         print("X STAGE ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -14866,7 +14904,7 @@ try:
                         print("FIGURE 8 ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('yinyang_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -14879,7 +14917,20 @@ try:
                         print("YIN-YANG ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('hourglass_mode', False):
+                            queue_arena_switch('normal')
+                            print("Normal arena restored (from host)")
+
+                # Apply hourglass mode state
+                if opts.get('hourglass_mode', False) != hourglass_mode:
+                    hourglass_mode = opts.get('hourglass_mode', False)
+                    hourglass_mode_active[None] = 1 if hourglass_mode else 0
+                    if hourglass_mode:
+                        queue_arena_switch('hourglass')
+                        print("HOURGLASS ARENA ENABLED (from host)")
+                    else:
+                        # Only restore normal if other modes aren't on
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -17271,6 +17322,9 @@ try:
                     if yinyang_mode:
                         yinyang_mode = False
                         yinyang_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
                     # Initialize ball
                     if not ball_cache_initialized:
                         init_ball_cache(beetle_ball.radius)
@@ -17303,7 +17357,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -17337,13 +17391,16 @@ try:
                     if yinyang_mode:
                         yinyang_mode = False
                         yinyang_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
                     donut_mode = True
                     donut_mode_active[None] = 1
                     queue_arena_switch('donut')
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -17377,13 +17434,16 @@ try:
                     if yinyang_mode:
                         yinyang_mode = False
                         yinyang_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
                     x_stage_mode = True
                     x_stage_mode_active[None] = 1
                     queue_arena_switch('x_stage')
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -17417,13 +17477,16 @@ try:
                     if yinyang_mode:
                         yinyang_mode = False
                         yinyang_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
                     figure8_mode = True
                     figure8_mode_active[None] = 1
                     queue_arena_switch('figure8')
                     print("FIGURE 8 ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -17457,13 +17520,59 @@ try:
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
                     yinyang_mode = True
                     yinyang_mode_active[None] = 1
                     queue_arena_switch('yinyang')
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+
+            # === HOURGLASS MODE ===
+            hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
+            if window.GUI.button(hourglass_button_text):
+                if hourglass_mode:
+                    # Disabling hourglass
+                    hourglass_mode = False
+                    hourglass_mode_active[None] = 0
+                    queue_arena_switch('normal')
+                    print("Normal arena restored")
+                else:
+                    # Enabling hourglass - disable other arena modes first
+                    if beetle_ball.active:
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        beetle_ball.active = False
+                        blue_score = 0
+                        red_score = 0
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
+                    hourglass_mode = True
+                    hourglass_mode_active[None] = 1
+                    queue_arena_switch('hourglass')
+                    print("HOURGLASS ARENA ENABLED - fight at the waist!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")

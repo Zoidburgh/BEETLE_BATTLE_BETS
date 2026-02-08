@@ -727,6 +727,48 @@ def init_yinyang_arena():
     print(f"YIN-YANG ARENA constructed - ring (outer {outer_radius}, inner {inner_radius}) with S-curve bridge")
 
 @ti.kernel
+def init_hourglass_arena():
+    """
+    HOURGLASS ARENA - Two triangles meeting at a narrow pinch point
+    Forces close combat at the center waist, easy to knock off at the sides
+    """
+    # Clear everything first
+    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    center_x = 64
+    center_z = 64
+    arena_length = 32  # Half-length from center to tip
+    waist_width = 6  # Half-width at the narrow center
+    tip_width = 24  # Half-width at the wide ends
+    floor_y_offset = 33
+
+    # Hourglass shape: width increases linearly from center to tips
+    # At x=0: width = waist_width
+    # At x=±arena_length: width = tip_width
+    slope = (tip_width - waist_width) / arena_length
+
+    for i in range(center_x - arena_length - 2, center_x + arena_length + 2):
+        for k in range(center_z - tip_width - 2, center_z + tip_width + 2):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+
+            # Distance from center along x-axis
+            dist_x = ti.abs(dx)
+
+            # Only within arena length
+            if dist_x <= arena_length:
+                # Calculate allowed width at this x position
+                allowed_width = waist_width + slope * dist_x
+
+                # Check if within the hourglass shape
+                if ti.abs(dz) <= allowed_width:
+                    voxel_type[i, floor_y_offset, k] = CONCRETE
+                    voxel_type[i, floor_y_offset + 1, k] = EMPTY
+
+    print(f"HOURGLASS ARENA constructed - waist {waist_width*2}, tips {tip_width*2}")
+
+@ti.kernel
 def render_bowl_perimeter():
     """
     Render slippery bowl perimeter around arena (for ball mode)
