@@ -615,6 +615,49 @@ def init_x_stage_arena():
     print(f"X STAGE ARENA constructed - plus shape with {arm_half_width * 2} voxel wide arms")
 
 @ti.kernel
+def init_figure8_arena():
+    """
+    FIGURE 8 ARENA - Two circles connected by a narrow bridge
+    Longer than normal arena, beetles can fall off edges or into gaps
+    """
+    # Clear everything first
+    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    # Two circles connected by bridge
+    # Left circle: center (42, 64), radius 20
+    # Right circle: center (86, 64), radius 20
+    # Bridge: rectangle connecting them
+    left_center_x = 42
+    right_center_x = 86
+    center_z = 64
+    circle_radius = 20
+    bridge_half_width = 6  # Bridge is 12 voxels wide
+    floor_y_offset = 33
+
+    for i in range(10, 118):  # Extended range for larger arena
+        for k in range(30, 98):
+            dx_left = float(i - left_center_x)
+            dx_right = float(i - right_center_x)
+            dz = float(k - center_z)
+
+            dist_left = ti.sqrt(dx_left * dx_left + dz * dz)
+            dist_right = ti.sqrt(dx_right * dx_right + dz * dz)
+
+            # Check if in left circle, right circle, or bridge
+            in_left_circle = dist_left <= circle_radius
+            in_right_circle = dist_right <= circle_radius
+            # Bridge connects the two circles (between their centers, narrow strip)
+            in_bridge = (i >= left_center_x and i <= right_center_x and
+                        abs(k - center_z) <= bridge_half_width)
+
+            if in_left_circle or in_right_circle or in_bridge:
+                voxel_type[i, floor_y_offset, k] = CONCRETE
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY
+
+    print(f"FIGURE 8 ARENA constructed - two circles (radius {circle_radius}) with bridge")
+
+@ti.kernel
 def render_bowl_perimeter():
     """
     Render slippery bowl perimeter around arena (for ball mode)

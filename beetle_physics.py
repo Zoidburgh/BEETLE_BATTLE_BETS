@@ -1382,7 +1382,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score, donut_mode, x_stage_mode
+    global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1690,12 +1690,21 @@ donut_mode = False
 # X stage arena mode (plus shape with corners cut out)
 x_stage_mode = False
 
+# Figure 8 arena mode (two circles connected by bridge)
+figure8_mode = False
+
 # Donut arena constants
 DONUT_INNER_RADIUS = 11  # Must match simulation.py
 DONUT_OUTER_RADIUS = 32  # Arena radius
 
 # X stage arena constants
 X_STAGE_ARM_HALF_WIDTH = 12.0  # Half-width of each arm (must match simulation.py)
+
+# Figure 8 arena constants (must match simulation.py)
+FIGURE8_LEFT_CENTER_X = 42.0 - 64.0  # Offset from world center (-22)
+FIGURE8_RIGHT_CENTER_X = 86.0 - 64.0  # Offset from world center (+22)
+FIGURE8_CIRCLE_RADIUS = 20.0
+FIGURE8_BRIDGE_HALF_WIDTH = 6.0
 
 def get_spawn_position(for_blue=True, is_initial=False):
     """Get a valid spawn position based on current arena mode.
@@ -1713,6 +1722,12 @@ def get_spawn_position(for_blue=True, is_initial=False):
         # Face toward center (or opposite beetle)
         rotation = angle + math.pi  # Face inward
         return (x, z, rotation)
+    elif figure8_mode:
+        # Spawn at center of respective circle, facing the other circle
+        if for_blue:
+            return (FIGURE8_LEFT_CENTER_X, 0.0, 0.0)  # Left circle, face right
+        else:
+            return (FIGURE8_RIGHT_CENTER_X, 0.0, math.pi)  # Right circle, face left
     else:
         # Normal arena
         if is_initial:
@@ -4959,6 +4974,13 @@ DONUT_INNER_EDGE_RADIUS = 11.0  # Inner pit radius for tipping detection
 # X stage mode state for GPU kernels (corner tipping)
 x_stage_mode_active = ti.field(ti.i32, shape=())  # 1 if x stage mode, 0 otherwise
 X_STAGE_ARM_HALF_WIDTH_GPU = 12.0  # Half-width of each arm for edge detection
+
+# Figure 8 mode state for GPU kernels
+figure8_mode_active = ti.field(ti.i32, shape=())  # 1 if figure 8 mode, 0 otherwise
+FIGURE8_LEFT_CENTER_X_GPU = 42.0 - 64.0  # -22 (world coords)
+FIGURE8_RIGHT_CENTER_X_GPU = 86.0 - 64.0  # +22 (world coords)
+FIGURE8_CIRCLE_RADIUS_GPU = 20.0
+FIGURE8_BRIDGE_HALF_WIDTH_GPU = 6.0
 
 # Dirty voxel tracking for efficient clearing
 # Instead of scanning 250K voxels, track only the ~600 voxels we actually place
@@ -8973,6 +8995,22 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                             # In corner if within arena radius but NOT in either arm
                             if dist_from_center <= ARENA_EDGE_RADIUS and not in_ns_arm and not in_ew_arm:
                                 is_over_edge = 1
+                        # Figure 8: check if in left circle, right circle, or bridge
+                        if figure8_mode_active[None] == 1:
+                            # Distance from left and right circle centers
+                            dist_left = ti.sqrt((world_x_v - FIGURE8_LEFT_CENTER_X_GPU)**2 + (world_z_v - arena_center_z)**2)
+                            dist_right = ti.sqrt((world_x_v - FIGURE8_RIGHT_CENTER_X_GPU)**2 + (world_z_v - arena_center_z)**2)
+                            in_left = dist_left <= FIGURE8_CIRCLE_RADIUS_GPU
+                            in_right = dist_right <= FIGURE8_CIRCLE_RADIUS_GPU
+                            # Bridge: between the two circle centers, narrow strip
+                            in_bridge = (world_x_v >= FIGURE8_LEFT_CENTER_X_GPU and
+                                        world_x_v <= FIGURE8_RIGHT_CENTER_X_GPU and
+                                        ti.abs(world_z_v - arena_center_z) <= FIGURE8_BRIDGE_HALF_WIDTH_GPU)
+                            # Over edge if NOT in any valid region
+                            if not in_left and not in_right and not in_bridge:
+                                is_over_edge = 1
+                            else:
+                                is_over_edge = 0  # Override normal arena check for figure 8
 
                         if is_over_edge:
                             over_edge_count += 1
@@ -12831,6 +12869,7 @@ explode_loading_screen()
 # These clear the voxel grid, so must happen after explode but before title setup
 simulation.init_donut_arena()
 simulation.init_x_stage_arena()
+simulation.init_figure8_arena()
 simulation.init_beetle_arena()  # Restore normal arena
 
 setup_title_screen()
@@ -14577,8 +14616,8 @@ try:
                         build_floor_height_cache()
                         print("DONUT ARENA ENABLED (from host)")
                     else:
-                        # Only restore normal if x_stage isn't on
-                        if not opts.get('x_stage_mode', False):
+                        # Only restore normal if other modes aren't on
+                        if not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False):
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -14592,8 +14631,23 @@ try:
                         build_floor_height_cache()
                         print("X STAGE ARENA ENABLED (from host)")
                     else:
-                        # Only restore normal if donut isn't on
-                        if not opts.get('donut_mode', False):
+                        # Only restore normal if other modes aren't on
+                        if not opts.get('donut_mode', False) and not opts.get('figure8_mode', False):
+                            simulation.init_beetle_arena()
+                            build_floor_height_cache()
+                            print("Normal arena restored (from host)")
+
+                # Apply figure8 mode state
+                if opts.get('figure8_mode', False) != figure8_mode:
+                    figure8_mode = opts.get('figure8_mode', False)
+                    figure8_mode_active[None] = 1 if figure8_mode else 0
+                    if figure8_mode:
+                        simulation.init_figure8_arena()
+                        build_floor_height_cache()
+                        print("FIGURE 8 ARENA ENABLED (from host)")
+                    else:
+                        # Only restore normal if other modes aren't on
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False):
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -14894,7 +14948,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
 
-                if donut_mode:
+                if donut_mode or figure8_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     blue_hovering = True
                     blue_hover_timer = 0.0
@@ -15024,7 +15078,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
 
-                if donut_mode:
+                if donut_mode or figure8_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     red_hovering = True
                     red_hover_timer = 0.0
@@ -16612,10 +16666,15 @@ try:
         window.GUI.text(f"FPS: {actual_fps:3.0f}")
 
         # Fullscreen toggle button
-        fs_text = "WINDOWED" if is_fullscreen else "FULLSCREEN"
+        fs_text = "FULLSCREEN: ON" if is_fullscreen else "FULLSCREEN: OFF"
         if window.GUI.button(fs_text):
             toggle_fullscreen_windows()
 
+        # Camera follow toggle
+        cam_button_text = "CAMERA MOVE: ON" if auto_follow_enabled else "CAMERA MOVE: OFF"
+        if window.GUI.button(cam_button_text):
+            auto_follow_enabled = not auto_follow_enabled
+            print(f"Camera tracking: {'ON' if auto_follow_enabled else 'OFF'}")
 
     # === NETWORK / ONLINE PLAY SECTION ===
     if NETWORK_AVAILABLE and not gui_skip_content:
@@ -16691,7 +16750,7 @@ try:
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
                     network_manager.start_match_now()  # Send START signal to guest
-                    # Reset beetle ball mode to OFF when starting network match (prevents desync)
+                    # Reset all arena modes to normal when starting network match (prevents desync)
                     if beetle_ball.active:
                         if ball_last_rendered[None] == 1:
                             num_voxels = ball_cache_size[None]
@@ -16701,9 +16760,23 @@ try:
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
-                        build_floor_height_cache()
                         beetle_ball.active = False
                         print("[Game] Beetle ball mode disabled for network sync")
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                        print("[Game] Donut mode disabled for network sync")
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                        print("[Game] X Stage mode disabled for network sync")
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
+                        print("[Game] Figure 8 mode disabled for network sync")
+                    # Restore normal arena
+                    simulation.init_beetle_arena()
+                    build_floor_height_cache()
                     reset_match()
                     print(f"[Game] Host sent START, waiting for guest sync... Delay: 8 frames")
 
@@ -16796,7 +16869,7 @@ try:
                 input_buffer.local_player_id = 1  # Guest is red
                 input_buffer.reset()
                 local_player_id = 1  # Guest is red
-                # Reset beetle ball mode to OFF when starting network match (prevents desync)
+                # Reset all arena modes to normal when starting network match (prevents desync)
                 if beetle_ball.active:
                     if ball_last_rendered[None] == 1:
                         num_voxels = ball_cache_size[None]
@@ -16806,9 +16879,23 @@ try:
                     else:
                         clear_ball()
                     simulation.clear_bowl_perimeter()
-                    build_floor_height_cache()
                     beetle_ball.active = False
                     print("[Game] Beetle ball mode disabled for network sync")
+                if donut_mode:
+                    donut_mode = False
+                    donut_mode_active[None] = 0
+                    print("[Game] Donut mode disabled for network sync")
+                if x_stage_mode:
+                    x_stage_mode = False
+                    x_stage_mode_active[None] = 0
+                    print("[Game] X Stage mode disabled for network sync")
+                if figure8_mode:
+                    figure8_mode = False
+                    figure8_mode_active[None] = 0
+                    print("[Game] Figure 8 mode disabled for network sync")
+                # Restore normal arena
+                simulation.init_beetle_arena()
+                build_floor_height_cache()
                 reset_match()
                 # Tell host we're ready to sync
                 network_manager.send_sync_ready()
@@ -16915,7 +17002,7 @@ try:
             window.GUI.text(f"Arena: {current_mode} (host controls)")
         else:
             # === BALL MODE ===
-            ball_button_text = "BALL: ON" if beetle_ball.active else "BALL: OFF"
+            ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
             if window.GUI.button(ball_button_text):
                 if beetle_ball.active:
                     # Disabling ball - clear voxels and bowl perimeter
@@ -16930,11 +17017,13 @@ try:
                     blue_score = 0
                     red_score = 0
                     beetle_ball.active = False
-                    # Restore appropriate arena (normal, donut, or x_stage)
+                    # Restore appropriate arena (normal, donut, x_stage, or figure8)
                     if donut_mode:
                         simulation.init_donut_arena()
                     elif x_stage_mode:
                         simulation.init_x_stage_arena()
+                    elif figure8_mode:
+                        simulation.init_figure8_arena()
                     else:
                         simulation.init_beetle_arena()
                     build_floor_height_cache()
@@ -16946,6 +17035,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
                     # Initialize ball
                     if not ball_cache_initialized:
                         init_ball_cache(beetle_ball.radius)
@@ -16980,7 +17072,7 @@ try:
                     build_floor_height_cache()
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -17009,6 +17101,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
                     donut_mode = True
                     donut_mode_active[None] = 1
                     simulation.init_donut_arena()
@@ -17016,7 +17111,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -17045,6 +17140,9 @@ try:
                     if donut_mode:
                         donut_mode = False
                         donut_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
                     x_stage_mode = True
                     x_stage_mode_active[None] = 1
                     simulation.init_x_stage_arena()
@@ -17052,17 +17150,46 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode)
 
-        cam_button_text = "CAMERA MOVE: ON" if auto_follow_enabled else "CAMERA MOVE: OFF"
-        if window.GUI.button(cam_button_text):
-            auto_follow_enabled = not auto_follow_enabled
-            print(f"Camera tracking: {'ON' if auto_follow_enabled else 'OFF'}")
-
-        # Ball score display (only show when ball is enabled)
-        if beetle_ball.active:
-            # Display score
-            window.GUI.text(f"SCORE: B1 {blue_score} - {red_score} B2")
+            # === FIGURE 8 MODE ===
+            figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
+            if window.GUI.button(figure8_button_text):
+                if figure8_mode:
+                    # Disabling figure 8
+                    figure8_mode = False
+                    figure8_mode_active[None] = 0
+                    simulation.init_beetle_arena()
+                    build_floor_height_cache()
+                    print("Normal arena restored")
+                else:
+                    # Enabling figure 8 - disable other arena modes first
+                    if beetle_ball.active:
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        beetle_ball.active = False
+                        blue_score = 0
+                        red_score = 0
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    figure8_mode = True
+                    figure8_mode_active[None] = 1
+                    simulation.init_figure8_arena()
+                    build_floor_height_cache()
+                    print("FIGURE 8 ARENA ENABLED - watch the bridge!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode)
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:
