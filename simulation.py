@@ -658,6 +658,71 @@ def init_figure8_arena():
     print(f"FIGURE 8 ARENA constructed - two circles (radius {circle_radius}) with bridge")
 
 @ti.kernel
+def init_yinyang_arena():
+    """
+    YIN-YANG ARENA - Large hollow ring with S-curved bridge through middle
+    The bridge curves like a yin-yang symbol, creating interesting movement paths
+    """
+    # Clear everything first
+    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    center_x = 64
+    center_z = 64
+    outer_radius = 38  # Larger than normal arena
+    inner_radius = 26  # Large hole in middle (bigger)
+    bridge_half_width = 5  # Width of the S-curve bridge
+    floor_y_offset = 33
+
+    # The S-curve is made of two arcs:
+    # Left arc: center at (center_x - curve_radius, center_z), bulges toward +z
+    # Right arc: center at (center_x + curve_radius, center_z), bulges toward -z
+    # Larger curve_radius = gentler/wider angle curves
+    curve_radius = inner_radius * 0.8  # 20.8 - wider, gentler arcs
+
+    for i in range(center_x - outer_radius - 2, center_x + outer_radius + 2):
+        for k in range(center_z - outer_radius - 2, center_z + outer_radius + 2):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+            dist = ti.sqrt(dx * dx + dz * dz)
+
+            # Check if in the hollow ring
+            in_ring = dist <= outer_radius and dist >= inner_radius
+
+            # Check if on the S-curved bridge (only inside the hole, not extending into ring)
+            in_bridge = 0
+
+            # Only consider bridge if we're inside the inner hole
+            if dist <= inner_radius:
+                # Upper arc (z >= center, curves toward +x) - extend past center for smooth blend
+                if k >= center_z - bridge_half_width:
+                    arc_center_x = center_x
+                    arc_center_z = center_z + curve_radius
+                    arc_dx = float(i - arc_center_x)
+                    arc_dz = float(k - arc_center_z)
+                    arc_dist = ti.sqrt(arc_dx * arc_dx + arc_dz * arc_dz)
+                    # Right half, extended past center by bridge width for overlap
+                    if ti.abs(arc_dist - curve_radius) <= bridge_half_width and i >= center_x - bridge_half_width:
+                        in_bridge = 1
+
+                # Lower arc (z <= center, curves toward -x) - extend past center for smooth blend
+                if k <= center_z + bridge_half_width:
+                    arc_center_x = center_x
+                    arc_center_z = center_z - curve_radius
+                    arc_dx = float(i - arc_center_x)
+                    arc_dz = float(k - arc_center_z)
+                    arc_dist = ti.sqrt(arc_dx * arc_dx + arc_dz * arc_dz)
+                    # Left half, extended past center by bridge width for overlap
+                    if ti.abs(arc_dist - curve_radius) <= bridge_half_width and i <= center_x + bridge_half_width:
+                        in_bridge = 1
+
+            if in_ring or in_bridge == 1:
+                voxel_type[i, floor_y_offset, k] = CONCRETE
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY
+
+    print(f"YIN-YANG ARENA constructed - ring (outer {outer_radius}, inner {inner_radius}) with S-curve bridge")
+
+@ti.kernel
 def render_bowl_perimeter():
     """
     Render slippery bowl perimeter around arena (for ball mode)

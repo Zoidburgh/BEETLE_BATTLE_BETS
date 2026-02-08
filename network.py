@@ -565,19 +565,20 @@ class NetworkManager:
         type_str = "death" if score_type == 0 else "ball goal"
         print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str}) at ({death_x:.1f}, {death_z:.1f})")
 
-    def send_game_options(self, referee_enabled, ball_active, donut_mode=False, x_stage_mode=False, figure8_mode=False):
+    def send_game_options(self, referee_enabled, ball_active, donut_mode=False, x_stage_mode=False, figure8_mode=False, yinyang_mode=False):
         """
         Host sends game options to guest.
-        Packet format: [type:1][referee:1][ball:1][donut:1][x_stage:1][figure8:1] = 6 bytes
+        Packet format: [type:1][referee:1][ball:1][donut:1][x_stage:1][figure8:1][yinyang:1] = 7 bytes
         """
         if not self.is_host or not self.connected:
             return
-        data = struct.pack('>BBBBBB', MSG_GAME_OPTIONS,
+        data = struct.pack('>BBBBBBB', MSG_GAME_OPTIONS,
                           1 if referee_enabled else 0,
                           1 if ball_active else 0,
                           1 if donut_mode else 0,
                           1 if x_stage_mode else 0,
-                          1 if figure8_mode else 0)
+                          1 if figure8_mode else 0,
+                          1 if yinyang_mode else 0)
         self._send_packet(data, reliable=True)
 
     def send_ball_explode(self, pos_x, pos_y, pos_z):
@@ -947,37 +948,52 @@ class NetworkManager:
 
         elif msg_type == MSG_GAME_OPTIONS:
             # Host sends game options (guest receives)
-            if len(data) >= 6 and not self.is_host:
-                # New format with figure8
+            if len(data) >= 7 and not self.is_host:
+                # New format with yinyang
+                _, referee_enabled, ball_active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode = struct.unpack('>BBBBBBB', data[:7])
+                self.pending_game_options = {
+                    'referee_enabled': referee_enabled == 1,
+                    'ball_active': ball_active == 1,
+                    'donut_mode': donut_mode == 1,
+                    'x_stage_mode': x_stage_mode == 1,
+                    'figure8_mode': figure8_mode == 1,
+                    'yinyang_mode': yinyang_mode == 1
+                }
+                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, figure8={figure8_mode}, yinyang={yinyang_mode}")
+            elif len(data) >= 6 and not self.is_host:
+                # Backwards compatibility with 6-byte format (no yinyang)
                 _, referee_enabled, ball_active, donut_mode, x_stage_mode, figure8_mode = struct.unpack('>BBBBBB', data[:6])
                 self.pending_game_options = {
                     'referee_enabled': referee_enabled == 1,
                     'ball_active': ball_active == 1,
                     'donut_mode': donut_mode == 1,
                     'x_stage_mode': x_stage_mode == 1,
-                    'figure8_mode': figure8_mode == 1
+                    'figure8_mode': figure8_mode == 1,
+                    'yinyang_mode': False
                 }
                 print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, figure8={figure8_mode}")
             elif len(data) >= 5 and not self.is_host:
-                # Backwards compatibility with 5-byte format (no figure8)
+                # Backwards compatibility with 5-byte format (no figure8 or yinyang)
                 _, referee_enabled, ball_active, donut_mode, x_stage_mode = struct.unpack('>BBBBB', data[:5])
                 self.pending_game_options = {
                     'referee_enabled': referee_enabled == 1,
                     'ball_active': ball_active == 1,
                     'donut_mode': donut_mode == 1,
                     'x_stage_mode': x_stage_mode == 1,
-                    'figure8_mode': False
+                    'figure8_mode': False,
+                    'yinyang_mode': False
                 }
                 print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}")
             elif len(data) >= 4 and not self.is_host:
-                # Backwards compatibility with old 4-byte format (no x_stage or figure8)
+                # Backwards compatibility with old 4-byte format (no x_stage, figure8, or yinyang)
                 _, referee_enabled, ball_active, donut_mode = struct.unpack('>BBBB', data[:4])
                 self.pending_game_options = {
                     'referee_enabled': referee_enabled == 1,
                     'ball_active': ball_active == 1,
                     'donut_mode': donut_mode == 1,
                     'x_stage_mode': False,
-                    'figure8_mode': False
+                    'figure8_mode': False,
+                    'yinyang_mode': False
                 }
                 print(f"[Network] Received game options (legacy): referee={referee_enabled}, ball={ball_active}, donut={donut_mode}")
 

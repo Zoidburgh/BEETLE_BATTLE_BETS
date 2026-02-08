@@ -1382,7 +1382,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode
+    global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1693,6 +1693,9 @@ x_stage_mode = False
 # Figure 8 arena mode (two circles connected by bridge)
 figure8_mode = False
 
+# Yin-Yang arena mode (hollow ring with S-curved bridge)
+yinyang_mode = False
+
 # Donut arena constants
 DONUT_INNER_RADIUS = 11  # Must match simulation.py
 DONUT_OUTER_RADIUS = 32  # Arena radius
@@ -1705,6 +1708,12 @@ FIGURE8_LEFT_CENTER_X = 42.0 - 64.0  # Offset from world center (-22)
 FIGURE8_RIGHT_CENTER_X = 86.0 - 64.0  # Offset from world center (+22)
 FIGURE8_CIRCLE_RADIUS = 20.0
 FIGURE8_BRIDGE_HALF_WIDTH = 6.0
+
+# Yin-Yang arena constants (must match simulation.py)
+YINYANG_OUTER_RADIUS = 38.0
+YINYANG_INNER_RADIUS = 26.0
+YINYANG_BRIDGE_HALF_WIDTH = 5.0
+YINYANG_CURVE_RADIUS = YINYANG_INNER_RADIUS * 0.8  # 20.8 - wider, gentler arcs
 
 def get_spawn_position(for_blue=True, is_initial=False):
     """Get a valid spawn position based on current arena mode.
@@ -1728,6 +1737,13 @@ def get_spawn_position(for_blue=True, is_initial=False):
             return (FIGURE8_LEFT_CENTER_X, 0.0, 0.0)  # Left circle, face right
         else:
             return (FIGURE8_RIGHT_CENTER_X, 0.0, math.pi)  # Right circle, face left
+    elif yinyang_mode:
+        # Spawn on opposite sides of the ring
+        ring_spawn_radius = (YINYANG_INNER_RADIUS + YINYANG_OUTER_RADIUS) / 2  # Middle of ring
+        if for_blue:
+            return (-ring_spawn_radius, 0.0, 0.0)  # West side, face right
+        else:
+            return (ring_spawn_radius, 0.0, math.pi)  # East side, face left
     else:
         # Normal arena
         if is_initial:
@@ -4981,6 +4997,13 @@ FIGURE8_LEFT_CENTER_X_GPU = 42.0 - 64.0  # -22 (world coords)
 FIGURE8_RIGHT_CENTER_X_GPU = 86.0 - 64.0  # +22 (world coords)
 FIGURE8_CIRCLE_RADIUS_GPU = 20.0
 FIGURE8_BRIDGE_HALF_WIDTH_GPU = 6.0
+
+# Yin-Yang mode state for GPU kernels
+yinyang_mode_active = ti.field(ti.i32, shape=())  # 1 if yin-yang mode, 0 otherwise
+YINYANG_OUTER_RADIUS_GPU = 38.0
+YINYANG_INNER_RADIUS_GPU = 26.0
+YINYANG_BRIDGE_HALF_WIDTH_GPU = 5.0
+YINYANG_CURVE_RADIUS_GPU = YINYANG_INNER_RADIUS_GPU * 0.8  # 20.8 - wider, gentler arcs
 
 # Dirty voxel tracking for efficient clearing
 # Instead of scanning 250K voxels, track only the ~600 voxels we actually place
@@ -9011,6 +9034,36 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                                 is_over_edge = 1
                             else:
                                 is_over_edge = 0  # Override normal arena check for figure 8
+                        # Yin-Yang: hollow ring with S-curved bridge through middle
+                        if yinyang_mode_active[None] == 1:
+                            rel_x = world_x_v - arena_center_x
+                            rel_z = world_z_v - arena_center_z
+                            # Check if in the hollow ring
+                            in_ring = dist_from_center <= YINYANG_OUTER_RADIUS_GPU and dist_from_center >= YINYANG_INNER_RADIUS_GPU
+                            # Check if on the S-curved bridge (only inside the hole)
+                            in_bridge_yy = 0
+                            if dist_from_center <= YINYANG_INNER_RADIUS_GPU:
+                                # Upper arc - extend past center for smooth blend
+                                if rel_z >= -YINYANG_BRIDGE_HALF_WIDTH_GPU:
+                                    arc_center_z = YINYANG_CURVE_RADIUS_GPU
+                                    arc_dx = rel_x
+                                    arc_dz = rel_z - arc_center_z
+                                    arc_dist = ti.sqrt(arc_dx * arc_dx + arc_dz * arc_dz)
+                                    if ti.abs(arc_dist - YINYANG_CURVE_RADIUS_GPU) <= YINYANG_BRIDGE_HALF_WIDTH_GPU and rel_x >= -YINYANG_BRIDGE_HALF_WIDTH_GPU:
+                                        in_bridge_yy = 1
+                                # Lower arc - extend past center for smooth blend
+                                if rel_z <= YINYANG_BRIDGE_HALF_WIDTH_GPU:
+                                    arc_center_z = -YINYANG_CURVE_RADIUS_GPU
+                                    arc_dx = rel_x
+                                    arc_dz = rel_z - arc_center_z
+                                    arc_dist = ti.sqrt(arc_dx * arc_dx + arc_dz * arc_dz)
+                                    if ti.abs(arc_dist - YINYANG_CURVE_RADIUS_GPU) <= YINYANG_BRIDGE_HALF_WIDTH_GPU and rel_x <= YINYANG_BRIDGE_HALF_WIDTH_GPU:
+                                        in_bridge_yy = 1
+                            # Over edge if NOT in ring and NOT on bridge
+                            if not in_ring and in_bridge_yy == 0:
+                                is_over_edge = 1
+                            else:
+                                is_over_edge = 0  # Override normal arena check for yin-yang
 
                         if is_over_edge:
                             over_edge_count += 1
@@ -12870,6 +12923,7 @@ explode_loading_screen()
 simulation.init_donut_arena()
 simulation.init_x_stage_arena()
 simulation.init_figure8_arena()
+simulation.init_yinyang_arena()
 simulation.init_beetle_arena()  # Restore normal arena
 
 setup_title_screen()
@@ -14617,7 +14671,7 @@ try:
                         print("DONUT ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False):
+                        if not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -14632,7 +14686,7 @@ try:
                         print("X STAGE ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('figure8_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -14647,7 +14701,22 @@ try:
                         print("FIGURE 8 ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('yinyang_mode', False):
+                            simulation.init_beetle_arena()
+                            build_floor_height_cache()
+                            print("Normal arena restored (from host)")
+
+                # Apply yinyang mode state
+                if opts.get('yinyang_mode', False) != yinyang_mode:
+                    yinyang_mode = opts.get('yinyang_mode', False)
+                    yinyang_mode_active[None] = 1 if yinyang_mode else 0
+                    if yinyang_mode:
+                        simulation.init_yinyang_arena()
+                        build_floor_height_cache()
+                        print("YIN-YANG ARENA ENABLED (from host)")
+                    else:
+                        # Only restore normal if other modes aren't on
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False):
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -14948,7 +15017,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
 
-                if donut_mode or figure8_mode:
+                if donut_mode or figure8_mode or yinyang_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     blue_hovering = True
                     blue_hover_timer = 0.0
@@ -15078,7 +15147,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
 
-                if donut_mode or figure8_mode:
+                if donut_mode or figure8_mode or yinyang_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     red_hovering = True
                     red_hover_timer = 0.0
@@ -16774,6 +16843,10 @@ try:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
                         print("[Game] Figure 8 mode disabled for network sync")
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
+                        print("[Game] Yin-Yang mode disabled for network sync")
                     # Restore normal arena
                     simulation.init_beetle_arena()
                     build_floor_height_cache()
@@ -16893,6 +16966,10 @@ try:
                     figure8_mode = False
                     figure8_mode_active[None] = 0
                     print("[Game] Figure 8 mode disabled for network sync")
+                if yinyang_mode:
+                    yinyang_mode = False
+                    yinyang_mode_active[None] = 0
+                    print("[Game] Yin-Yang mode disabled for network sync")
                 # Restore normal arena
                 simulation.init_beetle_arena()
                 build_floor_height_cache()
@@ -17017,13 +17094,15 @@ try:
                     blue_score = 0
                     red_score = 0
                     beetle_ball.active = False
-                    # Restore appropriate arena (normal, donut, x_stage, or figure8)
+                    # Restore appropriate arena (normal, donut, x_stage, figure8, or yinyang)
                     if donut_mode:
                         simulation.init_donut_arena()
                     elif x_stage_mode:
                         simulation.init_x_stage_arena()
                     elif figure8_mode:
                         simulation.init_figure8_arena()
+                    elif yinyang_mode:
+                        simulation.init_yinyang_arena()
                     else:
                         simulation.init_beetle_arena()
                     build_floor_height_cache()
@@ -17038,6 +17117,9 @@ try:
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
                     # Initialize ball
                     if not ball_cache_initialized:
                         init_ball_cache(beetle_ball.radius)
@@ -17072,7 +17154,7 @@ try:
                     build_floor_height_cache()
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -17104,6 +17186,9 @@ try:
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
                     donut_mode = True
                     donut_mode_active[None] = 1
                     simulation.init_donut_arena()
@@ -17111,7 +17196,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -17143,6 +17228,9 @@ try:
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
                     x_stage_mode = True
                     x_stage_mode_active[None] = 1
                     simulation.init_x_stage_arena()
@@ -17150,7 +17238,7 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -17182,6 +17270,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
                     figure8_mode = True
                     figure8_mode_active[None] = 1
                     simulation.init_figure8_arena()
@@ -17189,7 +17280,49 @@ try:
                     print("FIGURE 8 ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
+
+            # === YIN-YANG MODE ===
+            yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
+            if window.GUI.button(yinyang_button_text):
+                if yinyang_mode:
+                    # Disabling yin-yang
+                    yinyang_mode = False
+                    yinyang_mode_active[None] = 0
+                    simulation.init_beetle_arena()
+                    build_floor_height_cache()
+                    print("Normal arena restored")
+                else:
+                    # Enabling yin-yang - disable other arena modes first
+                    if beetle_ball.active:
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        beetle_ball.active = False
+                        blue_score = 0
+                        red_score = 0
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
+                    yinyang_mode = True
+                    yinyang_mode_active[None] = 1
+                    simulation.init_yinyang_arena()
+                    build_floor_height_cache()
+                    print("YIN-YANG ARENA ENABLED - mind the curves!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:
