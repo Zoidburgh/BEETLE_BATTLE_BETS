@@ -17483,7 +17483,12 @@ try:
         # Reset to defaults button (only show if colors changed)
         default_bg = (0.18, 0.40, 0.22)
         default_board = (0.41, 0.39, 0.37)
-        if window.background_color != default_bg or window.board_color != default_board:
+        # Use tolerance for float comparison
+        def colors_match(c1, c2, tol=0.001):
+            return abs(c1[0] - c2[0]) < tol and abs(c1[1] - c2[1]) < tol and abs(c1[2] - c2[2]) < tol
+        bg_is_default = colors_match(window.background_color, default_bg)
+        board_is_default = colors_match(window.board_color, default_board)
+        if not bg_is_default or not board_is_default:
             if window.GUI.button("DEFAULT COLORS"):
                 window.background_color = default_bg
                 window.board_color = default_board
