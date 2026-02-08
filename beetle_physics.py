@@ -1704,6 +1704,10 @@ arena_transition_pending = False  # Flag to trigger transition at frame start (b
 ARENA_TRANSITION_DURATION = 0.3  # seconds
 ARENA_TRANSITION_MAX_RADIUS = 45.0  # expands outward
 
+# Delayed arena mode switch (animation starts immediately, arena switches after delay)
+pending_arena_switch = None  # Tuple: (mode_name, delay_remaining) or None
+ARENA_SWITCH_DELAY = 0.1  # seconds - delay before actual arena geometry changes
+
 # Donut arena constants
 DONUT_INNER_RADIUS = 11  # Must match simulation.py
 DONUT_OUTER_RADIUS = 32  # Arena radius
@@ -9543,6 +9547,62 @@ def update_arena_transition(dt):
     if progress >= 1.0:
         arena_transition_active = False
 
+def update_pending_arena_switch(dt):
+    """Update delayed arena switch - counts down timer and executes switch."""
+    global pending_arena_switch, donut_mode, x_stage_mode, figure8_mode, yinyang_mode
+
+    if pending_arena_switch is None:
+        return
+
+    mode_name, delay_remaining = pending_arena_switch
+    delay_remaining -= dt
+
+    if delay_remaining <= 0:
+        # Execute the arena switch now
+        pending_arena_switch = None
+
+        if mode_name == 'normal':
+            simulation.init_beetle_arena()
+            build_floor_height_cache()
+        elif mode_name == 'donut':
+            simulation.init_donut_arena()
+            build_floor_height_cache()
+        elif mode_name == 'x_stage':
+            simulation.init_x_stage_arena()
+            build_floor_height_cache()
+        elif mode_name == 'figure8':
+            simulation.init_figure8_arena()
+            build_floor_height_cache()
+        elif mode_name == 'yinyang':
+            simulation.init_yinyang_arena()
+            build_floor_height_cache()
+        elif mode_name == 'ball':
+            simulation.init_beetle_arena()
+            simulation.render_bowl_perimeter()
+            build_floor_height_cache()
+        elif mode_name == 'ball_off':
+            # Restore appropriate arena when ball mode turns off
+            if donut_mode:
+                simulation.init_donut_arena()
+            elif x_stage_mode:
+                simulation.init_x_stage_arena()
+            elif figure8_mode:
+                simulation.init_figure8_arena()
+            elif yinyang_mode:
+                simulation.init_yinyang_arena()
+            else:
+                simulation.init_beetle_arena()
+            build_floor_height_cache()
+    else:
+        # Still waiting
+        pending_arena_switch = (mode_name, delay_remaining)
+
+def queue_arena_switch(mode_name):
+    """Queue an arena switch with delay. Animation starts immediately."""
+    global pending_arena_switch
+    start_arena_transition()  # Start animation immediately
+    pending_arena_switch = (mode_name, ARENA_SWITCH_DELAY)
+
 # ============================================================
 # BOMBARDIER BEETLE SPRAY ATTACK SYSTEM
 # ============================================================
@@ -14369,6 +14429,9 @@ try:
         if arena_transition_active:
             update_arena_transition(PHYSICS_TIMESTEP)
 
+        # === DELAYED ARENA SWITCH ===
+        update_pending_arena_switch(PHYSICS_TIMESTEP)
+
         # === SPRAY PARTICLE SYSTEM (BOMBARDIER BEETLE) ===
         # Decrement spray cooldowns
         spray_cooldown_blue = max(0.0, spray_cooldown_blue - PHYSICS_TIMESTEP)
@@ -14715,7 +14778,6 @@ try:
                 # Apply ball state (referee is local-only, not synced)
                 if opts['ball_active'] != beetle_ball.active:
                     beetle_ball.active = opts['ball_active']
-                    start_arena_transition()
                     if beetle_ball.active:
                         # Initialize ball cache for guest (CRITICAL - without this ball won't render!)
                         if not ball_cache_initialized:
@@ -14748,11 +14810,9 @@ try:
                         g['ball_explosion_timer'] = 0.0
                         g['blue_score'] = 0
                         g['red_score'] = 0
-                        # Render bowl and rebuild floor cache
-                        simulation.render_bowl_perimeter()
-                        build_floor_height_cache()
+                        queue_arena_switch('ball')
                     else:
-                        # Disabling ball - clear voxels
+                        # Disabling ball - clear voxels immediately
                         if ball_last_rendered[None] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
@@ -14761,9 +14821,9 @@ try:
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
-                        build_floor_height_cache()
                         g['blue_score'] = 0
                         g['red_score'] = 0
+                        queue_arena_switch('ball_off')
                     print(f"Ball mode: {opts['ball_active']} (from host)")
 
                 # Apply donut mode state
@@ -14771,16 +14831,12 @@ try:
                     donut_mode = opts.get('donut_mode', False)
                     donut_mode_active[None] = 1 if donut_mode else 0
                     if donut_mode:
-                        start_arena_transition()
-                        simulation.init_donut_arena()
-                        build_floor_height_cache()
+                        queue_arena_switch('donut')
                         print("DONUT ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
                         if not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
-                            start_arena_transition()
-                            simulation.init_beetle_arena()
-                            build_floor_height_cache()
+                            queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
                 # Apply x_stage mode state
@@ -14788,16 +14844,12 @@ try:
                     x_stage_mode = opts.get('x_stage_mode', False)
                     x_stage_mode_active[None] = 1 if x_stage_mode else 0
                     if x_stage_mode:
-                        start_arena_transition()
-                        simulation.init_x_stage_arena()
-                        build_floor_height_cache()
+                        queue_arena_switch('x_stage')
                         print("X STAGE ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
                         if not opts.get('donut_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
-                            start_arena_transition()
-                            simulation.init_beetle_arena()
-                            build_floor_height_cache()
+                            queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
                 # Apply figure8 mode state
@@ -14805,16 +14857,12 @@ try:
                     figure8_mode = opts.get('figure8_mode', False)
                     figure8_mode_active[None] = 1 if figure8_mode else 0
                     if figure8_mode:
-                        start_arena_transition()
-                        simulation.init_figure8_arena()
-                        build_floor_height_cache()
+                        queue_arena_switch('figure8')
                         print("FIGURE 8 ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
                         if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('yinyang_mode', False):
-                            start_arena_transition()
-                            simulation.init_beetle_arena()
-                            build_floor_height_cache()
+                            queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
                 # Apply yinyang mode state
@@ -14822,16 +14870,12 @@ try:
                     yinyang_mode = opts.get('yinyang_mode', False)
                     yinyang_mode_active[None] = 1 if yinyang_mode else 0
                     if yinyang_mode:
-                        start_arena_transition()
-                        simulation.init_yinyang_arena()
-                        build_floor_height_cache()
+                        queue_arena_switch('yinyang')
                         print("YIN-YANG ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
                         if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False):
-                            start_arena_transition()
-                            simulation.init_beetle_arena()
-                            build_floor_height_cache()
+                            queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
         # Determine if we should detect deaths locally
@@ -17195,7 +17239,7 @@ try:
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
             if window.GUI.button(ball_button_text):
                 if beetle_ball.active:
-                    # Disabling ball - clear voxels and bowl perimeter
+                    # Disabling ball - clear voxels and bowl perimeter immediately
                     if ball_last_rendered[None] == 1:
                         num_voxels = ball_cache_size[None]
                         if num_voxels > 0:
@@ -17207,19 +17251,7 @@ try:
                     blue_score = 0
                     red_score = 0
                     beetle_ball.active = False
-                    start_arena_transition()
-                    # Restore appropriate arena (normal, donut, x_stage, figure8, or yinyang)
-                    if donut_mode:
-                        simulation.init_donut_arena()
-                    elif x_stage_mode:
-                        simulation.init_x_stage_arena()
-                    elif figure8_mode:
-                        simulation.init_figure8_arena()
-                    elif yinyang_mode:
-                        simulation.init_yinyang_arena()
-                    else:
-                        simulation.init_beetle_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('ball_off')
                 else:
                     # Enabling ball - disable other arena modes first
                     if donut_mode:
@@ -17263,10 +17295,7 @@ try:
                     ball_explosion_delay = 0.0
                     ball_explosion_timer = 0.0
                     beetle_ball.active = True
-                    start_arena_transition()
-                    simulation.init_beetle_arena()
-                    simulation.render_bowl_perimeter()
-                    build_floor_height_cache()
+                    queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
                     network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode)
@@ -17278,9 +17307,7 @@ try:
                     # Disabling donut
                     donut_mode = False
                     donut_mode_active[None] = 0
-                    start_arena_transition()
-                    simulation.init_beetle_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('normal')
                     print("Normal arena restored")
                 else:
                     # Enabling donut - disable other arena modes first
@@ -17307,9 +17334,7 @@ try:
                         yinyang_mode_active[None] = 0
                     donut_mode = True
                     donut_mode_active[None] = 1
-                    start_arena_transition()
-                    simulation.init_donut_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('donut')
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
@@ -17322,9 +17347,7 @@ try:
                     # Disabling x stage
                     x_stage_mode = False
                     x_stage_mode_active[None] = 0
-                    start_arena_transition()
-                    simulation.init_beetle_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('normal')
                     print("Normal arena restored")
                 else:
                     # Enabling x stage - disable other arena modes first
@@ -17351,9 +17374,7 @@ try:
                         yinyang_mode_active[None] = 0
                     x_stage_mode = True
                     x_stage_mode_active[None] = 1
-                    start_arena_transition()
-                    simulation.init_x_stage_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('x_stage')
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
@@ -17366,9 +17387,7 @@ try:
                     # Disabling figure 8
                     figure8_mode = False
                     figure8_mode_active[None] = 0
-                    start_arena_transition()
-                    simulation.init_beetle_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('normal')
                     print("Normal arena restored")
                 else:
                     # Enabling figure 8 - disable other arena modes first
@@ -17395,9 +17414,7 @@ try:
                         yinyang_mode_active[None] = 0
                     figure8_mode = True
                     figure8_mode_active[None] = 1
-                    start_arena_transition()
-                    simulation.init_figure8_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('figure8')
                     print("FIGURE 8 ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
@@ -17410,9 +17427,7 @@ try:
                     # Disabling yin-yang
                     yinyang_mode = False
                     yinyang_mode_active[None] = 0
-                    start_arena_transition()
-                    simulation.init_beetle_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('normal')
                     print("Normal arena restored")
                 else:
                     # Enabling yin-yang - disable other arena modes first
@@ -17439,9 +17454,7 @@ try:
                         figure8_mode_active[None] = 0
                     yinyang_mode = True
                     yinyang_mode_active[None] = 1
-                    start_arena_transition()
-                    simulation.init_yinyang_arena()
-                    build_floor_height_cache()
+                    queue_arena_switch('yinyang')
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
