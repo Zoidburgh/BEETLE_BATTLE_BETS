@@ -1760,12 +1760,12 @@ def get_spawn_position(for_blue=True, is_initial=False):
         else:
             return (ring_spawn_radius, 0.0, math.pi)  # East side, face left
     elif hourglass_mode:
-        # Spawn at the wide ends of the hourglass
-        spawn_x = 25.0  # Near the tips
+        # Spawn at the meatiest part of the hourglass (not too close to edge)
+        spawn_x = 18.0  # About 56% out - good width here
         if for_blue:
-            return (-spawn_x, 0.0, 0.0)  # Left tip, face right
+            return (-spawn_x, 0.0, 0.0)  # Left side, face right
         else:
-            return (spawn_x, 0.0, math.pi)  # Right tip, face left
+            return (spawn_x, 0.0, math.pi)  # Right side, face left
     else:
         # Normal arena
         if is_initial:
@@ -15230,7 +15230,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
 
-                if donut_mode or figure8_mode or yinyang_mode:
+                if donut_mode or figure8_mode or yinyang_mode or hourglass_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     blue_hovering = True
                     blue_hover_timer = 0.0
@@ -15360,7 +15360,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
 
-                if donut_mode or figure8_mode or yinyang_mode:
+                if donut_mode or figure8_mode or yinyang_mode or hourglass_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     red_hovering = True
                     red_hover_timer = 0.0
