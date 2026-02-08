@@ -1706,7 +1706,7 @@ ARENA_TRANSITION_MAX_RADIUS = 45.0  # expands outward
 
 # Delayed arena mode switch (animation starts immediately, arena switches after delay)
 pending_arena_switch = None  # Tuple: (mode_name, delay_remaining) or None
-ARENA_SWITCH_DELAY = 0.1  # seconds - delay before actual arena geometry changes
+ARENA_SWITCH_DELAY = 0.05  # seconds - delay before actual arena geometry changes
 
 # Donut arena constants
 DONUT_INNER_RADIUS = 11  # Must match simulation.py
