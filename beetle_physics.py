@@ -1700,6 +1700,7 @@ yinyang_mode = False
 arena_transition_active = False
 arena_transition_timer = 0.0
 arena_transition_radius = 0.0
+arena_transition_pending = False  # Flag to trigger transition at frame start (before render)
 ARENA_TRANSITION_DURATION = 0.3  # seconds
 ARENA_TRANSITION_MAX_RADIUS = 45.0  # expands outward
 
@@ -9501,13 +9502,20 @@ def spawn_arena_transition_ring(ring_radius: ti.f32, ring_width: ti.f32, num_par
             simulation.debris_lifetime[idx] = 0.6 + ti.random() * 0.3
 
 def start_arena_transition():
-    """Start the arena transition visual effect."""
-    global arena_transition_active, arena_transition_timer, arena_transition_radius
-    arena_transition_active = True
-    arena_transition_timer = 0.0
-    arena_transition_radius = 4.0  # Start at first ring position
-    # Spawn first ring immediately for instant feedback
-    spawn_arena_transition_ring(4.0, 4.0, 12)
+    """Queue arena transition to start at beginning of next frame (before rendering)."""
+    global arena_transition_pending
+    arena_transition_pending = True
+
+def process_pending_arena_transition():
+    """Called at frame start (before rendering) to spawn first ring immediately."""
+    global arena_transition_pending, arena_transition_active, arena_transition_timer, arena_transition_radius
+    if arena_transition_pending:
+        arena_transition_pending = False
+        arena_transition_active = True
+        arena_transition_timer = 0.0
+        arena_transition_radius = 4.0
+        # Spawn first ring immediately - will be visible this frame
+        spawn_arena_transition_ring(4.0, 4.0, 12)
 
 def update_arena_transition(dt):
     """Update arena transition effect - spawn debris rings expanding outward."""
@@ -13118,6 +13126,10 @@ try:
     # Must poll even in lobby states to receive callbacks
     if network_manager and game_state in [GAME_STATE_LOBBY_HOST, GAME_STATE_LOBBY_CONNECTING, GAME_STATE_LOBBY_WAITING, GAME_STATE_SYNCING]:
         network_manager.poll_messages(None)  # No input buffer during lobby/sync
+
+    # === PROCESS PENDING ARENA TRANSITION (before rendering) ===
+    # This ensures the first debris ring spawns at frame start, not after rendering
+    process_pending_arena_transition()
 
     # === TITLE SCREEN HANDLING ===
     if game_state == GAME_STATE_TITLE:
