@@ -1696,6 +1696,13 @@ figure8_mode = False
 # Yin-Yang arena mode (hollow ring with S-curved bridge)
 yinyang_mode = False
 
+# Arena transition effect
+arena_transition_active = False
+arena_transition_timer = 0.0
+arena_transition_radius = 0.0
+ARENA_TRANSITION_DURATION = 0.3  # seconds
+ARENA_TRANSITION_MAX_RADIUS = 45.0  # expands outward
+
 # Donut arena constants
 DONUT_INNER_RADIUS = 11  # Must match simulation.py
 DONUT_OUTER_RADIUS = 32  # Arena radius
@@ -9456,6 +9463,78 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                 # Lifetime scales slightly with impact (bigger bounce = longer hang time)
                 simulation.debris_lifetime[idx] = 0.4 + ti.min(impact_speed * 0.06, 0.4) + ti.random() * 0.15
 
+@ti.kernel
+def spawn_arena_transition_ring(ring_radius: ti.f32, ring_width: ti.f32, num_particles: ti.i32):
+    """Spawn debris particles in a ring pattern for arena transition effect.
+    Deterministic based on ring_radius for network sync."""
+    # Arena floor color (brownish-gray concrete)
+    color_r = 0.55
+    color_g = 0.50
+    color_b = 0.45
+
+    for i in range(num_particles):
+        # Deterministic angle based on particle index
+        angle = ti.cast(i, ti.f32) * 6.28318 / ti.cast(num_particles, ti.f32)
+
+        # Position on ring with slight random offset
+        r = ring_radius + (ti.random() - 0.5) * ring_width
+        pos_x = ti.cos(angle) * r
+        pos_z = ti.sin(angle) * r
+        pos_y = RENDER_Y_OFFSET + 0.5  # Just above floor
+
+        # Outward + upward velocity
+        outward_speed = 15.0 + ti.random() * 10.0
+        upward_speed = 20.0 + ti.random() * 15.0
+        vx = ti.cos(angle) * outward_speed
+        vz = ti.sin(angle) * outward_speed
+        vy = upward_speed
+
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Color variation
+            color_var = 0.85 + ti.random() * 0.3
+            simulation.debris_material[idx] = ti.math.vec3(color_r * color_var, color_g * color_var, color_b * color_var)
+            simulation.debris_lifetime[idx] = 0.6 + ti.random() * 0.3
+
+def start_arena_transition():
+    """Start the arena transition visual effect."""
+    global arena_transition_active, arena_transition_timer, arena_transition_radius
+    arena_transition_active = True
+    arena_transition_timer = 0.0
+    arena_transition_radius = 4.0  # Start at first ring position
+    # Spawn first ring immediately for instant feedback
+    spawn_arena_transition_ring(4.0, 4.0, 12)
+
+def update_arena_transition(dt):
+    """Update arena transition effect - spawn debris rings expanding outward."""
+    global arena_transition_active, arena_transition_timer, arena_transition_radius
+
+    if not arena_transition_active:
+        return
+
+    arena_transition_timer += dt
+
+    # Calculate target radius based on time
+    progress = arena_transition_timer / ARENA_TRANSITION_DURATION
+    target_radius = progress * ARENA_TRANSITION_MAX_RADIUS
+
+    # Spawn ring every ~3 units of radius expansion
+    ring_spacing = 4.0
+    while arena_transition_radius + ring_spacing < target_radius:
+        arena_transition_radius += ring_spacing
+        # More particles for larger rings
+        num_particles = int(arena_transition_radius * 2)
+        num_particles = max(12, min(num_particles, 60))
+        spawn_arena_transition_ring(arena_transition_radius, ring_spacing, num_particles)
+
+    # End transition when complete
+    if progress >= 1.0:
+        arena_transition_active = False
+
 # ============================================================
 # BOMBARDIER BEETLE SPRAY ATTACK SYSTEM
 # ============================================================
@@ -9965,7 +10044,16 @@ def update_silk_particles(dt: ti.f32):
             pos = simulation.silk_pos[idx]
             dist_from_center = ti.sqrt(pos.x * pos.x + pos.z * pos.z)
 
-            if pos.y < RENDER_Y_OFFSET and dist_from_center < ARENA_RADIUS:
+            # Check floor_height_cache to see if there's actually floor at this position
+            # (handles holes in donut, yin-yang, figure-8, x-stage modes)
+            grid_x = ti.cast(pos.x + 64.0, ti.i32)
+            grid_z = ti.cast(pos.z + 64.0, ti.i32)
+            grid_x = ti.max(0, ti.min(127, grid_x))
+            grid_z = ti.max(0, ti.min(127, grid_z))
+            floor_y = floor_height_cache[grid_x, grid_z]
+            has_floor = floor_y > -100.0  # -1000 means no floor, valid floor is around 0
+
+            if pos.y < RENDER_Y_OFFSET and has_floor:
                 # Check if there's already floor silk nearby using spatial grid (O(1) instead of O(n²))
                 MIN_FLOOR_SPACING = 0.5  # Minimum distance between floor silk
                 MIN_FLOOR_SPACING_SQ = MIN_FLOOR_SPACING * MIN_FLOOR_SPACING
@@ -14265,6 +14353,10 @@ try:
         _t_debris_only = time.perf_counter()
         _physics_timing['debris_update'] = _physics_timing.get('debris_update', 0) + (_t_debris_only - _t_debris_start) * 1000
 
+        # === ARENA TRANSITION EFFECT ===
+        if arena_transition_active:
+            update_arena_transition(PHYSICS_TIMESTEP)
+
         # === SPRAY PARTICLE SYSTEM (BOMBARDIER BEETLE) ===
         # Decrement spray cooldowns
         spray_cooldown_blue = max(0.0, spray_cooldown_blue - PHYSICS_TIMESTEP)
@@ -14611,6 +14703,7 @@ try:
                 # Apply ball state (referee is local-only, not synced)
                 if opts['ball_active'] != beetle_ball.active:
                     beetle_ball.active = opts['ball_active']
+                    start_arena_transition()
                     if beetle_ball.active:
                         # Initialize ball cache for guest (CRITICAL - without this ball won't render!)
                         if not ball_cache_initialized:
@@ -14666,12 +14759,14 @@ try:
                     donut_mode = opts.get('donut_mode', False)
                     donut_mode_active[None] = 1 if donut_mode else 0
                     if donut_mode:
+                        start_arena_transition()
                         simulation.init_donut_arena()
                         build_floor_height_cache()
                         print("DONUT ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
                         if not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
+                            start_arena_transition()
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -14681,12 +14776,14 @@ try:
                     x_stage_mode = opts.get('x_stage_mode', False)
                     x_stage_mode_active[None] = 1 if x_stage_mode else 0
                     if x_stage_mode:
+                        start_arena_transition()
                         simulation.init_x_stage_arena()
                         build_floor_height_cache()
                         print("X STAGE ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
                         if not opts.get('donut_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
+                            start_arena_transition()
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -14696,12 +14793,14 @@ try:
                     figure8_mode = opts.get('figure8_mode', False)
                     figure8_mode_active[None] = 1 if figure8_mode else 0
                     if figure8_mode:
+                        start_arena_transition()
                         simulation.init_figure8_arena()
                         build_floor_height_cache()
                         print("FIGURE 8 ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
                         if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('yinyang_mode', False):
+                            start_arena_transition()
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -14711,12 +14810,14 @@ try:
                     yinyang_mode = opts.get('yinyang_mode', False)
                     yinyang_mode_active[None] = 1 if yinyang_mode else 0
                     if yinyang_mode:
+                        start_arena_transition()
                         simulation.init_yinyang_arena()
                         build_floor_height_cache()
                         print("YIN-YANG ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
                         if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False):
+                            start_arena_transition()
                             simulation.init_beetle_arena()
                             build_floor_height_cache()
                             print("Normal arena restored (from host)")
@@ -17094,6 +17195,7 @@ try:
                     blue_score = 0
                     red_score = 0
                     beetle_ball.active = False
+                    start_arena_transition()
                     # Restore appropriate arena (normal, donut, x_stage, figure8, or yinyang)
                     if donut_mode:
                         simulation.init_donut_arena()
@@ -17149,6 +17251,7 @@ try:
                     ball_explosion_delay = 0.0
                     ball_explosion_timer = 0.0
                     beetle_ball.active = True
+                    start_arena_transition()
                     simulation.init_beetle_arena()
                     simulation.render_bowl_perimeter()
                     build_floor_height_cache()
@@ -17163,6 +17266,7 @@ try:
                     # Disabling donut
                     donut_mode = False
                     donut_mode_active[None] = 0
+                    start_arena_transition()
                     simulation.init_beetle_arena()
                     build_floor_height_cache()
                     print("Normal arena restored")
@@ -17191,6 +17295,7 @@ try:
                         yinyang_mode_active[None] = 0
                     donut_mode = True
                     donut_mode_active[None] = 1
+                    start_arena_transition()
                     simulation.init_donut_arena()
                     build_floor_height_cache()
                     print("DONUT ARENA ENABLED - watch the center pit!")
@@ -17205,6 +17310,7 @@ try:
                     # Disabling x stage
                     x_stage_mode = False
                     x_stage_mode_active[None] = 0
+                    start_arena_transition()
                     simulation.init_beetle_arena()
                     build_floor_height_cache()
                     print("Normal arena restored")
@@ -17233,6 +17339,7 @@ try:
                         yinyang_mode_active[None] = 0
                     x_stage_mode = True
                     x_stage_mode_active[None] = 1
+                    start_arena_transition()
                     simulation.init_x_stage_arena()
                     build_floor_height_cache()
                     print("X STAGE ARENA ENABLED - watch the corners!")
@@ -17247,6 +17354,7 @@ try:
                     # Disabling figure 8
                     figure8_mode = False
                     figure8_mode_active[None] = 0
+                    start_arena_transition()
                     simulation.init_beetle_arena()
                     build_floor_height_cache()
                     print("Normal arena restored")
@@ -17275,6 +17383,7 @@ try:
                         yinyang_mode_active[None] = 0
                     figure8_mode = True
                     figure8_mode_active[None] = 1
+                    start_arena_transition()
                     simulation.init_figure8_arena()
                     build_floor_height_cache()
                     print("FIGURE 8 ARENA ENABLED - watch the bridge!")
@@ -17289,6 +17398,7 @@ try:
                     # Disabling yin-yang
                     yinyang_mode = False
                     yinyang_mode_active[None] = 0
+                    start_arena_transition()
                     simulation.init_beetle_arena()
                     build_floor_height_cache()
                     print("Normal arena restored")
@@ -17317,6 +17427,7 @@ try:
                         figure8_mode_active[None] = 0
                     yinyang_mode = True
                     yinyang_mode_active[None] = 1
+                    start_arena_transition()
                     simulation.init_yinyang_arena()
                     build_floor_height_cache()
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
