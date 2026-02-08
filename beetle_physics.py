@@ -17480,11 +17480,14 @@ try:
             window.board_color = new_board_color
             simulation.board_color[None] = ti.Vector([new_board_color[0], new_board_color[1], new_board_color[2]])
 
-        # Reset to defaults button
-        if window.GUI.button("DEFAULT COLORS"):
-            window.background_color = (0.18, 0.40, 0.22)  # Forest green
-            window.board_color = (0.41, 0.39, 0.37)  # Brownish gray
-            simulation.board_color[None] = ti.Vector([0.41, 0.39, 0.37])
+        # Reset to defaults button (only show if colors changed)
+        default_bg = (0.18, 0.40, 0.22)
+        default_board = (0.41, 0.39, 0.37)
+        if window.background_color != default_bg or window.board_color != default_board:
+            if window.GUI.button("DEFAULT COLORS"):
+                window.background_color = default_bg
+                window.board_color = default_board
+                simulation.board_color[None] = ti.Vector([0.41, 0.39, 0.37])
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:
