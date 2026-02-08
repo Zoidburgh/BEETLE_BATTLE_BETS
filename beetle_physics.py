@@ -1701,7 +1701,7 @@ arena_transition_active = False
 arena_transition_timer = 0.0
 arena_transition_radius = 0.0
 arena_transition_pending = False  # Flag to trigger transition at frame start (before render)
-ARENA_TRANSITION_DURATION = 0.1  # seconds
+ARENA_TRANSITION_DURATION = 0.07  # seconds
 ARENA_TRANSITION_MAX_RADIUS = 45.0  # expands outward
 
 # Delayed arena mode switch (animation starts immediately, arena switches after delay)
