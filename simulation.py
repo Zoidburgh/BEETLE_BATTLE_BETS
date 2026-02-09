@@ -769,6 +769,49 @@ def init_hourglass_arena():
     print(f"HOURGLASS ARENA constructed - waist {waist_width*2}, tips {tip_width*2}")
 
 @ti.kernel
+def init_square_bridge_arena():
+    """
+    SQUARE BRIDGE ARENA - Rectangular ring (perimeter) with long bridge through middle
+    Like yin-yang but rectangular shape with straight bridge running the long way
+    """
+    # Clear everything first
+    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    center_x = 64
+    center_z = 64
+    # Outer rectangle (long shape)
+    outer_half_x = 38  # Long dimension (x-axis) - same as yin-yang
+    outer_half_z = 25  # Short dimension (z-axis)
+    # Inner rectangle (the hole)
+    inner_half_x = 28  # Leave 10 voxel perimeter on sides
+    inner_half_z = 15  # Leave 10 voxel perimeter on top/bottom
+    # Bridge through the hole (runs LONG way - along x-axis)
+    bridge_half_width = 5  # Width of bridge (z direction)
+    floor_y_offset = 33
+
+    for i in range(center_x - outer_half_x - 2, center_x + outer_half_x + 2):
+        for k in range(center_z - outer_half_z - 2, center_z + outer_half_z + 2):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+
+            # Check if within outer rectangle
+            in_outer = ti.abs(dx) <= outer_half_x and ti.abs(dz) <= outer_half_z
+
+            # Check if in inner hole
+            in_hole = ti.abs(dx) <= inner_half_x and ti.abs(dz) <= inner_half_z
+
+            # Check if on bridge (runs LONG way through hole along x-axis, narrow in z)
+            on_bridge = ti.abs(dx) <= inner_half_x and ti.abs(dz) <= bridge_half_width
+
+            # Place floor if: in outer bounds AND (NOT in hole OR on bridge)
+            if in_outer and (not in_hole or on_bridge):
+                voxel_type[i, floor_y_offset, k] = CONCRETE
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY
+
+    print(f"SQUARE BRIDGE ARENA constructed - rectangular ring with long bridge")
+
+@ti.kernel
 def render_bowl_perimeter():
     """
     Render slippery bowl perimeter around arena (for ball mode)

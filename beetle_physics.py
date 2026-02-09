@@ -1404,7 +1404,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode
+    global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, square_bridge_mode
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1721,6 +1721,9 @@ yinyang_mode = False
 # Hourglass arena mode (two triangles meeting at narrow waist)
 hourglass_mode = False
 
+# Square Bridge arena mode (long rectangle split with bridge)
+square_bridge_mode = False
+
 # Arena transition effect
 arena_transition_active = False
 arena_transition_timer = 0.0
@@ -1751,6 +1754,13 @@ YINYANG_OUTER_RADIUS = 38.0
 YINYANG_INNER_RADIUS = 26.0
 YINYANG_BRIDGE_HALF_WIDTH = 5.0
 YINYANG_CURVE_RADIUS = YINYANG_INNER_RADIUS * 0.8  # 20.8 - wider, gentler arcs
+
+# Square Bridge arena constants (must match simulation.py)
+SQUARE_BRIDGE_OUTER_X = 38.0  # Outer rectangle half-length (x-axis)
+SQUARE_BRIDGE_OUTER_Z = 25.0  # Outer rectangle half-width (z-axis)
+SQUARE_BRIDGE_INNER_X = 28.0  # Inner hole half-length
+SQUARE_BRIDGE_INNER_Z = 15.0  # Inner hole half-width
+SQUARE_BRIDGE_BRIDGE_HALF = 5.0  # Bridge half-width (z direction)
 
 def get_spawn_position(for_blue=True, is_initial=False):
     """Get a valid spawn position based on current arena mode.
@@ -1788,6 +1798,13 @@ def get_spawn_position(for_blue=True, is_initial=False):
             return (-spawn_x, 0.0, 0.0)  # Left side, face right
         else:
             return (spawn_x, 0.0, math.pi)  # Right side, face left
+    elif square_bridge_mode:
+        # Spawn on opposite ends of the long bridge, facing each other
+        spawn_x = 20.0  # On the bridge, toward each end
+        if for_blue:
+            return (-spawn_x, 0.0, 0.0)  # Left end of bridge, face right
+        else:
+            return (spawn_x, 0.0, math.pi)  # Right end of bridge, face left
     else:
         # Normal arena
         if is_initial:
@@ -5053,6 +5070,14 @@ YINYANG_CURVE_RADIUS_GPU = YINYANG_INNER_RADIUS_GPU * 0.8  # 20.8 - wider, gentl
 hourglass_mode_active = ti.field(ti.i32, shape=())  # 1 if hourglass mode, 0 otherwise
 HOURGLASS_LENGTH_GPU = 32.0  # Half-length from center to tip
 HOURGLASS_WAIST_GPU = 6.0  # Half-width at the narrow center
+
+# Square Bridge mode state for GPU kernels
+square_bridge_mode_active = ti.field(ti.i32, shape=())  # 1 if square bridge mode, 0 otherwise
+SQUARE_BRIDGE_OUTER_X_GPU = 38.0  # Outer rectangle half-length (x-axis)
+SQUARE_BRIDGE_OUTER_Z_GPU = 25.0  # Outer rectangle half-width (z-axis)
+SQUARE_BRIDGE_INNER_X_GPU = 28.0  # Inner hole half-length
+SQUARE_BRIDGE_INNER_Z_GPU = 15.0  # Inner hole half-width
+SQUARE_BRIDGE_BRIDGE_HALF_GPU = 5.0  # Bridge half-width (z direction)
 HOURGLASS_TIP_GPU = 24.0  # Half-width at the wide ends
 HOURGLASS_SLOPE_GPU = (HOURGLASS_TIP_GPU - HOURGLASS_WAIST_GPU) / HOURGLASS_LENGTH_GPU
 
@@ -9132,6 +9157,22 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                             else:
                                 is_over_edge = 1  # Beyond hourglass length
 
+                        # Square Bridge: rectangular ring with long bridge through middle
+                        if square_bridge_mode_active[None] == 1:
+                            rel_x = world_x_v - arena_center_x
+                            rel_z = world_z_v - arena_center_z
+                            # Check if within outer rectangle
+                            in_outer = ti.abs(rel_x) <= SQUARE_BRIDGE_OUTER_X_GPU and ti.abs(rel_z) <= SQUARE_BRIDGE_OUTER_Z_GPU
+                            # Check if in inner hole
+                            in_hole = ti.abs(rel_x) <= SQUARE_BRIDGE_INNER_X_GPU and ti.abs(rel_z) <= SQUARE_BRIDGE_INNER_Z_GPU
+                            # Check if on bridge (runs long way along x-axis)
+                            on_bridge = ti.abs(rel_x) <= SQUARE_BRIDGE_INNER_X_GPU and ti.abs(rel_z) <= SQUARE_BRIDGE_BRIDGE_HALF_GPU
+                            # On solid ground if: in outer AND (NOT in hole OR on bridge)
+                            if in_outer and (not in_hole or on_bridge):
+                                is_over_edge = 0  # On solid ground
+                            else:
+                                is_over_edge = 1  # Over edge or in hole
+
                         if is_over_edge:
                             over_edge_count += 1
                             lever_x = world_x_v - cog_x
@@ -9605,7 +9646,7 @@ def update_arena_transition(dt):
 
 def update_pending_arena_switch(dt):
     """Update delayed arena switch - counts down timer and executes switch."""
-    global pending_arena_switch, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode
+    global pending_arena_switch, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, square_bridge_mode
 
     if pending_arena_switch is None:
         return
@@ -9635,6 +9676,9 @@ def update_pending_arena_switch(dt):
         elif mode_name == 'hourglass':
             simulation.init_hourglass_arena()
             build_floor_height_cache()
+        elif mode_name == 'square_bridge':
+            simulation.init_square_bridge_arena()
+            build_floor_height_cache()
         elif mode_name == 'ball':
             simulation.init_beetle_arena()
             simulation.render_bowl_perimeter()
@@ -9651,6 +9695,8 @@ def update_pending_arena_switch(dt):
                 simulation.init_yinyang_arena()
             elif hourglass_mode:
                 simulation.init_hourglass_arena()
+            elif square_bridge_mode:
+                simulation.init_square_bridge_arena()
             else:
                 simulation.init_beetle_arena()
             build_floor_height_cache()
@@ -12830,7 +12876,7 @@ auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to 
 
 # 3rd person follow camera settings
 third_person_camera = False  # Toggle for 3rd person follow cam
-THIRD_PERSON_DISTANCE = 50.0  # Distance behind beetle (horizontal)
+THIRD_PERSON_DISTANCE = 60.0  # Distance behind beetle (horizontal)
 # Camera always uses opposite side view (beetles in foreground, edge in background)
 camera_edge_angle = None  # Previous edge angle for smooth transitions (None = not yet initialized)
 spotlight_strength = 0.633  # Spotlight intensity (adjustable via GUI slider)
@@ -13400,6 +13446,11 @@ try:
                     spawn_x, spawn_z, spawn_rot = -18.0, 0.0, 0.0
                 else:
                     spawn_x, spawn_z, spawn_rot = 18.0, 0.0, math.pi
+            elif square_bridge_mode:
+                if is_blue:
+                    spawn_x, spawn_z, spawn_rot = -20.0, 0.0, 0.0
+                else:
+                    spawn_x, spawn_z, spawn_rot = 20.0, 0.0, math.pi
             else:
                 # Normal arena - respawn at center
                 spawn_x, spawn_z, spawn_rot = 0.0, 0.0, 0.0 if is_blue else math.pi
@@ -15377,7 +15428,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
 
-                if donut_mode or figure8_mode or yinyang_mode or hourglass_mode:
+                if donut_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     blue_hovering = True
                     blue_hover_timer = 0.0
@@ -15507,7 +15558,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
 
-                if donut_mode or figure8_mode or yinyang_mode or hourglass_mode:
+                if donut_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     red_hovering = True
                     red_hover_timer = 0.0
@@ -16038,6 +16089,15 @@ try:
     DUST_SPEED_WALK = 5.2  # Speed for walking dust (+30%)
     DUST_SPEED_SPIN = 4.0  # Speed for spinning dust (outward from beetle center)
 
+    def has_floor_at(x, z):
+        """Check if there's floor at position using floor_height_cache (works for all arena modes)"""
+        grid_x = int(x + 64.0)
+        grid_z = int(z + 64.0)
+        grid_x = max(0, min(127, grid_x))
+        grid_z = max(0, min(127, grid_z))
+        floor_y = floor_height_cache[grid_x, grid_z]
+        return floor_y > -100.0  # -1000 means no floor
+
     # OPTIMIZATION: Pre-calculate sin values for walk phases (avoid repeated math.sin calls)
     blue_walk_sin = math.sin(beetle_blue.walk_phase)
     blue_prev_walk_sin = math.sin(beetle_blue.prev_walk_phase)
@@ -16081,9 +16141,8 @@ try:
                     # Nudge tip forward by velocity to compensate for movement lag
                     tip_x += beetle_blue.vx * 0.13
                     tip_z += beetle_blue.vz * 0.13
-                    # Only spawn dust if leg tip is on arena
-                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
-                    if tip_dist < ARENA_RADIUS:
+                    # Only spawn dust if leg tip is on arena floor (works for all arena modes)
+                    if has_floor_at(tip_x, tip_z):
                         # Kick direction: backward when forward, forward when backward
                         dir_x = kick_dir * math.cos(beetle_blue.rotation)
                         dir_z = kick_dir * math.sin(beetle_blue.rotation)
@@ -16112,8 +16171,7 @@ try:
                         back_legs = back_legs[:1]  # Only first leg for 6-legged beetles
                     for back_leg_id in back_legs:
                         tip_x, tip_z = get_leg_tip_world_position(beetle_blue, back_leg_id, blue_leg_len)
-                        tip_dist = math.sqrt(tip_x**2 + tip_z**2)
-                        if tip_dist < ARENA_RADIUS:
+                        if has_floor_at(tip_x, tip_z):
                             dir_x = tip_x - beetle_blue.x
                             dir_z = tip_z - beetle_blue.z
                             dir_len = math.sqrt(dir_x**2 + dir_z**2)
@@ -16128,8 +16186,7 @@ try:
                     # Right turn -> leg 1 (front_right)
                     front_leg_id = 0 if side == 1 else 1
                     tip_x, tip_z = get_leg_tip_world_position(beetle_blue, front_leg_id, blue_leg_len)
-                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
-                    if tip_dist < ARENA_RADIUS:
+                    if has_floor_at(tip_x, tip_z):
                         dir_x = tip_x - beetle_blue.x
                         dir_z = tip_z - beetle_blue.z
                         dir_len = math.sqrt(dir_x**2 + dir_z**2)
@@ -16183,9 +16240,8 @@ try:
                     # Nudge tip forward by velocity to compensate for movement lag
                     tip_x += beetle_red.vx * 0.13
                     tip_z += beetle_red.vz * 0.13
-                    # Only spawn dust if leg tip is on arena
-                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
-                    if tip_dist < ARENA_RADIUS:
+                    # Only spawn dust if leg tip is on arena floor (works for all arena modes)
+                    if has_floor_at(tip_x, tip_z):
                         # Kick direction: backward when forward, forward when backward
                         dir_x = kick_dir * math.cos(beetle_red.rotation)
                         dir_z = kick_dir * math.sin(beetle_red.rotation)
@@ -16214,8 +16270,7 @@ try:
                         back_legs = back_legs[:1]  # Only first leg for 6-legged beetles
                     for back_leg_id in back_legs:
                         tip_x, tip_z = get_leg_tip_world_position(beetle_red, back_leg_id, red_leg_len)
-                        tip_dist = math.sqrt(tip_x**2 + tip_z**2)
-                        if tip_dist < ARENA_RADIUS:
+                        if has_floor_at(tip_x, tip_z):
                             dir_x = tip_x - beetle_red.x
                             dir_z = tip_z - beetle_red.z
                             dir_len = math.sqrt(dir_x**2 + dir_z**2)
@@ -16230,8 +16285,7 @@ try:
                     # Right turn -> leg 1 (front_right)
                     front_leg_id = 0 if side == 1 else 1
                     tip_x, tip_z = get_leg_tip_world_position(beetle_red, front_leg_id, red_leg_len)
-                    tip_dist = math.sqrt(tip_x**2 + tip_z**2)
-                    if tip_dist < ARENA_RADIUS:
+                    if has_floor_at(tip_x, tip_z):
                         dir_x = tip_x - beetle_red.x
                         dir_z = tip_z - beetle_red.z
                         dir_len = math.sqrt(dir_x**2 + dir_z**2)
@@ -17437,6 +17491,10 @@ try:
             auto_follow_enabled = False
             print("Camera mode: 3RD PERSON")
 
+        # 3rd person distance slider (only show when 3rd person is active)
+        if third_person_camera:
+            THIRD_PERSON_DISTANCE = window.GUI.slider_float("Distance", THIRD_PERSON_DISTANCE, 40.0, 80.0)
+
     # Arena controls - skip during title screen
     if not gui_skip_content:
         # Mode toggle buttons (only host can toggle in online mode)
@@ -17456,6 +17514,8 @@ try:
                 current_mode = "Yin-Yang"
             elif hourglass_mode:
                 current_mode = "Hourglass"
+            elif square_bridge_mode:
+                current_mode = "Square Bridge"
             window.GUI.text("")
             window.GUI.text("=== ARENA ===")
             window.GUI.text(f"Arena: {current_mode} (host controls)")
@@ -17465,7 +17525,7 @@ try:
             window.GUI.text("=== ARENA ===")
 
             # Determine if circle (default) mode is active
-            circle_mode = not donut_mode and not x_stage_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not beetle_ball.active
+            circle_mode = not donut_mode and not x_stage_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not square_bridge_mode and not beetle_ball.active
 
             # === CIRCLE MODE (default) ===
             circle_button_text = "CIRCLE: ON" if circle_mode else "CIRCLE: OFF"
@@ -17498,6 +17558,9 @@ try:
                 if hourglass_mode:
                     hourglass_mode = False
                     hourglass_mode_active[None] = 0
+                if square_bridge_mode:
+                    square_bridge_mode = False
+                    square_bridge_mode_active[None] = 0
                 queue_arena_switch('normal')
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
@@ -17787,6 +17850,50 @@ try:
                 if network_manager and network_manager.is_host:
                     network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
 
+            # === SQUARE BRIDGE MODE ===
+            square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
+            if window.GUI.button(square_bridge_button_text):
+                if square_bridge_mode:
+                    # Disabling square bridge
+                    square_bridge_mode = False
+                    square_bridge_mode_active[None] = 0
+                    queue_arena_switch('normal')
+                    print("Normal arena restored")
+                else:
+                    # Enabling square bridge - disable other arena modes first
+                    if beetle_ball.active:
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        beetle_ball.active = False
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
+                    square_bridge_mode = True
+                    square_bridge_mode_active[None] = 1
+                    queue_arena_switch('square_bridge')
+                    print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")
         window.GUI.text("=== ARENA COLORS ===")
@@ -17856,84 +17963,10 @@ try:
         can_edit_blue = not network_manager or not network_manager.connected or network_manager.is_host
         can_edit_red = not network_manager or not network_manager.connected or not network_manager.is_host
 
-        if can_edit_blue:
-            window.GUI.text("=== BEETLE 1 GENETICS ===")
-        else:
-            window.GUI.text("=== BEETLE 1 (opponent) ===")
-
         # Front body (thorax) is fixed at 4 layers
         front_body_height = 4
 
-        # Blue beetle sliders - only editable if can_edit_blue, throttled during gameplay
-        if can_edit_blue and show_full_customization:
-            new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 8, 15)
-            new_blue_prong = window.GUI.slider_int("Blue Horn Prong", window.blue_horn_prong_value, 3, 6)
-            new_blue_back_body = window.GUI.slider_int("Blue Back Body", window.blue_back_body_height_value, 4, 8)
-            new_blue_body_length = window.GUI.slider_int("Blue Body Length", window.blue_body_length_value, 9, 14)
-            new_blue_body_width = window.GUI.slider_int("Blue Body Width", window.blue_body_width_value, 5, 9)
-            new_blue_leg_length = window.GUI.slider_int("Blue Leg Length", window.blue_leg_length_value, 6, 10)
-        else:
-            # Show read-only values (opponent's beetle OR throttled during gameplay)
-            window.GUI.text(f"Horn Shaft: {window.blue_horn_shaft_value}")
-            window.GUI.text(f"Horn Prong: {window.blue_horn_prong_value}")
-            window.GUI.text(f"Back Body: {window.blue_back_body_height_value}")
-            window.GUI.text(f"Body Length: {window.blue_body_length_value}")
-            window.GUI.text(f"Body Width: {window.blue_body_width_value}")
-            window.GUI.text(f"Leg Length: {window.blue_leg_length_value}")
-            # Keep values unchanged
-            new_blue_shaft = window.blue_horn_shaft_value
-            new_blue_prong = window.blue_horn_prong_value
-            new_blue_back_body = window.blue_back_body_height_value
-            new_blue_body_length = window.blue_body_length_value
-            new_blue_body_width = window.blue_body_width_value
-            new_blue_leg_length = window.blue_leg_length_value
-
-        # Random blue beetle button - only if can edit and not throttled
-        if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 1"):
-            new_blue_shaft = random.randint(8, 15)
-            new_blue_prong = random.randint(3, 6)
-            new_blue_back_body = random.randint(4, 8)
-            new_blue_body_length = random.randint(9, 14)
-            new_blue_body_width = random.randint(5, 9)
-            new_blue_leg_length = random.randint(6, 10)
-            print(f"Randomized blue beetle: shaft={new_blue_shaft}, prong={new_blue_prong}, back={new_blue_back_body}, length={new_blue_body_length}, width={new_blue_body_width}, legs={new_blue_leg_length}")
-
-        # Rebuild blue beetle geometry if sliders changed OR if scorpion tail curvature changed
-        if (new_blue_shaft != window.blue_horn_shaft_value or new_blue_prong != window.blue_horn_prong_value or
-            new_blue_back_body != window.blue_back_body_height_value or new_blue_body_length != window.blue_body_length_value or
-            new_blue_body_width != window.blue_body_width_value or new_blue_leg_length != window.blue_leg_length_value or
-            (blue_horn_type == "scorpion" and abs(beetle_blue.stinger_curvature - blue_previous_stinger_curvature) > 0.01)):
-
-            # For scorpion type, use blue beetle's current animation values
-            blue_current_stinger_curvature = 0.0
-            blue_current_tail_rotation = 0.0
-            if blue_horn_type == "scorpion":
-                blue_current_stinger_curvature = beetle_blue.stinger_curvature
-                blue_current_tail_rotation = beetle_blue.tail_rotation_angle
-
-            # Rebuild geometry and reset walk phase to prevent leg jitter
-            rebuild_blue_beetle(new_blue_shaft, new_blue_prong, front_body_height, new_blue_back_body, new_blue_body_length, new_blue_body_width, new_blue_leg_length, blue_horn_type, blue_current_stinger_curvature, blue_current_tail_rotation)
-            reset_walk_phase_on_geometry_change(beetle_blue)
-
-            window.blue_horn_shaft_value = new_blue_shaft
-            window.blue_horn_prong_value = new_blue_prong
-            window.blue_back_body_height_value = new_blue_back_body
-            window.blue_body_length_value = new_blue_body_length
-            window.blue_body_width_value = new_blue_body_width
-            window.blue_leg_length_value = new_blue_leg_length
-            blue_previous_stinger_curvature = blue_current_stinger_curvature
-            blue_previous_tail_rotation = blue_current_tail_rotation
-            # Send config immediately when host changes blue beetle
-            if network_manager and network_manager.connected and network_manager.is_host:
-                send_local_beetle_config(network_manager, is_host=True)
-
-        # Blue beetle stats
-        window.GUI.text(f"B1 Shaft: {window.blue_horn_shaft_value} voxels")
-        window.GUI.text(f"B1 Prong: {window.blue_horn_prong_value} voxels")
-        blue_total_reach = window.blue_horn_shaft_value + window.blue_horn_prong_value
-        window.GUI.text(f"B1 Total Horn: {blue_total_reach} voxels")
-
-        # Blue beetle horn type button - throttled during gameplay
+        # === BEETLE 1 TYPE ===
         window.GUI.text("")
         window.GUI.text("=== BEETLE 1 TYPE ===")
         if can_edit_blue and show_full_customization:
@@ -18022,6 +18055,74 @@ try:
             if network_manager and network_manager.connected and network_manager.is_host:
                 send_local_beetle_config(network_manager, is_host=True)
 
+        if can_edit_blue:
+            window.GUI.text("=== BEETLE 1 GENETICS ===")
+        else:
+            window.GUI.text("=== BEETLE 1 (opponent) ===")
+
+        # Blue beetle sliders - only editable if can_edit_blue, throttled during gameplay
+        if can_edit_blue and show_full_customization:
+            new_blue_shaft = window.GUI.slider_int("Blue Horn Shaft", window.blue_horn_shaft_value, 8, 15)
+            new_blue_prong = window.GUI.slider_int("Blue Horn Prong", window.blue_horn_prong_value, 3, 6)
+            new_blue_back_body = window.GUI.slider_int("Blue Back Body", window.blue_back_body_height_value, 4, 8)
+            new_blue_body_length = window.GUI.slider_int("Blue Body Length", window.blue_body_length_value, 9, 14)
+            new_blue_body_width = window.GUI.slider_int("Blue Body Width", window.blue_body_width_value, 5, 9)
+            new_blue_leg_length = window.GUI.slider_int("Blue Leg Length", window.blue_leg_length_value, 6, 10)
+        else:
+            # Show read-only values (opponent's beetle OR throttled during gameplay)
+            window.GUI.text(f"Horn Shaft: {window.blue_horn_shaft_value}")
+            window.GUI.text(f"Horn Prong: {window.blue_horn_prong_value}")
+            window.GUI.text(f"Back Body: {window.blue_back_body_height_value}")
+            window.GUI.text(f"Body Length: {window.blue_body_length_value}")
+            window.GUI.text(f"Body Width: {window.blue_body_width_value}")
+            window.GUI.text(f"Leg Length: {window.blue_leg_length_value}")
+            # Keep values unchanged
+            new_blue_shaft = window.blue_horn_shaft_value
+            new_blue_prong = window.blue_horn_prong_value
+            new_blue_back_body = window.blue_back_body_height_value
+            new_blue_body_length = window.blue_body_length_value
+            new_blue_body_width = window.blue_body_width_value
+            new_blue_leg_length = window.blue_leg_length_value
+
+        # Random blue beetle button - only if can edit and not throttled
+        if can_edit_blue and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 1"):
+            new_blue_shaft = random.randint(8, 15)
+            new_blue_prong = random.randint(3, 6)
+            new_blue_back_body = random.randint(4, 8)
+            new_blue_body_length = random.randint(9, 14)
+            new_blue_body_width = random.randint(5, 9)
+            new_blue_leg_length = random.randint(6, 10)
+            print(f"Randomized blue beetle: shaft={new_blue_shaft}, prong={new_blue_prong}, back={new_blue_back_body}, length={new_blue_body_length}, width={new_blue_body_width}, legs={new_blue_leg_length}")
+
+        # Rebuild blue beetle geometry if sliders changed OR if scorpion tail curvature changed
+        if (new_blue_shaft != window.blue_horn_shaft_value or new_blue_prong != window.blue_horn_prong_value or
+            new_blue_back_body != window.blue_back_body_height_value or new_blue_body_length != window.blue_body_length_value or
+            new_blue_body_width != window.blue_body_width_value or new_blue_leg_length != window.blue_leg_length_value or
+            (blue_horn_type == "scorpion" and abs(beetle_blue.stinger_curvature - blue_previous_stinger_curvature) > 0.01)):
+
+            # For scorpion type, use blue beetle's current animation values
+            blue_current_stinger_curvature = 0.0
+            blue_current_tail_rotation = 0.0
+            if blue_horn_type == "scorpion":
+                blue_current_stinger_curvature = beetle_blue.stinger_curvature
+                blue_current_tail_rotation = beetle_blue.tail_rotation_angle
+
+            # Rebuild geometry and reset walk phase to prevent leg jitter
+            rebuild_blue_beetle(new_blue_shaft, new_blue_prong, front_body_height, new_blue_back_body, new_blue_body_length, new_blue_body_width, new_blue_leg_length, blue_horn_type, blue_current_stinger_curvature, blue_current_tail_rotation)
+            reset_walk_phase_on_geometry_change(beetle_blue)
+
+            window.blue_horn_shaft_value = new_blue_shaft
+            window.blue_horn_prong_value = new_blue_prong
+            window.blue_back_body_height_value = new_blue_back_body
+            window.blue_body_length_value = new_blue_body_length
+            window.blue_body_width_value = new_blue_body_width
+            window.blue_leg_length_value = new_blue_leg_length
+            blue_previous_stinger_curvature = blue_current_stinger_curvature
+            blue_previous_tail_rotation = blue_current_tail_rotation
+            # Send config immediately when host changes blue beetle
+            if network_manager and network_manager.connected and network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=True)
+
         # Blue beetle color pickers - only if can edit, throttled during gameplay
         window.GUI.text("")
         if can_edit_blue and show_full_customization:
@@ -18079,82 +18180,7 @@ try:
                     send_local_beetle_config(network_manager, is_host=True)
                 print(f"Randomized B1 colors: {palette}")
 
-        window.GUI.text("")
-        if can_edit_red:
-            window.GUI.text("=== BEETLE 2 GENETICS ===")
-        else:
-            window.GUI.text("=== BEETLE 2 (opponent) ===")
-
-        # Red beetle sliders - only editable if can_edit_red, throttled during gameplay
-        if can_edit_red and show_full_customization:
-            new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 8, 15)
-            new_red_prong = window.GUI.slider_int("Red Horn Prong", window.red_horn_prong_value, 3, 6)
-            new_red_back_body = window.GUI.slider_int("Red Back Body", window.red_back_body_height_value, 4, 8)
-            new_red_body_length = window.GUI.slider_int("Red Body Length", window.red_body_length_value, 9, 14)
-            new_red_body_width = window.GUI.slider_int("Red Body Width", window.red_body_width_value, 5, 9)
-            new_red_leg_length = window.GUI.slider_int("Red Leg Length", window.red_leg_length_value, 6, 10)
-        else:
-            # Show read-only values (opponent's beetle OR throttled during gameplay)
-            window.GUI.text(f"Horn Shaft: {window.red_horn_shaft_value}")
-            window.GUI.text(f"Horn Prong: {window.red_horn_prong_value}")
-            window.GUI.text(f"Back Body: {window.red_back_body_height_value}")
-            window.GUI.text(f"Body Length: {window.red_body_length_value}")
-            window.GUI.text(f"Body Width: {window.red_body_width_value}")
-            window.GUI.text(f"Leg Length: {window.red_leg_length_value}")
-            # Keep values unchanged
-            new_red_shaft = window.red_horn_shaft_value
-            new_red_prong = window.red_horn_prong_value
-            new_red_back_body = window.red_back_body_height_value
-            new_red_body_length = window.red_body_length_value
-            new_red_body_width = window.red_body_width_value
-            new_red_leg_length = window.red_leg_length_value
-
-        # Random red beetle button - only if can edit and not throttled
-        if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 2"):
-            new_red_shaft = random.randint(8, 15)
-            new_red_prong = random.randint(3, 6)
-            new_red_back_body = random.randint(4, 8)
-            new_red_body_length = random.randint(9, 14)
-            new_red_body_width = random.randint(5, 9)
-            new_red_leg_length = random.randint(6, 10)
-            print(f"Randomized red beetle: shaft={new_red_shaft}, prong={new_red_prong}, back={new_red_back_body}, length={new_red_body_length}, width={new_red_body_width}, legs={new_red_leg_length}")
-
-        # Rebuild red beetle geometry if sliders changed OR if scorpion tail curvature changed
-        if (new_red_shaft != window.red_horn_shaft_value or new_red_prong != window.red_horn_prong_value or
-            new_red_back_body != window.red_back_body_height_value or new_red_body_length != window.red_body_length_value or
-            new_red_body_width != window.red_body_width_value or new_red_leg_length != window.red_leg_length_value or
-            (red_horn_type == "scorpion" and abs(beetle_red.stinger_curvature - red_previous_stinger_curvature) > 0.01)):
-
-            # For scorpion type, use red beetle's current animation values
-            red_current_stinger_curvature = 0.0
-            red_current_tail_rotation = 0.0
-            if red_horn_type == "scorpion":
-                red_current_stinger_curvature = beetle_red.stinger_curvature
-                red_current_tail_rotation = beetle_red.tail_rotation_angle
-
-            # Rebuild geometry and reset walk phase to prevent leg jitter
-            rebuild_red_beetle(new_red_shaft, new_red_prong, front_body_height, new_red_back_body, new_red_body_length, new_red_body_width, new_red_leg_length, red_horn_type, red_current_stinger_curvature, red_current_tail_rotation)
-            reset_walk_phase_on_geometry_change(beetle_red)
-
-            window.red_horn_shaft_value = new_red_shaft
-            window.red_horn_prong_value = new_red_prong
-            window.red_back_body_height_value = new_red_back_body
-            window.red_body_length_value = new_red_body_length
-            window.red_body_width_value = new_red_body_width
-            window.red_leg_length_value = new_red_leg_length
-            red_previous_stinger_curvature = red_current_stinger_curvature
-            red_previous_tail_rotation = red_current_tail_rotation
-            # Send config immediately when guest changes red beetle
-            if network_manager and network_manager.connected and not network_manager.is_host:
-                send_local_beetle_config(network_manager, is_host=False)
-
-        # Red beetle stats
-        window.GUI.text(f"B2 Shaft: {window.red_horn_shaft_value} voxels")
-        window.GUI.text(f"B2 Prong: {window.red_horn_prong_value} voxels")
-        red_total_reach = window.red_horn_shaft_value + window.red_horn_prong_value
-        window.GUI.text(f"B2 Total Horn: {red_total_reach} voxels")
-
-        # Red beetle horn type button - throttled during gameplay
+        # === BEETLE 2 TYPE ===
         window.GUI.text("")
         window.GUI.text("=== BEETLE 2 TYPE ===")
         if can_edit_red and show_full_customization:
@@ -18240,6 +18266,74 @@ try:
             )
             reset_walk_phase_on_geometry_change(beetle_red)
             # Send config immediately when guest changes red beetle type
+            if network_manager and network_manager.connected and not network_manager.is_host:
+                send_local_beetle_config(network_manager, is_host=False)
+
+        if can_edit_red:
+            window.GUI.text("=== BEETLE 2 GENETICS ===")
+        else:
+            window.GUI.text("=== BEETLE 2 (opponent) ===")
+
+        # Red beetle sliders - only editable if can_edit_red, throttled during gameplay
+        if can_edit_red and show_full_customization:
+            new_red_shaft = window.GUI.slider_int("Red Horn Shaft", window.red_horn_shaft_value, 8, 15)
+            new_red_prong = window.GUI.slider_int("Red Horn Prong", window.red_horn_prong_value, 3, 6)
+            new_red_back_body = window.GUI.slider_int("Red Back Body", window.red_back_body_height_value, 4, 8)
+            new_red_body_length = window.GUI.slider_int("Red Body Length", window.red_body_length_value, 9, 14)
+            new_red_body_width = window.GUI.slider_int("Red Body Width", window.red_body_width_value, 5, 9)
+            new_red_leg_length = window.GUI.slider_int("Red Leg Length", window.red_leg_length_value, 6, 10)
+        else:
+            # Show read-only values (opponent's beetle OR throttled during gameplay)
+            window.GUI.text(f"Horn Shaft: {window.red_horn_shaft_value}")
+            window.GUI.text(f"Horn Prong: {window.red_horn_prong_value}")
+            window.GUI.text(f"Back Body: {window.red_back_body_height_value}")
+            window.GUI.text(f"Body Length: {window.red_body_length_value}")
+            window.GUI.text(f"Body Width: {window.red_body_width_value}")
+            window.GUI.text(f"Leg Length: {window.red_leg_length_value}")
+            # Keep values unchanged
+            new_red_shaft = window.red_horn_shaft_value
+            new_red_prong = window.red_horn_prong_value
+            new_red_back_body = window.red_back_body_height_value
+            new_red_body_length = window.red_body_length_value
+            new_red_body_width = window.red_body_width_value
+            new_red_leg_length = window.red_leg_length_value
+
+        # Random red beetle button - only if can edit and not throttled
+        if can_edit_red and show_full_customization and window.GUI.button("RANDOMIZE BEETLE 2"):
+            new_red_shaft = random.randint(8, 15)
+            new_red_prong = random.randint(3, 6)
+            new_red_back_body = random.randint(4, 8)
+            new_red_body_length = random.randint(9, 14)
+            new_red_body_width = random.randint(5, 9)
+            new_red_leg_length = random.randint(6, 10)
+            print(f"Randomized red beetle: shaft={new_red_shaft}, prong={new_red_prong}, back={new_red_back_body}, length={new_red_body_length}, width={new_red_body_width}, legs={new_red_leg_length}")
+
+        # Rebuild red beetle geometry if sliders changed OR if scorpion tail curvature changed
+        if (new_red_shaft != window.red_horn_shaft_value or new_red_prong != window.red_horn_prong_value or
+            new_red_back_body != window.red_back_body_height_value or new_red_body_length != window.red_body_length_value or
+            new_red_body_width != window.red_body_width_value or new_red_leg_length != window.red_leg_length_value or
+            (red_horn_type == "scorpion" and abs(beetle_red.stinger_curvature - red_previous_stinger_curvature) > 0.01)):
+
+            # For scorpion type, use red beetle's current animation values
+            red_current_stinger_curvature = 0.0
+            red_current_tail_rotation = 0.0
+            if red_horn_type == "scorpion":
+                red_current_stinger_curvature = beetle_red.stinger_curvature
+                red_current_tail_rotation = beetle_red.tail_rotation_angle
+
+            # Rebuild geometry and reset walk phase to prevent leg jitter
+            rebuild_red_beetle(new_red_shaft, new_red_prong, front_body_height, new_red_back_body, new_red_body_length, new_red_body_width, new_red_leg_length, red_horn_type, red_current_stinger_curvature, red_current_tail_rotation)
+            reset_walk_phase_on_geometry_change(beetle_red)
+
+            window.red_horn_shaft_value = new_red_shaft
+            window.red_horn_prong_value = new_red_prong
+            window.red_back_body_height_value = new_red_back_body
+            window.red_body_length_value = new_red_body_length
+            window.red_body_width_value = new_red_body_width
+            window.red_leg_length_value = new_red_leg_length
+            red_previous_stinger_curvature = red_current_stinger_curvature
+            red_previous_tail_rotation = red_current_tail_rotation
+            # Send config immediately when guest changes red beetle
             if network_manager and network_manager.connected and not network_manager.is_host:
                 send_local_beetle_config(network_manager, is_host=False)
 
