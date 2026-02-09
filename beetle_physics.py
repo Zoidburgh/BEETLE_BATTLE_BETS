@@ -33,39 +33,48 @@ def copy_to_clipboard(text):
     """Copy text to clipboard using Windows API directly (instant, no lag)"""
     try:
         import ctypes
-        from ctypes import wintypes
 
         CF_UNICODETEXT = 13
         GMEM_MOVEABLE = 0x0002
+        GMEM_ZEROINIT = 0x0040
 
-        user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
+        user32 = ctypes.windll.user32
+
+        # Set up function signatures
+        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+
+        # Encode text as UTF-16-LE with null terminator
+        text_utf16 = text.encode('utf-16-le') + b'\x00\x00'
 
         # Open clipboard
-        if not user32.OpenClipboard(0):
+        if not user32.OpenClipboard(None):
             return False
 
         try:
-            # Empty clipboard
             user32.EmptyClipboard()
 
             # Allocate global memory
-            text_bytes = (text + '\0').encode('utf-16-le')
-            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(text_bytes))
+            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, len(text_utf16))
             if not h_mem:
                 return False
 
-            # Lock and copy
+            # Lock, copy, unlock
             p_mem = kernel32.GlobalLock(h_mem)
-            ctypes.memmove(p_mem, text_bytes, len(text_bytes))
-            kernel32.GlobalUnlock(h_mem)
-
-            # Set clipboard data
-            user32.SetClipboardData(CF_UNICODETEXT, h_mem)
-            return True
+            if p_mem:
+                ctypes.memmove(p_mem, text_utf16, len(text_utf16))
+                kernel32.GlobalUnlock(h_mem)
+                user32.SetClipboardData(CF_UNICODETEXT, h_mem)
+                return True
+            return False
         finally:
             user32.CloseClipboard()
-    except:
+    except Exception as e:
+        print(f"[Clipboard] Error: {e}")
         return False
 
 # ============================================================================
