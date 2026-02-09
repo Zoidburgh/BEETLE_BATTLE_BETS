@@ -11283,7 +11283,7 @@ def toggle_referee():
         referee_beam_active = False  # Stop any active beam
         print("Flying referee DISABLED")
 
-def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
+def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016, stay_far=False):
     """Update referee position to stay opposite camera with organic exploration"""
     global referee_ladybug, referee_time
     if referee_ladybug is None or not referee_enabled:
@@ -11301,8 +11301,12 @@ def update_referee_position(camera_angle, mid_x, mid_z, dt=0.016):
     angle_wander += math.sin(referee_time * 0.17) * 0.25  # Secondary slower wave
 
     # Radius breathing: only outward movement (never closer to center)
-    radius_breathe = max(0, math.sin(referee_time * 0.25)) * 4.0
-    radius_breathe += max(0, math.sin(referee_time * 0.6)) * 1.5  # Faster subtle variation
+    if stay_far:
+        # 3rd person mode: stay at max patrol range
+        radius_breathe = 8.0  # Fixed at max distance
+    else:
+        radius_breathe = max(0, math.sin(referee_time * 0.25)) * 4.0
+        radius_breathe += max(0, math.sin(referee_time * 0.6)) * 1.5  # Faster subtle variation
 
     # Apply variations to base position
     final_angle = opposite_angle + angle_wander
@@ -12823,6 +12827,10 @@ camera.yaw = TITLE_CAM_YAW
 
 # Auto-follow camera toggle
 auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to toggle)
+
+# 3rd person follow camera settings
+third_person_camera = False  # Toggle for 3rd person follow cam
+THIRD_PERSON_DISTANCE = 50.0  # Distance behind beetle (horizontal)
 # Camera always uses opposite side view (beetles in foreground, edge in background)
 camera_edge_angle = None  # Previous edge angle for smooth transitions (None = not yet initialized)
 spotlight_strength = 0.633  # Spotlight intensity (adjustable via GUI slider)
@@ -13335,7 +13343,45 @@ try:
         else:
             window.c_key_was_pressed = False
 
-    if auto_follow_enabled and game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
+    # Helper to determine which beetle to follow in 3rd person mode
+    def get_follow_beetle():
+        """Returns the beetle to follow based on game mode"""
+        if game_state == GAME_STATE_ONLINE_PLAY:
+            # Network: follow your own beetle
+            if network_manager and network_manager.is_host:
+                return beetle_blue  # Host is blue
+            else:
+                return beetle_red   # Guest is red
+        else:
+            # Local play: always follow player 1 (blue)
+            return beetle_blue
+
+    # 3rd person follow camera - locked to beetle's back
+    if third_person_camera and game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
+        target_beetle = get_follow_beetle()
+
+        # Use same height and pitch as overhead camera
+        target_y = physics_params["CAMERA_BASE_HEIGHT"]
+        target_pitch = physics_params["CAMERA_PITCH"]
+
+        # Camera position circles around beetle based on its rotation
+        # beetle.rotation is in radians - camera stays behind the beetle's butt
+        angle = target_beetle.rotation + math.pi / 2  # Offset 90 deg to be behind, not beside
+        camera.pos_x = target_beetle.x - math.sin(angle) * THIRD_PERSON_DISTANCE
+        camera.pos_z = target_beetle.z + math.cos(angle) * THIRD_PERSON_DISTANCE
+
+        # Smooth only the height transition
+        lerp_factor = 0.1 * frame_dt * 60.0
+        lerp_factor = min(1.0, lerp_factor)
+        camera.pos_y += (target_y - camera.pos_y) * lerp_factor
+        camera.pitch += (target_pitch - camera.pitch) * lerp_factor
+
+        # Yaw uses same convention as overhead camera (atan2(dx, dz))
+        dx = target_beetle.x - camera.pos_x
+        dz = target_beetle.z - camera.pos_z
+        camera.yaw = math.degrees(math.atan2(dx, dz))
+
+    elif auto_follow_enabled and game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
         # Edge-aware auto-follow camera: track beetles AND nearest arena edge
         # Detect if beetles have fallen off the platform
         FALL_HEIGHT_THRESHOLD = -10.0  # Y position below which beetle is considered fallen
@@ -13495,12 +13541,19 @@ try:
         # Compute beetle midpoint for referee
         ref_mid_x = (beetle_blue.x + beetle_red.x) / 2.0
         ref_mid_z = (beetle_blue.z + beetle_red.z) / 2.0
-        if auto_follow_enabled and camera_edge_angle is not None:
+        if third_person_camera:
+            # In 3rd person, referee stays opposite the camera, shifted 90 deg right
+            # Calculate angle from midpoint to camera position
+            ref_angle = math.atan2(camera.pos_z - ref_mid_z, camera.pos_x - ref_mid_x)
+            ref_angle -= math.radians(90)  # Shift patrol area 90 deg to the right
+            update_referee_position(ref_angle, ref_mid_x, ref_mid_z, frame_dt, stay_far=True)
+        elif auto_follow_enabled and camera_edge_angle is not None:
             ref_angle = camera_edge_angle
+            update_referee_position(ref_angle, ref_mid_x, ref_mid_z, frame_dt)
         else:
             # Camera locked to home position (+Z side), so angle is π/2
             ref_angle = math.pi / 2.0
-        update_referee_position(ref_angle, ref_mid_x, ref_mid_z, frame_dt)
+            update_referee_position(ref_angle, ref_mid_x, ref_mid_z, frame_dt)
 
     perf_monitor.stop('camera')
 
@@ -16974,12 +17027,6 @@ try:
         if window.GUI.button(fs_text):
             toggle_fullscreen_windows()
 
-        # Camera follow toggle
-        cam_button_text = "CAMERA MOVE: ON" if auto_follow_enabled else "CAMERA MOVE: OFF"
-        if window.GUI.button(cam_button_text):
-            auto_follow_enabled = not auto_follow_enabled
-            print(f"Camera tracking: {'ON' if auto_follow_enabled else 'OFF'}")
-
     # === NETWORK / ONLINE PLAY SECTION ===
     if NETWORK_AVAILABLE and not gui_skip_content:
         window.GUI.text("")
@@ -16987,7 +17034,7 @@ try:
         # Show different UI based on game state
         if game_state == GAME_STATE_LOCAL_PLAY:
             # Local play mode - show option to go online
-            window.GUI.text("=== MULTIPLAYER ===")
+            window.GUI.text("=== CONNECT ===")
             if window.GUI.button("HOST ONLINE GAME"):
                 game_state = GAME_STATE_LOBBY_HOST
                 network_manager = NetworkManager()
@@ -17289,24 +17336,102 @@ try:
 
         window.GUI.text("")
 
-    # Ball controls (beetle soccer) - skip during title screen
+    # === CAMERA SECTION ===
     if not gui_skip_content:
         window.GUI.text("")
-        window.GUI.text("=== ARENA MODES ===")
+        window.GUI.text("=== CAMERA ===")
 
+        # Determine current camera mode
+        fixed_camera = not auto_follow_enabled and not third_person_camera
+
+        # MOVING CAMERA (auto-follow)
+        moving_text = "MOVING CAMERA: ON" if auto_follow_enabled else "MOVING CAMERA: OFF"
+        if window.GUI.button(moving_text):
+            auto_follow_enabled = True
+            third_person_camera = False
+            print("Camera mode: MOVING")
+
+        # FIXED CAMERA
+        fixed_text = "FIXED CAMERA: ON" if fixed_camera else "FIXED CAMERA: OFF"
+        if window.GUI.button(fixed_text):
+            auto_follow_enabled = False
+            third_person_camera = False
+            print("Camera mode: FIXED")
+
+        # 3RD PERSON
+        tp_text = "3RD PERSON: ON" if third_person_camera else "3RD PERSON: OFF"
+        if window.GUI.button(tp_text):
+            third_person_camera = True
+            auto_follow_enabled = False
+            print("Camera mode: 3RD PERSON")
+
+    # Arena controls - skip during title screen
+    if not gui_skip_content:
         # Mode toggle buttons (only host can toggle in online mode)
         is_online_guest = game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host
         if is_online_guest:
             # Guest sees mode states but can't toggle
-            current_mode = "Normal"
+            current_mode = "Circle"
             if beetle_ball.active:
                 current_mode = "Ball"
             elif donut_mode:
                 current_mode = "Donut"
             elif x_stage_mode:
                 current_mode = "X Stage"
+            elif figure8_mode:
+                current_mode = "Figure 8"
+            elif yinyang_mode:
+                current_mode = "Yin-Yang"
+            elif hourglass_mode:
+                current_mode = "Hourglass"
+            window.GUI.text("")
+            window.GUI.text("=== ARENA ===")
             window.GUI.text(f"Arena: {current_mode} (host controls)")
         else:
+            # === ARENA SECTION ===
+            window.GUI.text("")
+            window.GUI.text("=== ARENA ===")
+
+            # Determine if circle (default) mode is active
+            circle_mode = not donut_mode and not x_stage_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not beetle_ball.active
+
+            # === CIRCLE MODE (default) ===
+            circle_button_text = "CIRCLE: ON" if circle_mode else "CIRCLE: OFF"
+            if window.GUI.button(circle_button_text):
+                # Disable all other arena modes
+                if beetle_ball.active:
+                    if ball_last_rendered[None] == 1:
+                        num_voxels = ball_cache_size[None]
+                        if num_voxels > 0:
+                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                        ball_last_rendered[None] = 0
+                    else:
+                        clear_ball()
+                    simulation.clear_bowl_perimeter()
+                    beetle_ball.active = False
+                    blue_score = 0
+                    red_score = 0
+                if donut_mode:
+                    donut_mode = False
+                    donut_mode_active[None] = 0
+                if x_stage_mode:
+                    x_stage_mode = False
+                    x_stage_mode_active[None] = 0
+                if figure8_mode:
+                    figure8_mode = False
+                    figure8_mode_active[None] = 0
+                if yinyang_mode:
+                    yinyang_mode = False
+                    yinyang_mode_active[None] = 0
+                if hourglass_mode:
+                    hourglass_mode = False
+                    hourglass_mode_active[None] = 0
+                queue_arena_switch('normal')
+                print("CIRCLE ARENA - classic ring!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
             if window.GUI.button(ball_button_text):
