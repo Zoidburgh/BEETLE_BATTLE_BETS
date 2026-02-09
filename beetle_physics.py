@@ -27,52 +27,23 @@ except ImportError:
     print("[Controller] pygame._sdl2.controller not available - controller support disabled")
 
 # ============================================================================
-# FAST CLIPBOARD COPY (Windows only - no subprocess lag)
+# FAST CLIPBOARD COPY (Windows only - using clip.exe)
 # ============================================================================
 def copy_to_clipboard(text):
-    """Copy text to clipboard using Windows API directly (instant, no lag)"""
+    """Copy text to clipboard using clip.exe (non-blocking, no lag)"""
     try:
-        import ctypes
-
-        CF_UNICODETEXT = 13
-        GMEM_MOVEABLE = 0x0002
-        GMEM_ZEROINIT = 0x0040
-
-        kernel32 = ctypes.windll.kernel32
-        user32 = ctypes.windll.user32
-
-        # Set up function signatures
-        kernel32.GlobalAlloc.argtypes = [ctypes.c_uint, ctypes.c_size_t]
-        kernel32.GlobalAlloc.restype = ctypes.c_void_p
-        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
-        kernel32.GlobalLock.restype = ctypes.c_void_p
-        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
-
-        # Encode text as UTF-16-LE with null terminator
-        text_utf16 = text.encode('utf-16-le') + b'\x00\x00'
-
-        # Open clipboard
-        if not user32.OpenClipboard(None):
-            return False
-
-        try:
-            user32.EmptyClipboard()
-
-            # Allocate global memory
-            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, len(text_utf16))
-            if not h_mem:
-                return False
-
-            # Lock, copy, unlock
-            p_mem = kernel32.GlobalLock(h_mem)
-            if p_mem:
-                ctypes.memmove(p_mem, text_utf16, len(text_utf16))
-                kernel32.GlobalUnlock(h_mem)
-                user32.SetClipboardData(CF_UNICODETEXT, h_mem)
-                return True
-            return False
-        finally:
-            user32.CloseClipboard()
+        import subprocess
+        # Use clip.exe - built into Windows, handles any text size
+        process = subprocess.Popen(
+            'clip.exe',
+            stdin=subprocess.PIPE,
+            shell=True,
+            creationflags=subprocess.CREATE_NO_WINDOW
+        )
+        process.stdin.write(text.encode('utf-8'))
+        process.stdin.close()
+        # Don't wait for process to finish - makes it non-blocking
+        return True
     except Exception as e:
         print(f"[Clipboard] Error: {e}")
         return False
