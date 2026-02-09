@@ -27,6 +27,48 @@ except ImportError:
     print("[Controller] pygame._sdl2.controller not available - controller support disabled")
 
 # ============================================================================
+# FAST CLIPBOARD COPY (Windows only - no subprocess lag)
+# ============================================================================
+def copy_to_clipboard(text):
+    """Copy text to clipboard using Windows API directly (instant, no lag)"""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        CF_UNICODETEXT = 13
+        GMEM_MOVEABLE = 0x0002
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        # Open clipboard
+        if not user32.OpenClipboard(0):
+            return False
+
+        try:
+            # Empty clipboard
+            user32.EmptyClipboard()
+
+            # Allocate global memory
+            text_bytes = (text + '\0').encode('utf-16-le')
+            h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(text_bytes))
+            if not h_mem:
+                return False
+
+            # Lock and copy
+            p_mem = kernel32.GlobalLock(h_mem)
+            ctypes.memmove(p_mem, text_bytes, len(text_bytes))
+            kernel32.GlobalUnlock(h_mem)
+
+            # Set clipboard data
+            user32.SetClipboardData(CF_UNICODETEXT, h_mem)
+            return True
+        finally:
+            user32.CloseClipboard()
+    except:
+        return False
+
+# ============================================================================
 # RESOLUTION PRESETS (for 4K monitor performance)
 # ============================================================================
 # Use command-line: python beetle_physics.py --res 720
@@ -16989,13 +17031,7 @@ try:
             if network_manager and network_manager.lobby_id:
                 window.GUI.text(f"Lobby ID: {network_manager.lobby_id}")
                 if window.GUI.button("COPY LOBBY ID"):
-                    try:
-                        import subprocess
-                        subprocess.run(['powershell', '-command',
-                                      f'Set-Clipboard -Value "{network_manager.lobby_id}"'],
-                                      capture_output=True)
-                    except:
-                        pass
+                    copy_to_clipboard(str(network_manager.lobby_id))
                 # TODO: Re-enable copy link once it works smoothly
                 # if window.GUI.button("COPY INVITE LINK"):
                 #     try:
