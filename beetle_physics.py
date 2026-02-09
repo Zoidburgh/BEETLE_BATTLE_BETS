@@ -1734,7 +1734,7 @@ pending_arena_switch = None  # Tuple: (mode_name, delay_remaining) or None
 ARENA_SWITCH_DELAY = 0.05  # seconds - delay before actual arena geometry changes
 
 # Donut arena constants
-DONUT_INNER_RADIUS = 11  # Must match simulation.py
+DONUT_INNER_RADIUS = 13  # Must match simulation.py
 DONUT_OUTER_RADIUS = 32  # Arena radius
 
 # X stage arena constants
@@ -5029,7 +5029,7 @@ edge_tipping_roll_vel = ti.field(ti.f32, shape=())  # Roll angular velocity
 
 # Donut mode state for GPU kernels (inner edge tipping)
 donut_mode_active = ti.field(ti.i32, shape=())  # 1 if donut mode, 0 otherwise
-DONUT_INNER_EDGE_RADIUS = 11.0  # Inner pit radius for tipping detection
+DONUT_INNER_EDGE_RADIUS = 13.0  # Inner pit radius for tipping detection
 
 # X stage mode state for GPU kernels (corner tipping)
 x_stage_mode_active = ti.field(ti.i32, shape=())  # 1 if x stage mode, 0 otherwise
@@ -13360,26 +13360,98 @@ try:
     if third_person_camera and game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
         target_beetle = get_follow_beetle()
 
+        # Check if tracked beetle is respawning
+        respawn_timer = 0.0
+        if target_beetle == beetle_blue:
+            respawn_timer = g['blue_respawn_timer']
+        elif target_beetle == beetle_red:
+            respawn_timer = g['red_respawn_timer']
+
         # Use same height and pitch as overhead camera
         target_y = physics_params["CAMERA_BASE_HEIGHT"]
         target_pitch = physics_params["CAMERA_PITCH"]
 
-        # Camera position circles around beetle based on its rotation
-        # beetle.rotation is in radians - camera stays behind the beetle's butt
-        angle = target_beetle.rotation + math.pi / 2  # Offset 90 deg to be behind, not beside
-        camera.pos_x = target_beetle.x - math.sin(angle) * THIRD_PERSON_DISTANCE
-        camera.pos_z = target_beetle.z + math.cos(angle) * THIRD_PERSON_DISTANCE
+        # Death breathing: wait 1 second before moving camera to spawn position
+        # Timer counts down from 4.0, so > 3.0 means just died
+        if respawn_timer > 3.0:
+            # Just died - hold camera position, let death breathe
+            pass
+        elif respawn_timer > 0:
+            # Calculate where beetle will spawn and position camera behind it
+            is_blue = (target_beetle == beetle_blue)
 
-        # Smooth only the height transition
-        lerp_factor = 0.1 * frame_dt * 60.0
-        lerp_factor = min(1.0, lerp_factor)
-        camera.pos_y += (target_y - camera.pos_y) * lerp_factor
-        camera.pitch += (target_pitch - camera.pitch) * lerp_factor
+            # Get spawn position based on arena mode (deterministic for most modes)
+            if donut_mode:
+                # Donut is random, just go to center
+                spawn_x, spawn_z, spawn_rot = 0.0, 0.0, 0.0 if is_blue else math.pi
+            elif figure8_mode:
+                if is_blue:
+                    spawn_x, spawn_z, spawn_rot = FIGURE8_LEFT_CENTER_X, 0.0, 0.0
+                else:
+                    spawn_x, spawn_z, spawn_rot = FIGURE8_RIGHT_CENTER_X, 0.0, math.pi
+            elif yinyang_mode:
+                ring_spawn_radius = (YINYANG_INNER_RADIUS + YINYANG_OUTER_RADIUS) / 2
+                if is_blue:
+                    spawn_x, spawn_z, spawn_rot = -ring_spawn_radius, 0.0, 0.0
+                else:
+                    spawn_x, spawn_z, spawn_rot = ring_spawn_radius, 0.0, math.pi
+            elif hourglass_mode:
+                if is_blue:
+                    spawn_x, spawn_z, spawn_rot = -18.0, 0.0, 0.0
+                else:
+                    spawn_x, spawn_z, spawn_rot = 18.0, 0.0, math.pi
+            else:
+                # Normal arena - respawn at center
+                spawn_x, spawn_z, spawn_rot = 0.0, 0.0, 0.0 if is_blue else math.pi
 
-        # Yaw uses same convention as overhead camera (atan2(dx, dz))
-        dx = target_beetle.x - camera.pos_x
-        dz = target_beetle.z - camera.pos_z
-        camera.yaw = math.degrees(math.atan2(dx, dz))
+            # Position camera behind the spawn point
+            angle = spawn_rot + math.pi / 2
+            target_x = spawn_x - math.sin(angle) * THIRD_PERSON_DISTANCE
+            target_z = spawn_z + math.cos(angle) * THIRD_PERSON_DISTANCE
+
+            lerp_factor = 0.08 * frame_dt * 60.0
+            lerp_factor = min(1.0, lerp_factor)
+
+            camera.pos_x += (target_x - camera.pos_x) * lerp_factor
+            camera.pos_z += (target_z - camera.pos_z) * lerp_factor
+            camera.pos_y += (target_y - camera.pos_y) * lerp_factor
+            camera.pitch += (target_pitch - camera.pitch) * lerp_factor
+
+            # Look toward spawn point
+            dx = spawn_x - camera.pos_x
+            dz = spawn_z - camera.pos_z
+            target_yaw = math.degrees(math.atan2(dx, dz))
+            yaw_diff = target_yaw - camera.yaw
+            while yaw_diff > 180.0:
+                yaw_diff -= 360.0
+            while yaw_diff < -180.0:
+                yaw_diff += 360.0
+            camera.yaw += yaw_diff * lerp_factor
+        else:
+            # Smoothly follow behind beetle (lerp, not instant)
+            angle = target_beetle.rotation + math.pi / 2  # Offset 90 deg to be behind
+            target_x = target_beetle.x - math.sin(angle) * THIRD_PERSON_DISTANCE
+            target_z = target_beetle.z + math.cos(angle) * THIRD_PERSON_DISTANCE
+
+            # Smooth camera movement - faster for responsive turning
+            lerp_factor = 0.27 * frame_dt * 60.0
+            lerp_factor = min(1.0, lerp_factor)
+
+            camera.pos_x += (target_x - camera.pos_x) * lerp_factor
+            camera.pos_z += (target_z - camera.pos_z) * lerp_factor
+            camera.pos_y += (target_y - camera.pos_y) * lerp_factor
+            camera.pitch += (target_pitch - camera.pitch) * lerp_factor
+
+            # Smooth yaw transition
+            dx = target_beetle.x - camera.pos_x
+            dz = target_beetle.z - camera.pos_z
+            target_yaw = math.degrees(math.atan2(dx, dz))
+            yaw_diff = target_yaw - camera.yaw
+            while yaw_diff > 180.0:
+                yaw_diff -= 360.0
+            while yaw_diff < -180.0:
+                yaw_diff += 360.0
+            camera.yaw += yaw_diff * lerp_factor
 
     elif auto_follow_enabled and game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
         # Edge-aware auto-follow camera: track beetles AND nearest arena edge

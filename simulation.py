@@ -566,7 +566,7 @@ def init_donut_arena():
 
     # Arena dimensions
     arena_radius = 32
-    inner_radius = 11  # Hole in the middle (1 voxel wider)
+    inner_radius = 13  # Hole in the middle
     floor_y_offset = 33  # Offset to match RENDER_Y_OFFSET in beetle_physics.py
 
     # Build donut floor - ring shape with hole in middle
