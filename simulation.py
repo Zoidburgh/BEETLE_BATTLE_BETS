@@ -208,6 +208,9 @@ BG_ANIM_WAVE = 9       # Water: rolling wave blobs
 BG_ANIM_TREE = 10      # Tree: branch sway with wind effect
 BG_ANIM_SCRUNCH = 11   # Grub: vertical scrunching motion
 BG_ANIM_FISH = 12      # Fish: jumping arc in/out of waves
+BG_ANIM_LAVA = 13      # Lava: slow viscous wave with molten glow
+BG_ANIM_LAVA_SPRAY = 14  # Lava spray: cyclic parabolic eruption arcs
+BG_ANIM_LAVA_VOLCANO = 15  # Lava volcano: scrunches to squirt out eruption
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -242,6 +245,7 @@ THEME_BUTTERFLIES = 6
 THEME_WAVES = 7
 THEME_PALM_TREES = 10
 THEME_STADIUM = 11
+THEME_LAVA = 12
 
 # Track each theme's voxel range
 theme_start_idx = {}   # theme_id -> start index in bg_* arrays
@@ -1015,44 +1019,58 @@ def animate_background(time: ti.f32):
             bg_brightness[i] = 0.6 + 0.4 * (0.5 + 0.5 * pulse)
 
         elif anim == BG_ANIM_BUTTERFLY:
-            # Butterfly: realistic fluttery flight paths
-            # phase = butterfly ID, amplitude = part type, speed = movement seed
+            # Butterfly: fluttery flight with 2-voxel wings that flap together
+            # phase = butterfly ID, amplitude = part type (0=body, 1-4=wings), speed = movement seed
             part_type = amplitude
             move_seed = speed
 
-            # Lissajous-like path (figure-8 / meandering) - desync with move_seed
+            # Lissajous-like path (figure-8 / meandering)
             path_time = time * 0.5 + move_seed * 6.28
-
-            # Two frequencies create elongated figure-8 paths - bigger range
             fly_x = 26.0 * ti.sin(path_time * 1.0)
-            fly_z = 26.0 * ti.sin(path_time * 1.3 + 0.785)  # π/4 offset
+            fly_z = 26.0 * ti.sin(path_time * 1.3 + 0.785)
 
-            # Vertical: slower wave + bobbing coupled to flap
-            climb_wave = ti.sin(path_time * 0.7)  # Slow climb/descend
-            fly_y = 8.0 * climb_wave
+            # Flight direction for wing orientation
+            vel_x = 26.0 * ti.cos(path_time * 1.0) * 0.5
+            vel_z = 26.0 * ti.cos(path_time * 1.3 + 0.785) * 0.65
+            vel_len = ti.max(ti.sqrt(vel_x * vel_x + vel_z * vel_z), 0.01)
+            perp_x = -vel_z / vel_len
+            perp_z = vel_x / vel_len
 
-            # Constant flap speed, desynced by move_seed
-            flap = ti.sin(time * 8.0 + move_seed * 3.0)
+            # Flap cycle: sin wave drives wings AND vertical lift
+            flap_raw = ti.sin(time * 8.0 + move_seed * 3.0)
+            # flap_raw: +1 = wings up (recharging), -1 = wings down (power stroke)
 
-            # Body bob couples with flapping
+            # Vertical lift tied to flap: downstroke pushes up, upstroke sinks
+            # Integrate flap: -cos gives smooth rise on downstroke, fall on upstroke
+            lift = ti.cos(time * 8.0 + move_seed * 3.0)  # +1 after downstroke, -1 after upstroke
+            lift_amount = 1.8  # How much the flap lifts/sinks
+            fly_y = 8.0 * ti.sin(path_time * 0.7) + lift * lift_amount
+
+            flap = flap_raw
             body_bob = 0.3 * ti.abs(flap)
 
-            # Body
             if part_type < 0.5:
+                # Body
                 bg_offset_x[i] = fly_x
                 bg_offset_y[i] = fly_y + body_bob
                 bg_offset_z[i] = fly_z
             else:
-                # Wings - left side (1,3) go one way, right side (2,4) go other
+                # Wings: 1=left inner, 2=right inner, 3=left outer, 4=right outer
                 is_left = (part_type > 0.5 and part_type < 1.5) or (part_type > 2.5 and part_type < 3.5)
+                is_outer = part_type > 2.5
                 wing_side = 1.0 if is_left else -1.0
 
-                # Wings sweep forward during upstroke (figure-8 motion)
-                wing_forward = 0.2 * flap
+                # Inner wings stay close, outer wings extend further
+                spread_dist = 1.4 if is_outer else 0.6
+                # Flap angle: wings go up together, outer flaps more
+                flap_height = 0.8 if is_outer else 0.5
+                flap_y = flap_height * flap
 
-                bg_offset_x[i] = fly_x + wing_side * 1.0 * flap + wing_forward
-                bg_offset_y[i] = fly_y + body_bob + 1.0 * ti.abs(flap)
-                bg_offset_z[i] = fly_z
+                # Position along perpendicular axis (spread) + up/down (flap)
+                side_offset = wing_side * spread_dist
+                bg_offset_x[i] = fly_x + perp_x * side_offset
+                bg_offset_y[i] = fly_y + body_bob + flap_y
+                bg_offset_z[i] = fly_z + perp_z * side_offset
 
             bg_brightness[i] = 0.85 + 0.15 * ti.abs(flap)
 
@@ -1237,6 +1255,105 @@ def animate_background(time: ti.f32):
             wobble_mult = 0.25 + excitement * 0.25
             bg_offset_x[i] = ti.sin(time * 1.2 + phase) * wobble_mult
             bg_offset_z[i] = ti.cos(time * 1.2 + phase) * wobble_mult
+
+        elif anim == BG_ANIM_LAVA:
+            # Lava: slow viscous wave with molten glow cycling
+            # phase = x position, amplitude = z position (same encoding as WAVE)
+            base_x = phase
+            base_z = amplitude
+
+            lava_speed = 0.6
+            lava_freq = 0.08
+            wave1 = ti.sin(time * lava_speed - base_x * lava_freq)
+            wave2 = ti.sin(time * lava_speed * 0.7 - base_z * lava_freq * 0.8)
+            total = (wave1 + wave2 * 0.2) * 1.0
+
+            bg_offset_y[i] = total
+            bg_offset_x[i] = wave1 * 0.08
+            bg_offset_z[i] = wave2 * 0.04
+
+            # Molten glow: peaks glow bright, valleys go dark/crusty
+            glow = 0.5 + 0.5 * total
+            bg_brightness[i] = 0.3 + glow * 1.2
+
+        elif anim == BG_ANIM_LAVA_SPRAY:
+            # Lava spray: burst then quiet — smooth arcs
+            # phase = time offset (burst sync), amplitude = launch height, speed = cycle period
+            cycle_period = speed
+            t_cycle = (time + phase) % cycle_period
+
+            # Burst lasts 35% of cycle, rest is quiet
+            burst_duration = cycle_period * 0.35
+            arc_height = 0.0
+
+            if t_cycle < burst_duration:
+                # ACTIVE: particle is flying
+                normalized = t_cycle / burst_duration  # 0 to 1 within burst
+
+                # Smooth sinusoidal arc — no hard peak, just a smooth hump
+                arc_height = amplitude * ti.sin(normalized * 3.14159)
+
+                # Cone spread: fans out on the way up, holds spread while falling
+                cone_spread = 1.5 + amplitude * 0.15
+                drift_cone = 0.0
+                if normalized < 0.4:
+                    # Rising: spread grows smoothly
+                    rise_ratio = normalized / 0.4
+                    drift_cone = rise_ratio * rise_ratio
+                else:
+                    # Past peak: hold spread
+                    drift_cone = 1.0
+                bg_offset_y[i] = arc_height
+                bg_offset_x[i] = drift_cone * cone_spread * ti.sin(phase * 6.28)
+                bg_offset_z[i] = drift_cone * cone_spread * ti.cos(phase * 6.28)
+
+                # Brightness follows same sin curve — 0 at edges, bright at peak, no pop
+                bg_brightness[i] = 1.4 * ti.sin(normalized * 3.14159)
+            else:
+                # QUIET: reset to origin and invisible
+                bg_offset_y[i] = 0.0
+                bg_offset_x[i] = 0.0
+                bg_offset_z[i] = 0.0
+                bg_brightness[i] = 0.0
+
+        elif anim == BG_ANIM_LAVA_VOLCANO:
+            # Volcano cone: smooth pressure build-up → eruption → settle
+            # phase = eruption_base_offset (synced with spray), speed = cycle_period
+            # amplitude = layer index (0=base, 3=tip)
+            cycle_period = speed
+            t_cycle = (time + phase) % cycle_period
+            layer = amplitude
+            normalized = t_cycle / cycle_period
+
+            # Smooth pressure cycle:
+            # 0.0-0.17: eruption release — reverse of charge but 3x faster
+            # 0.17-0.5: settle back to rest
+            # 0.5-1.0: slow pressure build-up (scrunch down)
+            pressure = 0.0
+            if normalized > 0.5:
+                # Building pressure: smooth quadratic ease-in (slow start, accelerates)
+                build = (normalized - 0.5) * 2.0  # 0 to 1
+                pressure = build * build
+            elif normalized < 0.17:
+                # Eruption release: reverse of charge curve, 3x speed
+                release = normalized / 0.17  # 0 to 1
+                inv = 1.0 - release
+                pressure = inv * inv  # Same quadratic curve, reversed
+            else:
+                # Settling: smooth ease back to rest
+                settle = (normalized - 0.17) / 0.33  # 0 to 1
+                pressure = 0.0
+
+            # Higher layers move more (tip scrunches most)
+            layer_mult = 0.5 + layer * 0.6
+            scrunch = -pressure * layer_mult * 1.8
+            bulge = ti.max(0.0, pressure) * 0.4
+            glow_boost = ti.max(0.0, pressure) * 0.7
+
+            bg_offset_y[i] = scrunch
+            bg_offset_x[i] = bulge * ti.sin(phase * 3.0)
+            bg_offset_z[i] = bulge * ti.cos(phase * 3.0)
+            bg_brightness[i] = 1.0 + glow_boost
 
 @ti.kernel
 def clear_background():
@@ -2036,6 +2153,7 @@ def toggle_theme(theme_id: int):
             THEME_WAVES: lambda: add_waves(3600),
             THEME_PALM_TREES: lambda: add_tree_branches(12),
             THEME_STADIUM: lambda: add_stadium(),
+            THEME_LAVA: lambda: add_lava(),
         }
         if theme_id in add_functions:
             add_functions[theme_id]()
@@ -2279,6 +2397,190 @@ def add_grass(count: int = 625, seed: int = 42):
     active_themes.add(THEME_GRASS)
     num_bg_voxels[None] = idx
     print(f"Added {idx - start_idx} grass voxels (total: {idx})")
+
+def add_lava(seed: int = 42):
+    """Add lava ground with dark crust, molten flow, eruption sprays, and floating embers."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_LAVA in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    lava_y_base = 17
+    circle_radius = 85.0
+
+    # === PASS 1: DARK CRUST - static cooled rock base ===
+    crust_grid = 35
+    crust_spacing = (circle_radius * 2) / crust_grid
+
+    for gx in range(crust_grid):
+        for gz in range(crust_grid):
+            if idx >= MAX_BACKGROUND_VOXELS - 200:
+                break
+
+            x = -circle_radius + gx * crust_spacing + random.uniform(-1.5, 1.5)
+            z = -circle_radius + gz * crust_spacing + random.uniform(-1.5, 1.5)
+
+            dist = math.sqrt(x * x + z * z)
+            if dist > circle_radius:
+                continue
+
+            bg_positions[idx] = ti.Vector([x, lava_y_base - 0.5 + random.uniform(-0.3, 0.3), z])
+            # Dark charcoal/brown rock
+            g = random.uniform(0.08, 0.2)
+            bg_colors[idx] = ti.Vector([g * 1.2, g * 0.5, g * 0.2])
+            bg_size[idx] = random.uniform(2.5, 3.0)
+            bg_anim_type[idx] = BG_ANIM_NONE
+            bg_anim_speed[idx] = 0.0
+            bg_anim_amplitude[idx] = 0.0
+            bg_phase[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === PASS 2: MOLTEN LAVA FLOW - glowing animated surface ===
+    lava_grid = 50
+    lava_spacing = (circle_radius * 2) / lava_grid
+
+    for gx in range(lava_grid):
+        for gz in range(lava_grid):
+            if idx >= MAX_BACKGROUND_VOXELS - 120:
+                break
+
+            x = -circle_radius + gx * lava_spacing + random.uniform(-0.3, 0.3)
+            z = -circle_radius + gz * lava_spacing + random.uniform(-0.3, 0.3)
+
+            dist = math.sqrt(x * x + z * z)
+            if dist > circle_radius:
+                continue
+
+            bg_positions[idx] = ti.Vector([x, lava_y_base + random.uniform(-0.2, 0.2), z])
+            # Bright red molten base color (brightness modulation creates glow)
+            r = random.uniform(0.85, 1.0)
+            g = random.uniform(0.08, 0.18)
+            b = random.uniform(0.01, 0.05)
+            bg_colors[idx] = ti.Vector([r, g, b])
+            bg_size[idx] = random.uniform(1.0, 1.3)
+            bg_anim_type[idx] = BG_ANIM_LAVA
+            bg_anim_speed[idx] = 1.0
+            bg_anim_amplitude[idx] = z  # Store z position for cross-wave
+            bg_phase[idx] = x  # Store x position for primary wave
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === PASS 3: ERUPTION SPRAYS - gentle bubbles + occasional BOOM eruptions ===
+    arena_avoid_radius = 35.0  # Stay outside the basic circular arena (~32 + margin)
+    num_eruption_points = 15
+    for ep in range(num_eruption_points):
+        if idx >= MAX_BACKGROUND_VOXELS - 80:
+            break
+
+        # Random eruption point within lava field, OUTSIDE the arena
+        placed = False
+        ep_x, ep_z = 0.0, 0.0
+        for _ in range(30):
+            ep_angle = random.uniform(0, 2 * math.pi)
+            ep_radius = random.uniform(15, 75)
+            ep_x = math.cos(ep_angle) * ep_radius
+            ep_z = math.sin(ep_angle) * ep_radius
+            if math.sqrt(ep_x * ep_x + ep_z * ep_z) > arena_avoid_radius:
+                placed = True
+                break
+        if not placed:
+            continue
+
+        # ~20% chance of BOOM eruption, rest are gentle bubbles
+        is_boom = random.random() < 0.2
+
+        if is_boom:
+            # BOOM: huge dramatic plume, long build-up then explosive burst
+            particles_per_eruption = random.randint(60, 200)
+            cycle_period = random.uniform(10.0, 16.0)  # Long cycle — mostly quiet
+            launch_height_base = 38.0
+            launch_height_var = 25.0
+            spread = 3.0
+            voxel_size_min = 0.15
+            voxel_size_max = 0.35
+        else:
+            # Gentle: lazy slow bubbles, smooth arcs
+            particles_per_eruption = random.randint(3, 5)
+            cycle_period = random.uniform(5.0, 8.0)  # Slower cycle for smoother motion
+            launch_height_base = 4.0
+            launch_height_var = 3.0
+            spread = 1.5
+            voxel_size_min = 0.2
+            voxel_size_max = 0.4
+
+        # All particles share a base offset so the eruption point bursts together
+        eruption_base_offset = random.uniform(0, cycle_period)
+
+        # Build a mini volcano cone — animated to scrunch before eruption
+        volcano_layers = 4
+        for v in range(volcano_layers):
+            if idx >= MAX_BACKGROUND_VOXELS - 200:
+                break
+            v_size = 4.2 - v * 0.75  # 4.2, 3.45, 2.7, 1.95
+            v_y = lava_y_base + 1.5 + v * 2.0
+            rock_r = 0.15 + v * 0.12
+            rock_g = 0.06 + v * 0.03
+            rock_b = 0.03 + v * 0.01
+            bg_positions[idx] = ti.Vector([ep_x, v_y, ep_z])
+            bg_colors[idx] = ti.Vector([rock_r, rock_g, rock_b])
+            bg_size[idx] = v_size
+            bg_anim_type[idx] = BG_ANIM_LAVA_VOLCANO
+            bg_anim_speed[idx] = cycle_period
+            bg_anim_amplitude[idx] = float(v)  # Layer index
+            bg_phase[idx] = eruption_base_offset  # Synced with spray timing
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        for p in range(particles_per_eruption):
+            if idx >= MAX_BACKGROUND_VOXELS - 60:
+                break
+
+            # Stagger within a SHORT burst window (not spread across whole cycle)
+            burst_window = cycle_period * 0.09  # Stagger within 9% of cycle
+            time_offset = eruption_base_offset + random.uniform(0, burst_window)
+            launch_height = launch_height_base + random.uniform(0, launch_height_var)
+
+            bg_positions[idx] = ti.Vector([ep_x + random.uniform(-0.5, 0.5), lava_y_base + 8.0, ep_z + random.uniform(-0.5, 0.5)])
+            # Fiery bright lava colors
+            if is_boom:
+                bg_colors[idx] = ti.Vector([1.0, random.uniform(0.4, 0.7), random.uniform(0.05, 0.2)])
+            else:
+                bg_colors[idx] = ti.Vector([1.0, random.uniform(0.25, 0.5), random.uniform(0.02, 0.1)])
+            bg_size[idx] = random.uniform(voxel_size_min, voxel_size_max)
+            bg_anim_type[idx] = BG_ANIM_LAVA_SPRAY
+            bg_anim_speed[idx] = cycle_period
+            bg_anim_amplitude[idx] = launch_height
+            bg_phase[idx] = time_offset
+            bg_brightness[idx] = 0.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    theme_start_idx[THEME_LAVA] = start_idx
+    theme_count[THEME_LAVA] = idx - start_idx
+    active_themes.add(THEME_LAVA)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} lava voxels (total: {idx})")
 
 def add_fireflies(count: int = 2800, seed: int = 42):
     """Add fireflies to the background (appends to existing voxels)."""
@@ -2527,21 +2829,22 @@ def add_butterflies(count: int = 60, seed: int = 42):
         bg_active[idx] = 1
         idx += 1
 
-        # Wings
-        wing_offsets = [
-            (-0.8, 0.2, 0.0, 1.0),
-            (0.8, 0.2, 0.0, 2.0),
-            (-0.6, 0.0, 0.0, 3.0),
-            (0.6, 0.0, 0.0, 4.0),
+        # Wings: 2 per side (inner + outer), 4 total
+        # part_type encoding: 1=left inner, 2=right inner, 3=left outer, 4=right outer
+        wing_parts = [
+            (1.0, 0.55),   # left inner - bigger
+            (2.0, 0.55),   # right inner - bigger
+            (3.0, 0.4),    # left outer - smaller tip
+            (4.0, 0.4),    # right outer - smaller tip
         ]
 
-        for wx, wy, wz, wing_id in wing_offsets:
+        for wing_id, w_size in wing_parts:
             if idx >= MAX_BACKGROUND_VOXELS:
                 break
 
-            bg_positions[idx] = ti.Vector([base_x + wx, base_y + wy, base_z + wz])
-            bg_colors[idx] = color
-            bg_size[idx] = 0.6 if wing_id <= 2 else 0.45
+            bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
+            bg_colors[idx] = color if wing_id <= 2 else color * 0.8
+            bg_size[idx] = w_size
             bg_anim_type[idx] = BG_ANIM_BUTTERFLY
             bg_phase[idx] = butterfly_id
             bg_anim_amplitude[idx] = wing_id

@@ -17968,12 +17968,6 @@ try:
         if window.GUI.button(theme_label("FIREFLY", simulation.THEME_FIREFLIES)):
             simulation.toggle_theme(simulation.THEME_FIREFLIES)
 
-        if window.GUI.button(theme_label("WATER", simulation.THEME_WATER)):
-            simulation.toggle_theme(simulation.THEME_WATER)
-
-        if window.GUI.button(theme_label("JELLY", simulation.THEME_JELLYFISH)):
-            simulation.toggle_theme(simulation.THEME_JELLYFISH)
-
         if window.GUI.button(theme_label("BTTRFLY", simulation.THEME_BUTTERFLIES)):
             simulation.toggle_theme(simulation.THEME_BUTTERFLIES)
 
@@ -17985,6 +17979,9 @@ try:
 
         if window.GUI.button(theme_label("STADIUM", simulation.THEME_STADIUM)):
             simulation.toggle_theme(simulation.THEME_STADIUM)
+
+        if window.GUI.button(theme_label("LAVA", simulation.THEME_LAVA)):
+            simulation.toggle_theme(simulation.THEME_LAVA)
 
         if window.GUI.button("CLEAR ALL"):
             simulation.clear_all_themes()
