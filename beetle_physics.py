@@ -12991,6 +12991,7 @@ last_time = time.time()
 accumulator = 0.0  # Time accumulator for fixed timestep physics
 shadows_were_placed = False  # Track if shadows existed last frame (for cleanup)
 background_time = 0.0  # Time accumulator for background animation (continuous, not fixed timestep)
+render_frame = 0  # Render frame counter for background animation frame-skipping
 
 # Per-beetle horn types (independent type selection for blue and red beetles)
 blue_horn_type = "rhino"  # Blue beetle horn type: "rhino", "stag", "hercules", or "scorpion"
@@ -17141,8 +17142,10 @@ try:
 
     # Animate background voxels (stars, grass, etc.)
     background_time += frame_dt
+    render_frame += 1
     if simulation.num_bg_voxels[None] > 0:
-        simulation.animate_background(background_time)
+        if render_frame % simulation.BG_ANIM_FREQUENCY == 0:
+            simulation.animate_background(background_time)
         simulation.decay_stadium_excitement(frame_dt)
 
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid,

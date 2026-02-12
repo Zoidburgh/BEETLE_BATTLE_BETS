@@ -70,6 +70,7 @@ BACKEND, BACKEND_REASON = choose_backend()
 CLEANUP_FREQUENCY_DEBRIS = 2 if BACKEND == 'cpu' else 30  # Every 0.5s on GPU
 CLEANUP_FREQUENCY_SPRAY = 2 if BACKEND == 'cpu' else 30
 CLEANUP_FREQUENCY_SILK = 5 if BACKEND == 'cpu' else 60
+BG_ANIM_FREQUENCY = 1 if BACKEND == 'cpu' else 2  # Background animation: every frame on CPU, every 2nd on GPU
 
 # Check if user wants fresh kernel compilation (bypasses cache that might cause variance)
 FRESH_COMPILE = '--fresh' in sys.argv
@@ -890,6 +891,11 @@ def animate_background(time: ti.f32):
             continue
 
         anim = bg_anim_type[i]
+
+        # Skip static voxels entirely - they keep their init values (brightness=1, offset=0)
+        if anim == BG_ANIM_NONE:
+            continue
+
         phase = bg_phase[i]
         speed = bg_anim_speed[i]
         amplitude = bg_anim_amplitude[i]
@@ -2125,7 +2131,7 @@ def add_grass(count: int = 625, seed: int = 42):
     ]
 
     # === PASS 1: GROUND COVER - dense carpet of fat low voxels ===
-    ground_grid = 70  # Denser grid for fewer gaps
+    ground_grid = 40  # Fewer, bigger voxels for same coverage
     ground_spacing = (circle_radius * 2) / ground_grid
 
     for gx in range(ground_grid):
@@ -2140,15 +2146,15 @@ def add_grass(count: int = 625, seed: int = 42):
             if dist > circle_radius:
                 continue
 
-            bg_positions[idx] = ti.Vector([x, grass_y_base + random.uniform(-0.3, 0.3), z])
+            bg_positions[idx] = ti.Vector([x, grass_y_base - 0.5 + random.uniform(-0.3, 0.3), z])
             # Dark earthy green
             g = random.uniform(0.2, 0.35)
             bg_colors[idx] = ti.Vector([g * 0.4, g, g * 0.25])
-            bg_size[idx] = random.uniform(1.5, 1.9)
-            bg_anim_type[idx] = BG_ANIM_SWAY
-            bg_anim_speed[idx] = 0.5  # Very subtle sway
-            bg_anim_amplitude[idx] = 0.15
-            bg_phase[idx] = x * 0.05
+            bg_size[idx] = random.uniform(2.2, 2.7)
+            bg_anim_type[idx] = BG_ANIM_NONE  # Static - no animation needed for ground cover
+            bg_anim_speed[idx] = 0.0
+            bg_anim_amplitude[idx] = 0.0
+            bg_phase[idx] = 0.0
             bg_brightness[idx] = 1.0
             bg_offset_x[idx] = 0.0
             bg_offset_y[idx] = 0.0
@@ -2157,7 +2163,7 @@ def add_grass(count: int = 625, seed: int = 42):
             idx += 1
 
     # === PASS 2: GRASS BLADE CLUSTERS with varied heights and flowers ===
-    num_clusters = 180
+    num_clusters = 144
     min_cluster_dist = 8.0  # Minimum distance between cluster centers
     cluster_centers = []
 
@@ -2234,10 +2240,10 @@ def add_grass(count: int = 625, seed: int = 42):
                     random.uniform(0.05, 0.15) * brightness
                 ])
 
-                # Fatter base, tapered (20% smaller than before)
-                blade_size = 1.23 - h * 0.20
-                if blade_size < 0.4:
-                    blade_size = 0.4
+                # Fatter base, tapered
+                blade_size = 1.48 - h * 0.24
+                if blade_size < 0.48:
+                    blade_size = 0.48
                 bg_size[idx] = blade_size
 
                 bg_anim_type[idx] = BG_ANIM_SWAY
