@@ -341,6 +341,31 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
                 voxel_colors[write_idx] = ti.math.vec3(1.0, 1.0, 0.0)
                 voxel_radii[write_idx] = PROJECTILE_RADIUS
 
+    # ===== PHASE 6: Extract background voxels (stars, grass, etc.) =====
+    # Only process if backgrounds are active (skip entirely when off)
+    if simulation.bg_theme_active[None] > 0:
+        bg_count = simulation.num_bg_voxels[None]
+        for idx in range(bg_count):
+            if simulation.bg_active[idx] == 0:
+                continue
+
+            write_idx = ti.atomic_add(num_voxels[None], 1)
+            if write_idx < MAX_VOXELS:
+                # Get base position and apply animation offsets
+                pos = simulation.bg_positions[idx]
+                pos.x += simulation.bg_offset_x[idx]
+                pos.y += simulation.bg_offset_y[idx]
+                pos.z += simulation.bg_offset_z[idx]
+
+                voxel_positions[write_idx] = pos
+
+                # Apply brightness modulation to color
+                brightness = simulation.bg_brightness[idx]
+                base_color = simulation.bg_colors[idx]
+                voxel_colors[write_idx] = base_color * brightness
+
+                voxel_radii[write_idx] = simulation.bg_size[idx]
+
 @ti.kernel
 def init_gradient_background():
     """Initialize gradient background (forest pit atmosphere)"""

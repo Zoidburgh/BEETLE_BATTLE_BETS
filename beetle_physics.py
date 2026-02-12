@@ -12990,6 +12990,7 @@ physics_params = {
 last_time = time.time()
 accumulator = 0.0  # Time accumulator for fixed timestep physics
 shadows_were_placed = False  # Track if shadows existed last frame (for cleanup)
+background_time = 0.0  # Time accumulator for background animation (continuous, not fixed timestep)
 
 # Per-beetle horn types (independent type selection for blue and red beetles)
 blue_horn_type = "rhino"  # Blue beetle horn type: "rhino", "stag", "hercules", or "scorpion"
@@ -13199,7 +13200,11 @@ simulation.init_donut_arena()
 simulation.init_x_stage_arena()
 simulation.init_figure8_arena()
 simulation.init_yinyang_arena()
+simulation.init_square_bridge_arena()
 simulation.init_beetle_arena()  # Restore normal arena
+
+# Warm up background animation kernel
+simulation.animate_background(0.0)
 
 setup_title_screen()
 
@@ -17125,6 +17130,12 @@ try:
         render_front_strength = front_light_strength * light_factor
 
     canvas.set_background_color(window.background_color)
+
+    # Animate background voxels (stars, grass, etc.)
+    background_time += frame_dt
+    if simulation.num_bg_voxels[None] > 0:
+        simulation.animate_background(background_time)
+
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid,
                     dynamic_lighting=dynamic_lighting_enabled,
                     spotlight_pos=render_spotlight_pos,
@@ -17922,6 +17933,62 @@ try:
                 window.background_color = default_bg
                 window.board_color = default_board
                 simulation.board_color[None] = ti.Vector([0.41, 0.39, 0.37])
+
+        # === BACKGROUND EFFECTS ===
+        window.GUI.text("")
+        window.GUI.text("=== BACKGROUND ===")
+
+        current_bg_theme = simulation.bg_theme_active[None]
+        theme_names = ["OFF", "STARS", "GRASS", "FIREFLIES", "WATER"]
+        theme_name = theme_names[current_bg_theme] if current_bg_theme < len(theme_names) else "OFF"
+        window.GUI.text(f"Theme: {theme_name}")
+
+        # Theme buttons
+        if window.GUI.button("STARS"):
+            simulation.generate_stars(2400)
+            # Set dark background for stars
+            window.background_color = (0.02, 0.02, 0.05)
+            print("Stars background enabled")
+
+        if window.GUI.button("GRASS"):
+            simulation.generate_grass(1250)
+            print("Grass background enabled")
+
+        if window.GUI.button("FIREFLIES"):
+            simulation.generate_fireflies(930)
+            # Slightly darker for fireflies
+            window.background_color = (0.08, 0.12, 0.08)
+            print("Fireflies background enabled")
+
+        if window.GUI.button("BRANCHES"):
+            simulation.generate_water(2250)
+            window.background_color = (0.05, 0.08, 0.12)
+            print("Branches background enabled")
+
+        if window.GUI.button("JELLYFISH"):
+            simulation.generate_jellyfish(240)
+            window.background_color = (0.02, 0.03, 0.08)
+            print("Jellyfish background enabled")
+
+        if window.GUI.button("BUTTERFLIES"):
+            simulation.generate_butterflies(80)
+            window.background_color = (0.08, 0.12, 0.18)
+            print("Butterflies background enabled")
+
+        if window.GUI.button("WAVES"):
+            simulation.generate_waves(3600)
+            window.background_color = (0.02, 0.05, 0.12)
+            print("Waves background enabled")
+
+        if window.GUI.button("PALM TREES"):
+            simulation.generate_tree_branches(12)
+            window.background_color = (0.04, 0.06, 0.03)
+            print("Palm trees background enabled")
+
+        if window.GUI.button("BG OFF"):
+            simulation.clear_background()
+            simulation.bg_theme_active[None] = 0
+            print("Background effects disabled")
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:

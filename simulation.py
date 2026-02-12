@@ -188,6 +188,44 @@ projectile_radius = ti.field(dtype=ti.f32, shape=MAX_PROJECTILES)  # Collision r
 # Ball system (beetle soccer ball) - now handled by beetle_ball Beetle object in beetle_physics.py
 # (No longer using Taichi fields; ball is a Beetle with horn_type="ball")
 
+# ============================================================
+# BACKGROUND VOXEL SYSTEM - Animated backgrounds (stars, grass, etc.)
+# ============================================================
+MAX_BACKGROUND_VOXELS = 8000  # Budget for all background effects
+
+# Animation types
+BG_ANIM_NONE = 0      # Static, no animation
+BG_ANIM_TWINKLE = 1   # Brightness oscillation (stars)
+BG_ANIM_SWAY = 2      # Horizontal wave motion (grass, seaweed)
+BG_ANIM_DRIFT = 3     # Slow position movement (clouds, snow)
+BG_ANIM_FLICKER = 4   # Random on/off (sparks)
+BG_ANIM_FIREFLY = 5   # Firefly: gentle wandering path + glow pulse
+BG_ANIM_WATER = 6     # Water: flowing stream movement
+BG_ANIM_JELLYFISH = 7 # Jellyfish: pulsing bell with trailing tentacles
+BG_ANIM_BUTTERFLY = 8 # Butterfly: flapping wings with drift
+BG_ANIM_WAVE = 9       # Water: rolling wave blobs
+BG_ANIM_TREE = 10      # Tree: branch sway with wind effect
+
+# Background voxel fields
+bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
+bg_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)         # RGB color
+bg_phase = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                    # Animation phase offset
+bg_size = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                     # Voxel radius
+bg_anim_type = ti.field(dtype=ti.i32, shape=MAX_BACKGROUND_VOXELS)                # Which animation
+bg_anim_speed = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)               # Animation speed
+bg_anim_amplitude = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)           # Animation amplitude
+bg_active = ti.field(dtype=ti.i32, shape=MAX_BACKGROUND_VOXELS)                   # 1 = active
+num_bg_voxels = ti.field(dtype=ti.i32, shape=())
+
+# Animation output fields (updated each frame)
+bg_brightness = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)               # Current brightness multiplier
+bg_offset_x = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                 # Current x offset
+bg_offset_y = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                 # Current y offset
+bg_offset_z = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                 # Current z offset
+
+# Background theme state
+bg_theme_active = ti.field(dtype=ti.i32, shape=())  # 0=off, 1=stars, 2=grass, 3=fireflies, etc.
+
 # Voxel types
 EMPTY = 0
 STEEL = 1
@@ -810,6 +848,834 @@ def init_square_bridge_arena():
                 voxel_type[i, floor_y_offset + 1, k] = EMPTY
 
     print(f"SQUARE BRIDGE ARENA constructed - rectangular ring with long bridge")
+
+# ============================================================
+# BACKGROUND VOXEL ANIMATION SYSTEM
+# ============================================================
+
+@ti.kernel
+def animate_background(time: ti.f32):
+    """
+    Animate all background voxels based on their animation type.
+    Called once per frame. Updates brightness and offset fields.
+    """
+    for i in range(num_bg_voxels[None]):
+        if bg_active[i] == 0:
+            continue
+
+        anim = bg_anim_type[i]
+        phase = bg_phase[i]
+        speed = bg_anim_speed[i]
+        amplitude = bg_anim_amplitude[i]
+        t = time * speed + phase
+
+        # Default values
+        bg_brightness[i] = 1.0
+        bg_offset_x[i] = 0.0
+        bg_offset_y[i] = 0.0
+
+        if anim == BG_ANIM_TWINKLE:
+            # Brightness oscillation: 0.6 to 1.0 range for subtle twinkle
+            bg_brightness[i] = 0.8 + 0.2 * ti.sin(t)
+
+        elif anim == BG_ANIM_SWAY:
+            # Horizontal wave motion (grass swaying) with gust waves
+            # Gust modulation - slow wave that increases/decreases intensity
+            gust = 0.5 + 0.5 * ti.sin(t * 0.3 + phase * 0.5)  # Slow gust wave
+            gust_amp = amplitude * (0.4 + 0.6 * gust)  # Range from 40% to 100% amplitude
+            bg_offset_x[i] = gust_amp * ti.sin(t)
+            # Slight y offset for more organic feel
+            bg_offset_y[i] = gust_amp * 0.3 * ti.sin(t * 1.5 + 0.5)
+
+        elif anim == BG_ANIM_DRIFT:
+            # Slow position drift (clouds, ambient particles)
+            bg_offset_x[i] = amplitude * ti.sin(t * 0.3)
+            bg_offset_y[i] = amplitude * 0.5 * ti.cos(t * 0.2)
+
+        elif anim == BG_ANIM_FLICKER:
+            # Random-ish flicker using sin of different frequencies
+            flicker = ti.sin(t * 7.0) * ti.sin(t * 11.0) * ti.sin(t * 13.0)
+            bg_brightness[i] = 0.5 + 0.5 * ti.max(0.0, flicker)
+
+        elif anim == BG_ANIM_FIREFLY:
+            # Firefly: wandering path + realistic flash (on/off blink)
+            # Bigger wandering path
+            bg_offset_x[i] = amplitude * 1.5 * ti.sin(t * 0.5) * ti.cos(t * 0.25)
+            bg_offset_y[i] = amplitude * ti.sin(t * 0.4) * 0.8
+            bg_offset_z[i] = amplitude * 0.8 * ti.sin(t * 0.35 + 1.5)
+
+            # Firefly flash: gradual glow that pulses smoothly
+            flash_cycle = ti.sin(t * 0.8 + phase * 2.0)
+            # Map -1 to 1 range to 0.35 to 1.0 (never fully dark)
+            bg_brightness[i] = 0.35 + 0.65 * (flash_cycle * 0.5 + 0.5)
+
+        elif anim == BG_ANIM_WATER:
+            # Water: Whirlpool - spiral into center, respawn at edge
+            # phase = initial angle, amplitude = initial radius, speed = speed multiplier
+            initial_angle = phase
+            initial_radius = amplitude
+            speed_mult = speed
+
+            # Whirlpool parameters
+            outer_radius = 55.0
+            inner_radius = 5.0
+            radius_range = outer_radius - inner_radius
+            rotation_speed = 0.25  # Slow rotation
+            inward_speed = 3.0  # Slow inward drift
+
+            # Current angle - rotates over time
+            current_angle = initial_angle + t * rotation_speed * speed_mult
+
+            # Current radius - shrinks over time, wraps back to outer
+            time_offset = initial_radius / radius_range  # Stagger based on start pos
+            radius_cycle = (t * inward_speed / radius_range + time_offset) % 1.0
+            current_radius = outer_radius - radius_cycle * radius_range
+
+            # Convert polar to cartesian
+            new_x = ti.cos(current_angle) * current_radius
+            new_z = ti.sin(current_angle) * current_radius
+
+            # Offset from original position
+            orig_x = ti.cos(initial_angle) * initial_radius
+            orig_z = ti.sin(initial_angle) * initial_radius
+            bg_offset_x[i] = new_x - orig_x
+            bg_offset_z[i] = new_z - orig_z
+
+            # Descend as approaching center (like a drain)
+            depth = (1.0 - current_radius / outer_radius) * 8.0
+            bg_offset_y[i] = -depth
+
+            # Subtle breathing effect - slow global pulse
+            breathe = 0.75 + 0.25 * ti.sin(t * 0.12)
+            bg_brightness[i] = breathe
+
+        elif anim == BG_ANIM_JELLYFISH:
+            # Jellyfish: pulsing float with tentacle lag
+            # phase = unique ID for this jellyfish
+            # amplitude = vertical offset within jellyfish (0=bell, 1+=tentacles)
+            # speed = base Y position
+            jelly_id = phase
+            part_type = amplitude  # 0=bell, 1-3=tentacles
+            base_y = speed
+
+            # Vertical bob - hypnotic wave effect
+            bob_speed = 0.075
+            bob = 2.0 * ti.sin(t * bob_speed + jelly_id * 0.5)
+
+            # Pulse effect - hypnotic wave
+            pulse_speed = 0.1
+            pulse = ti.sin(t * pulse_speed + jelly_id * 0.3)
+
+            # Bell movement
+            if part_type < 0.5:
+                # Bell - direct movement
+                bg_offset_y[i] = bob
+                bg_offset_x[i] = pulse * 0.3
+                bg_offset_z[i] = 0.0
+            else:
+                # Tentacles - lag behind bell, sway more
+                lag = 0.3 * part_type
+                bg_offset_y[i] = bob - lag - part_type * 0.5
+                bg_offset_x[i] = pulse * (0.5 + part_type * 0.3)
+                bg_offset_z[i] = 0.3 * ti.sin(t * 0.3 + part_type)
+
+            # Gentle glow pulse
+            bg_brightness[i] = 0.6 + 0.4 * (0.5 + 0.5 * pulse)
+
+        elif anim == BG_ANIM_BUTTERFLY:
+            # Butterfly: realistic fluttery flight paths
+            # phase = butterfly ID, amplitude = part type, speed = movement seed
+            part_type = amplitude
+            move_seed = speed
+
+            # Lissajous-like path (figure-8 / meandering) - desync with move_seed
+            path_time = time * 0.5 + move_seed * 6.28
+
+            # Two frequencies create elongated figure-8 paths - bigger range
+            fly_x = 26.0 * ti.sin(path_time * 1.0)
+            fly_z = 26.0 * ti.sin(path_time * 1.3 + 0.785)  # π/4 offset
+
+            # Vertical: slower wave + bobbing coupled to flap
+            climb_wave = ti.sin(path_time * 0.7)  # Slow climb/descend
+            fly_y = 8.0 * climb_wave
+
+            # Constant flap speed, desynced by move_seed
+            flap = ti.sin(time * 8.0 + move_seed * 3.0)
+
+            # Body bob couples with flapping
+            body_bob = 0.3 * ti.abs(flap)
+
+            # Body
+            if part_type < 0.5:
+                bg_offset_x[i] = fly_x
+                bg_offset_y[i] = fly_y + body_bob
+                bg_offset_z[i] = fly_z
+            else:
+                # Wings - left side (1,3) go one way, right side (2,4) go other
+                is_left = (part_type > 0.5 and part_type < 1.5) or (part_type > 2.5 and part_type < 3.5)
+                wing_side = 1.0 if is_left else -1.0
+
+                # Wings sweep forward during upstroke (figure-8 motion)
+                wing_forward = 0.2 * flap
+
+                bg_offset_x[i] = fly_x + wing_side * 1.0 * flap + wing_forward
+                bg_offset_y[i] = fly_y + body_bob + 1.0 * ti.abs(flap)
+                bg_offset_z[i] = fly_z
+
+            bg_brightness[i] = 0.85 + 0.15 * ti.abs(flap)
+
+        elif anim == BG_ANIM_WAVE:
+            # Water: rolling wave blobs
+            # phase = x position for wave sync
+            # amplitude = z position for cross-wave
+            base_x = phase
+            base_z = amplitude
+
+            # Primary wave rolling in X direction
+            wave_speed = 0.8
+            wave_freq = 0.15
+            wave1 = ti.sin(time * wave_speed + base_x * wave_freq)
+
+            # Secondary cross-wave in Z direction
+            wave2 = ti.sin(time * wave_speed * 0.7 + base_z * wave_freq * 1.2 + 1.0)
+
+            # Combined wave height
+            wave_height = 2.0
+            total_wave = (wave1 + wave2 * 0.5) * wave_height / 1.5
+
+            bg_offset_y[i] = total_wave
+
+        elif anim == BG_ANIM_TREE:
+            # Tree branch sway - wind effect
+            # amplitude controls how much this part sways (trunk=0.3, branches=1.5+)
+            # speed varies slightly per tree for desync
+
+            # Slow wind gust wave
+            gust = 0.5 + 0.5 * ti.sin(t * 0.2 + phase * 0.8)
+            sway_amp = amplitude * (0.3 + 0.7 * gust)
+
+            # Horizontal sway (mostly X, some Z)
+            bg_offset_x[i] = sway_amp * ti.sin(t * 0.7 + phase * 0.5)
+            bg_offset_z[i] = sway_amp * 0.4 * ti.sin(t * 0.5 + phase * 0.3 + 1.0)
+
+            # Slight vertical bob
+            bg_offset_y[i] = sway_amp * 0.15 * ti.sin(t * 0.9 + phase * 0.4)
+
+@ti.kernel
+def clear_background():
+    """Clear all background voxels."""
+    num_bg_voxels[None] = 0
+    bg_theme_active[None] = 0
+    # Reset all slots fully
+    for i in range(MAX_BACKGROUND_VOXELS):
+        bg_active[i] = 0
+        bg_brightness[i] = 1.0
+        bg_offset_x[i] = 0.0
+        bg_offset_y[i] = 0.0
+        bg_offset_z[i] = 0.0
+        bg_size[i] = 0.0
+
+def generate_stars(count: int = 2400, seed: int = 42):
+    """
+    Generate stars on the outer edges, far from arena.
+    Dense starfield surrounding the play area.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+    min_dist = 55  # Stars must be at least this far from center
+
+    for _ in range(count * 3):  # Generate extra, reject those too close
+        if idx >= MAX_BACKGROUND_VOXELS or idx >= count:
+            break
+
+        # Distribute across large outer area
+        x = random.uniform(-120, 120)
+        y = random.uniform(-20, 120)
+        z = random.uniform(-120, 120)
+
+        # Only keep stars far from arena center
+        dist_xz = math.sqrt(x*x + z*z)
+        if dist_xz < min_dist:
+            continue  # Too close to arena
+
+        bg_positions[idx] = ti.Vector([x, y, z])
+
+        # Color: white to pale blue, slight variation
+        blue_tint = random.uniform(0.0, 0.2)
+        brightness = random.uniform(0.6, 1.0)
+        bg_colors[idx] = ti.Vector([
+            brightness * (1.0 - blue_tint * 0.5),
+            brightness * (1.0 - blue_tint * 0.3),
+            brightness
+        ])
+
+        # Size: varied, some bigger bright stars
+        if random.random() < 0.1:
+            bg_size[idx] = random.uniform(0.3, 0.45)  # Bigger bright stars
+        else:
+            bg_size[idx] = random.uniform(0.12, 0.25)
+
+        # Animation: twinkle with varied speeds
+        bg_anim_type[idx] = BG_ANIM_TWINKLE
+        bg_anim_speed[idx] = random.uniform(1.5, 4.0)
+        bg_anim_amplitude[idx] = 0.0
+        bg_phase[idx] = random.uniform(0, 6.28)
+
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
+    num_bg_voxels[None] = idx
+    bg_theme_active[None] = 1  # Stars theme
+    print(f"Generated {idx} stars for background")
+
+def generate_grass(count: int = 2500, seed: int = 42):
+    """
+    Generate grass carpet just below the arena (where beetles fall into).
+    Each blade is 3 voxels tall for actual length.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+
+    # Flat carpet below arena floor (floor is at y=33)
+    grass_y_base = 22  # Lower, 3 voxels down
+
+    # Uniform grid of grass blades
+    grid_size = int(math.sqrt(count))  # e.g. 35x35 for 1250
+    spacing = 110.0 / grid_size  # Cover -55 to 55
+
+    blade_idx = 0
+    for gx in range(grid_size):
+        for gz in range(grid_size):
+            if idx >= MAX_BACKGROUND_VOXELS - 2:
+                break
+
+            # Grid with random offset for natural look
+            x = -55 + gx * spacing + random.uniform(-0.9, 0.9)
+            z = -55 + gz * spacing + random.uniform(-0.9, 0.9)
+
+            # Base height with slight variation
+            y_base = grass_y_base + random.uniform(0, 1.5)
+
+            # Shared properties for this blade
+            green_var = random.uniform(0.35, 0.7)
+            blade_phase = x * 0.08
+            blade_speed = 1.0
+
+            # Stack 3 voxels vertically for each grass blade
+            for h in range(3):
+                if idx >= MAX_BACKGROUND_VOXELS:
+                    break
+
+                y = y_base + h * 1.0  # Vertical spacing (bigger)
+
+                bg_positions[idx] = ti.Vector([x, y, z])
+
+                # Color: darker at base, brighter at top
+                brightness = 0.7 + h * 0.15
+                bg_colors[idx] = ti.Vector([
+                    random.uniform(0.1, 0.25) * brightness,
+                    green_var * brightness,
+                    random.uniform(0.05, 0.15) * brightness
+                ])
+
+                # Size: slightly smaller at top (tapered blade) - 30% bigger again
+                bg_size[idx] = 0.76 - h * 0.135
+
+                # Animation: top sways more than bottom - more intense
+                bg_anim_type[idx] = BG_ANIM_SWAY
+                bg_anim_speed[idx] = blade_speed
+                bg_anim_amplitude[idx] = 0.6 + h * 0.8  # Bottom: 0.6, Top: 2.2
+                bg_phase[idx] = blade_phase
+
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    num_bg_voxels[None] = idx
+    bg_theme_active[None] = 2  # Grass theme
+    print(f"Generated {idx} grass voxels for background")
+
+def generate_fireflies(count: int = 2800, seed: int = 42):
+    """
+    Generate floating fireflies on outer edges, far from arena.
+    Fireflies wander in gentle paths and glow.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+    min_dist = 55  # Fireflies must be at least this far from center (further from arena)
+
+    for _ in range(count * 4):  # Generate extra, reject those too close
+        if idx >= MAX_BACKGROUND_VOXELS or idx >= count:
+            break
+
+        # Scattered in outer area - use ring distribution for better coverage
+        angle = random.uniform(0, 2 * math.pi)
+        dist = random.uniform(min_dist, 110)  # Ring from min_dist outward
+        x = math.cos(angle) * dist
+        z = math.sin(angle) * dist
+        y = random.uniform(15, 90)
+
+        bg_positions[idx] = ti.Vector([x, y, z])
+
+        # Color: warm yellow/green glow (more natural firefly color)
+        bg_colors[idx] = ti.Vector([
+            random.uniform(0.8, 1.0),
+            random.uniform(0.9, 1.0),
+            random.uniform(0.1, 0.3)
+        ])
+
+        # Size: tiny glowing dots
+        bg_size[idx] = random.uniform(0.05, 0.12)
+
+        # Animation: firefly wandering path + glow
+        bg_anim_type[idx] = BG_ANIM_FIREFLY
+        bg_anim_speed[idx] = random.uniform(0.4, 1.0)
+        bg_anim_amplitude[idx] = random.uniform(8.0, 20.0)  # Wander radius - long distances
+        bg_phase[idx] = random.uniform(0, 6.28)
+
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
+    num_bg_voxels[None] = idx
+    bg_theme_active[None] = 3  # Fireflies theme
+    print(f"Generated {idx} fireflies for background")
+
+def generate_water(count: int = 3000, seed: int = 42):
+    """
+    Generate whirlpool water particles in uniform concentric rings.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+    water_y_base = 22
+
+    outer_radius = 55.0
+    inner_radius = 5.0  # Dead center zone
+
+    # Fermat spiral (golden angle) - no gaps mathematically
+    golden_angle = math.pi * (3.0 - math.sqrt(5.0))  # ~137.5 degrees
+    num_particles = 5000
+
+    for i in range(num_particles):
+        if idx >= MAX_BACKGROUND_VOXELS:
+            break
+
+        # Golden angle spiral - each point rotated by golden angle
+        angle = i * golden_angle
+        # Radius grows with sqrt for even density
+        radius = inner_radius + (outer_radius - inner_radius) * math.sqrt(i / num_particles)
+
+        # Convert to cartesian for base position
+        x = math.cos(angle) * radius
+        z = math.sin(angle) * radius
+        y = water_y_base
+
+        bg_positions[idx] = ti.Vector([x, y, z])
+
+        # Tree branch browns/tans
+        bg_colors[idx] = ti.Vector([0.45, 0.30, 0.15])
+
+        # Size - 30% smaller
+        bg_size[idx] = random.uniform(0.22, 0.32)
+
+        # Animation: store initial angle and radius
+        bg_anim_type[idx] = BG_ANIM_WATER
+        bg_phase[idx] = angle  # Initial angle
+        bg_anim_amplitude[idx] = radius  # Initial radius
+        bg_anim_speed[idx] = 1.0  # All same speed
+
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
+    num_bg_voxels[None] = idx
+    bg_theme_active[None] = 4  # Water theme
+    print(f"Generated {idx} water particles")
+
+def generate_jellyfish(count: int = 30, seed: int = 42):
+    """
+    Generate jellyfish floating around the SIDES of the arena.
+    Each jellyfish is 5-6 voxels: 1 bell + 4-5 tentacles.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+    arena_radius = 65  # Stay outside this (further from arena)
+    outer_radius = 110  # Don't go beyond this
+    min_y = 20
+    max_y = 60
+
+    # Evenly space jellyfish in rings
+    num_rings = 3  # Rings at different heights for hypnotic wave
+    per_ring = count // num_rings
+    jelly = 0
+
+    for ring in range(num_rings):
+        ring_y = min_y + (max_y - min_y) * ring / (num_rings - 1) if num_rings > 1 else (min_y + max_y) / 2
+        ring_radius = arena_radius + (outer_radius - arena_radius) * (ring + 1) / (num_rings + 1)
+
+        for j in range(per_ring):
+            if idx >= MAX_BACKGROUND_VOXELS - 6:
+                break
+
+            # Evenly spaced angle
+            angle = (j / per_ring) * 2 * math.pi
+
+            base_x = math.cos(angle) * ring_radius
+            base_z = math.sin(angle) * ring_radius
+            base_y = ring_y
+
+            # Jellyfish colors - cycle through
+            color_choice = jelly % 3
+            if color_choice == 0:
+                color = ti.Vector([0.9, 0.4, 0.7])  # Pink
+            elif color_choice == 1:
+                color = ti.Vector([0.5, 0.3, 0.9])  # Purple
+            else:
+                color = ti.Vector([0.3, 0.8, 0.9])  # Cyan
+
+            jelly_id = float(jelly)
+            jelly += 1
+
+            # Bell (main body) - 1 voxel
+            bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
+            bg_colors[idx] = color
+            bg_size[idx] = random.uniform(0.6, 0.9)
+            bg_anim_type[idx] = BG_ANIM_JELLYFISH
+            bg_phase[idx] = jelly_id
+            bg_anim_amplitude[idx] = 0.0  # Bell
+            bg_anim_speed[idx] = base_y
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+            # Tentacles - 4-5 voxels hanging below
+            num_tentacles = random.randint(4, 5)
+            for t in range(num_tentacles):
+                if idx >= MAX_BACKGROUND_VOXELS:
+                    break
+
+                # Offset tentacles slightly from center
+                t_angle = (t / num_tentacles) * 2 * math.pi
+                t_offset = 0.4
+                t_x = base_x + math.cos(t_angle) * t_offset
+                t_z = base_z + math.sin(t_angle) * t_offset
+                t_y = base_y - 0.8 - t * 0.3  # Hang below bell
+
+                bg_positions[idx] = ti.Vector([t_x, t_y, t_z])
+                bg_colors[idx] = color * 0.7  # Slightly dimmer
+                bg_size[idx] = random.uniform(0.25, 0.4)
+                bg_anim_type[idx] = BG_ANIM_JELLYFISH
+                bg_phase[idx] = jelly_id
+                bg_anim_amplitude[idx] = float(t + 1)  # Tentacle index
+                bg_anim_speed[idx] = base_y
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    num_bg_voxels[None] = idx
+    bg_theme_active[None] = 5  # Jellyfish theme
+    print(f"Generated {idx} voxels for {count} jellyfish")
+
+def generate_butterflies(count: int = 60, seed: int = 42):
+    """
+    Generate butterflies floating around the sides of the arena.
+    Each butterfly is 5 voxels: 1 body + 4 wings.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+    arena_radius = 75  # Stay outside this (further from arena)
+    outer_radius = 120  # Don't go beyond this
+    min_y = 35
+    max_y = 75
+
+    # Butterfly colors - vibrant
+    colors = [
+        ti.Vector([1.0, 0.5, 0.1]),   # Orange
+        ti.Vector([0.9, 0.2, 0.6]),   # Magenta
+        ti.Vector([0.3, 0.6, 1.0]),   # Blue
+        ti.Vector([1.0, 0.9, 0.2]),   # Yellow
+        ti.Vector([0.6, 0.2, 0.9]),   # Purple
+    ]
+
+    # Evenly space butterflies around arena
+    for b in range(count):
+        if idx >= MAX_BACKGROUND_VOXELS - 9:
+            break
+
+        # Evenly spaced angle
+        angle = (b / count) * 2 * math.pi
+        radius = arena_radius + (b % 3) * 15  # 3 rings
+        base_x = math.cos(angle) * radius
+        base_z = math.sin(angle) * radius
+        base_y = min_y + (b % 5) * 8  # Vary heights
+
+        color = colors[b % len(colors)]
+        butterfly_id = float(b)
+        move_seed = float(b) * 0.37  # Each butterfly unique, evenly spread
+
+        # Body - 1 voxel (small, dark)
+        bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
+        bg_colors[idx] = color * 0.4  # Darker body
+        bg_size[idx] = 0.45
+        bg_anim_type[idx] = BG_ANIM_BUTTERFLY
+        bg_phase[idx] = butterfly_id
+        bg_anim_amplitude[idx] = 0.0  # Body
+        bg_anim_speed[idx] = move_seed
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
+        # Wings - 2 voxels each (outer big, inner small) = 8 voxels total
+        # (wx, wy, wz, part_id, size)
+        wing_offsets = [
+            # Upper left wing - outer (big) and inner (small)
+            (-0.6, 0.2, 0.0, 1.0, 0.8),    # Upper left outer
+            (-0.3, 0.15, 0.0, 1.0, 0.5),   # Upper left inner
+            # Upper right wing
+            (0.6, 0.2, 0.0, 2.0, 0.8),     # Upper right outer
+            (0.3, 0.15, 0.0, 2.0, 0.5),    # Upper right inner
+            # Lower left wing
+            (-0.5, -0.1, 0.0, 3.0, 0.6),   # Lower left outer
+            (-0.25, -0.05, 0.0, 3.0, 0.4), # Lower left inner
+            # Lower right wing
+            (0.5, -0.1, 0.0, 4.0, 0.6),    # Lower right outer
+            (0.25, -0.05, 0.0, 4.0, 0.4),  # Lower right inner
+        ]
+
+        for wx, wy, wz, part_id, size in wing_offsets:
+            if idx >= MAX_BACKGROUND_VOXELS:
+                break
+
+            bg_positions[idx] = ti.Vector([base_x + wx, base_y + wy, base_z + wz])
+            bg_colors[idx] = color
+            bg_size[idx] = size
+            bg_anim_type[idx] = BG_ANIM_BUTTERFLY
+            bg_phase[idx] = butterfly_id
+            bg_anim_amplitude[idx] = part_id  # Wing type
+            bg_anim_speed[idx] = move_seed
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    num_bg_voxels[None] = idx
+    bg_theme_active[None] = 6  # Butterfly theme
+    print(f"Generated {idx} voxels for {count} butterflies")
+
+def generate_waves(count: int = 1600, seed: int = 42):
+    """
+    Generate water wave blobs in a grid pattern below arena.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+    water_y_base = 17  # 5 voxels lower than grass
+
+    # Uniform grid of water blobs
+    grid_size = int(math.sqrt(count))  # e.g. 40x40
+    spacing = 110.0 / grid_size
+
+    for gx in range(grid_size):
+        for gz in range(grid_size):
+            if idx >= MAX_BACKGROUND_VOXELS:
+                break
+
+            # Grid with minimal random offset
+            x = -55 + gx * spacing + random.uniform(-0.15, 0.15)
+            z = -55 + gz * spacing + random.uniform(-0.15, 0.15)
+            y = water_y_base + random.uniform(0, 0.3)
+
+            bg_positions[idx] = ti.Vector([x, y, z])
+
+            # Water colors - blue/cyan, varies slightly
+            depth_var = random.uniform(0.8, 1.0)
+            bg_colors[idx] = ti.Vector([
+                0.1 * depth_var,
+                0.4 * depth_var,
+                0.8 * depth_var
+            ])
+
+            # Size - 50% bigger
+            bg_size[idx] = random.uniform(0.68, 0.9)
+
+            # Animation: store x and z for wave sync
+            bg_anim_type[idx] = BG_ANIM_WAVE
+            bg_phase[idx] = x  # X position for primary wave
+            bg_anim_amplitude[idx] = z  # Z position for cross-wave
+            bg_anim_speed[idx] = 1.0
+
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    num_bg_voxels[None] = idx
+    bg_theme_active[None] = 7  # Waves theme
+    print(f"Generated {idx} water wave blobs")
+
+def generate_tree_branches(count: int = 12, seed: int = 42):
+    """
+    Generate BIG palm trees around the arena sides.
+    Tall solid trunks with bold fronds at the top.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+    tree_radius = 90  # Distance from center - further from arena
+    base_y = -15      # Trees start very low (adding to bottom)
+
+    tree_id = 0
+
+    for t in range(count):
+        if idx >= MAX_BACKGROUND_VOXELS - 200:
+            break
+
+        # Evenly spaced around the circle
+        angle = (t / count) * 2 * math.pi
+        tree_x = math.cos(angle) * tree_radius
+        tree_z = math.sin(angle) * tree_radius
+
+        tree_phase = float(tree_id)
+        tree_id += 1
+
+        # Palm trunk color - tan/brown
+        trunk_color = ti.Vector([0.45, 0.32, 0.18])
+        # Frond color - tropical green
+        frond_color = ti.Vector([0.25, 0.50, 0.20])
+
+        # === TALL SOLID TRUNK (dense voxels, no gaps) ===
+        trunk_height = random.randint(38, 42)  # More segments - same top, lower bottom
+        trunk_spacing = 1.5  # Tight spacing for solid trunk
+
+        for h in range(trunk_height):
+            y = base_y + h * trunk_spacing
+            # Trunk tapers slightly - starts thick
+            trunk_size = 1.5 - h * 0.015
+            if trunk_size < 0.8:
+                trunk_size = 0.8
+
+            # Trunk barely sways - very subtle
+            sway_amp = 0.02 + h * 0.003
+
+            bg_positions[idx] = ti.Vector([tree_x, y, tree_z])
+            bg_colors[idx] = trunk_color
+            bg_size[idx] = trunk_size
+            bg_anim_type[idx] = BG_ANIM_TREE
+            bg_phase[idx] = tree_phase
+            bg_anim_amplitude[idx] = sway_amp
+            bg_anim_speed[idx] = random.uniform(0.9, 1.1)
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # === BOLD PALM FRONDS AT TOP ===
+        tree_top_y = base_y + trunk_height * trunk_spacing
+
+        # 10 big fronds radiating outward and drooping down
+        num_fronds = 10
+        for f in range(num_fronds):
+            frond_angle = angle + (f / num_fronds) * 2 * math.pi
+
+            # Each frond is multiple voxels in a line going outward and down
+            frond_length = random.randint(8, 10)
+            for seg in range(frond_length):
+                # Frond curves outward and droops
+                reach = 1.5 + seg * 1.8
+                droop = seg * seg * 0.12  # Quadratic droop
+
+                f_x = tree_x + math.cos(frond_angle) * reach
+                f_z = tree_z + math.sin(frond_angle) * reach
+                f_y = tree_top_y + 3.0 - droop
+
+                # Fronds taper toward tips
+                frond_size = 0.9 - seg * 0.05
+                if frond_size < 0.35:
+                    frond_size = 0.35
+
+                # Gentle sway - stays connected
+                sway_amp = 0.3 + seg * 0.08
+
+                bg_positions[idx] = ti.Vector([f_x, f_y, f_z])
+                bg_colors[idx] = frond_color
+                bg_size[idx] = frond_size
+                bg_anim_type[idx] = BG_ANIM_TREE
+                bg_phase[idx] = tree_phase + f * 0.15  # Slight phase offset per frond
+                bg_anim_amplitude[idx] = sway_amp
+                bg_anim_speed[idx] = random.uniform(0.8, 1.2)
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    num_bg_voxels[None] = idx
+    bg_theme_active[None] = 10  # Tree theme
+    print(f"Generated {idx} palm tree voxels ({tree_id} trees)")
 
 @ti.kernel
 def render_bowl_perimeter():
