@@ -205,6 +205,8 @@ BG_ANIM_JELLYFISH = 7 # Jellyfish: pulsing bell with trailing tentacles
 BG_ANIM_BUTTERFLY = 8 # Butterfly: flapping wings with drift
 BG_ANIM_WAVE = 9       # Water: rolling wave blobs
 BG_ANIM_TREE = 10      # Tree: branch sway with wind effect
+BG_ANIM_SCRUNCH = 11   # Grub: vertical scrunching motion
+BG_ANIM_FISH = 12      # Fish: jumping arc in/out of waves
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -225,6 +227,30 @@ bg_offset_z = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)               
 
 # Background theme state
 bg_theme_active = ti.field(dtype=ti.i32, shape=())  # 0=off, 1=stars, 2=grass, 3=fireflies, etc.
+
+# ============================================================
+# STACKABLE THEME SYSTEM - Multiple themes can be active at once
+# ============================================================
+# Theme IDs (match bg_theme_active values)
+THEME_STARS = 1
+THEME_GRASS = 2
+THEME_FIREFLIES = 3
+THEME_WATER = 4
+THEME_JELLYFISH = 5
+THEME_BUTTERFLIES = 6
+THEME_WAVES = 7
+THEME_PALM_TREES = 10
+THEME_STADIUM = 11
+
+# Track each theme's voxel range
+theme_start_idx = {}   # theme_id -> start index in bg_* arrays
+theme_count = {}       # theme_id -> number of voxels for this theme
+active_themes = set()  # which themes are currently active
+
+# Stadium crowd excitement (for score reactions)
+stadium_excitement = ti.field(dtype=ti.f32, shape=())  # 0-1, current excitement level
+stadium_excitement_target = ti.field(dtype=ti.f32, shape=())  # Target to ramp toward
+bg_angle = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)  # Angle around arena
 
 # Voxel types
 EMPTY = 0
@@ -1025,25 +1051,145 @@ def animate_background(time: ti.f32):
             bg_brightness[i] = 0.85 + 0.15 * ti.abs(flap)
 
         elif anim == BG_ANIM_WAVE:
-            # Water: rolling wave blobs
-            # phase = x position for wave sync
-            # amplitude = z position for cross-wave
+            # Water: rolling wave blobs with traveling motion
+            # phase = x position, amplitude = z position
             base_x = phase
             base_z = amplitude
 
-            # Primary wave rolling in X direction
-            wave_speed = 0.8
-            wave_freq = 0.15
-            wave1 = ti.sin(time * wave_speed + base_x * wave_freq)
+            # FASTER wave speed for energetic ocean
+            wave_speed = 1.8
+            wave_freq = 0.12
 
-            # Secondary cross-wave in Z direction
-            wave2 = ti.sin(time * wave_speed * 0.7 + base_z * wave_freq * 1.2 + 1.0)
+            # Primary traveling wave (minus sign = waves travel forward)
+            wave1 = ti.sin(time * wave_speed - base_x * wave_freq)
 
-            # Combined wave height
-            wave_height = 2.0
-            total_wave = (wave1 + wave2 * 0.5) * wave_height / 1.5
+            # Secondary cross-wave
+            wave2 = ti.sin(time * wave_speed * 0.8 - base_z * wave_freq * 0.9)
 
+            # Combined height (more dramatic)
+            wave_height = 2.5
+            total_wave = (wave1 + wave2 * 0.6) * wave_height / 1.5
             bg_offset_y[i] = total_wave
+
+            # TRAVELING MOTION - waves roll across surface
+            travel_amount = 0.8
+            bg_offset_x[i] = wave1 * travel_amount * 0.5
+            bg_offset_z[i] = wave2 * travel_amount * 0.3
+
+            # SIZE PULSING - bigger at peaks
+            size_pulse = 1.0 + total_wave * 0.08
+            bg_brightness[i] = ti.max(0.7, ti.min(1.4, size_pulse))
+
+        elif anim == BG_ANIM_FISH:
+            # Sea serpent/dragon snaking through waves
+            # phase = angle offset for this serpent's position
+            # amplitude = segment index (0-19=body, 100+=antenna, 300+=whisker)
+            # speed = serpent ID
+            seg_idx = amplitude
+            serpent_id = speed
+
+            # Serpent swims in a circle around the arena
+            swim_speed = 0.31
+            base_angle = phase + time * swim_speed
+            swim_radius = 50.0
+            wave_freq = 0.35
+            wave_speed = 2.75
+            wave_height = 7.0
+
+            if seg_idx < 100:
+                # === MAIN BODY SEGMENTS ===
+                segment_spacing = 0.055
+                seg_angle = base_angle - seg_idx * segment_spacing
+
+                px = ti.cos(seg_angle) * swim_radius
+                pz = ti.sin(seg_angle) * swim_radius
+
+                snake_wave = ti.sin(seg_idx * wave_freq - time * wave_speed)
+                y_offset = snake_wave * wave_height
+
+                head_bias = ti.max(0.0, 1.5 - seg_idx * 0.15)
+                y_offset += head_bias
+
+                # Flapping tail
+                tail_flap = 0.0
+                if seg_idx > 14:
+                    tail_intensity = (seg_idx - 14) * 0.7
+                    tail_flap = ti.sin(time * 7.0 + seg_idx * 0.4) * tail_intensity
+
+                flap_x = -ti.sin(seg_angle) * tail_flap
+                flap_z = ti.cos(seg_angle) * tail_flap
+
+                bg_offset_x[i] = px - bg_positions[i].x + flap_x
+                bg_offset_z[i] = pz - bg_positions[i].z + flap_z
+                bg_offset_y[i] = y_offset
+
+                if y_offset > 0:
+                    bg_brightness[i] = 1.0
+                else:
+                    bg_brightness[i] = 0.5
+
+            elif seg_idx < 300:
+                # === ANTENNAS - on left/right sides of head ===
+                antenna_side = 0 if seg_idx < 200 else 1
+                antenna_idx = int(seg_idx) % 100
+
+                # Get exact head position
+                head_angle = base_angle
+                head_x = ti.cos(head_angle) * swim_radius
+                head_z = ti.sin(head_angle) * swim_radius
+                head_wave = ti.sin(0.0 * wave_freq - time * wave_speed)
+                head_y = head_wave * wave_height + 1.5
+
+                # Radial direction (inward/outward from circle center) = left/right of head
+                radial_x = ti.cos(head_angle)
+                radial_z = ti.sin(head_angle)
+
+                # Forward direction (tangent to circle = direction of travel)
+                forward_x = -ti.sin(head_angle)
+                forward_z = ti.cos(head_angle)
+
+                # Side offset - closer together
+                side_offset = 2.0 if antenna_side == 0 else -2.0
+
+                # Forward lean - antennas angle ~60 deg forward
+                forward_lean = antenna_idx * 1.0
+
+                # Root position shifted forward on head
+                root_forward = 2.0
+
+                # Head velocity for compensation
+                head_vel = -wave_speed * ti.cos(0.0 * wave_freq - time * wave_speed)
+
+                # When head dives (vel negative), push root forward to stay attached
+                root_compensate = -head_vel * 0.7
+
+                # Cascaded delay for natural bend
+                seg_delay = antenna_idx * 0.1
+                delayed_time = time - seg_delay
+
+                # Each segment's delayed velocity for forward/back bend
+                delayed_vel = -wave_speed * ti.cos(0.0 * wave_freq - delayed_time * wave_speed)
+
+                # Fling back more
+                flap_amount = delayed_vel * 1.0 + delayed_vel * antenna_idx * 0.06
+
+                # Subtle V-spread - tips splay outward slightly
+                spread = antenna_idx * 0.25 * (1.0 if antenna_side == 0 else -1.0)
+
+                # Root crawls forward when head dives
+                ax = head_x + radial_x * (side_offset + spread) + forward_x * (root_forward + root_compensate + forward_lean + flap_amount)
+                az = head_z + radial_z * (side_offset + spread) + forward_z * (root_forward + root_compensate + forward_lean + flap_amount)
+                ay = head_y + 2.0 + antenna_idx * 0.85
+
+                bg_offset_x[i] = ax - bg_positions[i].x
+                bg_offset_z[i] = az - bg_positions[i].z
+                bg_offset_y[i] = ay
+
+                if ay > 0:
+                    bg_brightness[i] = 1.0
+                else:
+                    bg_brightness[i] = 0.5
+
 
         elif anim == BG_ANIM_TREE:
             # Tree branch sway - wind effect
@@ -1060,6 +1206,31 @@ def animate_background(time: ti.f32):
 
             # Slight vertical bob
             bg_offset_y[i] = sway_amp * 0.15 * ti.sin(t * 0.9 + phase * 0.4)
+
+        elif anim == BG_ANIM_SCRUNCH:
+            # Grub scrunching motion - segments compress and expand
+            # amplitude = segment index (0=bottom, 3=head)
+            # phase = shared phase for this grub
+            seg_idx = amplitude
+
+            # Get excitement level - use squared for smoother transition
+            raw_excitement = stadium_excitement[None]
+            excitement = raw_excitement * raw_excitement  # Eases out gradually
+
+            # Base scrunch speed
+            base_speed = 2.2 + excitement * 1.2
+
+            # Normal scrunch
+            scrunch = ti.sin(time * base_speed + phase - seg_idx * 0.8)
+
+            # Vertical compression - more intense idle
+            squish_mult = 0.4 + excitement * 0.4
+            bg_offset_y[i] = scrunch * squish_mult * (seg_idx - 1.5)
+
+            # Horizontal wobble - more visible
+            wobble_mult = 0.25 + excitement * 0.25
+            bg_offset_x[i] = ti.sin(time * 1.2 + phase) * wobble_mult
+            bg_offset_z[i] = ti.cos(time * 1.2 + phase) * wobble_mult
 
 @ti.kernel
 def clear_background():
@@ -1150,7 +1321,7 @@ def generate_grass(count: int = 2500, seed: int = 42):
     idx = 0
 
     # Flat carpet below arena floor (floor is at y=33)
-    grass_y_base = 22  # Lower, 3 voxels down
+    grass_y_base = 17  # Lower, 3 voxels down
 
     # Uniform grid of grass blades
     grid_size = int(math.sqrt(count))  # e.g. 35x35 for 1250
@@ -1336,8 +1507,8 @@ def generate_jellyfish(count: int = 30, seed: int = 42):
     idx = 0
     arena_radius = 65  # Stay outside this (further from arena)
     outer_radius = 110  # Don't go beyond this
-    min_y = 20
-    max_y = 60
+    min_y = 22
+    max_y = 42
 
     # Evenly space jellyfish in rings
     num_rings = 3  # Rings at different heights for hypnotic wave
@@ -1550,8 +1721,8 @@ def generate_waves(count: int = 1600, seed: int = 42):
                 0.8 * depth_var
             ])
 
-            # Size - 50% bigger
-            bg_size[idx] = random.uniform(0.68, 0.9)
+            # Size - 20% bigger
+            bg_size[idx] = random.uniform(0.95, 1.12)
 
             # Animation: store x and z for wave sync
             bg_anim_type[idx] = BG_ANIM_WAVE
@@ -1656,8 +1827,8 @@ def generate_tree_branches(count: int = 12, seed: int = 42):
                 if frond_size < 0.35:
                     frond_size = 0.35
 
-                # Gentle sway - stays connected
-                sway_amp = 0.3 + seg * 0.08
+                # More sway on fronds
+                sway_amp = 0.6 + seg * 0.2
 
                 bg_positions[idx] = ti.Vector([f_x, f_y, f_z])
                 bg_colors[idx] = frond_color
@@ -1676,6 +1847,1050 @@ def generate_tree_branches(count: int = 12, seed: int = 42):
     num_bg_voxels[None] = idx
     bg_theme_active[None] = 10  # Tree theme
     print(f"Generated {idx} palm tree voxels ({tree_id} trees)")
+
+def generate_stadium(seed: int = 42):
+    """
+    Generate stadium seating with beetle larvae spectators.
+    Each larva is 4 voxels tall - grub-like creatures standing in tiered rows.
+    """
+    import random
+    import math
+    random.seed(seed)
+
+    clear_background()
+
+    idx = 0
+    base_y = 28  # Stadium starts just below arena level
+    inner_radius = 70  # First row of seats - further from arena
+    row_spacing = 5  # Distance between rows
+    row_height = 3.5  # Height increase per row
+    num_rows = 5  # Tiers of seating
+
+    # Generate tiered seating rows
+    for row in range(num_rows):
+        row_radius = inner_radius + row * row_spacing
+        row_y = base_y + row * row_height
+
+        # Number of larvae in this row - sparse for big grubs
+        circumference = 2 * math.pi * row_radius
+        num_larvae = int(circumference / 40.0)  # Even fewer grubs
+
+        for s in range(num_larvae):
+            if idx >= MAX_BACKGROUND_VOXELS - 10:
+                break
+
+            angle = (s / num_larvae) * 2 * math.pi
+            # Slight random offset
+            angle += random.uniform(-0.03, 0.03)
+
+            base_x = math.cos(angle) * row_radius
+            base_z = math.sin(angle) * row_radius
+
+            # Larva properties - shared for all segments
+            larva_phase = random.uniform(0, 6.28)
+            larva_speed = random.uniform(1.0, 1.5)
+
+            # Color variation per larva - creamy white body
+            body_tint = random.uniform(0.85, 1.0)
+
+            # Each larva is 4 voxels stacked vertically - BIG fat grubs
+            for seg in range(4):
+                if idx >= MAX_BACKGROUND_VOXELS:
+                    break
+
+                y = row_y + seg * 1.8  # Big vertical spacing
+
+                # Body segments: really fat grubby shape
+                if seg == 0:  # Bottom/tail
+                    seg_size = 0.9
+                    # Cream/white tail
+                    color = ti.Vector([0.90 * body_tint, 0.85 * body_tint, 0.70 * body_tint])
+                elif seg == 1:  # Lower body - fattest
+                    seg_size = 1.3
+                    color = ti.Vector([0.92 * body_tint, 0.88 * body_tint, 0.72 * body_tint])
+                elif seg == 2:  # Upper body - still fat
+                    seg_size = 1.15
+                    color = ti.Vector([0.88 * body_tint, 0.82 * body_tint, 0.68 * body_tint])
+                else:  # Head - darker brown, bigger
+                    seg_size = 1.0
+                    color = ti.Vector([0.45, 0.30, 0.18])
+
+                bg_positions[idx] = ti.Vector([base_x, y, base_z])
+                bg_colors[idx] = color
+                bg_size[idx] = seg_size
+                bg_anim_type[idx] = BG_ANIM_SCRUNCH
+                bg_phase[idx] = larva_phase
+                bg_anim_amplitude[idx] = float(seg)  # Segment index for scrunch wave
+                bg_anim_speed[idx] = larva_speed
+                bg_angle[idx] = angle  # Store angle for stadium wave
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    num_bg_voxels[None] = idx
+    stadium_excitement[None] = 0.0  # Reset excitement
+    stadium_excitement_target[None] = 0.0
+    bg_theme_active[None] = 11  # Stadium theme
+    print(f"Generated {idx} larva voxels in stadium")
+
+def trigger_stadium_excitement():
+    """Call this when a score happens to make the crowd go wild."""
+    stadium_excitement[None] = 1.0
+    print("STADIUM CROWD CHEERING!")
+
+def decay_stadium_excitement(dt: float):
+    """Call each frame to slowly decay excitement."""
+    current = stadium_excitement[None]
+    if current > 0.01:
+        # Simple slow decay over ~6 seconds
+        stadium_excitement[None] = current * (1.0 - dt * 0.25)
+    else:
+        stadium_excitement[None] = 0.0
+
+# ============================================================
+# STACKABLE THEME TOGGLE FUNCTIONS
+# ============================================================
+
+def compact_background_voxels(removed_start: int, removed_count: int):
+    """Shift voxels down to fill gap left by removed theme."""
+    global theme_start_idx, theme_count
+    total = num_bg_voxels[None]
+    shift_start = removed_start + removed_count
+
+    # Shift all voxels after the gap down
+    for i in range(shift_start, total):
+        new_idx = i - removed_count
+        # Copy all fields
+        bg_positions[new_idx] = bg_positions[i]
+        bg_colors[new_idx] = bg_colors[i]
+        bg_size[new_idx] = bg_size[i]
+        bg_phase[new_idx] = bg_phase[i]
+        bg_anim_type[new_idx] = bg_anim_type[i]
+        bg_anim_speed[new_idx] = bg_anim_speed[i]
+        bg_anim_amplitude[new_idx] = bg_anim_amplitude[i]
+        bg_active[new_idx] = bg_active[i]
+        bg_brightness[new_idx] = bg_brightness[i]
+        bg_offset_x[new_idx] = bg_offset_x[i]
+        bg_offset_y[new_idx] = bg_offset_y[i]
+        bg_offset_z[new_idx] = bg_offset_z[i]
+        bg_angle[new_idx] = bg_angle[i]
+
+    # Clear the old slots at the end
+    for i in range(total - removed_count, total):
+        bg_active[i] = 0
+        bg_size[i] = 0.0
+
+    # Update indices for themes that shifted
+    for theme_id in list(active_themes):
+        if theme_id in theme_start_idx and theme_start_idx[theme_id] > removed_start:
+            theme_start_idx[theme_id] -= removed_count
+
+    num_bg_voxels[None] = total - removed_count
+
+def remove_theme(theme_id: int):
+    """Remove a theme and compact the voxel arrays."""
+    global active_themes, theme_start_idx, theme_count
+
+    if theme_id not in active_themes:
+        return  # Not active
+
+    start = theme_start_idx[theme_id]
+    count = theme_count[theme_id]
+
+    # Compact the array
+    compact_background_voxels(start, count)
+
+    # Remove from tracking
+    active_themes.remove(theme_id)
+    del theme_start_idx[theme_id]
+    del theme_count[theme_id]
+
+    # Update bg_theme_active for renderer
+    if len(active_themes) == 0:
+        bg_theme_active[None] = 0
+
+    print(f"Removed theme {theme_id}, {count} voxels freed")
+
+def toggle_theme(theme_id: int):
+    """Toggle a theme on or off."""
+    if theme_id in active_themes:
+        remove_theme(theme_id)
+    else:
+        # Add the theme
+        add_functions = {
+            THEME_STARS: lambda: add_stars(2400),
+            THEME_GRASS: lambda: add_grass(625),
+            THEME_FIREFLIES: lambda: add_fireflies(930),
+            THEME_WATER: lambda: add_water(2250),
+            THEME_JELLYFISH: lambda: add_jellyfish(240),
+            THEME_BUTTERFLIES: lambda: add_butterflies(80),
+            THEME_WAVES: lambda: add_waves(3600),
+            THEME_PALM_TREES: lambda: add_tree_branches(12),
+            THEME_STADIUM: lambda: add_stadium(),
+        }
+        if theme_id in add_functions:
+            add_functions[theme_id]()
+            # Enable background rendering
+            bg_theme_active[None] = 1
+
+def is_theme_active(theme_id: int) -> bool:
+    """Check if a theme is currently active."""
+    return theme_id in active_themes
+
+# ============================================================
+# STACKABLE THEME ADD FUNCTIONS (append to existing voxels)
+# ============================================================
+
+def add_stars(count: int = 2400, seed: int = 42):
+    """Add stars to the background (appends to existing voxels)."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_STARS in active_themes:
+        return  # Already active
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    min_dist = 55
+
+    for _ in range(count * 3):
+        if idx >= MAX_BACKGROUND_VOXELS or idx >= start_idx + count:
+            break
+
+        x = random.uniform(-120, 120)
+        y = random.uniform(-20, 120)
+        z = random.uniform(-120, 120)
+
+        dist_xz = math.sqrt(x*x + z*z)
+        if dist_xz < min_dist:
+            continue
+
+        bg_positions[idx] = ti.Vector([x, y, z])
+        blue_tint = random.uniform(0.0, 0.2)
+        brightness = random.uniform(0.6, 1.0)
+        bg_colors[idx] = ti.Vector([
+            brightness * (1.0 - blue_tint * 0.5),
+            brightness * (1.0 - blue_tint * 0.3),
+            brightness
+        ])
+
+        if random.random() < 0.1:
+            bg_size[idx] = random.uniform(0.3, 0.45)
+        else:
+            bg_size[idx] = random.uniform(0.12, 0.25)
+
+        bg_anim_type[idx] = BG_ANIM_TWINKLE
+        bg_anim_speed[idx] = random.uniform(1.5, 4.0)
+        bg_anim_amplitude[idx] = 0.0
+        bg_phase[idx] = random.uniform(0, 6.28)
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
+    theme_start_idx[THEME_STARS] = start_idx
+    theme_count[THEME_STARS] = idx - start_idx
+    active_themes.add(THEME_STARS)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} stars (total voxels: {idx})")
+
+def add_grass(count: int = 625, seed: int = 42):
+    """Add lush grass with ground cover, clumps, varied heights, and wildflowers."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_GRASS in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    grass_y_base = 17
+    circle_radius = 85.0
+
+    # Flower colors for wildflower accents
+    flower_colors = [
+        ti.Vector([0.9, 0.8, 0.2]),   # Yellow
+        ti.Vector([0.9, 0.9, 0.85]),   # White
+        ti.Vector([0.6, 0.3, 0.8]),    # Purple
+        ti.Vector([0.8, 0.2, 0.2]),    # Red
+    ]
+
+    # === PASS 1: GROUND COVER - dense carpet of fat low voxels ===
+    ground_grid = 70  # Denser grid for fewer gaps
+    ground_spacing = (circle_radius * 2) / ground_grid
+
+    for gx in range(ground_grid):
+        for gz in range(ground_grid):
+            if idx >= MAX_BACKGROUND_VOXELS - 20:
+                break
+
+            x = -circle_radius + gx * ground_spacing + random.uniform(-1.0, 1.0)
+            z = -circle_radius + gz * ground_spacing + random.uniform(-1.0, 1.0)
+
+            dist = math.sqrt(x * x + z * z)
+            if dist > circle_radius:
+                continue
+
+            bg_positions[idx] = ti.Vector([x, grass_y_base + random.uniform(-0.3, 0.3), z])
+            # Dark earthy green
+            g = random.uniform(0.2, 0.35)
+            bg_colors[idx] = ti.Vector([g * 0.4, g, g * 0.25])
+            bg_size[idx] = random.uniform(1.5, 1.9)
+            bg_anim_type[idx] = BG_ANIM_SWAY
+            bg_anim_speed[idx] = 0.5  # Very subtle sway
+            bg_anim_amplitude[idx] = 0.15
+            bg_phase[idx] = x * 0.05
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === PASS 2: GRASS BLADE CLUSTERS with varied heights and flowers ===
+    num_clusters = 180
+    min_cluster_dist = 8.0  # Minimum distance between cluster centers
+    cluster_centers = []
+
+    for c in range(num_clusters):
+        if idx >= MAX_BACKGROUND_VOXELS - 20:
+            break
+
+        # Random cluster center within circle, with min distance check
+        cx, cz = 0.0, 0.0
+        placed = False
+        for _ in range(30):  # Rejection sampling
+            cx = random.uniform(-circle_radius, circle_radius)
+            cz = random.uniform(-circle_radius, circle_radius)
+            if math.sqrt(cx * cx + cz * cz) > circle_radius:
+                continue
+            # Check min distance from existing clusters
+            too_close = False
+            for ox, oz in cluster_centers:
+                if math.sqrt((cx - ox)**2 + (cz - oz)**2) < min_cluster_dist:
+                    too_close = True
+                    break
+            if not too_close:
+                placed = True
+                break
+
+        if not placed:
+            continue  # Skip this cluster if can't find valid spot
+
+        cluster_centers.append((cx, cz))
+
+        # 3-6 blades per cluster
+        blades_in_cluster = random.randint(3, 6)
+
+        for b in range(blades_in_cluster):
+            if idx >= MAX_BACKGROUND_VOXELS - 10:
+                break
+
+            # Blades close together within cluster
+            x = cx + random.uniform(-2.5, 2.5)
+            z = cz + random.uniform(-2.5, 2.5)
+
+            dist = math.sqrt(x * x + z * z)
+            if dist > circle_radius:
+                continue
+
+            y_base = grass_y_base + 1.0 + random.uniform(0, 1.2)
+            green_var = random.uniform(0.35, 0.7)
+            blade_phase = x * 0.08 + z * 0.03
+            blade_speed = random.uniform(0.8, 1.2)
+
+            # Varied heights: weighted random
+            roll = random.random()
+            if roll < 0.2:
+                blade_height = 2
+            elif roll < 0.6:
+                blade_height = 3
+            elif roll < 0.9:
+                blade_height = 4
+            else:
+                blade_height = 5
+
+            for h in range(blade_height):
+                if idx >= MAX_BACKGROUND_VOXELS:
+                    break
+
+                y = y_base + h * 1.0
+
+                bg_positions[idx] = ti.Vector([x, y, z])
+
+                brightness = 0.7 + h * 0.1
+                bg_colors[idx] = ti.Vector([
+                    random.uniform(0.1, 0.25) * brightness,
+                    green_var * brightness,
+                    random.uniform(0.05, 0.15) * brightness
+                ])
+
+                # Fatter base, tapered (20% smaller than before)
+                blade_size = 1.23 - h * 0.20
+                if blade_size < 0.4:
+                    blade_size = 0.4
+                bg_size[idx] = blade_size
+
+                bg_anim_type[idx] = BG_ANIM_SWAY
+                bg_anim_speed[idx] = blade_speed
+                bg_anim_amplitude[idx] = 0.25 + h * 0.45
+                bg_phase[idx] = blade_phase
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+            # Wildflower accent on ~15% of blades
+            if random.random() < 0.15 and idx < MAX_BACKGROUND_VOXELS:
+                flower_y = y_base + blade_height * 1.0
+                bg_positions[idx] = ti.Vector([x, flower_y, z])
+                bg_colors[idx] = flower_colors[random.randint(0, 3)]
+                bg_size[idx] = 0.45
+                bg_anim_type[idx] = BG_ANIM_SWAY
+                bg_anim_speed[idx] = blade_speed
+                bg_anim_amplitude[idx] = 0.4 + blade_height * 0.7
+                bg_phase[idx] = blade_phase
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    theme_start_idx[THEME_GRASS] = start_idx
+    theme_count[THEME_GRASS] = idx - start_idx
+    active_themes.add(THEME_GRASS)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} grass voxels (total: {idx})")
+
+def add_fireflies(count: int = 2800, seed: int = 42):
+    """Add fireflies to the background (appends to existing voxels)."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_FIREFLIES in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    min_dist = 55
+
+    for _ in range(count * 4):
+        if idx >= MAX_BACKGROUND_VOXELS or idx >= start_idx + count:
+            break
+
+        angle = random.uniform(0, 2 * math.pi)
+        dist = random.uniform(min_dist, 110)
+        x = math.cos(angle) * dist
+        z = math.sin(angle) * dist
+        y = random.uniform(15, 90)
+
+        bg_positions[idx] = ti.Vector([x, y, z])
+        bg_colors[idx] = ti.Vector([
+            random.uniform(0.8, 1.0),
+            random.uniform(0.9, 1.0),
+            random.uniform(0.1, 0.3)
+        ])
+        bg_size[idx] = random.uniform(0.05, 0.12)
+        bg_anim_type[idx] = BG_ANIM_FIREFLY
+        bg_anim_speed[idx] = random.uniform(0.4, 1.0)
+        bg_anim_amplitude[idx] = random.uniform(8.0, 20.0)
+        bg_phase[idx] = random.uniform(0, 6.28)
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
+    theme_start_idx[THEME_FIREFLIES] = start_idx
+    theme_count[THEME_FIREFLIES] = idx - start_idx
+    active_themes.add(THEME_FIREFLIES)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} fireflies (total: {idx})")
+
+def add_water(count: int = 3000, seed: int = 42):
+    """Add water to the background (appends to existing voxels)."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_WATER in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    water_y_base = 22
+
+    num_rings = 15
+    particles_per_ring = count // num_rings
+
+    for ring in range(num_rings):
+        if idx >= MAX_BACKGROUND_VOXELS:
+            break
+
+        ring_radius = 35 + ring * 5
+        ring_phase = ring * 0.5
+
+        for p in range(particles_per_ring):
+            if idx >= MAX_BACKGROUND_VOXELS:
+                break
+
+            angle = (p / particles_per_ring) * 2 * math.pi
+            x = math.cos(angle) * ring_radius
+            z = math.sin(angle) * ring_radius
+            y = water_y_base + random.uniform(-0.5, 0.5)
+
+            bg_positions[idx] = ti.Vector([x, y, z])
+            blue_var = random.uniform(0.4, 0.8)
+            bg_colors[idx] = ti.Vector([0.1, 0.3 + blue_var * 0.3, 0.5 + blue_var * 0.5])
+            bg_size[idx] = random.uniform(0.4, 0.7)
+            bg_anim_type[idx] = BG_ANIM_WATER
+            bg_anim_speed[idx] = random.uniform(0.8, 1.2)
+            bg_anim_amplitude[idx] = ring_phase
+            bg_phase[idx] = angle
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    theme_start_idx[THEME_WATER] = start_idx
+    theme_count[THEME_WATER] = idx - start_idx
+    active_themes.add(THEME_WATER)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} water particles (total: {idx})")
+
+def add_jellyfish(count: int = 30, seed: int = 42):
+    """Add jellyfish to the background (appends to existing voxels)."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_JELLYFISH in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    arena_radius = 65
+    outer_radius = 110
+    min_y = 22
+    max_y = 42
+    num_rings = 3
+    per_ring = count // num_rings
+    jelly = 0
+
+    for ring in range(num_rings):
+        ring_y = min_y + (max_y - min_y) * ring / (num_rings - 1) if num_rings > 1 else (min_y + max_y) / 2
+        ring_radius = arena_radius + (outer_radius - arena_radius) * (ring + 1) / (num_rings + 1)
+
+        for j in range(per_ring):
+            if idx >= MAX_BACKGROUND_VOXELS - 6:
+                break
+
+            angle = (j / per_ring) * 2 * math.pi
+            base_x = math.cos(angle) * ring_radius
+            base_z = math.sin(angle) * ring_radius
+            base_y = ring_y
+
+            color_choice = jelly % 3
+            if color_choice == 0:
+                color = ti.Vector([0.9, 0.4, 0.7])
+            elif color_choice == 1:
+                color = ti.Vector([0.5, 0.3, 0.9])
+            else:
+                color = ti.Vector([0.3, 0.8, 0.9])
+
+            jelly_id = float(jelly)
+            jelly += 1
+
+            # Bell
+            bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
+            bg_colors[idx] = color
+            bg_size[idx] = random.uniform(0.6, 0.9)
+            bg_anim_type[idx] = BG_ANIM_JELLYFISH
+            bg_phase[idx] = jelly_id
+            bg_anim_amplitude[idx] = 0.0
+            bg_anim_speed[idx] = base_y
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+            # Tentacles
+            num_tentacles = random.randint(4, 5)
+            for t in range(num_tentacles):
+                if idx >= MAX_BACKGROUND_VOXELS:
+                    break
+
+                t_angle = (t / num_tentacles) * 2 * math.pi
+                t_offset = 0.4
+                t_x = base_x + math.cos(t_angle) * t_offset
+                t_z = base_z + math.sin(t_angle) * t_offset
+                t_y = base_y - 0.8 - t * 0.3
+
+                bg_positions[idx] = ti.Vector([t_x, t_y, t_z])
+                bg_colors[idx] = color * 0.7
+                bg_size[idx] = random.uniform(0.25, 0.4)
+                bg_anim_type[idx] = BG_ANIM_JELLYFISH
+                bg_phase[idx] = jelly_id
+                bg_anim_amplitude[idx] = float(t + 1)
+                bg_anim_speed[idx] = base_y
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    theme_start_idx[THEME_JELLYFISH] = start_idx
+    theme_count[THEME_JELLYFISH] = idx - start_idx
+    active_themes.add(THEME_JELLYFISH)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} jellyfish voxels (total: {idx})")
+
+def add_butterflies(count: int = 60, seed: int = 42):
+    """Add butterflies to the background (appends to existing voxels)."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_BUTTERFLIES in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    arena_radius = 75
+    outer_radius = 120
+    min_y = 35
+    max_y = 75
+
+    colors = [
+        ti.Vector([1.0, 0.5, 0.1]),
+        ti.Vector([0.9, 0.2, 0.6]),
+        ti.Vector([0.3, 0.6, 1.0]),
+        ti.Vector([1.0, 0.9, 0.2]),
+        ti.Vector([0.6, 0.2, 0.9]),
+    ]
+
+    for b in range(count):
+        if idx >= MAX_BACKGROUND_VOXELS - 9:
+            break
+
+        angle = (b / count) * 2 * math.pi
+        radius = arena_radius + (b % 3) * 15
+        base_x = math.cos(angle) * radius
+        base_z = math.sin(angle) * radius
+        base_y = min_y + (b % 5) * 8
+
+        color = colors[b % len(colors)]
+        butterfly_id = float(b)
+        move_seed = float(b) * 0.37
+
+        # Body
+        bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
+        bg_colors[idx] = color * 0.4
+        bg_size[idx] = 0.45
+        bg_anim_type[idx] = BG_ANIM_BUTTERFLY
+        bg_phase[idx] = butterfly_id
+        bg_anim_amplitude[idx] = 0.0
+        bg_anim_speed[idx] = move_seed
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
+        # Wings
+        wing_offsets = [
+            (-0.8, 0.2, 0.0, 1.0),
+            (0.8, 0.2, 0.0, 2.0),
+            (-0.6, 0.0, 0.0, 3.0),
+            (0.6, 0.0, 0.0, 4.0),
+        ]
+
+        for wx, wy, wz, wing_id in wing_offsets:
+            if idx >= MAX_BACKGROUND_VOXELS:
+                break
+
+            bg_positions[idx] = ti.Vector([base_x + wx, base_y + wy, base_z + wz])
+            bg_colors[idx] = color
+            bg_size[idx] = 0.6 if wing_id <= 2 else 0.45
+            bg_anim_type[idx] = BG_ANIM_BUTTERFLY
+            bg_phase[idx] = butterfly_id
+            bg_anim_amplitude[idx] = wing_id
+            bg_anim_speed[idx] = move_seed
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    theme_start_idx[THEME_BUTTERFLIES] = start_idx
+    theme_count[THEME_BUTTERFLIES] = idx - start_idx
+    active_themes.add(THEME_BUTTERFLIES)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} butterfly voxels (total: {idx})")
+
+def add_waves(count: int = 1600, seed: int = 42):
+    """Add waves to the background (appends to existing voxels)."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_WAVES in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    water_y_base = 17  # 5 voxels lower than grass
+
+    # Bigger grid, but only keep voxels within circle
+    circle_radius = 85.0  # Circular boundary
+    grid_extent = 90.0  # Grid goes from -90 to 90
+    grid_size = int(math.sqrt(count * 1.6))  # Bigger grid to compensate for cut corners
+    spacing = (grid_extent * 2) / grid_size
+
+    for gx in range(grid_size):
+        for gz in range(grid_size):
+            if idx >= MAX_BACKGROUND_VOXELS:
+                break
+
+            # Grid with minimal random offset
+            x = -grid_extent + gx * spacing + random.uniform(-0.15, 0.15)
+            z = -grid_extent + gz * spacing + random.uniform(-0.15, 0.15)
+
+            # Only keep voxels within circle
+            dist = math.sqrt(x * x + z * z)
+            if dist > circle_radius:
+                continue
+
+            y = water_y_base + random.uniform(0, 0.3)
+
+            bg_positions[idx] = ti.Vector([x, y, z])
+
+            # Water colors - blue/cyan, varies slightly
+            depth_var = random.uniform(0.8, 1.0)
+            bg_colors[idx] = ti.Vector([
+                0.1 * depth_var,
+                0.4 * depth_var,
+                0.8 * depth_var
+            ])
+
+            # Size - 20% bigger
+            bg_size[idx] = random.uniform(0.95, 1.12)
+
+            # Animation: store x and z for wave sync
+            bg_anim_type[idx] = BG_ANIM_WAVE
+            bg_phase[idx] = x  # X position for primary wave
+            bg_anim_amplitude[idx] = z  # Z position for cross-wave
+            bg_anim_speed[idx] = 1.0
+
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === ADD SEA SERPENT/DRAGON ===
+    num_serpents = 1  # One big sea dragon
+    num_segments = 20  # Long snaking body with more segments for smoothness
+
+    for serpent_id in range(num_serpents):
+        if idx >= MAX_BACKGROUND_VOXELS - num_segments - 5:
+            break
+
+        # Starting angle for this serpent
+        serpent_phase = serpent_id * (2 * math.pi / max(1, num_serpents))
+
+        for seg in range(num_segments):
+            # Base position (will be overridden by animation)
+            bg_positions[idx] = ti.Vector([0.0, water_y_base, 0.0])
+
+            # Color: dark blue/teal body, menacing red head
+            if seg == 0:
+                # HEAD - menacing red/dark, smaller
+                bg_colors[idx] = ti.Vector([0.8, 0.1, 0.1])
+                bg_size[idx] = 2.6
+            elif seg == 1:
+                # Neck - still red-ish
+                bg_colors[idx] = ti.Vector([0.6, 0.1, 0.15])
+                bg_size[idx] = 2.5
+            elif seg == 2:
+                # Transition to body
+                bg_colors[idx] = ti.Vector([0.3, 0.15, 0.25])
+                bg_size[idx] = 2.5
+            elif seg < 6:
+                # Upper body - darker blue
+                bg_colors[idx] = ti.Vector([0.12, 0.2, 0.4])
+                bg_size[idx] = 2.6
+            elif seg < num_segments - 4:
+                # Body segments - blue/teal, consistent size
+                t = seg / num_segments
+                bg_colors[idx] = ti.Vector([0.1, 0.25 + t * 0.15, 0.45 + t * 0.15])
+                bg_size[idx] = 2.4
+            else:
+                # Tail - tapers, lighter color
+                tail_pos = seg - (num_segments - 4)
+                bg_colors[idx] = ti.Vector([0.15, 0.4, 0.55])
+                bg_size[idx] = 2.2 - tail_pos * 0.4
+
+            # Minimum size for tail tip
+            if bg_size[idx] < 0.8:
+                bg_size[idx] = 0.8
+
+            bg_anim_type[idx] = BG_ANIM_FISH
+            bg_phase[idx] = serpent_phase
+            bg_anim_amplitude[idx] = float(seg)  # Segment index
+            bg_anim_speed[idx] = float(serpent_id)
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # === ANTENNAS - two long feelers on top of head ===
+        for antenna_side in range(2):  # Left and right
+            for a in range(6):  # 6 voxels per antenna for no gaps
+                bg_positions[idx] = ti.Vector([0.0, water_y_base, 0.0])
+                # Yellow/gold antennas
+                bg_colors[idx] = ti.Vector([0.9, 0.7, 0.2])
+                bg_size[idx] = 0.9 - a * 0.08  # Bigger, taper toward tip
+                if bg_size[idx] < 0.4:
+                    bg_size[idx] = 0.4
+                bg_anim_type[idx] = BG_ANIM_FISH
+                bg_phase[idx] = serpent_phase
+                # 100+ = left antenna, 200+ = right antenna
+                bg_anim_amplitude[idx] = float(100 + antenna_side * 100 + a)
+                bg_anim_speed[idx] = float(serpent_id)
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+
+    wave_count = idx - start_idx
+    theme_start_idx[THEME_WAVES] = start_idx
+    theme_count[THEME_WAVES] = wave_count
+    active_themes.add(THEME_WAVES)
+    num_bg_voxels[None] = idx
+    print(f"Added {wave_count} wave voxels + sea serpent (total: {idx})")
+
+def add_tree_branches(count: int = 12, seed: int = 42):
+    """Add palm trees to the background (appends to existing voxels)."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_PALM_TREES in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    tree_radius = 90
+    base_y = -15
+    tree_id = 0
+
+    for t in range(count):
+        if idx >= MAX_BACKGROUND_VOXELS - 200:
+            break
+
+        angle = (t / count) * 2 * math.pi
+        tree_x = math.cos(angle) * tree_radius
+        tree_z = math.sin(angle) * tree_radius
+
+        tree_phase = float(tree_id)
+        tree_id += 1
+
+        trunk_color = ti.Vector([0.45, 0.32, 0.18])
+        frond_color = ti.Vector([0.25, 0.50, 0.20])
+
+        # Trunk
+        trunk_height = random.randint(38, 42)
+        trunk_spacing = 1.5
+
+        for h in range(trunk_height):
+            y = base_y + h * trunk_spacing
+            trunk_size = 1.5 - h * 0.015
+            if trunk_size < 0.8:
+                trunk_size = 0.8
+            sway_amp = 0.02 + h * 0.003
+
+            bg_positions[idx] = ti.Vector([tree_x, y, tree_z])
+            bg_colors[idx] = trunk_color
+            bg_size[idx] = trunk_size
+            bg_anim_type[idx] = BG_ANIM_TREE
+            bg_phase[idx] = tree_phase
+            bg_anim_amplitude[idx] = sway_amp
+            bg_anim_speed[idx] = random.uniform(0.9, 1.1)
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # Fronds
+        tree_top_y = base_y + trunk_height * trunk_spacing
+        num_fronds = 10
+
+        for f in range(num_fronds):
+            frond_angle = angle + (f / num_fronds) * 2 * math.pi
+            frond_length = random.randint(8, 10)
+
+            for seg in range(frond_length):
+                reach = 1.5 + seg * 1.8
+                droop = seg * seg * 0.12
+
+                f_x = tree_x + math.cos(frond_angle) * reach
+                f_z = tree_z + math.sin(frond_angle) * reach
+                f_y = tree_top_y + 3.0 - droop
+
+                frond_size = 0.9 - seg * 0.05
+                if frond_size < 0.35:
+                    frond_size = 0.35
+                sway_amp = 0.6 + seg * 0.2
+
+                bg_positions[idx] = ti.Vector([f_x, f_y, f_z])
+                bg_colors[idx] = frond_color
+                bg_size[idx] = frond_size
+                bg_anim_type[idx] = BG_ANIM_TREE
+                bg_phase[idx] = tree_phase + f * 0.15
+                bg_anim_amplitude[idx] = sway_amp
+                bg_anim_speed[idx] = random.uniform(0.8, 1.2)
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    theme_start_idx[THEME_PALM_TREES] = start_idx
+    theme_count[THEME_PALM_TREES] = idx - start_idx
+    active_themes.add(THEME_PALM_TREES)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} palm tree voxels (total: {idx})")
+
+def add_stadium(seed: int = 42):
+    """Add stadium with beetle larvae to the background (appends to existing voxels)."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_STADIUM in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    base_y = 28
+    inner_radius = 70
+    row_spacing = 5
+    row_height = 3.5
+    num_rows = 5
+
+    for row in range(num_rows):
+        row_radius = inner_radius + row * row_spacing
+        row_y = base_y + row * row_height
+
+        circumference = 2 * math.pi * row_radius
+        num_larvae = int(circumference / 40.0)
+
+        for s in range(num_larvae):
+            if idx >= MAX_BACKGROUND_VOXELS - 10:
+                break
+
+            angle = (s / num_larvae) * 2 * math.pi
+            angle += random.uniform(-0.03, 0.03)
+
+            base_x = math.cos(angle) * row_radius
+            base_z = math.sin(angle) * row_radius
+
+            larva_phase = random.uniform(0, 6.28)
+            larva_speed = random.uniform(1.0, 1.5)
+            body_tint = random.uniform(0.85, 1.0)
+
+            for seg in range(4):
+                if idx >= MAX_BACKGROUND_VOXELS:
+                    break
+
+                y = row_y + seg * 1.8
+
+                if seg == 0:
+                    seg_size = 0.9
+                    color = ti.Vector([0.90 * body_tint, 0.85 * body_tint, 0.70 * body_tint])
+                elif seg == 1:
+                    seg_size = 1.3
+                    color = ti.Vector([0.92 * body_tint, 0.88 * body_tint, 0.72 * body_tint])
+                elif seg == 2:
+                    seg_size = 1.15
+                    color = ti.Vector([0.88 * body_tint, 0.82 * body_tint, 0.68 * body_tint])
+                else:
+                    seg_size = 1.0
+                    color = ti.Vector([0.45, 0.30, 0.18])
+
+                bg_positions[idx] = ti.Vector([base_x, y, base_z])
+                bg_colors[idx] = color
+                bg_size[idx] = seg_size
+                bg_anim_type[idx] = BG_ANIM_SCRUNCH
+                bg_phase[idx] = larva_phase
+                bg_anim_amplitude[idx] = float(seg)
+                bg_anim_speed[idx] = larva_speed
+                bg_angle[idx] = angle
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    theme_start_idx[THEME_STADIUM] = start_idx
+    theme_count[THEME_STADIUM] = idx - start_idx
+    active_themes.add(THEME_STADIUM)
+    num_bg_voxels[None] = idx
+    stadium_excitement[None] = 0.0
+    stadium_excitement_target[None] = 0.0
+    print(f"Added {idx - start_idx} stadium larva voxels (total: {idx})")
+
+def clear_all_themes():
+    """Clear all active themes and reset background."""
+    global active_themes, theme_start_idx, theme_count
+    active_themes.clear()
+    theme_start_idx.clear()
+    theme_count.clear()
+    num_bg_voxels[None] = 0
+    bg_theme_active[None] = 0
+    for i in range(MAX_BACKGROUND_VOXELS):
+        bg_active[i] = 0
+        bg_size[i] = 0.0
+    print("Cleared all background themes")
 
 @ti.kernel
 def render_bowl_perimeter():

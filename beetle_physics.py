@@ -14613,6 +14613,7 @@ try:
                             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                                 network_manager.send_score(1, score_type=1)  # Red scores (ball goal)
                             print(f"RED SCORES!")
+                            simulation.trigger_stadium_excitement()
                         elif beetle_ball.x > 32:  # Red goal pit (east) - BLUE scores
                             g['ball_scored_this_fall'] = True
                             g['goal_scored_by'] = "BLUE"
@@ -14623,6 +14624,7 @@ try:
                             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                                 network_manager.send_score(0, score_type=1)  # Blue scores (ball goal)
                             print(f"BLUE SCORES!")
+                            simulation.trigger_stadium_excitement()
             # NOTE: ball_scored_this_fall is only reset on ball respawn, not when ball goes above ground
             # This prevents double-scoring if ball bounces in the goal pit
 
@@ -14984,6 +14986,7 @@ try:
                         g['goal_scored_by'] = "RED"
                         g['goal_celebration_timer'] = 0.0
                     print(f"RED SCORES! ({'death' if is_beetle_death else 'ball goal'} from host)")
+                    simulation.trigger_stadium_excitement()
 
                 elif scorer == 0:  # Blue scores (red died or ball goal)
                     # Only trigger beetle explosion for actual death, not ball goals
@@ -15016,6 +15019,7 @@ try:
                         g['goal_scored_by'] = "BLUE"
                         g['goal_celebration_timer'] = 0.0
                     print(f"BLUE SCORES! ({'death' if is_beetle_death else 'ball goal'} from host)")
+                    simulation.trigger_stadium_excitement()
 
             # Check for game options from host (ball toggle only - referee is local)
             if network_manager.pending_game_options is not None:
@@ -15160,6 +15164,7 @@ try:
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                 network_manager.send_score(1, score_type=0, death_x=beetle_blue.x, death_z=beetle_blue.z)  # Red scores, blue died
             print(f"RED SCORES!")
+            simulation.trigger_stadium_excitement()
             print(f"BLUE BEETLE EXPLOSION STARTED! (debris: {simulation.num_debris[None]})")
 
         # Guest-side blue beetle explosion (triggered after receiving death event from host)
@@ -15219,6 +15224,7 @@ try:
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                 network_manager.send_score(0, score_type=0, death_x=beetle_red.x, death_z=beetle_red.z)  # Blue scores, red died
             print(f"BLUE SCORES!")
+            simulation.trigger_stadium_excitement()
             print(f"RED BEETLE EXPLOSION STARTED! (debris: {simulation.num_debris[None]})")
 
         # Guest-side red beetle explosion (triggered after receiving death event from host)
@@ -15395,6 +15401,7 @@ try:
                 beetle_blue.active = False
                 print("BLUE BEETLE FELL INTO THE ABYSS!")
                 # Red scores when blue dies
+                simulation.trigger_stadium_excitement()
                 if not red_celebrating:
                     red_celebrating = True
                     if not beetle_ball.active:
@@ -15405,6 +15412,7 @@ try:
                 beetle_red.active = False
                 print("RED BEETLE FELL INTO THE ABYSS!")
                 # Blue scores when red dies
+                simulation.trigger_stadium_excitement()
                 if not blue_celebrating:
                     blue_celebrating = True
                     if not beetle_ball.active:
@@ -17135,6 +17143,7 @@ try:
     background_time += frame_dt
     if simulation.num_bg_voxels[None] > 0:
         simulation.animate_background(background_time)
+        simulation.decay_stadium_excitement(frame_dt)
 
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid,
                     dynamic_lighting=dynamic_lighting_enabled,
@@ -17938,57 +17947,45 @@ try:
         window.GUI.text("")
         window.GUI.text("=== BACKGROUND ===")
 
-        current_bg_theme = simulation.bg_theme_active[None]
-        theme_names = ["OFF", "STARS", "GRASS", "FIREFLIES", "WATER"]
-        theme_name = theme_names[current_bg_theme] if current_bg_theme < len(theme_names) else "OFF"
-        window.GUI.text(f"Theme: {theme_name}")
+        # Active themes display
+        active_count = len(simulation.active_themes)
+        total_voxels = simulation.num_bg_voxels[None]
+        window.GUI.text(f"Themes: {active_count} | Voxels: {total_voxels}")
 
-        # Theme buttons
-        if window.GUI.button("STARS"):
-            simulation.generate_stars(2400)
-            # Set dark background for stars
-            window.background_color = (0.02, 0.02, 0.05)
-            print("Stars background enabled")
+        # Theme toggle buttons (ON/OFF labels)
+        def theme_label(name, theme_id):
+            return f"{name}: ON" if simulation.is_theme_active(theme_id) else f"{name}: OFF"
 
-        if window.GUI.button("GRASS"):
-            simulation.generate_grass(1250)
-            print("Grass background enabled")
+        if window.GUI.button(theme_label("STARS", simulation.THEME_STARS)):
+            simulation.toggle_theme(simulation.THEME_STARS)
 
-        if window.GUI.button("FIREFLIES"):
-            simulation.generate_fireflies(930)
-            # Slightly darker for fireflies
-            window.background_color = (0.08, 0.12, 0.08)
-            print("Fireflies background enabled")
+        if window.GUI.button(theme_label("GRASS", simulation.THEME_GRASS)):
+            simulation.toggle_theme(simulation.THEME_GRASS)
 
-        if window.GUI.button("BRANCHES"):
-            simulation.generate_water(2250)
-            window.background_color = (0.05, 0.08, 0.12)
-            print("Branches background enabled")
+        if window.GUI.button(theme_label("FIREFLY", simulation.THEME_FIREFLIES)):
+            simulation.toggle_theme(simulation.THEME_FIREFLIES)
 
-        if window.GUI.button("JELLYFISH"):
-            simulation.generate_jellyfish(240)
-            window.background_color = (0.02, 0.03, 0.08)
-            print("Jellyfish background enabled")
+        if window.GUI.button(theme_label("WATER", simulation.THEME_WATER)):
+            simulation.toggle_theme(simulation.THEME_WATER)
 
-        if window.GUI.button("BUTTERFLIES"):
-            simulation.generate_butterflies(80)
-            window.background_color = (0.08, 0.12, 0.18)
-            print("Butterflies background enabled")
+        if window.GUI.button(theme_label("JELLY", simulation.THEME_JELLYFISH)):
+            simulation.toggle_theme(simulation.THEME_JELLYFISH)
 
-        if window.GUI.button("WAVES"):
-            simulation.generate_waves(3600)
-            window.background_color = (0.02, 0.05, 0.12)
-            print("Waves background enabled")
+        if window.GUI.button(theme_label("BTTRFLY", simulation.THEME_BUTTERFLIES)):
+            simulation.toggle_theme(simulation.THEME_BUTTERFLIES)
 
-        if window.GUI.button("PALM TREES"):
-            simulation.generate_tree_branches(12)
-            window.background_color = (0.04, 0.06, 0.03)
-            print("Palm trees background enabled")
+        if window.GUI.button(theme_label("WAVES", simulation.THEME_WAVES)):
+            simulation.toggle_theme(simulation.THEME_WAVES)
 
-        if window.GUI.button("BG OFF"):
-            simulation.clear_background()
-            simulation.bg_theme_active[None] = 0
-            print("Background effects disabled")
+        if window.GUI.button(theme_label("PALMS", simulation.THEME_PALM_TREES)):
+            simulation.toggle_theme(simulation.THEME_PALM_TREES)
+
+        if window.GUI.button(theme_label("STADIUM", simulation.THEME_STADIUM)):
+            simulation.toggle_theme(simulation.THEME_STADIUM)
+
+        if window.GUI.button("CLEAR ALL"):
+            simulation.clear_all_themes()
+            print("All background themes cleared")
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:

@@ -25,7 +25,7 @@ voxel_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for mixed voxel/debris sizes
 
 # Particle radius constants
-VOXEL_RADIUS = 0.37  # Standard voxel size
+VOXEL_RADIUS = 0.407  # Standard voxel size (10% bigger)
 DEBRIS_RADIUS = 0.25  # Smaller dust/debris particles
 
 # Projectiles (cannonballs) are now merged into main voxel buffer with larger radius
