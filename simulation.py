@@ -1079,7 +1079,7 @@ def animate_background(time: ti.f32):
                 bg_offset_z[i] = wander_z
                 fade_in = ti.min(1.0, float_norm * 5.0)
                 fade_out = ti.min(1.0, (1.0 - float_norm) * 3.0)
-                bg_brightness[i] = 0.5 + 0.5 * fade_in * fade_out
+                bg_brightness[i] = 1.2 + 0.6 * fade_in * fade_out
             elif t_spore < 12.0:
                 # FLY AWAY: smooth detach and swoosh outward with lift + swirl
                 fly_t = t_spore - 8.0  # 0 to 4
@@ -1100,7 +1100,7 @@ def animate_background(time: ti.f32):
                 bg_offset_x[i] = push * gust_dx + swirl_x * perp_dx
                 bg_offset_z[i] = push * gust_dz + swirl_x * perp_dz
                 bg_offset_y[i] = float_y + lift + swirl_z
-                bg_brightness[i] = 1.0
+                bg_brightness[i] = 1.8
             else:
                 # RESPAWN: fade back in at cap
                 respawn_t = (t_spore - 12.0) / 3.0  # 0 to 1
@@ -1108,7 +1108,7 @@ def animate_background(time: ti.f32):
                 bg_offset_x[i] = 0.0
                 bg_offset_y[i] = 0.0
                 bg_offset_z[i] = 0.0
-                bg_brightness[i] = smooth * 0.8
+                bg_brightness[i] = smooth * 1.5
 
         elif anim == BG_ANIM_GLOW_PULSE:
             # Mushroom cap bioluminescent glow: smooth slow brightness pulse
@@ -1172,18 +1172,28 @@ def animate_background(time: ti.f32):
                     chain_idx = ant_local - 6.0
                 ant_side = -1.0 + is_right * 2.0  # -1 or 1
 
-                # Chain extends forward and outward from head, curving up
-                fwd = 1.5 + chain_idx * 0.8
-                spread = ant_side * (0.8 + chain_idx * 0.8)
-                rise = chain_idx * 1.8
-                # Bounce synced to inchworm — delayed wave from head through antenna
-                inch_bounce = ti.sin(time * 2.5 + phase * 3.0 - chain_idx * 0.4)
-                bounce = (0.5 + chain_idx * 0.6) * inch_bounce
-                # Extra whip at tips
-                whip = chain_idx * 0.3 * ti.sin(time * 4.0 + chain_idx * 1.2 + is_right * 2.0)
-                px = head_px + dir_x * fwd + perp_x * (spread + whip)
-                pz = head_pz + dir_z * fwd + perp_z * (spread + whip)
-                py = head_py + rise + bounce + 1.5
+                # Chain built link-by-link from head so segments stay connected
+                # Start ahead of head so first link clears the body
+                cx = head_px + dir_x * 3.0 + perp_x * ant_side * 1.5
+                cy = head_py + 3.0
+                cz = head_pz + dir_z * 3.0 + perp_z * ant_side * 1.5
+                # Head phase: sin > 0 = head up, sin crossing 0 going neg = landing
+                head_phase = ti.sin(time * 2.5 + phase * 3.0)
+                for k in range(ti.static(6)):
+                    if k <= chain_idx:
+                        # Delayed head phase — scrunch propagates from base to tip
+                        wave_k = ti.sin(time * 2.5 + phase * 3.0 - k * 0.3)
+                        sway_k = ti.sin(time * 2.5 + k * 0.8 + is_right * 2.0)
+                        # When wave_k < 0 (head landing), step_up shrinks = scrunch
+                        step_fwd = 0.6 + wave_k * 0.2
+                        step_up = 0.7 + wave_k * 0.5
+                        step_side = ant_side * (0.4 + sway_k * 0.25)
+                        cx += dir_x * step_fwd + perp_x * step_side
+                        cz += dir_z * step_fwd + perp_z * step_side
+                        cy += step_up
+                px = cx
+                py = cy
+                pz = cz
                 bg_offset_x[i] = px
                 bg_offset_y[i] = py
                 bg_offset_z[i] = pz
@@ -1963,20 +1973,25 @@ def animate_background(time: ti.f32):
             orbit_radius_ms = 55.0
             swamp_y_ms = 18.5
 
-            # Match toad hop cycle exactly
-            hop_cycle_ms = (time + phase * 3.7) % 5.0
-            hop_count_ms = ti.floor((time + phase * 3.7) / 5.0)
+            # Absolute time since last landing (not wrapped by cycle)
+            toad_time = time + phase * 3.7
+            hop_count_ms = ti.floor(toad_time / 5.0)
+            last_land_time = hop_count_ms * 5.0 + 3.9  # Landing happens at 3.9 in each cycle
+            splash_t_ms = toad_time - last_land_time
 
-            # Landing position (where toad lands = next_angle)
+            # If negative, landing hasn't happened yet this cycle — use previous cycle's landing
+            if splash_t_ms < 0.0:
+                hop_count_ms = hop_count_ms - 1.0
+                last_land_time = hop_count_ms * 5.0 + 3.9
+                splash_t_ms = toad_time - last_land_time
+
+            # Landing position (where toad landed)
             hop_angle_ms = hop_count_ms * 0.6 + phase * 3.14
             land_angle_ms = hop_angle_ms + 0.6
             land_x = orbit_radius_ms * ti.cos(land_angle_ms)
             land_z = orbit_radius_ms * ti.sin(land_angle_ms)
 
-            # Splash triggers at landing (cycle >= 4.0)
-            splash_t_ms = hop_cycle_ms - 4.0
-
-            if splash_t_ms >= 0.0 and splash_t_ms < 1.5:
+            if splash_t_ms >= 0.0 and splash_t_ms < 4.0:
                 # Burst ring pattern — start outside the body (radius 6)
                 burst_ang = sp_idx * (6.28318 / num_sp)
                 burst_dx_ms = ti.cos(burst_ang)
@@ -1985,32 +2000,47 @@ def animate_background(time: ti.f32):
                 # Start offset: outside toad body edge
                 start_r = 6.0
 
-                # Burst speed with variation
-                burst_spd_ms = 18.0 + ti.sin(sp_idx * 2.3) * 6.0
+                # Burst speed with variation (reduced to stay close)
+                burst_spd_ms = 10.0 + ti.sin(sp_idx * 2.3) * 4.0
 
-                # Upward velocity — mud flies up higher
-                up_spd_ms = 28.0 + ti.cos(sp_idx * 1.7) * 10.0
+                # Upward velocity — mud flies up
+                up_spd_ms = 22.0 + ti.cos(sp_idx * 1.7) * 8.0
 
-                # Parabolic arc
+                # Time when this particle hits ground: up/gravity
                 gravity_ms = 28.0
-                sp_px = land_x + burst_dx_ms * (start_r + burst_spd_ms * splash_t_ms)
-                sp_pz = land_z + burst_dz_ms * (start_r + burst_spd_ms * splash_t_ms)
+                t_ground = up_spd_ms / gravity_ms
+
+                # Clamp horizontal movement time so XZ freezes at landing
+                t_horiz = ti.min(splash_t_ms, t_ground)
+
+                # Parabolic arc for Y
                 sp_py = swamp_y_ms + up_spd_ms * splash_t_ms - gravity_ms * splash_t_ms * splash_t_ms
 
-                # Let mud sink into ground and fade out
-                if sp_py > swamp_y_ms - 5.0:
+                # XZ position (freezes when particle hits ground)
+                sp_px = land_x + burst_dx_ms * (start_r + burst_spd_ms * t_horiz)
+                sp_pz = land_z + burst_dz_ms * (start_r + burst_spd_ms * t_horiz)
+
+                if sp_py >= swamp_y_ms:
+                    # Above ground: normal flight
                     bg_offset_x[i] = sp_px
                     bg_offset_y[i] = sp_py
                     bg_offset_z[i] = sp_pz
-                    # Fade as it sinks below ground
-                    if sp_py >= swamp_y_ms:
-                        bg_brightness[i] = 1.0
-                    else:
-                        sink_depth = (swamp_y_ms - sp_py) / 5.0  # 0→1 over 5 units
-                        bg_brightness[i] = ti.max(0.0, 1.0 - sink_depth)
+                    bg_brightness[i] = 1.0
                 else:
-                    bg_offset_y[i] = -200.0
-                    bg_brightness[i] = 0.0
+                    # Below ground: slow sink into mud
+                    time_below = splash_t_ms - t_ground
+                    if time_below < 0.0:
+                        time_below = 0.0
+                    sink_y = swamp_y_ms - time_below * 2.0
+                    if sink_y > swamp_y_ms - 8.0:
+                        bg_offset_x[i] = sp_px
+                        bg_offset_y[i] = sink_y
+                        bg_offset_z[i] = sp_pz
+                        sink_frac = time_below * 2.0 / 8.0
+                        bg_brightness[i] = ti.max(0.0, 1.0 - sink_frac)
+                    else:
+                        bg_offset_y[i] = -200.0
+                        bg_brightness[i] = 0.0
             else:
                 # Hidden between splashes
                 bg_offset_y[i] = -200.0
@@ -2025,7 +2055,7 @@ def animate_background(time: ti.f32):
             sway_oy = gust_amp * 0.3 * ti.sin(t * 1.5 + 0.5)
 
             # Wind gust lean (synced with BG_ANIM_FLOWER cycle)
-            gust_period_s = 25.0
+            gust_period_s = 33.0
             gust_cycle_s = time % gust_period_s
             gust_num_s = ti.floor(time / gust_period_s)
             gust_dx_s = ti.sin(gust_num_s * 7.13)
@@ -2366,8 +2396,8 @@ def animate_background(time: ti.f32):
             phase_since = phase_since - ti.floor(phase_since / pi2) * pi2  # mod 2pi
             splash_t = phase_since / wave_speed_s  # seconds since dive
 
-            # Long enough for particles to complete full arc back to water
-            splash_dur = 1.3
+            # Long enough for particles to arc up, land, and sink
+            splash_dur = 4.0
 
             if splash_t < splash_dur:
                 # Head position at moment of dive
@@ -2401,31 +2431,47 @@ def animate_background(time: ti.f32):
                 burst_dx = local_x * radial_x + local_z * tangent_x
                 burst_dz = local_x * radial_z + local_z * tangent_z
 
-                # Burst speed with variation — wider ring (20% faster/farther)
+                # Burst speed with variation
                 burst_spd = 14.5 + ti.sin(splash_idx * 2.3) * 5.0
 
-                # Upward velocity varies — some go much higher (20% faster)
+                # Upward velocity varies
                 up_speed = 26.0 + ti.cos(splash_idx * 1.7) * 10.0
 
-                # Parabolic arc: v*t - 0.5*g*t^2
+                # Time when this particle hits water: up/gravity
                 gravity = 32.0
-                px = splash_cx + burst_dx * burst_spd * splash_t
-                pz = splash_cz + burst_dz * burst_spd * splash_t
+                t_ground_sp = up_speed / gravity
+
+                # Clamp horizontal movement so XZ freezes at landing
+                t_horiz_sp = ti.min(splash_t, t_ground_sp)
+
+                # Parabolic arc for Y (offset from base position which is already at water level)
                 py = up_speed * splash_t - gravity * splash_t * splash_t
 
-                bg_offset_x[i] = px - bg_positions[i].x
-                bg_offset_z[i] = pz - bg_positions[i].z
-                bg_offset_y[i] = py
+                # XZ position (freezes when particle hits water)
+                px = splash_cx + burst_dx * burst_spd * t_horiz_sp
+                pz = splash_cz + burst_dz * burst_spd * t_horiz_sp
 
-                # Stay fully bright while above water, hide when they drop back in
-                if py > 0.5:
+                if py >= 0.0:
+                    # Above water: normal flight
+                    bg_offset_x[i] = px - bg_positions[i].x
+                    bg_offset_y[i] = py
+                    bg_offset_z[i] = pz - bg_positions[i].z
                     bg_brightness[i] = 1.0
-                elif py > 0.0:
-                    bg_brightness[i] = py * 2.0  # Quick fade right at water surface
                 else:
-                    # Below water — hide underground
-                    bg_brightness[i] = 0.0
-                    bg_offset_y[i] = -200.0
+                    # Below water: slow sink and fade
+                    time_below_sp = splash_t - t_ground_sp
+                    if time_below_sp < 0.0:
+                        time_below_sp = 0.0
+                    sink_y_sp = -time_below_sp * 2.0
+                    if sink_y_sp > -16.0:
+                        bg_offset_x[i] = px - bg_positions[i].x
+                        bg_offset_y[i] = sink_y_sp
+                        bg_offset_z[i] = pz - bg_positions[i].z
+                        sink_frac_sp = time_below_sp * 2.0 / 16.0
+                        bg_brightness[i] = ti.max(0.0, 1.0 - sink_frac_sp)
+                    else:
+                        bg_offset_y[i] = -200.0
+                        bg_brightness[i] = 0.0
             else:
                 # No splash active — hide underground so no dark voxels
                 bg_brightness[i] = 0.0
@@ -2733,13 +2779,13 @@ def animate_background(time: ti.f32):
         elif anim == BG_ANIM_FLOWER:
             # Wildflower: normal sway + periodic gust that blows them away
             # phase = sway phase, amplitude = sway amount, speed = sway speed
-            # Gust cycle: 25 seconds total
+            # Gust cycle: 33 seconds total
             #   0-18: Normal sway
             #   18-19: Wind builds (flowers lean)
             #   19-22: Full gust (flowers fly off, fade out)
-            #   22-25: Flowers gently fade back in at base position
+            #   22-33: Flowers gently fade back in staggered over ~8s
 
-            gust_period = 25.0
+            gust_period = 33.0
             gust_cycle = time % gust_period
 
             # Pseudo-random gust direction per cycle
@@ -2784,7 +2830,7 @@ def animate_background(time: ti.f32):
                 bg_offset_x[i] = base_ox
                 bg_offset_y[i] = base_oy
                 bg_offset_z[i] = base_oz
-                bg_brightness[i] = 1.0
+                bg_brightness[i] = 1.6 + 0.3 * ti.sin(time * 1.2 + phase)
             elif gust_cycle < 24.0:
                 # Full gust — detach from blade and fly off with swirl
                 gust_t = gust_cycle - 19.0  # 0 to 5
@@ -2804,21 +2850,25 @@ def animate_background(time: ti.f32):
                 bg_offset_x[i] = base_ox + push * gust_dx + swirl_x * perp_dx
                 bg_offset_z[i] = base_oz + push * gust_dz + swirl_x * perp_dz
                 bg_offset_y[i] = base_oy + lift + swirl_z
-                bg_brightness[i] = 1.0
+                bg_brightness[i] = 1.6
             else:
-                # Staggered respawn — each flower fades in at different time based on wave_delay + phase
-                stagger = wave_delay * 0.5 + (phase % 1.0) * 0.4  # Mix position + unique phase
-                respawn_start = 23.0 + stagger * 1.8  # Spread over ~1.8 seconds
-                respawn_dur = 0.6
-                respawn_t = 0.0
-                if gust_cycle > respawn_start:
+                # Staggered respawn — pseudo-random per flower using sin hash
+                hash_val = ti.sin(phase * 127.1 + speed * 311.7) * 43758.5453
+                stagger = hash_val - ti.floor(hash_val)  # 0 to 1, well distributed
+                respawn_start = 24.0 + stagger * 8.0  # Spread over 8 seconds
+                respawn_dur = 1.5
+                if gust_cycle < respawn_start:
+                    # Hidden until this flower's respawn time
+                    bg_offset_y[i] = -200.0
+                    bg_brightness[i] = 0.0
+                else:
                     respawn_t = ti.min(1.0, (gust_cycle - respawn_start) / respawn_dur)
-                # Smooth ease-in: cubic
-                smooth = respawn_t * respawn_t * (3.0 - 2.0 * respawn_t)
-                bg_offset_x[i] = base_ox
-                bg_offset_y[i] = base_oy
-                bg_offset_z[i] = base_oz
-                bg_brightness[i] = smooth
+                    # Smooth ease-in: cubic
+                    smooth = respawn_t * respawn_t * (3.0 - 2.0 * respawn_t)
+                    bg_offset_x[i] = base_ox
+                    bg_offset_y[i] = base_oy
+                    bg_offset_z[i] = base_oz
+                    bg_brightness[i] = smooth * (1.6 + 0.3 * ti.sin(time * 1.2 + phase))
 
 @ti.kernel
 def clear_background():
@@ -5754,15 +5804,20 @@ def add_desert(seed: int = 42):
                     x = px_base + lx * voxel_spacing - half
                     z = pz_base + lz * voxel_spacing - half
 
-                    if li == len(layers) - 1 and lx == layer_size // 2 and lz == layer_size // 2:
-                        # Center peak voxel: golden glow
+                    if li >= len(layers) - 5:
+                        # Top 3 layers: golden glow
+                        glow_t = (li - (len(layers) - 5)) / 4.0  # 0 to 1.0
+                        gr = 0.75 + glow_t * 0.20
+                        gg = 0.65 + glow_t * 0.20
+                        gb = 0.20 + glow_t * 0.05
                         bg_positions[idx] = ti.Vector([x, layer_y, z])
-                        bg_colors[idx] = ti.Vector([0.95, 0.85, 0.25])
-                        bg_size[idx] = 0.8
+                        bg_colors[idx] = ti.Vector([gr, gg, gb])
+                        bg_size[idx] = vox_size
                         bg_anim_type[idx] = BG_ANIM_GLOW_PULSE
                         bg_anim_speed[idx] = 0.8
                         bg_anim_amplitude[idx] = 0.5
                         bg_phase[idx] = random.uniform(0, 6.28)
+                        bg_brightness[idx] = 3.0 + glow_t * 1.0
                     else:
                         r_v = base_r + random.uniform(-0.03, 0.03)
                         g_v = base_g + random.uniform(-0.03, 0.03)
@@ -5775,7 +5830,8 @@ def add_desert(seed: int = 42):
                         bg_anim_amplitude[idx] = 0.0
                         bg_phase[idx] = 0.0
 
-                    bg_brightness[idx] = 1.0
+                    if li < len(layers) - 5:
+                        bg_brightness[idx] = 1.0
                     bg_offset_x[idx] = 0.0
                     bg_offset_y[idx] = 0.0
                     bg_offset_z[idx] = 0.0
