@@ -3458,7 +3458,7 @@ def generate_tree_branches(count: int = 12, seed: int = 42):
 
                 f_x = tree_x + math.cos(frond_angle) * reach
                 f_z = tree_z + math.sin(frond_angle) * reach
-                f_y = tree_top_y + 3.0 - droop
+                f_y = tree_top_y + 0.5 - droop
 
                 # Fronds taper toward tips
                 frond_size = 0.9 - seg * 0.05
@@ -4538,9 +4538,9 @@ def add_clouds(seed: int = 42):
         cluster_id = float(c)
 
         # Cumulus: dense flat base slab + puffy dome bumps on top
-        cloud_width = random.uniform(18.7, 28.1)
-        cloud_depth = random.uniform(14.0, 21.8)
-        cloud_height = random.uniform(10.9, 17.2)
+        cloud_width = random.uniform(13.1, 19.7)
+        cloud_depth = random.uniform(9.8, 15.3)
+        cloud_height = random.uniform(7.6, 12.0)
 
         # 3-4 dome bumps for puffy cauliflower top, clustered near center
         num_bumps = random.randint(3, 4)
@@ -4548,7 +4548,7 @@ def add_clouds(seed: int = 42):
         for _ in range(num_bumps):
             bx = random.uniform(-cloud_width * 0.35, cloud_width * 0.35)
             bz = random.uniform(-cloud_depth * 0.35, cloud_depth * 0.35)
-            br = random.uniform(5.0, 8.0)  # Bump radius
+            br = random.uniform(3.5, 5.6)  # Bump radius
             bh = random.uniform(0.7, 1.0)  # Height multiplier
             bump_centers.append((bx, bz, br, bh))
 
@@ -4572,7 +4572,7 @@ def add_clouds(seed: int = 42):
 
             # Bigger voxels in center, smaller at edges
             center_factor = 1.0 - dist
-            voxel_size = 1.5 + center_factor * 2.5  # 1.5 at edge, 4.0 at center
+            voxel_size = 1.05 + center_factor * 1.75  # ~1.05 at edge, ~2.8 at center
 
             bg_positions[idx] = [cx + ox, cy, cz + oz]  # All at cy — perfectly flat
             gray = random.uniform(0.88, 0.93)
@@ -4612,7 +4612,7 @@ def add_clouds(seed: int = 42):
 
             # Distance from cloud center for size scaling
             center_factor = 1.0 - min(1.0, norm_dist)
-            voxel_size = 1.2 + center_factor * 2.8  # 1.2 at edge, 4.0 at center
+            voxel_size = 0.84 + center_factor * 1.96  # ~0.84 at edge, ~2.8 at center
 
             gray = random.uniform(0.92, 1.0)
             bg_positions[idx] = [cx + ox, cy + oy, cz + oz]
@@ -5248,7 +5248,7 @@ def add_tree_branches(count: int = 12, seed: int = 42):
 
                 f_x = tree_x + math.cos(frond_angle) * reach
                 f_z = tree_z + math.sin(frond_angle) * reach
-                f_y = tree_top_y + 3.0 - droop
+                f_y = tree_top_y + 0.5 - droop
 
                 frond_size = 0.9 - seg * 0.05
                 if frond_size < 0.35:
@@ -5426,7 +5426,7 @@ def add_swamp(seed: int = 42):
         mushroom_data.append((sx, sz, cap_y, cap_radius))
 
     # === SMALL MUSHROOMS ===
-    for s in range(18):
+    for s in range(12):
         if idx >= MAX_BACKGROUND_VOXELS - 50:
             break
         angle = random.uniform(0, 2 * math.pi)

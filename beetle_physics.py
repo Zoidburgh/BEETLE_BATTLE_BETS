@@ -17961,11 +17961,39 @@ try:
         def theme_label(name, theme_id):
             return f"{name}: ON" if simulation.is_theme_active(theme_id) else f"{name}: OFF"
 
-        if window.GUI.button(theme_label("STARS", simulation.THEME_STARS)):
-            simulation.toggle_theme(simulation.THEME_STARS)
+        window.GUI.text("--- BIOMES ---")
+
+        biome_ids = [simulation.THEME_DESERT, simulation.THEME_GRASS, simulation.THEME_WAVES, simulation.THEME_SWAMP, simulation.THEME_LAVA]
+
+        def toggle_biome(theme_id):
+            """Only one biome at a time — clear others before toggling."""
+            if simulation.is_theme_active(theme_id):
+                simulation.toggle_theme(theme_id)
+            else:
+                for b in biome_ids:
+                    if b != theme_id and simulation.is_theme_active(b):
+                        simulation.remove_theme(b)
+                simulation.toggle_theme(theme_id)
+
+        if window.GUI.button(theme_label("DESERT", simulation.THEME_DESERT)):
+            toggle_biome(simulation.THEME_DESERT)
 
         if window.GUI.button(theme_label("GRASS", simulation.THEME_GRASS)):
-            simulation.toggle_theme(simulation.THEME_GRASS)
+            toggle_biome(simulation.THEME_GRASS)
+
+        if window.GUI.button(theme_label("OCEAN", simulation.THEME_WAVES)):
+            toggle_biome(simulation.THEME_WAVES)
+
+        if window.GUI.button(theme_label("SWAMP", simulation.THEME_SWAMP)):
+            toggle_biome(simulation.THEME_SWAMP)
+
+        if window.GUI.button(theme_label("LAVA", simulation.THEME_LAVA)):
+            toggle_biome(simulation.THEME_LAVA)
+
+        window.GUI.text("--- EXTRA ---")
+
+        if window.GUI.button(theme_label("STARS", simulation.THEME_STARS)):
+            simulation.toggle_theme(simulation.THEME_STARS)
 
         if window.GUI.button(theme_label("FIREFLY", simulation.THEME_FIREFLIES)):
             simulation.toggle_theme(simulation.THEME_FIREFLIES)
@@ -17973,31 +18001,15 @@ try:
         if window.GUI.button(theme_label("BTTRFLY", simulation.THEME_BUTTERFLIES)):
             simulation.toggle_theme(simulation.THEME_BUTTERFLIES)
 
-        if window.GUI.button(theme_label("WAVES", simulation.THEME_WAVES)):
-            simulation.toggle_theme(simulation.THEME_WAVES)
-
         if window.GUI.button(theme_label("PALMS", simulation.THEME_PALM_TREES)):
             simulation.toggle_theme(simulation.THEME_PALM_TREES)
 
-        if window.GUI.button(theme_label("STADIUM", simulation.THEME_STADIUM)):
-            simulation.toggle_theme(simulation.THEME_STADIUM)
-
-        if window.GUI.button(theme_label("LAVA", simulation.THEME_LAVA)):
-            simulation.toggle_theme(simulation.THEME_LAVA)
-
-        if window.GUI.button(theme_label("RAIN", simulation.THEME_RAIN)):
-            simulation.toggle_theme(simulation.THEME_RAIN)
 
         if window.GUI.button(theme_label("CLOUDS", simulation.THEME_CLOUDS)):
             simulation.toggle_theme(simulation.THEME_CLOUDS)
 
         if window.GUI.button(theme_label("PTERO", simulation.THEME_PTERODACTYL)):
             simulation.toggle_theme(simulation.THEME_PTERODACTYL)
-
-        if window.GUI.button(theme_label("SWAMP", simulation.THEME_SWAMP)):
-            simulation.toggle_theme(simulation.THEME_SWAMP)
-        if window.GUI.button(theme_label("DESERT", simulation.THEME_DESERT)):
-            simulation.toggle_theme(simulation.THEME_DESERT)
 
         if window.GUI.button("CLEAR ALL"):
             simulation.clear_all_themes()
