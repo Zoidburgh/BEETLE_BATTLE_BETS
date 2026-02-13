@@ -12875,7 +12875,7 @@ camera.yaw = TITLE_CAM_YAW
 auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to toggle)
 
 # 3rd person follow camera settings
-third_person_camera = False  # Toggle for 3rd person follow cam
+third_person_camera = True  # Toggle for 3rd person follow cam
 THIRD_PERSON_DISTANCE = 60.0  # Distance behind beetle (horizontal)
 # Camera always uses opposite side view (beetles in foreground, edge in background)
 camera_edge_angle = None  # Previous edge angle for smooth transitions (None = not yet initialized)

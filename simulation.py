@@ -217,6 +217,8 @@ BG_ANIM_CLOUD = 18           # Cloud: slow drift + breathing + brightness pulse
 BG_ANIM_PTERODACTYL = 19     # Pterodactyl: circular orbit with wing flap
 BG_ANIM_FLOWER = 20          # Wildflower: sway + periodic gust blows them away
 BG_ANIM_SERPENT_SPLASH = 21  # Serpent splash: burst of water voxels when head dives
+BG_ANIM_CONSTELLATION = 22   # Constellation: synced pulse with traveling sparkle along lines
+BG_ANIM_COMET = 23           # Comet: orbiting head with trailing tail
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -920,8 +922,102 @@ def animate_background(time: ti.f32):
         bg_offset_y[i] = 0.0
 
         if anim == BG_ANIM_TWINKLE:
-            # Brightness oscillation: 0.6 to 1.0 range for subtle twinkle
-            bg_brightness[i] = 0.8 + 0.2 * ti.sin(t)
+            # Gentle base shimmer + occasional bright twinkle flash
+            base = 0.85 + 0.1 * ti.sin(t)
+            # Use two overlapping sin waves with different frequencies to create rare alignment peaks
+            wave1 = ti.sin(time * speed * 0.7 + amplitude * 3.14)
+            wave2 = ti.sin(time * speed * 1.1 + amplitude * 7.77)
+            combined = wave1 * wave2  # Only peaks when both waves align (~1.0)
+            # Sharp power curve so only the highest peaks create a visible flash
+            flash = 0.0
+            if combined > 0.7:
+                flash = (combined - 0.7) / 0.3  # 0 to 1 ramp
+                flash = flash * flash * 0.5  # squared for sharp spike, up to 0.5 extra brightness
+            bg_brightness[i] = base + flash
+
+        elif anim == BG_ANIM_CONSTELLATION:
+            # Constellation stars: synced pulse per constellation + traveling sparkle on lines
+            # phase = constellation_id offset (shared pulse timing)
+            # amplitude = 0 for vertex star, >0 for line dot (position along edge 0-1)
+            # speed = sparkle speed variation
+
+            # Whole constellation breathes together
+            constellation_pulse = 0.5 + 0.5 * ti.sin(time * 0.6 + phase)
+
+            if amplitude < 0.01:
+                # Vertex star — bright pulse
+                bg_brightness[i] = 0.55 + 0.45 * constellation_pulse
+            else:
+                # Line dot — traveling sparkle wave along the edge
+                sparkle = ti.sin(time * 2.0 + phase + amplitude * 6.28)
+                sparkle = ti.max(0.0, sparkle)
+                bg_brightness[i] = 0.15 + 0.45 * constellation_pulse + 0.4 * sparkle
+
+        elif anim == BG_ANIM_COMET:
+            # Giant comet: dome front + animated rings flowing backward into tail
+            # amplitude >= 100: animated ring voxel (amplitude-100 = theta within ring)
+            # amplitude < 100: static voxel (tip/spine)
+
+            orbit_radius = 220.0
+            orbit_y = 15.0
+            dome_r = 4.5
+            head_angle = time * 1.775
+
+            if amplitude >= 99.0:
+                # === ANIMATED RING: flows from dome front to tail end ===
+                ring_theta = amplitude - 100.0
+                cycle_offset = phase
+                cycle_period = 8.0
+                frac = ((time * 3.94 + cycle_offset) % cycle_period) / cycle_period
+
+                # Trail position: starts AT the head, flows backward
+                trail_pos = frac * 0.45
+
+                # Ring radius shrinks slower (quadratic — stays wide longer before converging)
+                shrink = (1.0 - frac) * (1.0 - frac)
+                ring_r = dome_r * shrink
+
+                lat = ring_r * ti.cos(ring_theta)
+                vert = ring_r * ti.sin(ring_theta)
+
+                voxel_angle = head_angle - trail_pos
+                px = orbit_radius * ti.cos(voxel_angle) + ti.cos(voxel_angle) * lat
+                pz = orbit_radius * ti.sin(voxel_angle) + ti.sin(voxel_angle) * lat
+                py = orbit_y + vert
+
+                bg_offset_x[i] = px - bg_positions[i].x
+                bg_offset_z[i] = pz - bg_positions[i].z
+                bg_offset_y[i] = py - bg_positions[i].y
+
+                # Smooth fade along tail — cubic for gradual dimming
+                fade = (1.0 - frac) * (1.0 - frac)
+                shimmer = ti.sin(time * 5.0 + ring_theta * 3.0) * 0.1 * fade
+                bright = fade + shimmer
+                if bright < 0.03:
+                    bg_brightness[i] = 0.0
+                    bg_offset_y[i] = -200.0  # hide underground, no black flicker
+                else:
+                    bg_brightness[i] = bright
+            else:
+                # === STATIC: front tip or core spine ===
+                trail_offset = phase
+                voxel_angle = head_angle - trail_offset
+
+                px = orbit_radius * ti.cos(voxel_angle)
+                pz = orbit_radius * ti.sin(voxel_angle)
+                py = orbit_y + speed  # vertical offset
+
+                px += ti.cos(voxel_angle) * amplitude
+                pz += ti.sin(voxel_angle) * amplitude
+
+                bg_offset_x[i] = px - bg_positions[i].x
+                bg_offset_z[i] = pz - bg_positions[i].z
+                bg_offset_y[i] = py - bg_positions[i].y
+
+                shimmer = ti.sin(time * 4.0 - trail_offset * 20.0)
+                shimmer = ti.max(0.0, shimmer) * 0.3
+                fade = 1.0 - trail_offset * 2.2
+                bg_brightness[i] = ti.max(0.05, fade + shimmer)
 
         elif anim == BG_ANIM_SWAY:
             # Horizontal wave motion (grass swaying) with gust waves
@@ -1538,7 +1634,9 @@ def animate_background(time: ti.f32):
             orbit_angle = time * orbit_speed + phase * 6.28
             px = orbit_radius * ti.cos(orbit_angle)
             pz = orbit_radius * ti.sin(orbit_angle)
-            py = 4.0 * ti.sin(time * 0.5 + phase * 2.0)
+            # Slow drift + subtle lift synced to wing flaps (rises on downstroke)
+            flap_lift = ti.max(0.0, -ti.sin(time * 2.5 + phase * 1.5))  # lift on downstroke
+            py = 2.0 * ti.sin(time * 0.5 + phase * 2.0) + 2.0 * flap_lift
 
             # Flight direction (tangent to circle)
             dir_x = -ti.sin(orbit_angle)
@@ -2508,7 +2606,7 @@ def toggle_theme(theme_id: int):
     else:
         # Add the theme
         add_functions = {
-            THEME_STARS: lambda: add_stars(2400),
+            THEME_STARS: lambda: add_stars(1200),
             THEME_GRASS: lambda: add_grass(625),
             THEME_FIREFLIES: lambda: add_fireflies(930),
             THEME_WATER: lambda: add_water(2250),
@@ -2535,45 +2633,190 @@ def is_theme_active(theme_id: int) -> bool:
 # STACKABLE THEME ADD FUNCTIONS (append to existing voxels)
 # ============================================================
 
-def add_stars(count: int = 2400, seed: int = 42):
-    """Add stars to the background (appends to existing voxels)."""
+def add_stars(count: int = 1200, seed: int = 42):
+    """Add constellation star patterns + scattered background stars."""
     global active_themes, theme_start_idx, theme_count
     import random
     import math
     random.seed(seed)
 
     if THEME_STARS in active_themes:
-        return  # Already active
+        return
 
     start_idx = num_bg_voxels[None]
     idx = start_idx
-    min_dist = 55
 
-    for _ in range(count * 3):
-        if idx >= MAX_BACKGROUND_VOXELS or idx >= start_idx + count:
+    # === CONSTELLATION DEFINITIONS ===
+    # Each: vertices as (x, y) local coords, edges as (v1, v2) pairs
+    constellations = [
+        {  # Stag Beetle - curved mandibles, body, legs
+            'verts': [
+                # Left mandible (single curve)
+                (-2, 20),                              # 0: left horn tip
+                (-5, 17),                              # 1: left horn curve
+                (-4, 14),                              # 2: left horn base
+                # Right mandible
+                (2, 20),                               # 3: right horn tip
+                (5, 17),                               # 4: right horn curve
+                (4, 14),                               # 5: right horn base
+                # Head
+                (0, 13),                               # 6: head
+                # Body
+                (-4, 10), (4, 10),                     # 7-8: body top
+                (-5, 5), (5, 5),                       # 9-10: body widest
+                (-3, 0), (3, 0),                       # 11-12: body bottom
+                # Legs
+                (-8, 9), (8, 9),                       # 13-14: front legs
+                (-9, 4), (9, 4),                       # 15-16: back legs
+            ],
+            'edges': [
+                (0, 1), (1, 2), (2, 6),                # left horn curve
+                (3, 4), (4, 5), (5, 6),                # right horn curve
+                (6, 7), (6, 8), (7, 8),                # head to body top
+                (7, 9), (8, 10),                       # body sides
+                (9, 11), (10, 12), (11, 12),           # body bottom
+                (7, 13), (8, 14),                      # front legs
+                (9, 15), (10, 16),                     # back legs
+            ],
+        },
+    ]
+
+    # === PLACEMENT: single beetle constellation ===
+    sky_radius = 155.0
+    placements = [
+        (0, -1),        # beetle
+    ]
+    scales = [2.6]
+    tilts = [45]  # beetle tilted left
+
+    for ci, constellation in enumerate(constellations):
+        az_deg, el_deg = placements[ci]
+        scale = scales[ci]
+        tilt = math.radians(tilts[ci])
+        az = math.radians(az_deg)
+        el = math.radians(el_deg)
+
+        # Center on sky sphere
+        center_x = sky_radius * math.cos(az) * math.cos(el)
+        center_y = sky_radius * math.sin(el)
+        center_z = sky_radius * math.sin(az) * math.cos(el)
+
+        # Local coordinate axes on the sphere surface (facing inward)
+        right_x = -math.sin(az)
+        right_y = 0.0
+        right_z = math.cos(az)
+        up_x = -math.cos(az) * math.sin(el)
+        up_y = math.cos(el)
+        up_z = -math.sin(az) * math.sin(el)
+
+        # Constellation ID for synced pulsing
+        const_phase = ci * 1.8
+
+        verts = constellation['verts']
+        edges = constellation['edges']
+
+        # Transform vertices to world space
+        world_verts = []
+        cos_tilt = math.cos(tilt)
+        sin_tilt = math.sin(tilt)
+        for lx, ly in verts:
+            lx *= scale
+            ly *= scale
+            # Rotate in local 2D plane so constellation is tilted
+            rx = lx * cos_tilt - ly * sin_tilt
+            ry = lx * sin_tilt + ly * cos_tilt
+            lx, ly = rx, ry
+            wx = center_x + lx * right_x + ly * up_x
+            wy = center_y + lx * right_y + ly * up_y
+            wz = center_z + lx * right_z + ly * up_z
+            world_verts.append((wx, wy, wz))
+
+        # Vertex star colors: warm white, blue-white, yellow-white
+        star_colors = [
+            (1.0, 0.95, 0.85),   # warm white
+            (0.85, 0.9, 1.0),    # blue-white
+            (1.0, 0.92, 0.7),    # yellow
+        ]
+
+        # Place vertex stars (bright, bigger)
+        for vi, (wx, wy, wz) in enumerate(world_verts):
+            if idx >= MAX_BACKGROUND_VOXELS - 10:
+                break
+            bg_positions[idx] = ti.Vector([wx, wy, wz])
+            sc = star_colors[vi % len(star_colors)]
+            bg_colors[idx] = ti.Vector([sc[0], sc[1], sc[2]])
+            bg_size[idx] = random.uniform(0.5, 0.7)
+            bg_anim_type[idx] = BG_ANIM_CONSTELLATION
+            bg_phase[idx] = const_phase
+            bg_anim_amplitude[idx] = 0.0  # 0 = vertex star
+            bg_anim_speed[idx] = 1.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # Place line dots along each edge
+        for v1i, v2i in edges:
+            w1 = world_verts[v1i]
+            w2 = world_verts[v2i]
+            edge_len = math.sqrt(sum((a - b) ** 2 for a, b in zip(w1, w2)))
+            num_dots = max(3, int(edge_len / 1.8))
+
+            for d in range(1, num_dots + 1):
+                if idx >= MAX_BACKGROUND_VOXELS - 10:
+                    break
+                frac = d / (num_dots + 1)
+                dx = w1[0] + frac * (w2[0] - w1[0])
+                dy = w1[1] + frac * (w2[1] - w1[1])
+                dz = w1[2] + frac * (w2[2] - w1[2])
+
+                bg_positions[idx] = ti.Vector([dx, dy, dz])
+                bg_colors[idx] = ti.Vector([0.7, 0.75, 0.9])  # Dim blue-white
+                bg_size[idx] = random.uniform(0.15, 0.25)
+                bg_anim_type[idx] = BG_ANIM_CONSTELLATION
+                bg_phase[idx] = const_phase
+                bg_anim_amplitude[idx] = frac  # Position along edge (for traveling sparkle)
+                bg_anim_speed[idx] = 1.0
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+    # === SCATTERED BACKGROUND STARS (dimmer, fill the sky) ===
+    min_dist = 85
+    bg_star_count = count
+    attempts = 0
+    placed = 0
+    while placed < bg_star_count and attempts < bg_star_count * 3:
+        attempts += 1
+        if idx >= MAX_BACKGROUND_VOXELS - 5:
             break
 
-        x = random.uniform(-120, 120)
-        y = random.uniform(-20, 120)
-        z = random.uniform(-120, 120)
+        x = random.uniform(-150, 150)
+        y = random.uniform(-10, 130)
+        z = random.uniform(-150, 150)
 
-        dist_xz = math.sqrt(x*x + z*z)
+        dist_xz = math.sqrt(x * x + z * z)
         if dist_xz < min_dist:
             continue
 
         bg_positions[idx] = ti.Vector([x, y, z])
-        blue_tint = random.uniform(0.0, 0.2)
-        brightness = random.uniform(0.6, 1.0)
+        blue_tint = random.uniform(0.0, 0.25)
+        brightness = random.uniform(0.4, 0.8)
         bg_colors[idx] = ti.Vector([
             brightness * (1.0 - blue_tint * 0.5),
             brightness * (1.0 - blue_tint * 0.3),
             brightness
         ])
 
-        if random.random() < 0.1:
-            bg_size[idx] = random.uniform(0.3, 0.45)
+        if random.random() < 0.08:
+            bg_size[idx] = random.uniform(0.15, 0.25)
         else:
-            bg_size[idx] = random.uniform(0.12, 0.25)
+            bg_size[idx] = random.uniform(0.05, 0.12)
 
         bg_anim_type[idx] = BG_ANIM_TWINKLE
         bg_anim_speed[idx] = random.uniform(1.5, 4.0)
@@ -2585,12 +2828,76 @@ def add_stars(count: int = 2400, seed: int = 42):
         bg_offset_z[idx] = 0.0
         bg_active[idx] = 1
         idx += 1
+        placed += 1
+
+    # === GIANT COMET - dome front pushing through space, tail streaming off ===
+    comet_voxels = 0
+    dome_R = 4.5   # physical radius of the dome
+    orbit_R = 112.0
+
+    def add_comet_voxel(idx, trail, lateral, vertical, size, r, g, b):
+        bg_positions[idx] = ti.Vector([0.0, 40.0, 0.0])
+        bg_colors[idx] = ti.Vector([r, g, b])
+        bg_size[idx] = size
+        bg_anim_type[idx] = BG_ANIM_COMET
+        bg_phase[idx] = trail
+        bg_anim_amplitude[idx] = lateral
+        bg_anim_speed[idx] = vertical
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+
+    # === FRONT TIP: static bright core ===
+    tip_trail = -(dome_R) / orbit_R
+    add_comet_voxel(idx, tip_trail, 0.0, 0.0, 4.1, 1.0, 0.4, 0.1)
+    idx += 1; comet_voxels += 1
+
+    # === ANIMATED RINGS: flow from dome front to tail end ===
+    # 10 rings x 8 voxels each, staggered evenly across the cycle
+    num_rings = 10
+    voxels_per_ring = 8
+    cycle_period = 3.5
+    for ring_id in range(num_rings):
+        cycle_offset = ring_id * (8.0 / num_rings)
+        for k in range(voxels_per_ring):
+            if idx >= MAX_BACKGROUND_VOXELS - 5: break
+            theta = k * 2 * math.pi / voxels_per_ring
+            # amplitude >= 100 flags this as animated ring; theta stored as amplitude-100
+            bg_positions[idx] = ti.Vector([0.0, 40.0, 0.0])
+            bg_colors[idx] = ti.Vector([1.0, 0.3, 0.05])  # glowing red
+            bg_size[idx] = 0.9
+            bg_anim_type[idx] = BG_ANIM_COMET
+            bg_phase[idx] = cycle_offset       # stagger within cycle
+            bg_anim_amplitude[idx] = 100.0 + theta  # flag + ring angle
+            bg_anim_speed[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+            comet_voxels += 1
+
+    # === CORE SPINE: static center tail line ===
+    num_core = 15
+    for t in range(num_core):
+        if idx >= MAX_BACKGROUND_VOXELS - 5: break
+        frac = t / num_core
+        trail = 0.005 + frac * 0.5
+        size = 2.2 * (1.0 - frac * 0.85)
+        r = 1.0 - frac * 0.3
+        g = 0.35 - frac * 0.25
+        b = 0.08 - frac * 0.05
+        add_comet_voxel(idx, trail, 0.0, 0.0, size, r, g, b)
+        idx += 1; comet_voxels += 1
 
     theme_start_idx[THEME_STARS] = start_idx
     theme_count[THEME_STARS] = idx - start_idx
     active_themes.add(THEME_STARS)
     num_bg_voxels[None] = idx
-    print(f"Added {idx - start_idx} stars (total voxels: {idx})")
+    print(f"Added {idx - start_idx} star voxels ({idx - start_idx - placed - comet_voxels} constellation, {placed} background, {comet_voxels} comet) (total: {idx})")
 
 def add_grass(count: int = 625, seed: int = 42):
     """Add lush grass with ground cover, clumps, varied heights, and wildflowers."""
