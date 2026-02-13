@@ -226,6 +226,8 @@ BG_ANIM_CATERPILLAR = 27    # Caterpillar: slow orbit with inchworm body wave
 BG_ANIM_LAVA_SNAIL = 28     # Lava snail: slow orbit with slug crawl + spiral shell
 BG_ANIM_DUST_DEVIL = 29     # Dust devil: phased spiral column with lifecycle
 BG_ANIM_SCORPION = 30       # Scorpion: ground orbit with tail curl, claw pinch
+BG_ANIM_TOAD = 31           # Toad: hopping orbit with idle breathing + throat puff
+BG_ANIM_MUD_SPLASH = 32     # Mud splash: burst on toad landing
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -1608,6 +1610,411 @@ def animate_background(time: ti.f32):
                 bg_offset_y[i] = py
                 bg_offset_z[i] = pz
                 bg_brightness[i] = 1.0
+
+        elif anim == BG_ANIM_TOAD:
+            # Fat swamp toad: hopping orbit with idle breathing, throat puff, stubby legs
+            # amplitude = part index, phase = toad ID, speed = orbit speed
+            # Parts: 0=body, 1=head, 2=throat, 3-4=eyes, 5-6=pupils,
+            #   7-8=back upper legs, 9-10=back lower legs, 11-12=back feet,
+            #   13-14=front upper legs, 15-16=front lower legs, 17-18=front feet
+            toad_part = amplitude
+            orbit_speed_t = speed
+            orbit_radius_t = 55.0
+            swamp_ground = 18.5
+
+            # 5s hop cycle: 3s idle, 0.3s crouch, 0.7s airborne, 1s land
+            hop_cycle = (time + phase * 3.7) % 5.0
+
+            # Orbit advances in discrete hops (~35 degrees per hop)
+            hop_count = ti.floor((time + phase * 3.7) / 5.0)
+            hop_angle = hop_count * 0.6 + phase * 3.14  # 0.6 rad = ~35 degrees per hop
+            next_angle = hop_angle + 0.6
+
+            # Interpolate angle during airborne phase
+            current_angle = hop_angle
+            if hop_cycle >= 3.3 and hop_cycle < 4.0:
+                jump_t = (hop_cycle - 3.3) / 0.7
+                smooth_jt = jump_t * jump_t * (3.0 - 2.0 * jump_t)
+                current_angle = hop_angle + (next_angle - hop_angle) * smooth_jt
+            elif hop_cycle >= 4.0:
+                current_angle = next_angle
+
+            # Direction vectors
+            dir_x_t = -ti.sin(current_angle)
+            dir_z_t = ti.cos(current_angle)
+            perp_x_t = -dir_z_t
+            perp_z_t = dir_x_t
+
+            # Center position on orbit
+            cx_t = orbit_radius_t * ti.cos(current_angle)
+            cz_t = orbit_radius_t * ti.sin(current_angle)
+
+            # Jump arc height — explosive fast arc
+            jump_y = 0.0
+            if hop_cycle >= 3.3 and hop_cycle < 4.0:
+                jump_t2 = (hop_cycle - 3.3) / 0.7
+                jump_y = ti.sin(jump_t2 * 3.14159) * 25.0  # Big explosive arc
+
+            # Breathing pulse during idle (body scale wobble)
+            breathe = 0.0
+            if hop_cycle < 3.0:
+                breathe = 0.15 * ti.sin(time * 1.8 + phase * 2.0)
+
+            # Crouch compression — quick wind-up
+            crouch_y = 0.0
+            if hop_cycle >= 3.0 and hop_cycle < 3.3:
+                crouch_t = (hop_cycle - 3.0) / 0.3
+                crouch_y = -2.0 * ti.sin(crouch_t * 3.14159 * 0.5)
+
+            # Land squish
+            land_squish = 0.0
+            if hop_cycle >= 4.0:
+                land_t = (hop_cycle - 4.0) / 1.0
+                land_squish = -1.5 * ti.sin(land_t * 3.14159) * (1.0 - land_t)
+
+            # Throat puff (inflates during idle, 3s cycle)
+            throat_puff = 0.0
+            if hop_cycle < 3.0:
+                throat_puff = 0.5 + 0.5 * ti.sin(time * 2.1 + phase * 4.0)
+
+            # Idle sway — gentle rocking side to side and forward/back
+            sway_x = 0.0
+            sway_z = 0.0
+            sway_y = 0.0
+            if hop_cycle < 3.0:
+                sway_x = perp_x_t * 0.8 * ti.sin(time * 0.9 + phase * 2.5) + dir_x_t * 0.4 * ti.sin(time * 0.7 + phase * 1.3)
+                sway_z = perp_z_t * 0.8 * ti.sin(time * 0.9 + phase * 2.5) + dir_z_t * 0.4 * ti.sin(time * 0.7 + phase * 1.3)
+                sway_y = 0.3 * ti.sin(time * 1.2 + phase * 3.0)
+
+            body_y = swamp_ground + jump_y + crouch_y + land_squish + sway_y
+
+            # Leg tuck during crouch
+            leg_tuck = 0.0
+            if hop_cycle >= 3.0 and hop_cycle < 3.3:
+                leg_tuck = (hop_cycle - 3.0) / 0.3
+
+            px_t = 0.0
+            py_t = -200.0
+            pz_t = 0.0
+
+            if toad_part < 0.5:
+                # BODY: big fat round center
+                px_t = cx_t + sway_x
+                py_t = body_y + breathe
+                pz_t = cz_t + sway_z
+            elif toad_part < 1.5:
+                # HEAD: forward and slightly up
+                px_t = cx_t + dir_x_t * 3.5 + sway_x * 1.2
+                py_t = body_y + 1.0 + breathe * 0.5
+                pz_t = cz_t + dir_z_t * 3.5 + sway_z * 1.2
+            elif toad_part < 2.5:
+                # THROAT POUCH: under head, inflates
+                puff_size = 1.0 + throat_puff * 1.5
+                px_t = cx_t + dir_x_t * 4.0 + sway_x * 1.3
+                py_t = body_y - 0.5 - puff_size * 0.3
+                pz_t = cz_t + dir_z_t * 4.0 + sway_z * 1.3
+            elif toad_part < 4.5:
+                # EYES: bulging on top of head (3=left, 4=right)
+                eye_side = -1.0
+                if toad_part > 3.5:
+                    eye_side = 1.0
+                px_t = cx_t + dir_x_t * 4.2 + perp_x_t * eye_side * 2.0 + sway_x * 1.3
+                py_t = body_y + 4.5
+                pz_t = cz_t + dir_z_t * 4.2 + perp_z_t * eye_side * 2.0 + sway_z * 1.3
+            elif toad_part < 6.5:
+                # PUPILS: on front of eyes (5=left, 6=right)
+                pupil_side = -1.0
+                if toad_part > 5.5:
+                    pupil_side = 1.0
+                px_t = cx_t + dir_x_t * 5.0 + perp_x_t * pupil_side * 2.0 + sway_x * 1.3
+                py_t = body_y + 4.7
+                pz_t = cz_t + dir_z_t * 5.0 + perp_z_t * pupil_side * 2.0 + sway_z * 1.3
+            elif toad_part < 22.5:
+                # BACK LEGS: 7-14=left (8 voxels), 15-22=right (8 voxels)
+                # Per leg: 0-2=thigh chain, 3-5=shin chain, 6-7=foot/toes
+                bleg_idx = toad_part - 7.0  # 0-15
+                bleg_side = -1.0
+                bleg_local = bleg_idx
+                if bleg_idx >= 8.0:
+                    bleg_side = 1.0
+                    bleg_local = bleg_idx - 8.0
+
+                spread_b = bleg_side * 4.5
+
+                # Toad back legs: thigh angles UP to knee, shin angles DOWN to ground
+                # Idle: knee sticks up high (classic toad crouch), Z-shape
+                # thigh_up = how much thigh goes UP from hip (positive = up)
+                # thigh_back = how far back from hip
+                # shin_fwd = how far forward shin goes from knee
+                thigh_up = 5.5     # Knee sticks up high above body
+                thigh_back = -2.0  # Slightly back
+                shin_down = -8.0   # Long shin reaching to ground
+                shin_fwd = 2.0     # Shin angles forward
+
+                if hop_cycle >= 3.0 and hop_cycle < 3.3:
+                    # Crouch: knee even higher, coil tight
+                    coil_t = (hop_cycle - 3.0) / 0.3
+                    thigh_up = 5.5 + coil_t * 2.5
+                    thigh_back = -2.0 - coil_t * 1.5
+                    shin_down = -8.0 - coil_t * 3.0
+                    shin_fwd = 2.0 - coil_t * 1.5
+                elif hop_cycle >= 3.3 and hop_cycle < 3.7:
+                    # Jump launch: legs EXTEND explosively behind and down
+                    ext_t = (hop_cycle - 3.3) / 0.4
+                    smooth_ext = ext_t * ext_t * (3.0 - 2.0 * ext_t)
+                    thigh_up = 8.0 - smooth_ext * 10.0
+                    thigh_back = -3.5 - smooth_ext * 5.0
+                    shin_down = -11.0 + smooth_ext * 8.0
+                    shin_fwd = 0.5 - smooth_ext * 4.0
+                elif hop_cycle >= 3.7 and hop_cycle < 4.0:
+                    # Airborne: tuck legs under body
+                    tuck_t = (hop_cycle - 3.7) / 0.3
+                    thigh_up = -2.0 + tuck_t * 4.0
+                    thigh_back = -8.5 + tuck_t * 5.0
+                    shin_down = -3.0 - tuck_t * 2.5
+                    shin_fwd = -3.5 + tuck_t * 3.5
+                elif hop_cycle >= 4.0:
+                    # Landing: absorb, return to toad crouch
+                    land_t2 = (hop_cycle - 4.0) / 1.0
+                    smooth_land = land_t2 * land_t2 * (3.0 - 2.0 * land_t2)
+                    thigh_up = 2.0 + smooth_land * 3.5
+                    thigh_back = -3.5 + smooth_land * 1.5
+                    shin_down = -5.5 - smooth_land * 2.5
+                    shin_fwd = 0.0 + smooth_land * 2.0
+
+                # Hip: behind and below body (sways with body)
+                hip_x = cx_t + dir_x_t * (-3.5) + perp_x_t * spread_b + sway_x * 0.5
+                hip_y = body_y - 1.5
+                hip_z = cz_t + dir_z_t * (-3.5) + perp_z_t * spread_b + sway_z * 0.5
+
+                # Knee position: up and back from hip
+                knee_x = hip_x + dir_x_t * thigh_back + perp_x_t * bleg_side * 0.5
+                knee_y = hip_y + thigh_up
+                knee_z = hip_z + dir_z_t * thigh_back + perp_z_t * bleg_side * 0.5
+
+                # Ankle position: down and forward from knee
+                ankle_x = knee_x + dir_x_t * shin_fwd
+                ankle_y = knee_y + shin_down
+                ankle_z = knee_z + dir_z_t * shin_fwd
+
+                seg_sp = 1.8  # Spacing between voxels in chain
+
+                if bleg_local < 3.0:
+                    # THIGH chain: hip → knee (3 voxels)
+                    chain_t = bleg_local / 2.0  # 0, 0.5, 1.0
+                    px_t = hip_x + (knee_x - hip_x) * chain_t
+                    py_t = hip_y + (knee_y - hip_y) * chain_t
+                    pz_t = hip_z + (knee_z - hip_z) * chain_t
+                elif bleg_local < 6.0:
+                    # SHIN chain: knee → ankle (3 voxels)
+                    chain_s = (bleg_local - 3.0) / 2.0  # 0, 0.5, 1.0
+                    px_t = knee_x + (ankle_x - knee_x) * chain_s
+                    py_t = knee_y + (ankle_y - knee_y) * chain_s
+                    pz_t = knee_z + (ankle_z - knee_z) * chain_s
+                else:
+                    # FOOT/TOES: splayed from ankle (2 voxels)
+                    toe_idx = bleg_local - 6.0  # 0 or 1
+                    toe_splay = -0.8 + toe_idx * 1.6
+                    px_t = ankle_x + dir_x_t * 1.2 + perp_x_t * bleg_side * toe_splay
+                    py_t = ti.max(ankle_y, swamp_ground - 1.0 + jump_y * 0.2)
+                    pz_t = ankle_z + dir_z_t * 1.2 + perp_z_t * bleg_side * toe_splay
+
+            elif toad_part < 34.5:
+                # FRONT LEGS: 23-28=left (6 voxels), 29-34=right (6 voxels)
+                # Per leg: 0-1=upper arm, 2-3=forearm, 4-5=hand/toes
+                fleg_idx2 = toad_part - 23.0  # 0-11
+                fleg_side2 = -1.0
+                fleg_local = fleg_idx2
+                if fleg_idx2 >= 6.0:
+                    fleg_side2 = 1.0
+                    fleg_local = fleg_idx2 - 6.0
+
+                spread_f = fleg_side2 * 3.5
+
+                # Animated elbow angle: how far the forearm drops
+                # Idle: 90-degree right angle — upper arm horizontal, forearm vertical
+                elbow_drop = 5.0  # How far forearm goes straight down
+                arm_fwd = 3.0     # Upper arm reach forward
+                arm_out = 1.5     # Upper arm pushes outward
+
+                if hop_cycle >= 3.0 and hop_cycle < 3.3:
+                    # Crouch: arms brace wider
+                    ct_f = (hop_cycle - 3.0) / 0.3
+                    arm_out = 1.5 + ct_f * 1.0
+                    elbow_drop = 5.0 + ct_f * 1.0
+                elif hop_cycle >= 3.3 and hop_cycle < 4.0:
+                    # Jump: arms reach forward and out
+                    jt_f = (hop_cycle - 3.3) / 0.7
+                    jump_f = ti.sin(jt_f * 3.14159)
+                    arm_fwd = 3.0 + jump_f * 3.0
+                    arm_out = 2.5 - jump_f * 1.0
+                    elbow_drop = 6.0 - jump_f * 3.0  # Arms extend out straighter
+                elif hop_cycle >= 4.0:
+                    # Landing: brace hard, arms lock
+                    lt_f = (hop_cycle - 4.0) / 1.0
+                    smooth_lf = lt_f * lt_f * (3.0 - 2.0 * lt_f)
+                    arm_fwd = 3.0 + (1.0 - smooth_lf) * 1.5
+                    arm_out = 1.5 + (1.0 - smooth_lf) * 0.5
+                    elbow_drop = 5.0 + (1.0 - smooth_lf) * 1.5
+
+                # Shoulder: on body, forward and out (sways with body)
+                shldr_x = cx_t + dir_x_t * 3.0 + perp_x_t * spread_f + sway_x * 0.5
+                shldr_y = body_y - 1.0
+                shldr_z = cz_t + dir_z_t * 3.0 + perp_z_t * spread_f + sway_z * 0.5
+
+                # Elbow: forward + outward from shoulder (horizontal upper arm)
+                elbow_x = shldr_x + dir_x_t * arm_fwd + perp_x_t * fleg_side2 * arm_out
+                elbow_y = shldr_y - 0.5  # Slight droop
+                elbow_z = shldr_z + dir_z_t * arm_fwd + perp_z_t * fleg_side2 * arm_out
+
+                # Wrist: straight down from elbow (vertical forearm)
+                wrist_x = elbow_x + dir_x_t * 0.3
+                wrist_y = elbow_y - elbow_drop
+                wrist_z = elbow_z + dir_z_t * 0.3
+
+                if fleg_local < 2.0:
+                    # UPPER ARM (2 voxels: shoulder → elbow)
+                    fu = fleg_local / 1.0  # 0, 1
+                    px_t = shldr_x + (elbow_x - shldr_x) * fu
+                    py_t = shldr_y + (elbow_y - shldr_y) * fu
+                    pz_t = shldr_z + (elbow_z - shldr_z) * fu
+                elif fleg_local < 4.0:
+                    # FOREARM (2 voxels: elbow → wrist, straight down)
+                    ff = (fleg_local - 2.0) / 1.0  # 0, 1
+                    px_t = elbow_x + (wrist_x - elbow_x) * ff
+                    py_t = elbow_y + (wrist_y - elbow_y) * ff
+                    pz_t = elbow_z + (wrist_z - elbow_z) * ff
+                else:
+                    # HAND/TOES (2 voxels splayed from wrist)
+                    toe_f = fleg_local - 4.0  # 0 or 1
+                    toe_sp = -0.6 + toe_f * 1.2
+                    px_t = wrist_x + dir_x_t * 0.8 + perp_x_t * fleg_side2 * toe_sp
+                    py_t = ti.max(wrist_y, swamp_ground - 1.0 + jump_y * 0.1)
+                    pz_t = wrist_z + dir_z_t * 0.8 + perp_z_t * fleg_side2 * toe_sp
+
+            elif toad_part < 40.5:
+                # WARTS: bumps on body surface (parts 35-40)
+                wart_idx = toad_part - 35.0  # 0-5
+                wart_ang = wart_idx * 1.05 + phase * 2.0
+                wart_fwd = -1.0 + ti.sin(wart_ang * 2.3) * 2.5
+                wart_side = ti.cos(wart_ang * 1.7) * 3.0
+                wart_up = 0.5 + ti.abs(ti.sin(wart_ang * 3.1)) * 1.5
+                px_t = cx_t + dir_x_t * wart_fwd + perp_x_t * wart_side
+                py_t = body_y + wart_up + breathe * 0.5
+                pz_t = cz_t + dir_z_t * wart_fwd + perp_z_t * wart_side
+            else:
+                # TONGUE: parts 41-48, shoots out every 3rd jump mid-air
+                tongue_idx = toad_part - 41.0  # 0-7 (tip=7)
+                tongue_len = 8.0
+                hop_count_t = ti.floor((time + phase * 3.7) / 5.0)
+                is_tongue_jump = (hop_count_t % 3.0)  # 0 = tongue jump
+
+                # Head position for tongue anchor
+                head_x_t = cx_t + dir_x_t * 3.5 + sway_x * 1.2
+                head_y_t = body_y + 1.0
+                head_z_t = cz_t + dir_z_t * 3.5 + sway_z * 1.2
+
+                # Tongue active during airborne phase (3.3-4.0) on every 3rd jump
+                if is_tongue_jump < 0.5 and hop_cycle >= 3.3 and hop_cycle < 4.0:
+                    tongue_t = (hop_cycle - 3.3) / 0.7  # 0→1 over airborne
+
+                    # Shoot out first half, retract second half
+                    extend = 0.0
+                    if tongue_t < 0.4:
+                        # Shoot out fast
+                        ext_f = tongue_t / 0.4
+                        extend = ext_f * ext_f * (3.0 - 2.0 * ext_f)  # smoothstep
+                    elif tongue_t < 0.6:
+                        # Hold extended
+                        extend = 1.0
+                    else:
+                        # Retract
+                        ret_f = (tongue_t - 0.6) / 0.4
+                        extend = 1.0 - ret_f * ret_f * (3.0 - 2.0 * ret_f)
+
+                    # Max tongue reach
+                    max_reach = 15.0
+                    chain_pos = (tongue_idx + 1.0) / tongue_len  # 0.125 to 1.0
+                    reach = extend * max_reach * chain_pos
+
+                    # Subtle wiggle that travels along the tongue
+                    wiggle_y = ti.sin(chain_pos * 6.28 + time * 12.0) * 0.4 * extend * chain_pos
+                    wiggle_x = ti.cos(chain_pos * 6.28 + time * 10.0) * 0.3 * extend * chain_pos
+
+                    px_t = head_x_t + dir_x_t * reach + perp_x_t * wiggle_x
+                    py_t = head_y_t + 0.5 + wiggle_y
+                    pz_t = head_z_t + dir_z_t * reach + perp_z_t * wiggle_x
+                else:
+                    # Hidden when not active
+                    px_t = 0.0
+                    py_t = -200.0
+                    pz_t = 0.0
+
+            bg_offset_x[i] = px_t
+            bg_offset_y[i] = py_t
+            bg_offset_z[i] = pz_t
+            bg_brightness[i] = 1.0
+
+        elif anim == BG_ANIM_MUD_SPLASH:
+            # Mud splash burst when toad lands
+            # amplitude = splash particle index (0-15), phase = toad ID, speed = unused
+            sp_idx = amplitude
+            num_sp = 16.0
+            orbit_radius_ms = 55.0
+            swamp_y_ms = 18.5
+
+            # Match toad hop cycle exactly
+            hop_cycle_ms = (time + phase * 3.7) % 5.0
+            hop_count_ms = ti.floor((time + phase * 3.7) / 5.0)
+
+            # Landing position (where toad lands = next_angle)
+            hop_angle_ms = hop_count_ms * 0.6 + phase * 3.14
+            land_angle_ms = hop_angle_ms + 0.6
+            land_x = orbit_radius_ms * ti.cos(land_angle_ms)
+            land_z = orbit_radius_ms * ti.sin(land_angle_ms)
+
+            # Splash triggers at landing (cycle >= 4.0)
+            splash_t_ms = hop_cycle_ms - 4.0
+
+            if splash_t_ms >= 0.0 and splash_t_ms < 1.5:
+                # Burst ring pattern — start outside the body (radius 6)
+                burst_ang = sp_idx * (6.28318 / num_sp)
+                burst_dx_ms = ti.cos(burst_ang)
+                burst_dz_ms = ti.sin(burst_ang)
+
+                # Start offset: outside toad body edge
+                start_r = 6.0
+
+                # Burst speed with variation
+                burst_spd_ms = 18.0 + ti.sin(sp_idx * 2.3) * 6.0
+
+                # Upward velocity — mud flies up higher
+                up_spd_ms = 28.0 + ti.cos(sp_idx * 1.7) * 10.0
+
+                # Parabolic arc
+                gravity_ms = 28.0
+                sp_px = land_x + burst_dx_ms * (start_r + burst_spd_ms * splash_t_ms)
+                sp_pz = land_z + burst_dz_ms * (start_r + burst_spd_ms * splash_t_ms)
+                sp_py = swamp_y_ms + up_spd_ms * splash_t_ms - gravity_ms * splash_t_ms * splash_t_ms
+
+                # Let mud sink into ground and fade out
+                if sp_py > swamp_y_ms - 5.0:
+                    bg_offset_x[i] = sp_px
+                    bg_offset_y[i] = sp_py
+                    bg_offset_z[i] = sp_pz
+                    # Fade as it sinks below ground
+                    if sp_py >= swamp_y_ms:
+                        bg_brightness[i] = 1.0
+                    else:
+                        sink_depth = (swamp_y_ms - sp_py) / 5.0  # 0→1 over 5 units
+                        bg_brightness[i] = ti.max(0.0, 1.0 - sink_depth)
+                else:
+                    bg_offset_y[i] = -200.0
+                    bg_brightness[i] = 0.0
+            else:
+                # Hidden between splashes
+                bg_offset_y[i] = -200.0
+                bg_brightness[i] = 0.0
 
         elif anim == BG_ANIM_SWAY:
             # Horizontal wave motion (grass swaying) with gust waves
@@ -4937,33 +5344,6 @@ def add_swamp(seed: int = 42):
             bg_active[idx] = 1
             idx += 1
 
-        # Glow spots on cap surface (bioluminescent)
-        for g in range(10):
-            theta = random.uniform(0, 2 * math.pi)
-            phi = random.uniform(0.1, math.pi * 0.4)
-            r = cap_radius * 1.02
-
-            gx_pos = sx + r * math.cos(theta) * math.sin(phi)
-            gz_pos = sz + r * math.sin(theta) * math.sin(phi)
-            gy_pos = cap_y + r * math.cos(phi) * 0.4
-
-            bg_positions[idx] = ti.Vector([gx_pos, gy_pos, gz_pos])
-            if random.random() < 0.5:
-                bg_colors[idx] = ti.Vector([0.7, 0.9, 0.3])  # warm green-yellow
-            else:
-                bg_colors[idx] = ti.Vector([0.3, 1.0, 0.7])  # cool cyan
-            bg_size[idx] = random.uniform(0.3, 0.55)
-            bg_anim_type[idx] = BG_ANIM_GLOW_PULSE
-            bg_phase[idx] = random.uniform(0, 6.28)
-            bg_anim_amplitude[idx] = random.uniform(0.3, 0.6)
-            bg_anim_speed[idx] = random.uniform(0.4, 0.8)
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
-            idx += 1
-
         # Hanging moss from cap edges
         for m in range(6):
             chain_angle = (m / 6) * 2 * math.pi + random.uniform(-0.3, 0.3)
@@ -5160,6 +5540,121 @@ def add_swamp(seed: int = 42):
             bg_brightness[idx] = 1.0
             bg_offset_x[idx] = 0.0
             bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === FAT TOADS ===
+    # 2 toads, 41 parts each (high-res legs)
+    # Parts: 0=body, 1=head, 2=throat, 3-4=eyes, 5-6=pupils,
+    #   7-14=left back leg (3 thigh + 3 shin + 2 toes)
+    #   15-22=right back leg
+    #   23-28=left front leg (2 upper + 2 forearm + 2 hand)
+    #   29-34=right front leg
+    #   35-40=warts
+    for toad_id in range(2):
+        toad_parts = [
+            # (part_id, size, r, g, b)
+            (0, 5.0, 0.35, 0.40, 0.15),         # Body: fat olive green
+            (1, 3.5, 0.38, 0.43, 0.17),         # Head: slightly lighter
+            (2, 2.5, 0.75, 0.70, 0.40),         # Throat pouch: pale yellow
+            (3, 1.8, 0.80, 0.75, 0.10),         # Left eye: golden yellow
+            (4, 1.8, 0.80, 0.75, 0.10),         # Right eye: golden yellow
+            (5, 0.7, 0.05, 0.05, 0.05),         # Left pupil: black
+            (6, 0.7, 0.05, 0.05, 0.05),         # Right pupil: black
+            # Left back leg: thigh chain
+            (7, 2.2, 0.32, 0.38, 0.13),
+            (8, 2.0, 0.32, 0.38, 0.13),
+            (9, 1.8, 0.31, 0.37, 0.12),
+            # Left back leg: shin chain
+            (10, 1.8, 0.30, 0.36, 0.12),
+            (11, 1.6, 0.30, 0.36, 0.12),
+            (12, 1.5, 0.29, 0.35, 0.11),
+            # Left back leg: toes
+            (13, 1.3, 0.28, 0.34, 0.11),
+            (14, 1.3, 0.28, 0.34, 0.11),
+            # Right back leg: thigh chain
+            (15, 2.2, 0.32, 0.38, 0.13),
+            (16, 2.0, 0.32, 0.38, 0.13),
+            (17, 1.8, 0.31, 0.37, 0.12),
+            # Right back leg: shin chain
+            (18, 1.8, 0.30, 0.36, 0.12),
+            (19, 1.6, 0.30, 0.36, 0.12),
+            (20, 1.5, 0.29, 0.35, 0.11),
+            # Right back leg: toes
+            (21, 1.3, 0.28, 0.34, 0.11),
+            (22, 1.3, 0.28, 0.34, 0.11),
+            # Left front leg: upper arm
+            (23, 1.8, 0.33, 0.39, 0.14),
+            (24, 1.6, 0.33, 0.39, 0.14),
+            # Left front leg: forearm
+            (25, 1.5, 0.32, 0.38, 0.13),
+            (26, 1.3, 0.32, 0.38, 0.13),
+            # Left front leg: hand/toes
+            (27, 1.2, 0.30, 0.35, 0.12),
+            (28, 1.2, 0.30, 0.35, 0.12),
+            # Right front leg: upper arm
+            (29, 1.8, 0.33, 0.39, 0.14),
+            (30, 1.6, 0.33, 0.39, 0.14),
+            # Right front leg: forearm
+            (31, 1.5, 0.32, 0.38, 0.13),
+            (32, 1.3, 0.32, 0.38, 0.13),
+            # Right front leg: hand/toes
+            (33, 1.2, 0.30, 0.35, 0.12),
+            (34, 1.2, 0.30, 0.35, 0.12),
+        ]
+
+        # Add wart bumps on body (extra small voxels)
+        wart_parts = []
+        for w in range(6):
+            wart_parts.append((35 + w, random.uniform(0.6, 1.0),
+                              0.28 + random.uniform(0, 0.05),
+                              0.33 + random.uniform(0, 0.05),
+                              0.10 + random.uniform(0, 0.03)))
+
+        # Tongue chain (8 voxels, tapering to tip, pink/red)
+        tongue_parts = []
+        for t in range(8):
+            t_size = 0.9 - t * 0.07  # Taper from 0.9 to ~0.4
+            # Pink base → red tip
+            t_r = 0.85 + t * 0.02
+            t_g = 0.25 - t * 0.02
+            t_b = 0.25 - t * 0.02
+            tongue_parts.append((41 + t, t_size, t_r, t_g, t_b))
+
+        for part_id, size, r, g, b in toad_parts + wart_parts + tongue_parts:
+            if idx >= MAX_BACKGROUND_VOXELS - 5:
+                break
+            bg_positions[idx] = ti.Vector([0, 0, 0])
+            bg_colors[idx] = ti.Vector([r, g, b])
+            bg_size[idx] = size
+            bg_anim_type[idx] = BG_ANIM_TOAD
+            bg_phase[idx] = float(toad_id)
+            bg_anim_amplitude[idx] = float(part_id)
+            bg_anim_speed[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # Mud splash particles (16 per toad)
+        for sp in range(16):
+            if idx >= MAX_BACKGROUND_VOXELS - 5:
+                break
+            bg_positions[idx] = ti.Vector([0, 0, 0])
+            # Mud colors: dark brown/green swamp muck
+            mud_t = random.uniform(0.7, 1.0)
+            bg_colors[idx] = ti.Vector([0.25 * mud_t, 0.20 * mud_t, 0.08 * mud_t])
+            bg_size[idx] = random.uniform(0.7, 1.4)
+            bg_anim_type[idx] = BG_ANIM_MUD_SPLASH
+            bg_phase[idx] = float(toad_id)
+            bg_anim_amplitude[idx] = float(sp)
+            bg_anim_speed[idx] = 0.0
+            bg_brightness[idx] = 0.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = -200.0
             bg_offset_z[idx] = 0.0
             bg_active[idx] = 1
             idx += 1

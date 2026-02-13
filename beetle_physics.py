@@ -13490,16 +13490,18 @@ try:
             target_x = target_beetle.x - math.sin(angle) * THIRD_PERSON_DISTANCE
             target_z = target_beetle.z + math.cos(angle) * THIRD_PERSON_DISTANCE
 
-            # Smooth camera movement - faster for responsive turning
-            lerp_factor = 0.27 * frame_dt * 60.0
-            lerp_factor = min(1.0, lerp_factor)
+            # Smooth camera movement - responsive position tracking
+            pos_lerp = 0.45 * frame_dt * 60.0
+            pos_lerp = min(1.0, pos_lerp)
 
-            camera.pos_x += (target_x - camera.pos_x) * lerp_factor
-            camera.pos_z += (target_z - camera.pos_z) * lerp_factor
-            camera.pos_y += (target_y - camera.pos_y) * lerp_factor
-            camera.pitch += (target_pitch - camera.pitch) * lerp_factor
+            camera.pos_x += (target_x - camera.pos_x) * pos_lerp
+            camera.pos_z += (target_z - camera.pos_z) * pos_lerp
+            camera.pos_y += (target_y - camera.pos_y) * pos_lerp
+            camera.pitch += (target_pitch - camera.pitch) * pos_lerp
 
-            # Smooth yaw transition
+            # Faster yaw tracking so camera stays behind beetle during turns
+            yaw_lerp = 0.55 * frame_dt * 60.0
+            yaw_lerp = min(1.0, yaw_lerp)
             dx = target_beetle.x - camera.pos_x
             dz = target_beetle.z - camera.pos_z
             target_yaw = math.degrees(math.atan2(dx, dz))
@@ -13508,7 +13510,7 @@ try:
                 yaw_diff -= 360.0
             while yaw_diff < -180.0:
                 yaw_diff += 360.0
-            camera.yaw += yaw_diff * lerp_factor
+            camera.yaw += yaw_diff * yaw_lerp
 
     elif auto_follow_enabled and game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
         # Edge-aware auto-follow camera: track beetles AND nearest arena edge
