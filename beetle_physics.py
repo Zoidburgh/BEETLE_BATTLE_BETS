@@ -17983,6 +17983,15 @@ try:
         if window.GUI.button(theme_label("LAVA", simulation.THEME_LAVA)):
             simulation.toggle_theme(simulation.THEME_LAVA)
 
+        if window.GUI.button(theme_label("RAIN", simulation.THEME_RAIN)):
+            simulation.toggle_theme(simulation.THEME_RAIN)
+
+        if window.GUI.button(theme_label("CLOUDS", simulation.THEME_CLOUDS)):
+            simulation.toggle_theme(simulation.THEME_CLOUDS)
+
+        if window.GUI.button(theme_label("PTERO", simulation.THEME_PTERODACTYL)):
+            simulation.toggle_theme(simulation.THEME_PTERODACTYL)
+
         if window.GUI.button("CLEAR ALL"):
             simulation.clear_all_themes()
             print("All background themes cleared")

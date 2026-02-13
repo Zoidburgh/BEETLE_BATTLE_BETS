@@ -211,6 +211,12 @@ BG_ANIM_FISH = 12      # Fish: jumping arc in/out of waves
 BG_ANIM_LAVA = 13      # Lava: slow viscous wave with molten glow
 BG_ANIM_LAVA_SPRAY = 14  # Lava spray: cyclic parabolic eruption arcs
 BG_ANIM_LAVA_VOLCANO = 15  # Lava volcano: scrunches to squirt out eruption
+BG_ANIM_RAIN = 16            # Rain: fast falling drops cycling top to bottom
+BG_ANIM_RAIN_SPLASH = 17     # Rain splash: pop-up burst at ground level
+BG_ANIM_CLOUD = 18           # Cloud: slow drift + breathing + brightness pulse
+BG_ANIM_PTERODACTYL = 19     # Pterodactyl: circular orbit with wing flap
+BG_ANIM_FLOWER = 20          # Wildflower: sway + periodic gust blows them away
+BG_ANIM_SERPENT_SPLASH = 21  # Serpent splash: burst of water voxels when head dives
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -246,6 +252,9 @@ THEME_WAVES = 7
 THEME_PALM_TREES = 10
 THEME_STADIUM = 11
 THEME_LAVA = 12
+THEME_RAIN = 13
+THEME_CLOUDS = 14
+THEME_PTERODACTYL = 15
 
 # Track each theme's voxel range
 theme_start_idx = {}   # theme_id -> start index in bg_* arrays
@@ -919,9 +928,32 @@ def animate_background(time: ti.f32):
             # Gust modulation - slow wave that increases/decreases intensity
             gust = 0.5 + 0.5 * ti.sin(t * 0.3 + phase * 0.5)  # Slow gust wave
             gust_amp = amplitude * (0.4 + 0.6 * gust)  # Range from 40% to 100% amplitude
-            bg_offset_x[i] = gust_amp * ti.sin(t)
-            # Slight y offset for more organic feel
-            bg_offset_y[i] = gust_amp * 0.3 * ti.sin(t * 1.5 + 0.5)
+            sway_ox = gust_amp * ti.sin(t)
+            sway_oy = gust_amp * 0.3 * ti.sin(t * 1.5 + 0.5)
+
+            # Wind gust lean (synced with BG_ANIM_FLOWER cycle)
+            gust_period_s = 25.0
+            gust_cycle_s = time % gust_period_s
+            gust_num_s = ti.floor(time / gust_period_s)
+            gust_dx_s = ti.sin(gust_num_s * 7.13)
+            gust_dz_s = ti.cos(gust_num_s * 7.13)
+
+            wind_lean = 0.0
+            wind_shake = 0.0
+            if gust_cycle_s > 18.0 and gust_cycle_s < 22.0:
+                # Smooth lean: ramp up 18-19, hold 19-21, ramp down 21-22
+                if gust_cycle_s < 19.0:
+                    wind_lean = (gust_cycle_s - 18.0) * amplitude * 0.8
+                elif gust_cycle_s < 21.0:
+                    wind_lean = amplitude * 0.8
+                else:
+                    wind_lean = (22.0 - gust_cycle_s) * amplitude * 0.8
+                # Rapid shaking during wind
+                wind_shake = wind_lean * 0.4 * ti.sin(time * 15.0 + phase * 3.0)
+
+            bg_offset_x[i] = sway_ox + wind_lean * gust_dx_s + wind_shake * gust_dz_s
+            bg_offset_y[i] = sway_oy
+            bg_offset_z[i] = wind_lean * gust_dz_s - wind_shake * gust_dx_s
 
         elif anim == BG_ANIM_DRIFT:
             # Slow position drift (clouds, ambient particles)
@@ -1215,6 +1247,97 @@ def animate_background(time: ti.f32):
                     bg_brightness[i] = 0.5
 
 
+        elif anim == BG_ANIM_SERPENT_SPLASH:
+            # Water splash burst when serpent head dives into water
+            # phase = serpent angular offset, amplitude = splash voxel index, speed = serpent_id
+            splash_idx = amplitude
+            num_splash = 24.0
+
+            # Serpent head timing (must match BG_ANIM_FISH exactly)
+            wave_speed_s = 2.75
+            swim_speed_s = 0.31
+            swim_radius_s = 50.0
+            pi2 = 2.0 * 3.14159265
+
+            # Head y = sin(-time * 2.75) * 7.0 + 1.5
+            # Trigger slightly BEFORE head hits water (head_y ≈ 0.7)
+            # sin(θ) = (0.7-1.5)/7.0 = -0.1143, θ = 2π - arcsin(0.1143) ≈ 6.169
+            dive_theta = pi2 - 0.1145
+
+            # Current phase in the sine cycle
+            raw_theta = -time * wave_speed_s
+            theta = raw_theta - ti.floor(raw_theta / pi2) * pi2  # mod 2pi
+
+            # Time since last dive: how far past dive_theta (theta decreasing)
+            phase_since = dive_theta - theta
+            phase_since = phase_since - ti.floor(phase_since / pi2) * pi2  # mod 2pi
+            splash_t = phase_since / wave_speed_s  # seconds since dive
+
+            # Long enough for particles to complete full arc back to water
+            splash_dur = 1.3
+
+            if splash_t < splash_dur:
+                # Head position at moment of dive
+                dive_time = time - splash_t
+                head_angle = phase + dive_time * swim_speed_s
+                head_x = ti.cos(head_angle) * swim_radius_s
+                head_z = ti.sin(head_angle) * swim_radius_s
+
+                # Forward direction (tangent to swim circle = direction of travel)
+                forward_x = -ti.sin(head_angle)
+                forward_z = ti.cos(head_angle)
+
+                # Offset splash forward in swim direction
+                splash_cx = head_x + forward_x * 6.0
+                splash_cz = head_z + forward_z * 6.0
+
+                # Burst direction for this voxel (ring pattern)
+                burst_angle = splash_idx * (pi2 / num_splash)
+
+                # Local radial/tangent frame at splash position
+                radial_x = ti.cos(head_angle)
+                radial_z = ti.sin(head_angle)
+                tangent_x = -ti.sin(head_angle)
+                tangent_z = ti.cos(head_angle)
+
+                # Burst in local 2D plane
+                local_x = ti.cos(burst_angle)
+                local_z = ti.sin(burst_angle)
+
+                # Transform to world coordinates
+                burst_dx = local_x * radial_x + local_z * tangent_x
+                burst_dz = local_x * radial_z + local_z * tangent_z
+
+                # Burst speed with variation — wider ring (20% faster/farther)
+                burst_spd = 14.5 + ti.sin(splash_idx * 2.3) * 5.0
+
+                # Upward velocity varies — some go much higher (20% faster)
+                up_speed = 26.0 + ti.cos(splash_idx * 1.7) * 10.0
+
+                # Parabolic arc: v*t - 0.5*g*t^2
+                gravity = 32.0
+                px = splash_cx + burst_dx * burst_spd * splash_t
+                pz = splash_cz + burst_dz * burst_spd * splash_t
+                py = up_speed * splash_t - gravity * splash_t * splash_t
+
+                bg_offset_x[i] = px - bg_positions[i].x
+                bg_offset_z[i] = pz - bg_positions[i].z
+                bg_offset_y[i] = py
+
+                # Stay fully bright while above water, hide when they drop back in
+                if py > 0.5:
+                    bg_brightness[i] = 1.0
+                elif py > 0.0:
+                    bg_brightness[i] = py * 2.0  # Quick fade right at water surface
+                else:
+                    # Below water — hide underground
+                    bg_brightness[i] = 0.0
+                    bg_offset_y[i] = -200.0
+            else:
+                # No splash active — hide underground so no dark voxels
+                bg_brightness[i] = 0.0
+                bg_offset_y[i] = -200.0
+
         elif anim == BG_ANIM_TREE:
             # Tree branch sway - wind effect
             # amplitude controls how much this part sways (trunk=0.3, branches=1.5+)
@@ -1355,6 +1478,247 @@ def animate_background(time: ti.f32):
             bg_offset_z[i] = bulge * ti.cos(phase * 3.0)
             bg_brightness[i] = 1.0 + glow_boost
 
+        elif anim == BG_ANIM_RAIN:
+            # Rain: fast straight falling drops that cycle seamlessly
+            # phase = random time offset, amplitude = fall distance, speed = fall rate
+            fall_dist = amplitude
+            t = (time * speed + phase) % fall_dist
+
+            bg_offset_y[i] = -t                    # Straight down, fast
+            bg_offset_x[i] = 0.0
+            bg_offset_z[i] = 0.0
+            bg_brightness[i] = 0.7 + 0.3 * (1.0 - t / fall_dist)
+
+        elif anim == BG_ANIM_RAIN_SPLASH:
+            # Rain splash: quick pop-up arc at ground level
+            # phase = timing offset + direction seed, amplitude = outward radius, speed = cycle period
+            cycle = speed
+            t_splash = (time + phase) % cycle
+            normalized = t_splash / cycle
+
+            splash_height = 2.5 * ti.sin(normalized * 3.14159)
+            spread = amplitude * normalized
+
+            bg_offset_y[i] = splash_height
+            bg_offset_x[i] = spread * ti.sin(phase * 6.28)
+            bg_offset_z[i] = spread * ti.cos(phase * 6.28)
+            bg_brightness[i] = 1.2 * ti.sin(normalized * 3.14159)
+
+        elif anim == BG_ANIM_CLOUD:
+            # Cloud: floating drift + individual breathing + strong size morphing
+            # phase = cluster_id (shared drift), amplitude = individual seed, speed = pulse rate
+
+            # Bigger floating drift (all voxels in same cloud move together)
+            drift_x = 10.0 * ti.sin(time * 0.15 + phase * 2.0)
+            drift_z = 8.0 * ti.cos(time * 0.12 + phase * 1.5)
+            drift_y = 2.0 * ti.sin(time * 0.08 + phase * 3.0)
+
+            # Individual position breathing (tighter to prevent strays)
+            breathe_x = 0.25 * ti.sin(time * speed * 0.3 + amplitude * 5.0)
+            breathe_y = 0.12 * ti.sin(time * speed * 0.25 + amplitude * 3.0)
+            breathe_z = 0.25 * ti.cos(time * speed * 0.35 + amplitude * 4.0)
+
+            bg_offset_x[i] = drift_x + breathe_x
+            bg_offset_y[i] = drift_y + breathe_y
+            bg_offset_z[i] = drift_z + breathe_z
+
+            # Brightness pulsing (voxels swell and shrink)
+            pulse = ti.sin(time * speed * 0.5 + amplitude * 6.28)
+            bg_brightness[i] = 0.775 + 0.175 * pulse  # Range 0.6 to 0.95
+
+        elif anim == BG_ANIM_PTERODACTYL:
+            # Pterodactyl: circular orbit with bending wing flap
+            # Parts: 0=body, 1=neck, 2=head, 3-7=beak cone, 8-14=crest cone
+            #   15-19=left wing, 20-24=right wing, 25-29=tail
+            part = amplitude
+            orbit_speed = speed
+            orbit_radius = 70.0
+
+            # Circular orbit
+            orbit_angle = time * orbit_speed + phase * 6.28
+            px = orbit_radius * ti.cos(orbit_angle)
+            pz = orbit_radius * ti.sin(orbit_angle)
+            py = 4.0 * ti.sin(time * 0.5 + phase * 2.0)
+
+            # Flight direction (tangent to circle)
+            dir_x = -ti.sin(orbit_angle)
+            dir_z = ti.cos(orbit_angle)
+
+            # Perpendicular axis (for wings)
+            perp_x = -dir_z
+            perp_z = dir_x
+
+            # Base flap cycle
+            flap_base = time * 2.5 + phase * 1.5
+
+            # Head position (shared by beak and crest)
+            head_fwd = 9.0
+            head_y = 2.0
+
+            off_x = 0.0
+            off_y = 0.0
+            off_z = 0.0
+
+            if part < 0.5:
+                # Body
+                off_x = px
+                off_y = py
+                off_z = pz
+            elif part < 1.5:
+                # Neck
+                off_x = px + dir_x * 5.0
+                off_y = py + 1.0
+                off_z = pz + dir_z * 5.0
+            elif part < 2.5:
+                # Head
+                off_x = px + dir_x * head_fwd
+                off_y = py + head_y
+                off_z = pz + dir_z * head_fwd
+            elif part < 7.5:
+                # Beak cone (3-7): 5 voxels extending forward from head
+                beak_idx = part - 3.0  # 0 to 4
+                beak_fwd = head_fwd + 2.0 + beak_idx * 1.5  # Extends forward
+                beak_drop = -beak_idx * 0.2  # Slight downward angle
+                off_x = px + dir_x * beak_fwd
+                off_y = py + head_y + beak_drop
+                off_z = pz + dir_z * beak_fwd
+            elif part < 14.5:
+                # Crest cone (8-14): 7 voxels curving up+back, flaps with flight
+                crest_idx = part - 8.0  # 0 to 6
+                crest_back = head_fwd - 1.0 - crest_idx * 1.2  # Tighter spacing
+                crest_up = head_y + 2.5 + crest_idx * 0.9
+                # Crest sways with wing flap — more at the tip
+                crest_flap = ti.sin(flap_base) * crest_idx * 0.3
+                off_x = px + dir_x * crest_back
+                off_y = py + crest_up + crest_flap
+                off_z = pz + dir_z * crest_back
+            elif part < 19.5:
+                # Left wing (15-19): bending flap
+                wing_idx = part - 15.0
+                spread = 5.0 + wing_idx * 4.0
+                flap_delay = wing_idx * 0.25
+                flap = ti.sin(flap_base - flap_delay)
+                flap_h = (2.0 + wing_idx * 1.5) * flap
+                droop_fwd = -wing_idx * 0.4 * ti.max(0.0, -flap)
+                off_x = px + perp_x * spread + dir_x * droop_fwd
+                off_y = py + flap_h
+                off_z = pz + perp_z * spread + dir_z * droop_fwd
+            elif part < 24.5:
+                # Right wing (20-24): mirror of left
+                wing_idx = part - 20.0
+                spread = -(5.0 + wing_idx * 4.0)
+                flap_delay = wing_idx * 0.25
+                flap = ti.sin(flap_base - flap_delay)
+                flap_h = (2.0 + wing_idx * 1.5) * flap
+                droop_fwd = -wing_idx * 0.4 * ti.max(0.0, -flap)
+                off_x = px + perp_x * spread + dir_x * droop_fwd
+                off_y = py + flap_h
+                off_z = pz + perp_z * spread + dir_z * droop_fwd
+            else:
+                # Tail (25-29): 5 voxels, tighter spacing, wavy
+                tail_idx = part - 25.0
+                trail = -(3.0 + tail_idx * 2.5)  # 3, 5.5, 8, 10.5, 13
+                # Wave travels down the tail with delay per segment
+                tail_sway = (0.4 + tail_idx * 0.4) * ti.sin(time * 2.5 - tail_idx * 0.5)
+                tail_bob = (0.3 + tail_idx * 0.2) * ti.sin(time * 2.0 - tail_idx * 0.4)
+                off_x = px + dir_x * trail + perp_x * tail_sway
+                off_y = py - 0.3 - tail_idx * 0.5 + tail_bob
+                off_z = pz + dir_z * trail + perp_z * tail_sway
+
+            bg_offset_x[i] = off_x
+            bg_offset_y[i] = off_y
+            bg_offset_z[i] = off_z
+            bg_brightness[i] = 1.0
+
+        elif anim == BG_ANIM_FLOWER:
+            # Wildflower: normal sway + periodic gust that blows them away
+            # phase = sway phase, amplitude = sway amount, speed = sway speed
+            # Gust cycle: 25 seconds total
+            #   0-18: Normal sway
+            #   18-19: Wind builds (flowers lean)
+            #   19-22: Full gust (flowers fly off, fade out)
+            #   22-25: Flowers gently fade back in at base position
+
+            gust_period = 25.0
+            gust_cycle = time % gust_period
+
+            # Pseudo-random gust direction per cycle
+            gust_num = ti.floor(time / gust_period)
+            gust_dx = ti.sin(gust_num * 7.13)
+            gust_dz = ti.cos(gust_num * 7.13)
+
+            # Wave sweep: flowers on incoming side blow first
+            base_x = bg_positions[i][0]
+            base_z = bg_positions[i][2]
+            along_gust = base_x * gust_dx + base_z * gust_dz
+            # Normalize to 0-1 across field (radius ~85)
+            wave_delay = (along_gust + 85.0) / 170.0
+            wave_delay = ti.max(0.0, ti.min(1.0, wave_delay))
+
+            # Match BG_ANIM_SWAY exactly: t = time * speed + phase
+            t_sway = time * speed + phase
+            gust_mod = 0.5 + 0.5 * ti.sin(t_sway * 0.3 + phase * 0.5)
+            sway_amp = amplitude * (0.4 + 0.6 * gust_mod)
+            sway_x = sway_amp * ti.sin(t_sway)
+            sway_y = sway_amp * 0.3 * ti.sin(t_sway * 1.5 + 0.5)
+
+            # Compute wind lean + shake matching BG_ANIM_SWAY exactly
+            wind_lean_f = 0.0
+            wind_shake_f = 0.0
+            if gust_cycle > 18.0 and gust_cycle < 22.0:
+                if gust_cycle < 19.0:
+                    wind_lean_f = (gust_cycle - 18.0) * amplitude * 0.8
+                elif gust_cycle < 21.0:
+                    wind_lean_f = amplitude * 0.8
+                else:
+                    wind_lean_f = (22.0 - gust_cycle) * amplitude * 0.8
+                wind_shake_f = wind_lean_f * 0.4 * ti.sin(time * 15.0 + phase * 3.0)
+
+            # Base position: sway + wind lean + shake (matches grass blade exactly)
+            base_ox = sway_x + wind_lean_f * gust_dx + wind_shake_f * gust_dz
+            base_oy = sway_y
+            base_oz = wind_lean_f * gust_dz - wind_shake_f * gust_dx
+
+            if gust_cycle < 19.0:
+                # Normal sway + wind lean — flower sits on blade tip
+                bg_offset_x[i] = base_ox
+                bg_offset_y[i] = base_oy
+                bg_offset_z[i] = base_oz
+                bg_brightness[i] = 1.0
+            elif gust_cycle < 24.0:
+                # Full gust — detach from blade and fly off with swirl
+                gust_t = gust_cycle - 19.0  # 0 to 5
+                # Delayed start based on position in wave
+                local_t = gust_t - wave_delay * 1.5
+                local_t = ti.max(0.0, local_t)
+                # Accelerating push in gust direction (starts from blade position)
+                push = local_t * local_t * 15.0
+                lift = local_t * 6.0
+                # Swirl: spiral perpendicular to gust direction
+                swirl_speed = 4.0 + phase * 0.5
+                swirl_radius = local_t * 3.0
+                swirl_x = swirl_radius * ti.sin(time * swirl_speed + phase * 3.0)
+                swirl_z = swirl_radius * ti.cos(time * swirl_speed + phase * 3.0)
+                perp_dx = -gust_dz
+                perp_dz = gust_dx
+                bg_offset_x[i] = base_ox + push * gust_dx + swirl_x * perp_dx
+                bg_offset_z[i] = base_oz + push * gust_dz + swirl_x * perp_dz
+                bg_offset_y[i] = base_oy + lift + swirl_z
+                bg_brightness[i] = 1.0
+            else:
+                # Staggered respawn — each flower fades in at different time based on wave_delay
+                respawn_start = 24.0 + wave_delay * 0.8  # Stagger over last second
+                respawn_dur = 1.0
+                respawn_t = 0.0
+                if gust_cycle > respawn_start:
+                    respawn_t = ti.min(1.0, (gust_cycle - respawn_start) / respawn_dur)
+                # Smooth ease-in: cubic
+                smooth = respawn_t * respawn_t * (3.0 - 2.0 * respawn_t)
+                bg_offset_x[i] = base_ox
+                bg_offset_y[i] = base_oy
+                bg_offset_z[i] = base_oz
+                bg_brightness[i] = smooth
+
 @ti.kernel
 def clear_background():
     """Clear all background voxels."""
@@ -1444,7 +1808,7 @@ def generate_grass(count: int = 2500, seed: int = 42):
     idx = 0
 
     # Flat carpet below arena floor (floor is at y=33)
-    grass_y_base = 17  # Lower, 3 voxels down
+    grass_y_base = 17.5  # Lower, 3 voxels down
 
     # Uniform grid of grass blades
     grid_size = int(math.sqrt(count))  # e.g. 35x35 for 1250
@@ -2154,6 +2518,9 @@ def toggle_theme(theme_id: int):
             THEME_PALM_TREES: lambda: add_tree_branches(12),
             THEME_STADIUM: lambda: add_stadium(),
             THEME_LAVA: lambda: add_lava(),
+            THEME_RAIN: lambda: add_rain(),
+            THEME_CLOUDS: lambda: add_clouds(),
+            THEME_PTERODACTYL: lambda: add_pterodactyl(),
         }
         if theme_id in add_functions:
             add_functions[theme_id]()
@@ -2237,7 +2604,7 @@ def add_grass(count: int = 625, seed: int = 42):
 
     start_idx = num_bg_voxels[None]
     idx = start_idx
-    grass_y_base = 17
+    grass_y_base = 17.5
     circle_radius = 85.0
 
     # Flower colors for wildflower accents
@@ -2281,7 +2648,7 @@ def add_grass(count: int = 625, seed: int = 42):
             idx += 1
 
     # === PASS 2: GRASS BLADE CLUSTERS with varied heights and flowers ===
-    num_clusters = 144
+    num_clusters = 150
     min_cluster_dist = 8.0  # Minimum distance between cluster centers
     cluster_centers = []
 
@@ -2375,13 +2742,13 @@ def add_grass(count: int = 625, seed: int = 42):
                 bg_active[idx] = 1
                 idx += 1
 
-            # Wildflower accent on ~15% of blades
-            if random.random() < 0.15 and idx < MAX_BACKGROUND_VOXELS:
+            # Wildflower accent on ~22.5% of blades
+            if random.random() < 0.225 and idx < MAX_BACKGROUND_VOXELS:
                 flower_y = y_base + blade_height * 1.0
                 bg_positions[idx] = ti.Vector([x, flower_y, z])
                 bg_colors[idx] = flower_colors[random.randint(0, 3)]
                 bg_size[idx] = 0.45
-                bg_anim_type[idx] = BG_ANIM_SWAY
+                bg_anim_type[idx] = BG_ANIM_FLOWER
                 bg_anim_speed[idx] = blade_speed
                 bg_anim_amplitude[idx] = 0.4 + blade_height * 0.7
                 bg_phase[idx] = blade_phase
@@ -2581,6 +2948,307 @@ def add_lava(seed: int = 42):
     active_themes.add(THEME_LAVA)
     num_bg_voxels[None] = idx
     print(f"Added {idx - start_idx} lava voxels (total: {idx})")
+
+def add_rain(seed: int = 42):
+    """Add rain with falling drops and ground splashes."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_RAIN in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    rain_y_base = 17
+    circle_radius = 85.0
+
+    # === PASS 1: FALLING RAINDROPS (grid-based for guaranteed even coverage) ===
+    rain_grid = 39  # 39x39 grid → ~1200 drops inside circle
+    rain_spacing = (circle_radius * 2) / rain_grid
+
+    for gx in range(rain_grid):
+        for gz in range(rain_grid):
+            if idx >= MAX_BACKGROUND_VOXELS - 200:
+                break
+
+            x = -circle_radius + gx * rain_spacing + random.uniform(-2.0, 2.0)
+            z = -circle_radius + gz * rain_spacing + random.uniform(-2.0, 2.0)
+
+            dist = math.sqrt(x * x + z * z)
+            if dist > circle_radius:
+                continue
+
+            y = random.uniform(50, 90)
+
+            bg_positions[idx] = [x, y, z]
+            # Pale blue-white
+            r = random.uniform(0.55, 0.70)
+            g = random.uniform(0.65, 0.80)
+            b = random.uniform(0.90, 1.00)
+            bg_colors[idx] = [r, g, b]
+            bg_size[idx] = random.uniform(0.03, 0.07)
+            bg_anim_type[idx] = BG_ANIM_RAIN
+            bg_phase[idx] = random.uniform(0, 100)
+            bg_anim_amplitude[idx] = random.uniform(50, 80)  # Fall distance
+            bg_anim_speed[idx] = random.uniform(55, 75)  # Fall speed (fast!)
+            bg_active[idx] = 1
+            bg_brightness[idx] = 1.0
+            idx += 1
+
+    # === PASS 2: GROUND SPLASHES (grid-based for even ground coverage) ===
+    splash_grid = 11  # 11x11 → ~95 splashes inside circle
+    splash_spacing = (circle_radius * 2) / splash_grid
+
+    for gx in range(splash_grid):
+        for gz in range(splash_grid):
+            if idx >= MAX_BACKGROUND_VOXELS - 50:
+                break
+
+            x = -circle_radius + gx * splash_spacing + random.uniform(-3.0, 3.0)
+            z = -circle_radius + gz * splash_spacing + random.uniform(-3.0, 3.0)
+
+            dist = math.sqrt(x * x + z * z)
+            if dist > circle_radius:
+                continue
+
+            bg_positions[idx] = [x, rain_y_base, z]
+        # White-blue splash
+        r = random.uniform(0.70, 0.85)
+        g = random.uniform(0.80, 0.90)
+        b = random.uniform(0.95, 1.00)
+        bg_colors[idx] = [r, g, b]
+        bg_size[idx] = random.uniform(0.15, 0.20)
+        bg_anim_type[idx] = BG_ANIM_RAIN_SPLASH
+        bg_phase[idx] = random.uniform(0, 10)  # Stagger timing + direction seed
+        bg_anim_amplitude[idx] = random.uniform(1.0, 2.0)  # Outward spread radius
+        bg_anim_speed[idx] = random.uniform(0.4, 0.8)  # Cycle period
+        bg_active[idx] = 1
+        bg_brightness[idx] = 0.0
+        idx += 1
+
+    theme_start_idx[THEME_RAIN] = start_idx
+    theme_count[THEME_RAIN] = idx - start_idx
+    active_themes.add(THEME_RAIN)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} rain voxels (total: {idx})")
+
+def add_clouds(seed: int = 42):
+    """Add puffy cloud groups that drift and morph above the arena."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_CLOUDS in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+
+    num_clusters = 6
+    for c in range(num_clusters):
+        if idx >= MAX_BACKGROUND_VOXELS - 50:
+            break
+
+        # Place clusters in a ring around the arena
+        angle = (c / num_clusters) * 2 * math.pi + random.uniform(-0.3, 0.3)
+        radius = random.uniform(75, 120)
+        cx = math.cos(angle) * radius
+        cz = math.sin(angle) * radius
+        cy = random.uniform(42, 50)
+        cluster_id = float(c)
+
+        # Cumulus: dense flat base slab + puffy dome bumps on top
+        cloud_width = random.uniform(18.7, 28.1)
+        cloud_depth = random.uniform(14.0, 21.8)
+        cloud_height = random.uniform(10.9, 17.2)
+
+        # 3-4 dome bumps for puffy cauliflower top, clustered near center
+        num_bumps = random.randint(3, 4)
+        bump_centers = []
+        for _ in range(num_bumps):
+            bx = random.uniform(-cloud_width * 0.35, cloud_width * 0.35)
+            bz = random.uniform(-cloud_depth * 0.35, cloud_depth * 0.35)
+            br = random.uniform(5.0, 8.0)  # Bump radius
+            bh = random.uniform(0.7, 1.0)  # Height multiplier
+            bump_centers.append((bx, bz, br, bh))
+
+        # PASS A: Flat base layer — dense slab at cy, bigger in center
+        num_base = random.randint(18, 25)
+        for p in range(num_base):
+            if idx >= MAX_BACKGROUND_VOXELS - 10:
+                break
+            # Center-biased distribution (squared random pulls toward center)
+            rx = random.gauss(0, 0.35)
+            rz = random.gauss(0, 0.35)
+            rx = max(-1.0, min(1.0, rx))
+            rz = max(-1.0, min(1.0, rz))
+            ox = rx * cloud_width
+            oz = rz * cloud_depth
+
+            # Distance from center (0=center, 1=edge)
+            dist = math.sqrt(rx * rx + rz * rz)
+            if dist > 1.0:
+                continue
+
+            # Bigger voxels in center, smaller at edges
+            center_factor = 1.0 - dist
+            voxel_size = 1.5 + center_factor * 2.5  # 1.5 at edge, 4.0 at center
+
+            bg_positions[idx] = [cx + ox, cy, cz + oz]  # All at cy — perfectly flat
+            gray = random.uniform(0.88, 0.93)
+            bg_colors[idx] = [gray, gray, gray + random.uniform(0.0, 0.03)]
+            bg_size[idx] = voxel_size
+            bg_anim_type[idx] = BG_ANIM_CLOUD
+            bg_phase[idx] = cluster_id
+            bg_anim_amplitude[idx] = random.uniform(0, 10)
+            bg_anim_speed[idx] = random.uniform(0.6, 1.2)
+            bg_active[idx] = 1
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            idx += 1
+
+        # PASS B: Puffy dome top — voxels inside bump spheres, bigger near center
+        num_top = random.randint(25, 35)
+        for p in range(num_top):
+            if idx >= MAX_BACKGROUND_VOXELS - 10:
+                break
+
+            # Pick a random bump to place voxel in
+            bx, bz, br, bh = random.choice(bump_centers)
+            # Center-biased placement inside bump (cubed random packs toward center)
+            r_raw = random.uniform(0, 1.0) ** 0.6 * br
+            angle_h = random.uniform(0, 2 * math.pi)
+            angle_v = random.uniform(0, math.pi * 0.45)  # Upper hemisphere, slightly tighter
+            ox = bx + r_raw * math.cos(angle_h) * math.sin(angle_v)
+            oz = bz + r_raw * math.sin(angle_h) * math.sin(angle_v)
+            oy = r_raw * math.cos(angle_v) * bh * (cloud_height / br)
+
+            # Reject if outside cloud footprint
+            norm_dist = math.sqrt((ox / cloud_width) ** 2 + (oz / cloud_depth) ** 2)
+            if norm_dist > 1.2:
+                continue
+
+            # Distance from cloud center for size scaling
+            center_factor = 1.0 - min(1.0, norm_dist)
+            voxel_size = 1.2 + center_factor * 2.8  # 1.2 at edge, 4.0 at center
+
+            gray = random.uniform(0.92, 1.0)
+            bg_positions[idx] = [cx + ox, cy + oy, cz + oz]
+            bg_colors[idx] = [gray, gray, gray + random.uniform(0.0, 0.03)]
+            bg_size[idx] = voxel_size
+            bg_anim_type[idx] = BG_ANIM_CLOUD
+            bg_phase[idx] = cluster_id  # Shared drift per cluster
+            bg_anim_amplitude[idx] = random.uniform(0, 10)  # Individual seed
+            bg_anim_speed[idx] = random.uniform(0.6, 1.2)  # Individual pulse rate
+            bg_active[idx] = 1
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            idx += 1
+
+    theme_start_idx[THEME_CLOUDS] = start_idx
+    theme_count[THEME_CLOUDS] = idx - start_idx
+    active_themes.add(THEME_CLOUDS)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} cloud voxels (total: {idx})")
+
+def add_pterodactyl(seed: int = 42):
+    """Add pterodactyl(s) that orbit around the arena at cloud level."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_PTERODACTYL in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+
+    # Pterodactyl parts:
+    # 0: body, 1: neck, 2: head
+    # 3-7: beak cone (5 voxels)
+    # 8-14: crest cone (7 voxels, curves up+back)
+    # 15-19: left wing (5 segments)
+    # 20-24: right wing (5 segments)
+    # 25-29: tail (5 voxels, tight spacing)
+    # Total: 30 voxels per pterodactyl
+
+    num_pteros = 1
+    orbit_radius = 70.0
+    cloud_y = 48.0
+
+    for p in range(num_pteros):
+        ptero_id = float(p)
+
+        parts = [
+            # (part_type, size, r, g, b)
+            (0, 4.0, 0.45, 0.35, 0.25),     # Body
+            (1, 2.0, 0.42, 0.33, 0.23),     # Neck
+            (2, 2.8, 0.48, 0.37, 0.27),     # Head
+            # Beak cone: 5 voxels shrinking to a point
+            (3, 1.8, 0.50, 0.38, 0.28),     # Beak 1 (base)
+            (4, 1.4, 0.52, 0.39, 0.28),     # Beak 2
+            (5, 1.0, 0.54, 0.40, 0.28),     # Beak 3
+            (6, 0.7, 0.56, 0.41, 0.28),     # Beak 4
+            (7, 0.4, 0.58, 0.42, 0.28),     # Beak 5 (tip)
+            # Crest cone: 7 voxels curving up and back (tighter spacing)
+            (8, 1.6, 0.55, 0.25, 0.15),     # Crest 1 (base)
+            (9, 1.4, 0.56, 0.245, 0.145),   # Crest 2
+            (10, 1.2, 0.57, 0.24, 0.14),    # Crest 3
+            (11, 1.0, 0.58, 0.235, 0.135),  # Crest 4
+            (12, 0.8, 0.59, 0.23, 0.13),    # Crest 5
+            (13, 0.6, 0.61, 0.22, 0.12),    # Crest 6
+            (14, 0.4, 0.63, 0.21, 0.11),    # Crest 7 (tip)
+            # Left wing
+            (15, 2.8, 0.50, 0.40, 0.28),    # LW 1 (inner)
+            (16, 2.4, 0.48, 0.38, 0.26),    # LW 2
+            (17, 2.0, 0.46, 0.36, 0.24),    # LW 3
+            (18, 1.6, 0.44, 0.34, 0.22),    # LW 4
+            (19, 1.0, 0.42, 0.32, 0.20),    # LW 5 (tip)
+            # Right wing
+            (20, 2.8, 0.50, 0.40, 0.28),    # RW 1 (inner)
+            (21, 2.4, 0.48, 0.38, 0.26),    # RW 2
+            (22, 2.0, 0.46, 0.36, 0.24),    # RW 3
+            (23, 1.6, 0.44, 0.34, 0.22),    # RW 4
+            (24, 1.0, 0.42, 0.32, 0.20),    # RW 5 (tip)
+            # Tail: 5 voxels, tighter spacing
+            (25, 1.8, 0.42, 0.33, 0.23),    # Tail 1
+            (26, 1.5, 0.41, 0.32, 0.22),    # Tail 2
+            (27, 1.2, 0.40, 0.31, 0.21),    # Tail 3
+            (28, 0.9, 0.39, 0.30, 0.20),    # Tail 4
+            (29, 0.6, 0.38, 0.29, 0.19),    # Tail 5 (tip)
+        ]
+
+        for part_type, size, r, g, b in parts:
+            if idx >= MAX_BACKGROUND_VOXELS - 10:
+                break
+
+            bg_positions[idx] = [0, cloud_y, 0]
+            bg_colors[idx] = [r, g, b]
+            bg_size[idx] = size
+            bg_anim_type[idx] = BG_ANIM_PTERODACTYL
+            bg_phase[idx] = ptero_id  # Which pterodactyl (shared orbit)
+            bg_anim_amplitude[idx] = float(part_type)  # Which body part
+            bg_anim_speed[idx] = 0.3  # Orbit speed
+            bg_active[idx] = 1
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            idx += 1
+
+    theme_start_idx[THEME_PTERODACTYL] = start_idx
+    theme_count[THEME_PTERODACTYL] = idx - start_idx
+    active_themes.add(THEME_PTERODACTYL)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} pterodactyl voxels (total: {idx})")
 
 def add_fireflies(count: int = 2800, seed: int = 42):
     """Add fireflies to the background (appends to existing voxels)."""
@@ -3002,6 +3670,29 @@ def add_waves(count: int = 1600, seed: int = 42):
                 bg_offset_z[idx] = 0.0
                 bg_active[idx] = 1
                 idx += 1
+
+        # === SPLASH VOXELS - burst when head dives into water ===
+        num_splash = 24
+        for s in range(num_splash):
+            bg_positions[idx] = ti.Vector([0.0, water_y_base, 0.0])
+            # Water splash colors - blue-white
+            white_mix = random.uniform(0.3, 0.7)
+            bg_colors[idx] = ti.Vector([
+                0.4 + 0.6 * white_mix,
+                0.6 + 0.4 * white_mix,
+                0.85 + 0.15 * white_mix
+            ])
+            bg_size[idx] = random.uniform(0.5, 1.0)
+            bg_anim_type[idx] = BG_ANIM_SERPENT_SPLASH
+            bg_phase[idx] = serpent_phase
+            bg_anim_amplitude[idx] = float(s)  # Splash voxel index (burst direction)
+            bg_anim_speed[idx] = float(serpent_id)
+            bg_brightness[idx] = 0.0  # Start hidden
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
 
 
     wave_count = idx - start_idx
