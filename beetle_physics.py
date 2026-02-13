@@ -17992,6 +17992,11 @@ try:
         if window.GUI.button(theme_label("PTERO", simulation.THEME_PTERODACTYL)):
             simulation.toggle_theme(simulation.THEME_PTERODACTYL)
 
+        if window.GUI.button(theme_label("SWAMP", simulation.THEME_SWAMP)):
+            simulation.toggle_theme(simulation.THEME_SWAMP)
+        if window.GUI.button(theme_label("DESERT", simulation.THEME_DESERT)):
+            simulation.toggle_theme(simulation.THEME_DESERT)
+
         if window.GUI.button("CLEAR ALL"):
             simulation.clear_all_themes()
             print("All background themes cleared")

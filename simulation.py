@@ -219,6 +219,13 @@ BG_ANIM_FLOWER = 20          # Wildflower: sway + periodic gust blows them away
 BG_ANIM_SERPENT_SPLASH = 21  # Serpent splash: burst of water voxels when head dives
 BG_ANIM_CONSTELLATION = 22   # Constellation: synced pulse with traveling sparkle along lines
 BG_ANIM_COMET = 23           # Comet: orbiting head with trailing tail
+BG_ANIM_SWAMP_BUBBLE = 24   # Swamp bubble: rise from water, pop, respawn
+BG_ANIM_SPORE_DRIFT = 25    # Spore: lazy upward drift with horizontal wandering
+BG_ANIM_GLOW_PULSE = 26     # Mushroom glow: smooth brightness pulse
+BG_ANIM_CATERPILLAR = 27    # Caterpillar: slow orbit with inchworm body wave
+BG_ANIM_LAVA_SNAIL = 28     # Lava snail: slow orbit with slug crawl + spiral shell
+BG_ANIM_DUST_DEVIL = 29     # Dust devil: phased spiral column with lifecycle
+BG_ANIM_SCORPION = 30       # Scorpion: ground orbit with tail curl, claw pinch
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -257,6 +264,8 @@ THEME_LAVA = 12
 THEME_RAIN = 13
 THEME_CLOUDS = 14
 THEME_PTERODACTYL = 15
+THEME_SWAMP = 16
+THEME_DESERT = 17
 
 # Track each theme's voxel range
 theme_start_idx = {}   # theme_id -> start index in bg_* arrays
@@ -1019,6 +1028,587 @@ def animate_background(time: ti.f32):
                 fade = 1.0 - trail_offset * 2.2
                 bg_brightness[i] = ti.max(0.05, fade + shimmer)
 
+        elif anim == BG_ANIM_SWAMP_BUBBLE:
+            # Tar eruption: idle, rumble violently, then explosive burst
+            # phase = shared pool timing, amplitude = eruption height, speed = unique voxel seed
+            erupt_period = 10.0
+            t_cycle = (time + phase) % erupt_period
+            # 0-6: idle | 6-7.5: violent rumble | 7.5-10: explosive burst
+
+            if t_cycle < 7.5:
+                # IDLE: hidden underground
+                bg_offset_x[i] = 0.0
+                bg_offset_y[i] = -200.0
+                bg_offset_z[i] = 0.0
+                bg_brightness[i] = 0.0
+            else:
+                # EXPLOSIVE BURST: fast upward arc, fall back through floor
+                erupt_t = t_cycle - 7.5  # 0 to 2.5
+                normalized = erupt_t / 2.5  # 0 to 1
+                # Parabolic arc: up fast then gravity pulls down past floor (20% higher)
+                up = amplitude * 1.2 * (normalized * 2.5 - normalized * normalized * 3.0)
+                # Each voxel sprays in unique direction
+                spray_angle = speed * 0.37
+                spray_r = normalized * 6.0
+                bg_offset_x[i] = spray_r * ti.sin(spray_angle)
+                bg_offset_z[i] = spray_r * ti.cos(spray_angle)
+                bg_offset_y[i] = up
+                # Stay visible while falling, only hide when well below floor
+                if up < -8.0:
+                    bg_offset_y[i] = -200.0
+                    bg_brightness[i] = 0.0
+                else:
+                    bg_brightness[i] = 1.0
+
+        elif anim == BG_ANIM_SPORE_DRIFT:
+            # Spore: float up from cap, mushroom shakes, spores fly away, respawn
+            # phase = stagger, amplitude = rise distance, speed = unique seed
+            spore_period = 15.0
+            t_spore = (time + phase) % spore_period
+            # 0-8: float upward | 8-12: fly away smoothly | 12-15: respawn
+
+            if t_spore < 8.0:
+                # FLOATING: lazy upward drift with Lissajous wandering
+                float_norm = t_spore / 8.0  # 0 to 1
+                bg_offset_y[i] = float_norm * amplitude * 0.5
+                wander_x = 3.0 * ti.sin(time * 0.2 + speed * 4.0)
+                wander_z = 2.5 * ti.cos(time * 0.15 + speed * 3.0 + 1.0)
+                bg_offset_x[i] = wander_x
+                bg_offset_z[i] = wander_z
+                fade_in = ti.min(1.0, float_norm * 5.0)
+                fade_out = ti.min(1.0, (1.0 - float_norm) * 3.0)
+                bg_brightness[i] = 0.5 + 0.5 * fade_in * fade_out
+            elif t_spore < 12.0:
+                # FLY AWAY: smooth detach and swoosh outward with lift + swirl
+                fly_t = t_spore - 8.0  # 0 to 4
+                float_y = amplitude * 0.5  # Start from top of float
+                # Gust direction per cycle
+                gust_num = ti.floor((time + phase) / spore_period)
+                gust_dx = ti.sin(gust_num * 5.37 + speed * 0.1)
+                gust_dz = ti.cos(gust_num * 5.37 + speed * 0.1)
+                # Accelerating push outward
+                push = fly_t * fly_t * 8.0
+                lift = fly_t * 4.0
+                # Swirl
+                swirl_r = fly_t * 2.5
+                swirl_x = swirl_r * ti.sin(time * 4.0 + speed * 3.0)
+                swirl_z = swirl_r * ti.cos(time * 4.0 + speed * 3.0)
+                perp_dx = -gust_dz
+                perp_dz = gust_dx
+                bg_offset_x[i] = push * gust_dx + swirl_x * perp_dx
+                bg_offset_z[i] = push * gust_dz + swirl_x * perp_dz
+                bg_offset_y[i] = float_y + lift + swirl_z
+                bg_brightness[i] = 1.0
+            else:
+                # RESPAWN: fade back in at cap
+                respawn_t = (t_spore - 12.0) / 3.0  # 0 to 1
+                smooth = respawn_t * respawn_t * (3.0 - 2.0 * respawn_t)
+                bg_offset_x[i] = 0.0
+                bg_offset_y[i] = 0.0
+                bg_offset_z[i] = 0.0
+                bg_brightness[i] = smooth * 0.8
+
+        elif anim == BG_ANIM_GLOW_PULSE:
+            # Mushroom cap bioluminescent glow: smooth slow brightness pulse
+            pulse = ti.sin(t * 0.8)
+            bg_brightness[i] = 1.0 + amplitude * pulse * 0.8
+            bg_offset_x[i] = 0.0
+            bg_offset_y[i] = 0.0
+            bg_offset_z[i] = 0.0
+
+        elif anim == BG_ANIM_CATERPILLAR:
+            # Giant caterpillar: slow orbit with inchworm body wave
+            # amplitude = segment index (0=head, 1-12=body, 13+=antennae chain)
+            # phase = caterpillar ID, speed = orbit speed
+            seg = amplitude
+            orbit_speed_c = speed
+            orbit_radius_c = 58.0
+            ground_y = 20.5  # Just above grass
+            orbit_angle_c = time * orbit_speed_c + phase * 6.28
+            seg_spacing = 2.8
+
+            # Direction (tangent to circle)
+            dir_x = -ti.sin(orbit_angle_c)
+            dir_z = ti.cos(orbit_angle_c)
+            perp_x = -dir_z
+            perp_z = dir_x
+
+            # Inchworm wave: big exaggerated humps
+            inch_wave = ti.sin(time * 2.5 - seg * 0.6 + phase * 3.0)
+            bunch = inch_wave * 1.5  # stronger compression
+            hump = ti.max(0.0, inch_wave) * 5.0  # big dramatic humps
+
+            # Head position (shared by antennae)
+            head_fwd = seg_spacing * 0.5
+            head_hump = ti.max(0.0, ti.sin(time * 2.5 + phase * 3.0)) * 4.0
+            head_px = orbit_radius_c * ti.cos(orbit_angle_c) + dir_x * head_fwd
+            head_pz = orbit_radius_c * ti.sin(orbit_angle_c) + dir_z * head_fwd
+            head_py = ground_y + head_hump
+
+            if seg < 0.5:
+                # HEAD
+                bg_offset_x[i] = head_px
+                bg_offset_y[i] = head_py
+                bg_offset_z[i] = head_pz
+            elif seg < 12.5:
+                # BODY SEGMENTS
+                body_idx = seg - 1.0
+                trail = -(body_idx * seg_spacing + bunch)
+                px = orbit_radius_c * ti.cos(orbit_angle_c) + dir_x * trail
+                pz = orbit_radius_c * ti.sin(orbit_angle_c) + dir_z * trail
+                py = ground_y + hump
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+            else:
+                # ANTENNAE CHAIN: segments 13-18=left, 19-24=right
+                ant_local = seg - 13.0  # 0-11
+                is_right = 0.0
+                chain_idx = ant_local
+                if ant_local >= 6.0:
+                    is_right = 1.0
+                    chain_idx = ant_local - 6.0
+                ant_side = -1.0 + is_right * 2.0  # -1 or 1
+
+                # Chain extends forward and outward from head, curving up
+                fwd = 1.5 + chain_idx * 0.8
+                spread = ant_side * (0.8 + chain_idx * 0.8)
+                rise = chain_idx * 1.8
+                # Bounce synced to inchworm — delayed wave from head through antenna
+                inch_bounce = ti.sin(time * 2.5 + phase * 3.0 - chain_idx * 0.4)
+                bounce = (0.5 + chain_idx * 0.6) * inch_bounce
+                # Extra whip at tips
+                whip = chain_idx * 0.3 * ti.sin(time * 4.0 + chain_idx * 1.2 + is_right * 2.0)
+                px = head_px + dir_x * fwd + perp_x * (spread + whip)
+                pz = head_pz + dir_z * fwd + perp_z * (spread + whip)
+                py = head_py + rise + bounce + 1.5
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+
+            bg_brightness[i] = 1.0
+
+        elif anim == BG_ANIM_LAVA_SNAIL:
+            # Molten lava snail: slow orbit, slug crawl, spiral shell, eye stalks, drips
+            # amplitude = part index, phase = snail ID, speed = orbit speed
+            part = amplitude
+            orbit_speed_s = speed
+            orbit_radius_s = 60.0
+            lava_ground = 20.5
+            orbit_angle_s = time * orbit_speed_s + phase * 6.28
+
+            dir_x = -ti.sin(orbit_angle_s)
+            dir_z = ti.cos(orbit_angle_s)
+            perp_x = -dir_z
+            perp_z = dir_x
+
+            # Slug crawl wave (flatter than caterpillar)
+            slug_wave = ti.sin(time * 1.8 - part * 0.5 + phase * 3.0)
+            bunch = slug_wave * 0.6
+            hump = ti.max(0.0, slug_wave) * 1.5
+
+            if part < 12.5:
+                # BODY SEGMENTS (0=head, 1-12=body, widest at middle, tapers at ends)
+                body_idx = part
+                trail = -(body_idx * 2.5 + bunch)
+                px = orbit_radius_s * ti.cos(orbit_angle_s) + dir_x * trail
+                pz = orbit_radius_s * ti.sin(orbit_angle_s) + dir_z * trail
+                py = lava_ground + hump
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                # Glow pulse for body
+                bg_brightness[i] = 0.8 + 0.2 * ti.sin(time * 1.5 + part * 0.7)
+            elif part < 35.5:
+                # SHELL: spiral voxels sitting on body segments 4-7 area
+                shell_idx = part - 13.0  # 0 to 22
+                # Logarithmic spiral
+                spiral_angle = shell_idx * 0.55
+                spiral_r = 3.0 + shell_idx * 0.6
+                # Shell center is above body segment ~5
+                shell_trail = -(5.0 * 2.5 + ti.sin(time * 1.8 - 5.0 * 0.5 + phase * 3.0) * 0.6)
+                shell_cx = orbit_radius_s * ti.cos(orbit_angle_s) + dir_x * shell_trail
+                shell_cz = orbit_radius_s * ti.sin(orbit_angle_s) + dir_z * shell_trail
+                shell_hump = ti.max(0.0, ti.sin(time * 1.8 - 5.0 * 0.5 + phase * 3.0)) * 1.5
+                shell_cy = lava_ground + shell_hump + 3.0
+
+                # Vertical spiral: coils upward with lateral spread
+                local_side = spiral_r * ti.cos(spiral_angle) * 0.5  # Lateral wobble
+                local_up = spiral_r * ti.sin(spiral_angle) * 0.5 + spiral_r * 0.5  # Spirals upward
+
+                px = shell_cx + dir_x * local_side
+                pz = shell_cz + dir_z * local_side
+                py = shell_cy + local_up
+
+                # Shell rock with crawl
+                rock = 0.5 * ti.sin(time * 1.8 + phase * 3.0)
+                py = py + rock
+
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                # Molten glow: gentle pulse, highlights slightly brighter
+                vein = 0.0
+                if (shell_idx % 3.0 > 0.5) and (shell_idx % 3.0 < 1.5):
+                    vein = 1.0
+                if vein > 0.5:
+                    bg_brightness[i] = 0.9 + 0.2 * ti.sin(time * 1.0 + shell_idx * 0.5)
+                else:
+                    bg_brightness[i] = 0.7 + 0.15 * ti.sin(time * 0.6 + shell_idx * 0.4)
+            elif part < 45.5:
+                # EYE STALKS: 36-40=left (5 voxels), 41-45=right (5 voxels)
+                eye_local = part - 36.0  # 0-9
+                is_right_e = 0.0
+                chain_e = eye_local
+                if eye_local >= 5.0:
+                    is_right_e = 1.0
+                    chain_e = eye_local - 5.0
+                eye_side = -1.0 + is_right_e * 2.0
+                chain_t = chain_e / 4.0  # 0 to 1 normalized
+
+                # Head position (body seg 0)
+                head_bunch = ti.sin(time * 1.8 + phase * 3.0) * 0.6
+                head_hump_s = ti.max(0.0, ti.sin(time * 1.8 + phase * 3.0)) * 1.5
+                head_px = orbit_radius_s * ti.cos(orbit_angle_s) + dir_x * (-head_bunch)
+                head_pz = orbit_radius_s * ti.sin(orbit_angle_s) + dir_z * (-head_bunch)
+                head_py = lava_ground + head_hump_s
+
+                fwd_e = 0.5 + chain_e * 0.8
+                spread_e = eye_side * (2.0 + chain_t * 0.8)
+                rise_e = chain_e * 0.9
+                wobble = (0.2 + chain_t * 0.5) * ti.sin(time * 2.5 + chain_e * 0.8 + is_right_e * 3.14)
+                px = head_px + dir_x * fwd_e + perp_x * spread_e
+                pz = head_pz + dir_z * fwd_e + perp_z * spread_e
+                py = head_py + rise_e + wobble + 1.5
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                bg_brightness[i] = 1.0
+            else:
+                # LAVA DRIPS: fall off behind shell, sink into lava
+                drip_idx = part - 46.0  # 0 to ~19
+                drip_period = 8.0
+                t_drip = (time + phase + drip_idx * 0.7) % drip_period
+
+                # Shell tail position (behind the shell)
+                shell_trail_d = -(6.0 * 2.5)
+                drip_cx = orbit_radius_s * ti.cos(orbit_angle_s) + dir_x * shell_trail_d
+                drip_cz = orbit_radius_s * ti.sin(orbit_angle_s) + dir_z * shell_trail_d
+
+                if t_drip < 5.0:
+                    # Hidden
+                    bg_offset_x[i] = 0.0
+                    bg_offset_y[i] = -200.0
+                    bg_offset_z[i] = 0.0
+                    bg_brightness[i] = 0.0
+                else:
+                    # Drip: detach and fall
+                    fall_t = t_drip - 5.0  # 0 to 3
+                    spray_a = drip_idx * 1.37
+                    spray_r_d = fall_t * 1.5
+                    px = drip_cx + spray_r_d * ti.sin(spray_a)
+                    pz = drip_cz + spray_r_d * ti.cos(spray_a)
+                    py = lava_ground + 5.0 - fall_t * fall_t * 1.5
+                    bg_offset_x[i] = px
+                    bg_offset_z[i] = pz
+                    if py < lava_ground - 3.0:
+                        bg_offset_y[i] = -200.0
+                        bg_brightness[i] = 0.0
+                    else:
+                        bg_offset_y[i] = py
+                        bg_brightness[i] = 1.0
+
+        elif anim == BG_ANIM_DUST_DEVIL:
+            # Desert dust devil: sand lifts from ground, chaotic funnel, blows far away
+            # amplitude = particle index (0-199), phase = cyclone ID, speed = anim speed
+            p_id = amplitude
+            height_t = p_id / 374.0  # 0=ground, 1=top
+            base_ang = p_id * 2.39996  # golden angle
+
+            # Cyclone base position stored in bg_positions
+            base_x = bg_positions[i][0]
+            base_z = bg_positions[i][2]
+            sand_y_dd = 18.0
+
+            # Per-particle chaos seeds
+            chaos1 = ti.sin(p_id * 7.13 + phase * 3.7)
+            chaos2 = ti.cos(p_id * 11.3 + phase * 5.1)
+            chaos3 = ti.sin(p_id * 4.91 + phase * 8.3)
+
+            # 22s lifecycle, staggered by phase
+            cycle = (time + phase * 7.0) % 22.0
+
+            # Drift center — wander wide with Lissajous, clamped to sand annulus
+            drift_x = base_x + 22.0 * ti.sin(time * 0.3 + phase * 2.0) + 8.0 * ti.sin(time * 0.55 + phase * 5.0)
+            drift_z = base_z + 22.0 * ti.cos(time * 0.25 + phase * 3.3) + 8.0 * ti.cos(time * 0.45 + phase * 4.1)
+            drift_dist = ti.sqrt(drift_x * drift_x + drift_z * drift_z) + 0.001
+            if drift_dist < 35.0:
+                drift_x = drift_x * 35.0 / drift_dist
+                drift_z = drift_z * 35.0 / drift_dist
+            elif drift_dist > 55.0:
+                drift_x = drift_x * 55.0 / drift_dist
+                drift_z = drift_z * 55.0 / drift_dist
+            cx_dd = drift_x
+            cz_dd = drift_z
+
+            # Funnel: narrow tip at ground, wide chaotic top
+            funnel_r = 0.3 + height_t * height_t * 7.0
+            funnel_h = height_t * 37.5
+            spin_speed = 7.0 + height_t * 4.0  # fast spin, faster at top
+            spin_ang = base_ang + time * spin_speed
+
+            # Per-particle chaos wobble
+            wobble_r = 1.2 * ti.sin(time * 3.1 + p_id * 0.37) * (0.3 + height_t * 0.7)
+            wobble_h = 1.0 * ti.sin(time * 2.3 + p_id * 0.53)
+            wobble_tang = 0.7 * ti.cos(time * 2.7 + p_id * 0.71)
+
+            if cycle < 3.0:
+                # EMERGE: sand lifts off the floor surface into funnel
+                emerge_t = cycle / 3.0
+                smooth_e = emerge_t * emerge_t * (3.0 - 2.0 * emerge_t)
+
+                # Start: scattered on the sand surface
+                start_r = 2.0 + (p_id % 30) * 0.15
+                start_ang_e = base_ang + chaos1 * 2.0
+                start_x = cx_dd + start_r * ti.cos(start_ang_e)
+                start_z = cz_dd + start_r * ti.sin(start_ang_e)
+                start_y = sand_y_dd
+
+                # Target: funnel position
+                tgt_r = funnel_r + wobble_r
+                tgt_x = cx_dd + tgt_r * ti.cos(spin_ang) + wobble_tang * ti.sin(spin_ang)
+                tgt_z = cz_dd + tgt_r * ti.sin(spin_ang) - wobble_tang * ti.cos(spin_ang)
+                tgt_y = sand_y_dd + funnel_h + wobble_h
+
+                # Lower particles emerge first
+                p_delay = height_t * 0.7
+                local_t = ti.max(0.0, (smooth_e - p_delay) / (1.0 - p_delay + 0.001))
+
+                px = start_x * (1.0 - local_t) + tgt_x * local_t
+                pz = start_z * (1.0 - local_t) + tgt_z * local_t
+                py = start_y * (1.0 - local_t) + tgt_y * local_t
+
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                bg_brightness[i] = 1.0
+
+            elif cycle < 12.0:
+                # ACTIVE: chaotic spinning funnel
+                act_r = funnel_r + wobble_r
+                px = cx_dd + act_r * ti.cos(spin_ang) + wobble_tang * ti.sin(spin_ang)
+                pz = cz_dd + act_r * ti.sin(spin_ang) - wobble_tang * ti.cos(spin_ang)
+                py = sand_y_dd + funnel_h + wobble_h
+
+                # Extra jitter for chaos
+                jit_x = 0.6 * ti.sin(time * 5.3 + p_id * 1.17)
+                jit_z = 0.6 * ti.cos(time * 4.7 + p_id * 1.31)
+                jit_y = 0.4 * ti.sin(time * 4.1 + p_id * 0.89)
+
+                bg_offset_x[i] = px + jit_x
+                bg_offset_y[i] = py + jit_y
+                bg_offset_z[i] = pz + jit_z
+                bg_brightness[i] = 1.0
+
+            elif cycle < 19.0:
+                # DISSIPATE: blow waaay far away in all directions
+                fly_t = cycle - 12.0  # 0 to 7 seconds
+
+                # Each particle gets unique gust direction
+                gust_ang_d = base_ang + chaos1 * 1.5 + chaos2 * 0.8
+                gust_dx = ti.cos(gust_ang_d)
+                gust_dz = ti.sin(gust_ang_d)
+                perp_dx = -gust_dz
+                perp_dz = gust_dx
+
+                # Snapshot of last funnel position
+                act_r = funnel_r + wobble_r
+                last_x = cx_dd + act_r * ti.cos(spin_ang)
+                last_z = cz_dd + act_r * ti.sin(spin_ang)
+                last_y = sand_y_dd + funnel_h
+
+                # Massive accelerating push into the distance
+                push = fly_t * fly_t * 24.0
+                lift = fly_t * 8.0
+                # Swirl around gust direction
+                swirl_r = fly_t * 4.8
+                swirl_x = swirl_r * ti.sin(time * 4.0 + p_id * 3.0)
+                swirl_z = swirl_r * ti.cos(time * 4.0 + p_id * 3.0)
+
+                px = last_x + gust_dx * push + swirl_x * perp_dx
+                pz = last_z + gust_dz * push + swirl_z * perp_dz
+                py = last_y + lift + swirl_z
+
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                bg_brightness[i] = 1.0
+
+            else:
+                # HIDDEN: waiting to respawn
+                bg_offset_x[i] = base_x
+                bg_offset_y[i] = -200.0
+                bg_offset_z[i] = base_z
+                bg_brightness[i] = 0.0
+
+        elif anim == BG_ANIM_SCORPION:
+            # Desert scorpion: ground orbit with crawl, tail curl, claw snaps, leg stride
+            # amplitude = part index, phase = scorpion ID, speed = orbit speed
+            part_sc = amplitude
+            orbit_speed_sc = speed
+            orbit_radius_sc = 55.0
+            sand_ground_sc = 18.0
+            orbit_angle_sc = time * orbit_speed_sc + phase * 6.28
+
+            dir_x_sc = -ti.sin(orbit_angle_sc)
+            dir_z_sc = ti.cos(orbit_angle_sc)
+            perp_x_sc = -dir_z_sc
+            perp_z_sc = dir_x_sc
+
+            # Flat crawl wave
+            crawl_wave = ti.sin(time * 1.5 - part_sc * 0.4 + phase * 3.0)
+            bunch_sc = crawl_wave * 0.4
+            hump_sc = ti.max(0.0, crawl_wave) * 0.8
+
+            px = 0.0
+            py = -200.0
+            pz = 0.0
+
+            if part_sc < 6.5:
+                # HEAD + BODY (0=head, 1-6=body)
+                body_idx_sc = part_sc
+                trail_sc = -(body_idx_sc * 2.8 + bunch_sc)
+                px = orbit_radius_sc * ti.cos(orbit_angle_sc) + dir_x_sc * trail_sc
+                pz = orbit_radius_sc * ti.sin(orbit_angle_sc) + dir_z_sc * trail_sc
+                py = sand_ground_sc + hump_sc
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                bg_brightness[i] = 1.0
+
+            elif part_sc < 13.0:
+                # TAIL (7-11) + STINGER (12)
+                tail_idx_sc = part_sc - 7.0  # 0 to 5
+                is_stinger = 0.0
+                if tail_idx_sc > 4.5:
+                    is_stinger = 1.0
+
+                # Tail anchor: behind body segment 6
+                anchor_crawl = ti.sin(time * 1.5 - 6.0 * 0.4 + phase * 3.0)
+                anchor_trail = -(6.0 * 2.8 + anchor_crawl * 0.4)
+                anchor_px = orbit_radius_sc * ti.cos(orbit_angle_sc) + dir_x_sc * anchor_trail
+                anchor_pz = orbit_radius_sc * ti.sin(orbit_angle_sc) + dir_z_sc * anchor_trail
+                anchor_py = sand_ground_sc
+
+                # J-curve: backward then upward then forward lean
+                t_idx = ti.min(tail_idx_sc, 4.0)  # clamp for stinger
+                back_sc = t_idx * 2.0
+                up_sc = t_idx * t_idx * 0.8
+                forward_lean = 0.0
+                if t_idx > 3.0:
+                    forward_lean = (t_idx - 3.0) * 1.5
+
+                # Sway
+                sway_sc = 0.3 * ti.sin(time * 0.8 + phase * 2.0) * (1.0 + t_idx * 0.3)
+
+                px = anchor_px - dir_x_sc * back_sc + dir_x_sc * forward_lean
+                pz = anchor_pz - dir_z_sc * back_sc + dir_z_sc * forward_lean
+                py = anchor_py + up_sc + sway_sc
+
+                # Stinger: offset down and forward from tail tip
+                if is_stinger > 0.5:
+                    py = py - 1.5
+                    px = px + dir_x_sc * 1.0
+                    pz = pz + dir_z_sc * 1.0
+
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                bg_brightness[i] = 1.0
+
+            elif part_sc < 25.0:
+                # CLAWS (13-18=left, 19-24=right)
+                claw_local = part_sc - 13.0  # 0-11
+                is_right_c = 0.0
+                claw_idx = claw_local
+                if claw_local >= 6.0:
+                    is_right_c = 1.0
+                    claw_idx = claw_local - 6.0
+                claw_side = -1.0 + is_right_c * 2.0
+
+                # Head position
+                head_crawl = ti.sin(time * 1.5 + phase * 3.0)
+                head_bunch_sc = head_crawl * 0.4
+                head_hump_sc = ti.max(0.0, head_crawl) * 0.8
+                head_px_sc = orbit_radius_sc * ti.cos(orbit_angle_sc) + dir_x_sc * (-head_bunch_sc)
+                head_pz_sc = orbit_radius_sc * ti.sin(orbit_angle_sc) + dir_z_sc * (-head_bunch_sc)
+                head_py_sc = sand_ground_sc + head_hump_sc
+
+                # Pincer open/close cycle
+                pinch_cycle = ti.sin(time * 0.5 + phase * 2.0 + is_right_c * 1.5)
+                pinch = 0.5 + 0.5 * pinch_cycle  # 0=closed, 1=open
+
+                if claw_idx < 4.0:
+                    # Arm segments: extend forward and outward
+                    fwd_c = 2.0 + claw_idx * 2.5
+                    spread_c = claw_side * (3.0 + claw_idx * 1.0)
+                    px = head_px_sc + dir_x_sc * fwd_c + perp_x_sc * spread_c
+                    pz = head_pz_sc + dir_z_sc * fwd_c + perp_z_sc * spread_c
+                    py = head_py_sc + 0.5
+                elif claw_idx < 5.0:
+                    # Upper jaw
+                    fwd_c = 2.0 + 4.0 * 2.5 + 1.5
+                    spread_c = claw_side * (3.0 + 4.0 * 1.0)
+                    jaw_open = pinch * 1.2
+                    px = head_px_sc + dir_x_sc * fwd_c + perp_x_sc * spread_c
+                    pz = head_pz_sc + dir_z_sc * fwd_c + perp_z_sc * spread_c
+                    py = head_py_sc + 0.5 + 0.8 + jaw_open
+                else:
+                    # Lower jaw
+                    fwd_c = 2.0 + 4.0 * 2.5 + 1.5
+                    spread_c = claw_side * (3.0 + 4.0 * 1.0)
+                    jaw_open = pinch * 0.8
+                    px = head_px_sc + dir_x_sc * fwd_c + perp_x_sc * spread_c
+                    pz = head_pz_sc + dir_z_sc * fwd_c + perp_z_sc * spread_c
+                    py = head_py_sc + 0.5 - 0.5 - jaw_open
+
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                bg_brightness[i] = 1.0
+
+            else:
+                # LEGS (25-32): 4 pairs, alternating stride
+                leg_local = part_sc - 25.0  # 0-7
+                pair_sc = ti.floor(leg_local / 2.0)  # 0-3
+                is_right_leg = leg_local - pair_sc * 2.0  # 0 or 1
+                leg_side = -1.0 + is_right_leg * 2.0
+
+                # Attach to body segs 1-4
+                body_seg_sc = pair_sc + 1.0
+                seg_crawl = ti.sin(time * 1.5 - body_seg_sc * 0.4 + phase * 3.0)
+                seg_trail = -(body_seg_sc * 2.8 + seg_crawl * 0.4)
+                seg_hump_sc = ti.max(0.0, seg_crawl) * 0.8
+
+                base_px_sc = orbit_radius_sc * ti.cos(orbit_angle_sc) + dir_x_sc * seg_trail
+                base_pz_sc = orbit_radius_sc * ti.sin(orbit_angle_sc) + dir_z_sc * seg_trail
+                base_py_sc = sand_ground_sc + seg_hump_sc
+
+                # Alternating stride
+                stride_phase = time * 3.0 + pair_sc * 1.57 + phase * 2.0
+                stride_fwd = 0.8 * ti.sin(stride_phase)
+                stride_up = ti.max(0.0, ti.sin(stride_phase)) * 0.5
+
+                spread_leg = leg_side * 3.5
+                px = base_px_sc + perp_x_sc * spread_leg + dir_x_sc * stride_fwd
+                pz = base_pz_sc + perp_z_sc * spread_leg + dir_z_sc * stride_fwd
+                py = base_py_sc - 0.5 + stride_up
+
+                bg_offset_x[i] = px
+                bg_offset_y[i] = py
+                bg_offset_z[i] = pz
+                bg_brightness[i] = 1.0
+
         elif anim == BG_ANIM_SWAY:
             # Horizontal wave motion (grass swaying) with gust waves
             # Gust modulation - slow wave that increases/decreases intensity
@@ -1609,18 +2199,23 @@ def animate_background(time: ti.f32):
             drift_z = 8.0 * ti.cos(time * 0.12 + phase * 1.5)
             drift_y = 2.0 * ti.sin(time * 0.08 + phase * 3.0)
 
-            # Individual position breathing (tighter to prevent strays)
-            breathe_x = 0.25 * ti.sin(time * speed * 0.3 + amplitude * 5.0)
-            breathe_y = 0.12 * ti.sin(time * speed * 0.25 + amplitude * 3.0)
-            breathe_z = 0.25 * ti.cos(time * speed * 0.35 + amplitude * 4.0)
+            # Individual breathing (wider wandering within cloud)
+            breathe_x = 0.8 * ti.sin(time * speed * 0.3 + amplitude * 5.0)
+            breathe_y = 0.4 * ti.sin(time * speed * 0.25 + amplitude * 3.0)
+            breathe_z = 0.8 * ti.cos(time * speed * 0.35 + amplitude * 4.0)
 
-            bg_offset_x[i] = drift_x + breathe_x
-            bg_offset_y[i] = drift_y + breathe_y
-            bg_offset_z[i] = drift_z + breathe_z
+            # Fast chaotic jitter (small, rapid, unique per voxel)
+            jitter_x = 0.35 * ti.sin(time * 2.3 + amplitude * 11.0)
+            jitter_y = 0.2 * ti.cos(time * 1.9 + amplitude * 7.7)
+            jitter_z = 0.35 * ti.sin(time * 2.7 + amplitude * 9.3)
+
+            bg_offset_x[i] = drift_x + breathe_x + jitter_x
+            bg_offset_y[i] = drift_y + breathe_y + jitter_y
+            bg_offset_z[i] = drift_z + breathe_z + jitter_z
 
             # Brightness pulsing (voxels swell and shrink)
             pulse = ti.sin(time * speed * 0.5 + amplitude * 6.28)
-            bg_brightness[i] = 0.775 + 0.175 * pulse  # Range 0.6 to 0.95
+            bg_brightness[i] = 0.7 + 0.25 * pulse  # Range 0.45 to 0.95
 
         elif anim == BG_ANIM_PTERODACTYL:
             # Pterodactyl: circular orbit with bending wing flap
@@ -1804,9 +2399,10 @@ def animate_background(time: ti.f32):
                 bg_offset_y[i] = base_oy + lift + swirl_z
                 bg_brightness[i] = 1.0
             else:
-                # Staggered respawn — each flower fades in at different time based on wave_delay
-                respawn_start = 24.0 + wave_delay * 0.8  # Stagger over last second
-                respawn_dur = 1.0
+                # Staggered respawn — each flower fades in at different time based on wave_delay + phase
+                stagger = wave_delay * 0.5 + (phase % 1.0) * 0.4  # Mix position + unique phase
+                respawn_start = 23.0 + stagger * 1.8  # Spread over ~1.8 seconds
+                respawn_dur = 0.6
                 respawn_t = 0.0
                 if gust_cycle > respawn_start:
                     respawn_t = ti.min(1.0, (gust_cycle - respawn_start) / respawn_dur)
@@ -2619,6 +3215,8 @@ def toggle_theme(theme_id: int):
             THEME_RAIN: lambda: add_rain(),
             THEME_CLOUDS: lambda: add_clouds(),
             THEME_PTERODACTYL: lambda: add_pterodactyl(),
+            THEME_SWAMP: lambda: add_swamp(),
+            THEME_DESERT: lambda: add_desert(),
         }
         if theme_id in add_functions:
             add_functions[theme_id]()
@@ -3066,6 +3664,57 @@ def add_grass(count: int = 625, seed: int = 42):
                 bg_active[idx] = 1
                 idx += 1
 
+    # === GIANT CATERPILLAR ===
+    caterpillar_id = 0.0
+    # Segments: 0=head, 1-12=body, 13-16=left antenna chain, 17-20=right antenna chain
+    parts = [
+        # (seg_id, size, r, g, b)
+        (0, 3.5, 0.85, 0.35, 0.10),       # Head (orange-red)
+        (1, 3.2, 0.75, 0.85, 0.12),       # Body 1 (bright yellow-green)
+        (2, 3.4, 0.90, 0.40, 0.12),       # Body 2 (orange stripe)
+        (3, 3.2, 0.75, 0.85, 0.12),       # Body 3
+        (4, 3.4, 0.90, 0.40, 0.12),       # Body 4 (orange stripe)
+        (5, 3.2, 0.75, 0.85, 0.12),       # Body 5
+        (6, 3.4, 0.90, 0.40, 0.12),       # Body 6 (orange stripe)
+        (7, 3.2, 0.75, 0.85, 0.12),       # Body 7
+        (8, 3.3, 0.90, 0.40, 0.12),       # Body 8 (orange stripe)
+        (9, 3.0, 0.75, 0.85, 0.12),       # Body 9
+        (10, 2.8, 0.90, 0.40, 0.12),      # Body 10 (orange stripe)
+        (11, 2.4, 0.75, 0.85, 0.12),      # Body 11
+        (12, 1.8, 0.85, 0.35, 0.10),      # Body 12 (tail tip, orange-red)
+        # Left antenna chain (6 voxels, tapering)
+        (13, 1.2, 0.10, 0.10, 0.10),
+        (14, 1.0, 0.10, 0.10, 0.10),
+        (15, 0.85, 0.10, 0.10, 0.10),
+        (16, 0.7, 0.10, 0.10, 0.10),
+        (17, 0.5, 0.10, 0.10, 0.10),
+        (18, 0.6, 0.85, 0.15, 0.10),      # Tip: red bulb
+        # Right antenna chain (6 voxels, tapering)
+        (19, 1.2, 0.10, 0.10, 0.10),
+        (20, 1.0, 0.10, 0.10, 0.10),
+        (21, 0.85, 0.10, 0.10, 0.10),
+        (22, 0.7, 0.10, 0.10, 0.10),
+        (23, 0.5, 0.10, 0.10, 0.10),
+        (24, 0.6, 0.85, 0.15, 0.10),      # Tip: red bulb
+    ]
+
+    for seg_id, size, r, g, b in parts:
+        if idx >= MAX_BACKGROUND_VOXELS - 5:
+            break
+        bg_positions[idx] = ti.Vector([0, 0, 0])
+        bg_colors[idx] = ti.Vector([r, g, b])
+        bg_size[idx] = size
+        bg_anim_type[idx] = BG_ANIM_CATERPILLAR
+        bg_phase[idx] = caterpillar_id
+        bg_anim_amplitude[idx] = float(seg_id)
+        bg_anim_speed[idx] = 0.08  # Slow orbit
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
     theme_start_idx[THEME_GRASS] = start_idx
     theme_count[THEME_GRASS] = idx - start_idx
     active_themes.add(THEME_GRASS)
@@ -3249,6 +3898,70 @@ def add_lava(seed: int = 42):
             bg_offset_z[idx] = 0.0
             bg_active[idx] = 1
             idx += 1
+
+    # === MOLTEN LAVA SNAIL ===
+    snail_id = 0.0
+    snail_parts = [
+        # BODY: 0=head, 1-12=body (orange-red, widest in middle, longer slug)
+        (0, 3.3, 1.0, 0.45, 0.08),        # Head (bright orange)
+        (1, 3.5, 0.95, 0.40, 0.06),
+        (2, 3.85, 0.90, 0.35, 0.05),
+        (3, 4.2, 0.85, 0.30, 0.05),        # Widest
+        (4, 4.2, 0.85, 0.30, 0.05),
+        (5, 4.2, 0.82, 0.28, 0.05),
+        (6, 3.85, 0.80, 0.28, 0.04),
+        (7, 3.5, 0.75, 0.25, 0.04),
+        (8, 3.1, 0.70, 0.22, 0.03),
+        (9, 2.75, 0.65, 0.20, 0.03),
+        (10, 2.2, 0.60, 0.18, 0.03),
+        (11, 1.65, 0.55, 0.16, 0.03),
+        (12, 1.1, 0.50, 0.14, 0.02),       # Tail tip
+    ]
+    # SHELL: spiral voxels (23 voxels, warm gradient — deep ember to burnt sienna)
+    for si in range(23):
+        t_norm = si / 22.0  # 0 to 1
+        size = 5.0 - t_norm * 3.0  # 5.0 at center, 2.0 at tip
+        if si % 3 == 1:
+            # Warm amber highlight
+            r = 0.85 - t_norm * 0.15
+            g = 0.38 - t_norm * 0.08
+            b = 0.08 + t_norm * 0.02
+        else:
+            # Deep burnt sienna / ember
+            r = 0.55 - t_norm * 0.12
+            g = 0.18 - t_norm * 0.04
+            b = 0.06 + t_norm * 0.02
+        snail_parts.append((13 + si, size, r, g, b))
+
+    # EYE STALKS: 36-40=left (5 voxels), 41-45=right (5 voxels)
+    for eye in range(10):
+        chain = eye % 5
+        is_tip = chain == 4
+        snail_parts.append((36 + eye, 0.6 if not is_tip else 0.9,
+                           0.15 if not is_tip else 1.0,
+                           0.10 if not is_tip else 0.6,
+                           0.05 if not is_tip else 0.05))
+
+    # LAVA DRIPS: 46-65
+    for di in range(20):
+        snail_parts.append((46 + di, random.uniform(0.3, 0.6), 1.0, 0.4, 0.05))
+
+    for part_id, size, r, g, b in snail_parts:
+        if idx >= MAX_BACKGROUND_VOXELS - 5:
+            break
+        bg_positions[idx] = ti.Vector([0, 0, 0])
+        bg_colors[idx] = ti.Vector([r, g, b])
+        bg_size[idx] = size
+        bg_anim_type[idx] = BG_ANIM_LAVA_SNAIL
+        bg_phase[idx] = snail_id
+        bg_anim_amplitude[idx] = float(part_id)
+        bg_anim_speed[idx] = 0.06  # Slow orbit
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
 
     theme_start_idx[THEME_LAVA] = start_idx
     theme_count[THEME_LAVA] = idx - start_idx
@@ -3489,7 +4202,7 @@ def add_pterodactyl(seed: int = 42):
 
     num_pteros = 1
     orbit_radius = 70.0
-    cloud_y = 48.0
+    cloud_y = 48.5
 
     for p in range(num_pteros):
         ptero_id = float(p)
@@ -3526,11 +4239,11 @@ def add_pterodactyl(seed: int = 42):
             (23, 1.6, 0.44, 0.34, 0.22),    # RW 4
             (24, 1.0, 0.42, 0.32, 0.20),    # RW 5 (tip)
             # Tail: 5 voxels, tighter spacing
-            (25, 1.8, 0.42, 0.33, 0.23),    # Tail 1
-            (26, 1.5, 0.41, 0.32, 0.22),    # Tail 2
-            (27, 1.2, 0.40, 0.31, 0.21),    # Tail 3
-            (28, 0.9, 0.39, 0.30, 0.20),    # Tail 4
-            (29, 0.6, 0.38, 0.29, 0.19),    # Tail 5 (tip)
+            (25, 2.8, 0.42, 0.33, 0.23),    # Tail 1
+            (26, 2.4, 0.41, 0.32, 0.22),    # Tail 2
+            (27, 2.0, 0.40, 0.31, 0.21),    # Tail 3
+            (28, 1.5, 0.39, 0.30, 0.20),    # Tail 4
+            (29, 1.0, 0.38, 0.29, 0.19),    # Tail 5 (tip)
         ]
 
         for part_type, size, r, g, b in parts:
@@ -4104,6 +4817,663 @@ def add_tree_branches(count: int = 12, seed: int = 42):
     active_themes.add(THEME_PALM_TREES)
     num_bg_voxels[None] = idx
     print(f"Added {idx - start_idx} palm tree voxels (total: {idx})")
+
+def add_swamp(seed: int = 42):
+    """Add swamp biome: giant mushrooms, fog, bubbling water, spores, hanging moss."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_SWAMP in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    water_y = 17.0
+
+    # === MURKY WATER SURFACE (covers under board + outer ring) ===
+    water_inner = 0.0
+    water_outer = 85.0
+    water_grid = 40
+    water_spacing = (water_outer * 2) / water_grid
+
+    for gx in range(water_grid):
+        for gz in range(water_grid):
+            if idx >= MAX_BACKGROUND_VOXELS - 200:
+                break
+            x = -water_outer + gx * water_spacing + random.uniform(-1.0, 1.0)
+            z = -water_outer + gz * water_spacing + random.uniform(-1.0, 1.0)
+            dist = math.sqrt(x * x + z * z)
+            if dist > water_outer:
+                continue
+
+            bg_positions[idx] = ti.Vector([x, water_y - 0.5 + random.uniform(-0.3, 0.3), z])
+            g = random.uniform(0.12, 0.22)
+            bg_colors[idx] = ti.Vector([g * 0.7, g, g * 0.4])
+            bg_size[idx] = random.uniform(2.0, 2.5)
+            bg_anim_type[idx] = BG_ANIM_NONE
+            bg_phase[idx] = 0.0
+            bg_anim_amplitude[idx] = 0.0
+            bg_anim_speed[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    water_count = idx - start_idx
+
+    # === GIANT MUSHROOMS ===
+    num_big_shrooms = 8
+    shroom_radius = 80.0
+    mushroom_data = []  # Store cap positions for spore spawning
+
+    for s in range(num_big_shrooms):
+        if idx >= MAX_BACKGROUND_VOXELS - 300:
+            break
+
+        angle = (s / num_big_shrooms) * 2 * math.pi + random.uniform(-0.15, 0.15)
+        sx = math.cos(angle) * shroom_radius + random.uniform(-5, 5)
+        sz = math.sin(angle) * shroom_radius + random.uniform(-5, 5)
+        shroom_height = random.uniform(15, 22.5)
+        cap_radius = random.uniform(6.0, 10.0)
+
+        # Stem: thick, tapered, pale cream/mossy
+        stem_segments = int(shroom_height / 1.2)
+        for h in range(stem_segments):
+            y = water_y + h * 1.2
+            stem_size = 2.0 - h * 0.03
+            if stem_size < 1.2:
+                stem_size = 1.2
+
+            bg_positions[idx] = ti.Vector([sx, y, sz])
+            tint = random.uniform(0.9, 1.0)
+            bg_colors[idx] = ti.Vector([0.65 * tint, 0.60 * tint, 0.45 * tint])
+            bg_size[idx] = stem_size
+            bg_anim_type[idx] = BG_ANIM_NONE
+            bg_phase[idx] = 0.0
+            bg_anim_amplitude[idx] = 0.0
+            bg_anim_speed[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # Cap: dome of overlapping voxels
+        cap_y = water_y + shroom_height
+        cap_type = random.choice(['purple', 'teal', 'orange'])
+        if cap_type == 'purple':
+            cap_base = (0.45, 0.15, 0.55)
+        elif cap_type == 'teal':
+            cap_base = (0.12, 0.50, 0.45)
+        else:
+            cap_base = (0.75, 0.35, 0.10)
+
+        for c in range(30):
+            theta = random.uniform(0, 2 * math.pi)
+            phi = random.uniform(0, math.pi * 0.45)
+            r = cap_radius * (0.6 + 0.4 * random.random())
+
+            cx = sx + r * math.cos(theta) * math.sin(phi)
+            cz = sz + r * math.sin(theta) * math.sin(phi)
+            cy = cap_y + r * math.cos(phi) * 0.4  # Flatten dome
+
+            tint = random.uniform(0.85, 1.0)
+            bg_positions[idx] = ti.Vector([cx, cy, cz])
+            bg_colors[idx] = ti.Vector([cap_base[0]*tint, cap_base[1]*tint, cap_base[2]*tint])
+            bg_size[idx] = random.uniform(1.8, 3.0)
+            bg_anim_type[idx] = BG_ANIM_NONE
+            bg_phase[idx] = 0.0
+            bg_anim_amplitude[idx] = 0.0
+            bg_anim_speed[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # Glow spots on cap surface (bioluminescent)
+        for g in range(10):
+            theta = random.uniform(0, 2 * math.pi)
+            phi = random.uniform(0.1, math.pi * 0.4)
+            r = cap_radius * 1.02
+
+            gx_pos = sx + r * math.cos(theta) * math.sin(phi)
+            gz_pos = sz + r * math.sin(theta) * math.sin(phi)
+            gy_pos = cap_y + r * math.cos(phi) * 0.4
+
+            bg_positions[idx] = ti.Vector([gx_pos, gy_pos, gz_pos])
+            if random.random() < 0.5:
+                bg_colors[idx] = ti.Vector([0.7, 0.9, 0.3])  # warm green-yellow
+            else:
+                bg_colors[idx] = ti.Vector([0.3, 1.0, 0.7])  # cool cyan
+            bg_size[idx] = random.uniform(0.3, 0.55)
+            bg_anim_type[idx] = BG_ANIM_GLOW_PULSE
+            bg_phase[idx] = random.uniform(0, 6.28)
+            bg_anim_amplitude[idx] = random.uniform(0.3, 0.6)
+            bg_anim_speed[idx] = random.uniform(0.4, 0.8)
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # Hanging moss from cap edges
+        for m in range(6):
+            chain_angle = (m / 6) * 2 * math.pi + random.uniform(-0.3, 0.3)
+            chain_base_x = sx + cap_radius * 0.85 * math.cos(chain_angle)
+            chain_base_z = sz + cap_radius * 0.85 * math.sin(chain_angle)
+            chain_base_y = cap_y - 0.5
+            chain_length = random.randint(3, 5)
+
+            for link in range(chain_length):
+                bg_positions[idx] = ti.Vector([
+                    chain_base_x,
+                    chain_base_y - link * 1.8,
+                    chain_base_z
+                ])
+                mt = random.uniform(0.8, 1.0)
+                bg_colors[idx] = ti.Vector([0.35*mt, 0.50*mt, 0.30*mt])
+                bg_size[idx] = random.uniform(0.35, 0.55)
+                bg_anim_type[idx] = BG_ANIM_SWAY
+                bg_phase[idx] = random.uniform(0, 6.28)
+                bg_anim_amplitude[idx] = 0.5 + link * 0.3
+                bg_anim_speed[idx] = random.uniform(0.5, 0.9)
+                bg_brightness[idx] = 1.0
+                bg_offset_x[idx] = 0.0
+                bg_offset_y[idx] = 0.0
+                bg_offset_z[idx] = 0.0
+                bg_active[idx] = 1
+                idx += 1
+
+        # Store cap info for spores
+        mushroom_data.append((sx, sz, cap_y, cap_radius))
+
+    # === SMALL MUSHROOMS ===
+    for s in range(18):
+        if idx >= MAX_BACKGROUND_VOXELS - 50:
+            break
+        angle = random.uniform(0, 2 * math.pi)
+        radius = random.uniform(10, 82)
+        sx = math.cos(angle) * radius
+        sz = math.sin(angle) * radius
+        shroom_height = random.uniform(6.75, 10.8)
+        cap_radius = random.uniform(2.5, 4.0)
+
+        cap_type = random.choice(['purple', 'teal', 'orange'])
+        if cap_type == 'purple':
+            cap_base = (0.45, 0.15, 0.55)
+        elif cap_type == 'teal':
+            cap_base = (0.12, 0.50, 0.45)
+        else:
+            cap_base = (0.75, 0.35, 0.10)
+
+        # Small stem
+        stem_segs = int(shroom_height / 1.5)
+        for h in range(stem_segs):
+            y = water_y + h * 1.5
+            tint = random.uniform(0.85, 1.0)
+            bg_positions[idx] = ti.Vector([sx, y, sz])
+            bg_colors[idx] = ti.Vector([0.55*tint, 0.50*tint, 0.38*tint])
+            bg_size[idx] = random.uniform(1.0, 1.5)
+            bg_anim_type[idx] = BG_ANIM_NONE
+            bg_phase[idx] = 0.0
+            bg_anim_amplitude[idx] = 0.0
+            bg_anim_speed[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # Small cap (5 voxels, all glow)
+        cap_y = water_y + shroom_height
+        for c in range(5):
+            theta = random.uniform(0, 2 * math.pi)
+            phi = random.uniform(0, math.pi * 0.4)
+            r = cap_radius * random.uniform(0.5, 1.0)
+            bg_positions[idx] = ti.Vector([
+                sx + r * math.cos(theta) * math.sin(phi),
+                cap_y + r * math.cos(phi) * 0.4,
+                sz + r * math.sin(theta) * math.sin(phi)
+            ])
+            tint = random.uniform(0.85, 1.0)
+            bg_colors[idx] = ti.Vector([cap_base[0]*tint, cap_base[1]*tint, cap_base[2]*tint])
+            bg_size[idx] = random.uniform(1.5, 2.5)
+            bg_anim_type[idx] = BG_ANIM_GLOW_PULSE
+            bg_phase[idx] = random.uniform(0, 6.28)
+            bg_anim_amplitude[idx] = random.uniform(0.3, 0.6)
+            bg_anim_speed[idx] = random.uniform(0.4, 0.8)
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === RISING BUBBLES ===
+    for b in range(40):
+        if idx >= MAX_BACKGROUND_VOXELS - 50:
+            break
+        b_angle = random.uniform(0, 2 * math.pi)
+        b_radius = random.uniform(45, 90)
+        bx = math.cos(b_angle) * b_radius
+        bz = math.sin(b_angle) * b_radius
+
+        for bp in range(5):
+            bg_positions[idx] = ti.Vector([
+                bx + random.uniform(-2, 2),
+                water_y,
+                bz + random.uniform(-2, 2)
+            ])
+            bg_colors[idx] = ti.Vector([0.3, 0.55, 0.3])
+            bg_size[idx] = random.uniform(0.2, 0.5)
+            bg_anim_type[idx] = BG_ANIM_SWAMP_BUBBLE
+            bg_phase[idx] = random.uniform(0, 6.28)
+            bg_anim_amplitude[idx] = random.uniform(5.0, 12.0)
+            bg_anim_speed[idx] = random.uniform(1.5, 3.0)
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === TAR PITS (dark patches + occasional burst of tiny dark voxels) ===
+    for tc in range(24):
+        if idx >= MAX_BACKGROUND_VOXELS - 60:
+            break
+        tar_angle = (tc / 24) * 2 * math.pi + random.uniform(-0.3, 0.3)
+        tar_radius = random.uniform(15, 75)
+        tar_cx = math.cos(tar_angle) * tar_radius
+        tar_cz = math.sin(tar_angle) * tar_radius
+        tar_cy = water_y + 0.3
+
+        # Dark tar pool base (static)
+        for tv in range(8):
+            ox = random.gauss(0, 4.0)
+            oz = random.gauss(0, 4.0)
+
+            bg_positions[idx] = ti.Vector([tar_cx + ox, tar_cy + random.uniform(-0.2, 0.2), tar_cz + oz])
+            d = random.uniform(0.05, 0.12)
+            bg_colors[idx] = ti.Vector([d, d * 0.8, d * 0.5])  # Very dark brown/black
+            bg_size[idx] = random.uniform(2.0, 3.0)
+            bg_anim_type[idx] = BG_ANIM_NONE
+            bg_phase[idx] = 0.0
+            bg_anim_amplitude[idx] = 0.0
+            bg_anim_speed[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+        # Tar eruption particles (dark voxels that shake and burst out)
+        pool_phase = random.uniform(0, 10.0)  # Shared timing per pool
+        for tb in range(25):
+            bg_positions[idx] = ti.Vector([
+                tar_cx + random.uniform(-2, 2),
+                tar_cy,
+                tar_cz + random.uniform(-2, 2)
+            ])
+            d = random.uniform(0.03, 0.10)
+            bg_colors[idx] = ti.Vector([d, d * 0.7, d * 0.4])
+            bg_size[idx] = random.uniform(0.4, 1.0)
+            bg_anim_type[idx] = BG_ANIM_SWAMP_BUBBLE
+            bg_phase[idx] = pool_phase  # All voxels in same pool erupt together
+            bg_anim_amplitude[idx] = random.uniform(8.0, 20.0)  # Big eruptions
+            bg_anim_speed[idx] = random.uniform(0.0, 100.0)  # Unique seed per voxel
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === GLOWING SPORES (from each big mushroom cap) ===
+    for (mx, mz, mcap_y, mcap_r) in mushroom_data:
+        for sp in range(35):
+            if idx >= MAX_BACKGROUND_VOXELS - 5:
+                break
+            sp_theta = random.uniform(0, 2 * math.pi)
+            sp_r = random.uniform(0, mcap_r * 0.8)
+            sp_x = mx + sp_r * math.cos(sp_theta)
+            sp_z = mz + sp_r * math.sin(sp_theta)
+            sp_y = mcap_y + random.uniform(-1.0, 3.0)
+
+            bg_positions[idx] = ti.Vector([sp_x, sp_y, sp_z])
+            sp_tint = random.uniform(0.7, 1.0)
+            bg_colors[idx] = ti.Vector([0.6*sp_tint, 1.0*sp_tint, 0.3*sp_tint])
+            bg_size[idx] = random.uniform(0.15, 0.30)
+            bg_anim_type[idx] = BG_ANIM_SPORE_DRIFT
+            bg_phase[idx] = random.uniform(0, 6.28)
+            bg_anim_amplitude[idx] = random.uniform(15.0, 25.0)
+            bg_anim_speed[idx] = random.uniform(0.8, 1.5)
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    theme_start_idx[THEME_SWAMP] = start_idx
+    theme_count[THEME_SWAMP] = idx - start_idx
+    active_themes.add(THEME_SWAMP)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} swamp voxels (total: {idx})")
+
+
+def add_desert(seed: int = 42):
+    """Add desert biome: sand ground, pyramids, cacti, dust devils, scorpions."""
+    global active_themes, theme_start_idx, theme_count
+    import random
+    import math
+    random.seed(seed)
+
+    if THEME_DESERT in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+    sand_y = 17.5
+    circle_radius = 85.0
+
+    # === SAND GROUND FILLER ===
+    sand_grid = 40
+    sand_spacing = (circle_radius * 2) / sand_grid
+    for gx in range(sand_grid):
+        for gz in range(sand_grid):
+            if idx >= MAX_BACKGROUND_VOXELS - 200:
+                break
+            x = -circle_radius + gx * sand_spacing + random.uniform(-1.0, 1.0)
+            z = -circle_radius + gz * sand_spacing + random.uniform(-1.0, 1.0)
+            dist = math.sqrt(x * x + z * z)
+            if dist > circle_radius:
+                continue
+            # Varied sand palette — mix of warm tan, pale gold, dusty amber
+            tone = random.random()
+            if tone < 0.4:
+                # Warm tan (most common)
+                r = random.uniform(0.58, 0.68)
+                g = random.uniform(0.45, 0.53)
+                b = random.uniform(0.26, 0.32)
+            elif tone < 0.7:
+                # Pale gold
+                r = random.uniform(0.64, 0.74)
+                g = random.uniform(0.52, 0.60)
+                b = random.uniform(0.28, 0.35)
+            elif tone < 0.9:
+                # Dusty amber (darker patches)
+                r = random.uniform(0.48, 0.58)
+                g = random.uniform(0.36, 0.43)
+                b = random.uniform(0.20, 0.26)
+            else:
+                # Occasional dark grit
+                r = random.uniform(0.38, 0.48)
+                g = random.uniform(0.28, 0.35)
+                b = random.uniform(0.16, 0.22)
+            bg_positions[idx] = ti.Vector([x, sand_y - 0.5 + random.uniform(-0.2, 0.2), z])
+            bg_colors[idx] = ti.Vector([r, g, b])
+            bg_size[idx] = random.uniform(1.8, 2.3)
+            bg_anim_type[idx] = BG_ANIM_NONE
+            bg_anim_speed[idx] = 0.0
+            bg_anim_amplitude[idx] = 0.0
+            bg_phase[idx] = 0.0
+            bg_brightness[idx] = 1.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = 0.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+    # === PYRAMIDS (2, opposite sides) ===
+    pyramid_angles = [0.4, 0.4 + math.pi]  # Opposite sides
+    pyramid_radius = 75.0
+    for pa in pyramid_angles:
+        px_base = math.cos(pa) * pyramid_radius
+        pz_base = math.sin(pa) * pyramid_radius
+        layers = [15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
+        layer_y = sand_y + 0.5
+        voxel_spacing = 1.8
+        for li, layer_size in enumerate(layers):
+            t_layer = li / (len(layers) - 1.0)  # 0 to 1
+            # Smooth sandstone gradient: warm tan base → pale golden top
+            base_r = 0.52 + t_layer * 0.22
+            base_g = 0.40 + t_layer * 0.20
+            base_b = 0.24 + t_layer * 0.14
+            vox_size = 0.9 - t_layer * 0.15
+
+            half = (layer_size - 1) * voxel_spacing / 2.0
+            for lx in range(layer_size):
+                for lz in range(layer_size):
+                    if idx >= MAX_BACKGROUND_VOXELS - 200:
+                        break
+                    x = px_base + lx * voxel_spacing - half
+                    z = pz_base + lz * voxel_spacing - half
+
+                    if li == len(layers) - 1 and lx == layer_size // 2 and lz == layer_size // 2:
+                        # Center peak voxel: golden glow
+                        bg_positions[idx] = ti.Vector([x, layer_y, z])
+                        bg_colors[idx] = ti.Vector([0.95, 0.85, 0.25])
+                        bg_size[idx] = 0.8
+                        bg_anim_type[idx] = BG_ANIM_GLOW_PULSE
+                        bg_anim_speed[idx] = 0.8
+                        bg_anim_amplitude[idx] = 0.5
+                        bg_phase[idx] = random.uniform(0, 6.28)
+                    else:
+                        r_v = base_r + random.uniform(-0.03, 0.03)
+                        g_v = base_g + random.uniform(-0.03, 0.03)
+                        b_v = base_b + random.uniform(-0.03, 0.03)
+                        bg_positions[idx] = ti.Vector([x, layer_y, z])
+                        bg_colors[idx] = ti.Vector([r_v, g_v, b_v])
+                        bg_size[idx] = vox_size
+                        bg_anim_type[idx] = BG_ANIM_NONE
+                        bg_anim_speed[idx] = 0.0
+                        bg_anim_amplitude[idx] = 0.0
+                        bg_phase[idx] = 0.0
+
+                    bg_brightness[idx] = 1.0
+                    bg_offset_x[idx] = 0.0
+                    bg_offset_y[idx] = 0.0
+                    bg_offset_z[idx] = 0.0
+                    bg_active[idx] = 1
+                    idx += 1
+            layer_y += 1.8
+
+    # === CACTI ===
+    def place_cactus_voxel(x, y, z, size, r, g, b, anim=BG_ANIM_NONE, spd=0.0, amp=0.0, ph=0.0):
+        nonlocal idx
+        if idx >= MAX_BACKGROUND_VOXELS - 100:
+            return
+        bg_positions[idx] = ti.Vector([x, y, z])
+        bg_colors[idx] = ti.Vector([r, g, b])
+        bg_size[idx] = size
+        bg_anim_type[idx] = anim
+        bg_anim_speed[idx] = spd
+        bg_anim_amplitude[idx] = amp
+        bg_phase[idx] = ph
+        bg_brightness[idx] = 1.0
+        bg_offset_x[idx] = 0.0
+        bg_offset_y[idx] = 0.0
+        bg_offset_z[idx] = 0.0
+        bg_active[idx] = 1
+        idx += 1
+
+    # --- TALL SAGUAROS (8) ---
+    for ci in range(8):
+        angle_c = (ci / 8.0) * math.pi * 2 + random.uniform(-0.25, 0.25)
+        rad_c = random.uniform(45, 78)
+        cx = math.cos(angle_c) * rad_c
+        cz = math.sin(angle_c) * rad_c
+        trunk_levels = random.randint(8, 12)
+        vsp = 1.6  # vertical spacing
+        vsz = 1.8  # big chunky voxels
+
+        def cactus_green(t_h):
+            gv = 0.30 + t_h * 0.10 + random.uniform(-0.02, 0.02)
+            return gv * 0.50, gv, gv * 0.35
+
+        # Thick trunk: cross pattern (center + 4 around) per level
+        for h in range(trunk_levels):
+            t_h = h / max(trunk_levels - 1, 1)
+            rv, gv, bv = cactus_green(t_h)
+            y = sand_y + 1.5 + h * vsp
+            # Center
+            place_cactus_voxel(cx, y, cz, vsz, rv, gv, bv)
+            # Cross pattern for roundness
+            off = vsz * 0.45
+            place_cactus_voxel(cx + off, y, cz, vsz * 0.7, rv, gv, bv)
+            place_cactus_voxel(cx - off, y, cz, vsz * 0.7, rv, gv, bv)
+            place_cactus_voxel(cx, y, cz + off, vsz * 0.7, rv, gv, bv)
+            place_cactus_voxel(cx, y, cz - off, vsz * 0.7, rv, gv, bv)
+
+        # Arms (2 per saguaro, opposite sides)
+        num_arms = 2
+        for arm in range(num_arms):
+            arm_h = random.randint(3, trunk_levels - 4)
+            arm_y_base = sand_y + 1.5 + arm_h * vsp
+            # Opposite sides
+            arm_dir = (math.pi * 2 / num_arms) * arm + random.uniform(-0.4, 0.4) + angle_c
+            arm_dx = math.cos(arm_dir)
+            arm_dz = math.sin(arm_dir)
+
+            rv, gv, bv = cactus_green(arm_h / trunk_levels)
+            arm_vsz = vsz * 0.75
+
+            # Horizontal elbow: 3 thick voxels reaching outward
+            for e in range(3):
+                dist_e = 1.8 + e * 1.4
+                ex = cx + arm_dx * dist_e
+                ez = cz + arm_dz * dist_e
+                place_cactus_voxel(ex, arm_y_base, ez, arm_vsz, rv, gv, bv)
+                # Thickness voxel above
+                if e < 2:
+                    place_cactus_voxel(ex, arm_y_base + arm_vsz * 0.4, ez,
+                                       arm_vsz * 0.6, rv, gv, bv)
+
+            # Vertical rise from elbow tip: 4-6 voxels
+            elbow_x = cx + arm_dx * (1.8 + 2 * 1.4)
+            elbow_z = cz + arm_dz * (1.8 + 2 * 1.4)
+            arm_rise = random.randint(4, 6)
+            for av in range(arm_rise):
+                av_t = av / max(arm_rise - 1, 1)
+                rv2, gv2, bv2 = cactus_green(0.5 + av_t * 0.3)
+                place_cactus_voxel(elbow_x, arm_y_base + (av + 1) * vsp,
+                                   elbow_z, arm_vsz * (1.0 - av_t * 0.15), rv2, gv2, bv2)
+                # Thickness
+                if av < arm_rise - 1:
+                    place_cactus_voxel(elbow_x + arm_dx * arm_vsz * 0.3,
+                                       arm_y_base + (av + 1) * vsp,
+                                       elbow_z + arm_dz * arm_vsz * 0.3,
+                                       arm_vsz * 0.5, rv2, gv2, bv2)
+
+            # Flower on arm tip
+            if random.random() < 0.6:
+                fc = random.choice([(0.95, 0.25, 0.45), (1.0, 0.85, 0.15),
+                                    (1.0, 0.40, 0.12), (0.95, 0.55, 0.70)])
+                fy = arm_y_base + (arm_rise + 1) * vsp
+                place_cactus_voxel(elbow_x, fy, elbow_z, 0.7, fc[0], fc[1], fc[2],
+                                   BG_ANIM_GLOW_PULSE, 1.0, 0.6, random.uniform(0, 6.28))
+
+        # Flower cluster on trunk top
+        trunk_top_y = sand_y + 1.5 + trunk_levels * vsp + 0.5
+        for fl in range(random.randint(1, 3)):
+            fc = random.choice([(0.95, 0.25, 0.45), (1.0, 0.85, 0.15),
+                                (1.0, 0.40, 0.12), (0.95, 0.55, 0.70)])
+            fx = cx + random.uniform(-0.5, 0.5)
+            fz = cz + random.uniform(-0.5, 0.5)
+            place_cactus_voxel(fx, trunk_top_y + fl * 0.4, fz, 0.6, fc[0], fc[1], fc[2],
+                               BG_ANIM_GLOW_PULSE, 1.0, 0.6, random.uniform(0, 6.28))
+
+    # --- BARREL CACTI (8) ---
+    for ci in range(8):
+        angle_c = (ci / 8.0) * math.pi * 2 + 0.39 + random.uniform(-0.25, 0.25)
+        rad_c = random.uniform(30, 78)
+        cx = math.cos(angle_c) * rad_c
+        cz = math.sin(angle_c) * rad_c
+
+        gv_base = random.uniform(0.28, 0.38)
+        barrel_h = random.randint(3, 5)
+        bsz = 3.0  # barrel voxel size
+
+        # Stacked rings for round barrel shape
+        for h in range(barrel_h):
+            t_h = h / max(barrel_h - 1, 1)
+            # Wider in middle, narrow at top/bottom
+            width = 1.0 - abs(t_h - 0.4) * 0.8
+            gv = gv_base + t_h * 0.06 + random.uniform(-0.02, 0.02)
+            rv = gv * 0.55
+            bv = gv * 0.38
+            y = sand_y + 1.5 + h * 2.8
+            # Center
+            place_cactus_voxel(cx, y, cz, bsz * width, rv, gv, bv)
+            # Ring of 4 around
+            ring_r = bsz * 0.5 * width
+            for a in range(4):
+                ang = a * (math.pi / 2) + h * 0.4  # rotate per layer
+                bx = cx + math.cos(ang) * ring_r
+                bz = cz + math.sin(ang) * ring_r
+                place_cactus_voxel(bx, y, bz, bsz * 0.65 * width, rv, gv, bv)
+
+        # Flower on top (most get one)
+        if random.random() < 0.75:
+            fc = random.choice([(0.95, 0.25, 0.45), (1.0, 0.85, 0.15),
+                                (1.0, 0.40, 0.12), (0.95, 0.55, 0.70)])
+            fy = sand_y + 1.5 + barrel_h * 2.8 + 0.5
+            place_cactus_voxel(cx, fy, cz, 1.2, fc[0], fc[1], fc[2],
+                               BG_ANIM_GLOW_PULSE, 1.0, 0.6, random.uniform(0, 6.28))
+
+    # === DUST DEVILS (3 cyclones, 200 tiny particles each) ===
+    cyclone_spots = [
+        (math.cos(0.8) * 30, math.sin(0.8) * 30),
+        (math.cos(2.8) * 35, math.sin(2.8) * 35),
+        (math.cos(4.5) * 25, math.sin(4.5) * 25),
+    ]
+    for ci_dd, (cx_dd, cz_dd) in enumerate(cyclone_spots):
+        for p in range(375):
+            if idx >= MAX_BACKGROUND_VOXELS - 100:
+                break
+            # Tiny sand grains — varied sand tones
+            tone = random.random()
+            if tone < 0.5:
+                base_col = random.uniform(0.78, 0.90)
+                rc, gc, bc = base_col, base_col * 0.78, base_col * 0.42
+            elif tone < 0.8:
+                base_col = random.uniform(0.70, 0.82)
+                rc, gc, bc = base_col, base_col * 0.72, base_col * 0.38
+            else:
+                base_col = random.uniform(0.55, 0.68)
+                rc, gc, bc = base_col, base_col * 0.68, base_col * 0.35
+            bg_positions[idx] = ti.Vector([cx_dd, 0, cz_dd])
+            bg_colors[idx] = ti.Vector([rc, gc, bc])
+            bg_size[idx] = random.uniform(0.15, 0.45)
+            bg_anim_type[idx] = BG_ANIM_DUST_DEVIL
+            bg_anim_speed[idx] = 1.0
+            bg_anim_amplitude[idx] = float(p)
+            bg_phase[idx] = float(ci_dd)
+            bg_brightness[idx] = 0.0
+            bg_offset_x[idx] = 0.0
+            bg_offset_y[idx] = -200.0
+            bg_offset_z[idx] = 0.0
+            bg_active[idx] = 1
+            idx += 1
+
+
+
+    theme_start_idx[THEME_DESERT] = start_idx
+    theme_count[THEME_DESERT] = idx - start_idx
+    active_themes.add(THEME_DESERT)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} desert voxels (total: {idx})")
+
 
 def add_stadium(seed: int = 42):
     """Add stadium with beetle larvae to the background (appends to existing voxels)."""
