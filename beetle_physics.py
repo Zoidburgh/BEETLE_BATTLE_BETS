@@ -1042,8 +1042,8 @@ DOWNWASH_PUSH_FORCE = 8.0         # Gentle nudge on enemy
 DOWNWASH_TIP_STRENGTH = 15.0      # Torque to tip enemy's near side
 DOWNWASH_RADIUS = 16.0            # Push/tip effect radius
 DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
-DOWNWASH_DUST_COUNT = 8           # Particles per burst (overlapping = continuous look)
-DOWNWASH_LANDING_DUST_COUNT = 28  # Big satisfying burst on impact
+DOWNWASH_DUST_COUNT = 16          # Particles per burst (overlapping = continuous look)
+DOWNWASH_LANDING_DUST_COUNT = 56  # Big satisfying burst on impact
 DOWNWASH_FADE_TIME = 0.4          # Post-landing push fade
 
 # Rendering offset - allows beetles to be visible while falling below arena
@@ -9560,17 +9560,17 @@ def spawn_downwash_dust(pos_x: ti.f32, pos_z: ti.f32, strength: ti.f32):
     color_g = 0.44
     color_b = 0.38
     floor_y = 33.5  # RENDER_Y_OFFSET + 0.5 (arena surface)
-    max_radius = 2.0 + strength * 6.0  # Grows as beetle descends
-    base_speed = 1.0 + strength * 4.0  # Faster near ground
+    max_radius = 4.0 + strength * 12.0  # Grows as beetle descends (2x bigger)
+    base_speed = 2.0 + strength * 8.0  # Faster near ground (2x)
 
-    for i in range(8):  # DOWNWASH_DUST_COUNT
+    for i in range(16):  # DOWNWASH_DUST_COUNT
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1
             ti.atomic_add(simulation.debris_active_count[None], 1)
             # Random angle and radius (fills area, not a discrete ring)
             angle = ti.random() * 2.0 * 3.14159
-            radius = 1.0 + ti.random() * (max_radius - 1.0)
+            radius = 2.0 + ti.random() * (max_radius - 2.0)
             spawn_x = pos_x + ti.cos(angle) * radius
             spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, floor_y, spawn_z)
@@ -9594,19 +9594,19 @@ def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
     color_b = 0.38
     floor_y = 33.5  # RENDER_Y_OFFSET + 0.5
 
-    for i in range(28):  # DOWNWASH_LANDING_DUST_COUNT
+    for i in range(56):  # DOWNWASH_LANDING_DUST_COUNT
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1
             ti.atomic_add(simulation.debris_active_count[None], 1)
             angle = ti.random() * 2.0 * 3.14159
-            # Tight cluster near center
-            radius = ti.random() * 3.0
+            # Tight cluster near center (2x radius)
+            radius = ti.random() * 6.0
             spawn_x = pos_x + ti.cos(angle) * radius
             spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, floor_y, spawn_z)
-            # Fast outward + stronger upward kick
-            particle_speed = 4.0 + ti.random() * 3.0
+            # Fast outward + stronger upward kick (2x)
+            particle_speed = 8.0 + ti.random() * 6.0
             vx = ti.cos(angle) * particle_speed
             vz = ti.sin(angle) * particle_speed
             vy = particle_speed * 0.5 * (0.7 + ti.random() * 0.6)
