@@ -15854,8 +15854,11 @@ try:
                         tip_mag = DOWNWASH_TIP_STRENGTH * fade_strength * falloff * PHYSICS_TIMESTEP
                         cos_r = math.cos(beetle_red.rotation)
                         sin_r = math.sin(beetle_red.rotation)
-                        local_x = dx_r * cos_r + dz_r * sin_r
-                        local_z = -dx_r * sin_r + dz_r * cos_r
+                        # Normalize direction before local-frame conversion
+                        dir_x = dx_r / dist_r
+                        dir_z = dz_r / dist_r
+                        local_x = dir_x * cos_r + dir_z * sin_r
+                        local_z = -dir_x * sin_r + dir_z * cos_r
                         beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
                         beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
             elif beetle_blue.active and not beetle_blue.on_ground:
@@ -15881,8 +15884,10 @@ try:
                     tip_mag = DOWNWASH_TIP_STRENGTH * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
                     cos_r = math.cos(beetle_red.rotation)
                     sin_r = math.sin(beetle_red.rotation)
-                    local_x = dx_r * cos_r + dz_r * sin_r
-                    local_z = -dx_r * sin_r + dz_r * cos_r
+                    dir_x = dx_r / dist_r
+                    dir_z = dz_r / dist_r
+                    local_x = dir_x * cos_r + dir_z * sin_r
+                    local_z = -dir_x * sin_r + dir_z * cos_r
                     beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
                     beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
             else:
@@ -15909,8 +15914,10 @@ try:
                         tip_mag = DOWNWASH_TIP_STRENGTH * fade_strength * falloff * PHYSICS_TIMESTEP
                         cos_b = math.cos(beetle_blue.rotation)
                         sin_b = math.sin(beetle_blue.rotation)
-                        local_x = dx_b * cos_b + dz_b * sin_b
-                        local_z = -dx_b * sin_b + dz_b * cos_b
+                        dir_x = dx_b / dist_b
+                        dir_z = dz_b / dist_b
+                        local_x = dir_x * cos_b + dir_z * sin_b
+                        local_z = -dir_x * sin_b + dir_z * cos_b
                         beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
                         beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
             elif beetle_red.active and not beetle_red.on_ground:
@@ -15932,8 +15939,10 @@ try:
                     tip_mag = DOWNWASH_TIP_STRENGTH * red_downwash_strength * falloff * PHYSICS_TIMESTEP
                     cos_b = math.cos(beetle_blue.rotation)
                     sin_b = math.sin(beetle_blue.rotation)
-                    local_x = dx_b * cos_b + dz_b * sin_b
-                    local_z = -dx_b * sin_b + dz_b * cos_b
+                    dir_x = dx_b / dist_b
+                    dir_z = dz_b / dist_b
+                    local_x = dir_x * cos_b + dir_z * sin_b
+                    local_z = -dir_x * sin_b + dir_z * cos_b
                     beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
                     beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
             else:
