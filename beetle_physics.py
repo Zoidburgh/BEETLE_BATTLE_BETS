@@ -16402,9 +16402,9 @@ try:
         # Rotation-only animation (use constant rotation speed)
         # Cancel animation completion if player resumes input
         beetle_blue.is_completing_animation = False
-        # When in air: 30% faster than ground, on ground: normal turning speed (25% speed increase overall)
+        # When in air: 15% faster than ground, on ground: normal turning speed
         if beetle_blue.is_lifted_high:
-            rotation_animation_speed = 16.875 * 1.3  # 30% faster than ground turning speed
+            rotation_animation_speed = 16.875 * 1.15  # 15% faster than ground turning speed
         else:
             rotation_animation_speed = 16.875  # Normal ground turning speed
         beetle_blue.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
@@ -16481,9 +16481,9 @@ try:
         # Rotation-only animation (use constant rotation speed)
         # Cancel animation completion if player resumes input
         beetle_red.is_completing_animation = False
-        # When in air: 30% faster than ground, on ground: normal turning speed (25% speed increase overall)
+        # When in air: 15% faster than ground, on ground: normal turning speed
         if beetle_red.is_lifted_high:
-            rotation_animation_speed = 16.875 * 1.3  # 30% faster than ground turning speed
+            rotation_animation_speed = 16.875 * 1.15  # 15% faster than ground turning speed
         else:
             rotation_animation_speed = 16.875  # Normal ground turning speed
         beetle_red.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
