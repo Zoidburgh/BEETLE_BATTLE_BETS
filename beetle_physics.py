@@ -1049,7 +1049,7 @@ DOWNWASH_LANDING_DUST_COUNT = 200 # Big explosive burst on impact
 DOWNWASH_FADE_TIME = 0.4          # Post-landing push fade
 
 # Arena tornado hazard
-TORNADO_RADIUS = 10.0             # Push/tip effect radius around tornado center
+TORNADO_RADIUS = 16.0             # Push/tip effect radius (covers horn reach)
 TORNADO_PUSH_FORCE = 100.0        # Outward push on beetles
 TORNADO_LIFT_FORCE = 150.0        # Upward pop on beetles
 TORNADO_TIP_STRENGTH = 5000.0     # Torque to tip beetles
@@ -16124,21 +16124,6 @@ try:
                         local_z = -dir_x * sin_r + dir_z * cos_r
                         beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
                         beetle.pitch_velocity += local_z * tip_mag / max(beetle.pitch_inertia, 0.1)
-                    elif dist_t > 0.1:
-                        # Horn in tornado but body outside = wind catches horn like a lever,
-                        # drags beetle toward tornado + yaw torque
-                        htx, hty, htz = calculate_horn_tip_position(beetle)
-                        dx_h = htx - tornado_x
-                        dz_h = htz - tornado_z
-                        dist_h = math.sqrt(dx_h * dx_h + dz_h * dz_h)
-                        if dist_h < TORNADO_RADIUS:
-                            h_falloff = 1.0 - dist_h / TORNADO_RADIUS
-                            # Pull body TOWARD tornado (negative = inward)
-                            pull_mag = 300.0 * h_falloff * PHYSICS_TIMESTEP
-                            beetle.vx -= (dx_t / dist_t) * pull_mag
-                            beetle.vz -= (dz_t / dist_t) * pull_mag
-                            # Yaw torque — wind on horn twists the beetle
-                            beetle.rotation += 15.0 * h_falloff * PHYSICS_TIMESTEP
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
