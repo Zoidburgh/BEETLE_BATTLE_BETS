@@ -1056,8 +1056,8 @@ TORNADO_TIP_STRENGTH = 3000.0     # Torque to tip beetles
 TORNADO_SPIN_SPEED = 8.0          # Visual particle spin (rad/s)
 TORNADO_MOVE_SPEED = 0.15         # Lissajous path speed multiplier
 TORNADO_BOUNDS = 34.0             # Movement boundary radius (inside yin-yang outer 38)
-TORNADO_DUST_INTERVAL = 0.02      # ~50Hz particle spawn rate
-TORNADO_DUST_COUNT = 12           # Particles per spawn burst
+TORNADO_DUST_INTERVAL = 0.016     # ~60Hz particle spawn rate
+TORNADO_DUST_COUNT = 20           # Particles per spawn burst
 TORNADO_HEIGHT = 25.0             # Visual funnel height (voxels above arena)
 
 # Rendering offset - allows beetles to be visible while falling below arena
@@ -9646,60 +9646,55 @@ def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
 
 @ti.kernel
 def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
-    """Spawn swirling funnel particles for arena tornado hazard.
-    Vertical spiral column from floor to TORNADO_HEIGHT, funnel-shaped."""
+    """Spawn swirling funnel particles on the funnel wall surface.
+    Tight at base, wider at top — particles hug the shell for a defined shape."""
     floor_y = 33.5  # RENDER_Y_OFFSET + 0.5 (arena surface)
     height = 25.0   # TORNADO_HEIGHT
-    spin_speed = 8.0  # TORNADO_SPIN_SPEED
 
-    for i in range(12):  # TORNADO_DUST_COUNT
+    for i in range(20):  # TORNADO_DUST_COUNT
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1
             ti.atomic_add(simulation.debris_active_count[None], 1)
-            # Random height in the column
-            h_frac = ti.random()
+            # Bias height toward bottom for denser base (sqrt gives uniform area on cone)
+            h_frac = ti.random() * ti.random()  # Clusters more particles near base
             spawn_y = floor_y + h_frac * height
-            # Funnel shape: tight at base (r=1), wide at top (r=5)
-            funnel_radius = 1.0 + h_frac * 4.0
-            angle = ti.random() * 2.0 * 3.14159
-            spawn_x = pos_x + ti.cos(angle) * funnel_radius
-            spawn_z = pos_z + ti.sin(angle) * funnel_radius
+            # Funnel wall radius: tight base (0.5), wide top (6.0)
+            # Thin shell: spawn ON the wall, not inside the volume
+            wall_radius = 0.5 + h_frac * h_frac * 5.5  # Quadratic flare
+            shell_jitter = wall_radius * 0.15 * (ti.random() - 0.5)  # Thin shell thickness
+            radius = wall_radius + shell_jitter
+            # Rotating base angle from time so funnel visibly spins
+            base_angle = time_val * 8.0 + h_frac * 6.28 * 3.0  # 3 spiral wraps up the cone
+            angle = base_angle + ti.random() * 0.5  # Small jitter around spiral position
+            spawn_x = pos_x + ti.cos(angle) * radius
+            spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
-            # Velocity: strong tangential (swirling) + slight outward + upward drift
-            tangential_speed = spin_speed * funnel_radius * (0.7 + ti.random() * 0.6)
-            # Alternate CW/CCW for chaos
-            sign = 1.0
-            if ti.random() < 0.3:
-                sign = -1.0
-            vx = -ti.sin(angle) * tangential_speed * sign + ti.cos(angle) * 2.0
-            vz = ti.cos(angle) * tangential_speed * sign + ti.sin(angle) * 2.0
-            vy = 3.0 + ti.random() * 5.0  # Upward drift
+            # Velocity: tangential swirl (all CCW) + upward draft, no outward scatter
+            swirl_speed = 12.0 * (0.3 + h_frac * 0.7)  # Faster at top
+            vx = -ti.sin(angle) * swirl_speed
+            vz = ti.cos(angle) * swirl_speed
+            vy = 4.0 + h_frac * 8.0  # Stronger updraft near top
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-            # Gray-brown dust + darker debris tones (stormier than sandy downwash)
-            # Gray-brown dust + darker debris tones (stormier than sandy downwash)
-            # Initialize before branches (Taichi scoping requires it)
+            # Dark stormy colors — initialize before branches (Taichi scoping)
             cr = 0.35
             cg = 0.30
             cb = 0.26
             color_choice = ti.random()
             if color_choice < 0.4:
-                # Dark gray
                 cr = 0.30 + ti.random() * 0.10
                 cg = 0.28 + ti.random() * 0.10
                 cb = 0.26 + ti.random() * 0.10
             elif color_choice < 0.7:
-                # Dark brown
                 cr = 0.35 + ti.random() * 0.10
                 cg = 0.25 + ti.random() * 0.08
                 cb = 0.18 + ti.random() * 0.08
             else:
-                # Medium gray
                 cr = 0.40 + ti.random() * 0.10
                 cg = 0.38 + ti.random() * 0.10
                 cb = 0.35 + ti.random() * 0.10
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
-            simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.4  # 0.4-0.8s
+            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.3  # 0.2-0.5s (tight trails)
 
 @ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
