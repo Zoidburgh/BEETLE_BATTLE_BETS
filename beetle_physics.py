@@ -9586,7 +9586,7 @@ def spawn_downwash_dust(pos_x: ti.f32, pos_z: ti.f32, strength: ti.f32):
             color_var = 0.85 + ti.random() * 0.3
             simulation.debris_material[idx] = ti.math.vec3(
                 color_r * color_var, color_g * color_var, color_b * color_var)
-            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.3
+            simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
 
 @ti.kernel
 def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
@@ -9615,7 +9615,7 @@ def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
             color_var = 0.85 + ti.random() * 0.3
             simulation.debris_material[idx] = ti.math.vec3(
                 color_r * color_var, color_g * color_var, color_b * color_var)
-            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.3
+            simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
 
 @ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
@@ -15871,11 +15871,16 @@ try:
                 visual_strength = max(0.0, min(1.0, 1.0 - (beetle_blue.y - 0.5) / 14.5))
                 # Physics strength: floored for push/tip/lift
                 blue_downwash_strength = max(DOWNWASH_MIN_STRENGTH, visual_strength)
+                # Fire landing burst early (at y<2.0, ~0.1s before on_ground)
+                if beetle_blue.y < 2.0 and blue_downwash_fade_timer <= 0:
+                    spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
+                    blue_downwash_fade_timer = DOWNWASH_FADE_TIME
                 # Spawn dust at interval (uses visual strength so it starts concentrated)
-                blue_downwash_dust_timer += PHYSICS_TIMESTEP
-                if blue_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
-                    blue_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
-                    spawn_downwash_dust(blue_downwash_x, blue_downwash_z, visual_strength)
+                if blue_downwash_fade_timer <= 0:
+                    blue_downwash_dust_timer += PHYSICS_TIMESTEP
+                    if blue_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
+                        blue_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
+                        spawn_downwash_dust(blue_downwash_x, blue_downwash_z, visual_strength)
                 # Push/tip enemy if nearby
                 dx_r = beetle_red.x - blue_downwash_x
                 dz_r = beetle_red.z - blue_downwash_z
@@ -15896,9 +15901,10 @@ try:
                     beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
                     beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
             else:
-                # Beetle just landed — fire landing burst and start fade
-                spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
-                blue_downwash_fade_timer = DOWNWASH_FADE_TIME
+                # Beetle landed — fire burst if not already fired early
+                if blue_downwash_fade_timer <= 0:
+                    spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
+                    blue_downwash_fade_timer = DOWNWASH_FADE_TIME
 
         # Red downwash
         if red_downwash_active:
@@ -15931,10 +15937,16 @@ try:
                 red_downwash_z = beetle_red.z
                 visual_strength = max(0.0, min(1.0, 1.0 - (beetle_red.y - 0.5) / 14.5))
                 red_downwash_strength = max(DOWNWASH_MIN_STRENGTH, visual_strength)
-                red_downwash_dust_timer += PHYSICS_TIMESTEP
-                if red_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
-                    red_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
-                    spawn_downwash_dust(red_downwash_x, red_downwash_z, visual_strength)
+                # Fire landing burst early (at y<2.0, ~0.1s before on_ground)
+                if beetle_red.y < 2.0 and red_downwash_fade_timer <= 0:
+                    spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
+                    red_downwash_fade_timer = DOWNWASH_FADE_TIME
+                # Spawn dust (stop once burst has fired)
+                if red_downwash_fade_timer <= 0:
+                    red_downwash_dust_timer += PHYSICS_TIMESTEP
+                    if red_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
+                        red_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
+                        spawn_downwash_dust(red_downwash_x, red_downwash_z, visual_strength)
                 dx_b = beetle_blue.x - red_downwash_x
                 dz_b = beetle_blue.z - red_downwash_z
                 dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
@@ -15954,8 +15966,10 @@ try:
                     beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
                     beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
             else:
-                spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
-                red_downwash_fade_timer = DOWNWASH_FADE_TIME
+                # Beetle landed — fire burst if not already fired early
+                if red_downwash_fade_timer <= 0:
+                    spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
+                    red_downwash_fade_timer = DOWNWASH_FADE_TIME
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
