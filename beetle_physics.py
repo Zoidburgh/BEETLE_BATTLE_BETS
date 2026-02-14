@@ -9677,6 +9677,11 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
             vy = 3.0 + ti.random() * 5.0  # Upward drift
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
             # Gray-brown dust + darker debris tones (stormier than sandy downwash)
+            # Gray-brown dust + darker debris tones (stormier than sandy downwash)
+            # Initialize before branches (Taichi scoping requires it)
+            cr = 0.35
+            cg = 0.30
+            cb = 0.26
             color_choice = ti.random()
             if color_choice < 0.4:
                 # Dark gray
