@@ -16123,6 +16123,9 @@ try:
                         local_z = -dir_x * sin_r + dir_z * cos_r
                         beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
                         beetle.pitch_velocity += local_z * tip_mag / max(beetle.pitch_inertia, 0.1)
+                        # Horn buffeting — tornado whips the horns around
+                        beetle.horn_pitch_velocity += 8.0 * falloff * (0.5 - local_z)
+                        beetle.horn_yaw_velocity += 10.0 * falloff * local_x
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
