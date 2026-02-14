@@ -9673,11 +9673,11 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
             spawn_x = pos_x + ti.cos(angle) * radius
             spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
-            # Velocity: tangential swirl (all CCW) + upward draft, no outward scatter
-            swirl_speed = 18.0 * (0.3 + h_frac * 0.7)  # Faster swirl overall
+            # Velocity: strong tangential swirl + gentle updraft
+            swirl_speed = 22.0 * (0.4 + h_frac * 0.6)  # Dominant horizontal spin
             vx = -ti.sin(angle) * swirl_speed
             vz = ti.cos(angle) * swirl_speed
-            vy = 5.0 + h_frac * 10.0  # Stronger updraft
+            vy = 1.5 + h_frac * 3.0  # Gentle updraft, doesn't overpower the swirl
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
             # Dark stormy colors — initialize before branches (Taichi scoping)
             cr = 0.35
