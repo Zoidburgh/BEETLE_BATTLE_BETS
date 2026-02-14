@@ -1056,8 +1056,8 @@ TORNADO_TIP_STRENGTH = 5000.0     # Torque to tip beetles
 TORNADO_SPIN_FORCE = 120.0        # Tangential swirl push on beetles
 TORNADO_YAW_STRENGTH = 12.0       # Yaw spin (rotation) applied to beetles
 TORNADO_SPIN_SPEED = 8.0          # Visual particle spin (rad/s)
-TORNADO_MOVE_SPEED = 0.15         # Lissajous path speed multiplier
-TORNADO_BOUNDS = 34.0             # Movement boundary radius (inside yin-yang outer 38)
+TORNADO_MOVE_SPEED = 0.18         # Lissajous path base speed multiplier
+TORNADO_BOUNDS = 36.0             # Full yin-yang coverage (outer 38 minus visual width)
 TORNADO_DUST_INTERVAL = 0.013     # ~75Hz particle spawn rate
 TORNADO_DUST_COUNT = 35           # Particles per spawn burst
 TORNADO_HEIGHT = 35.0             # Visual funnel height (voxels above arena)
@@ -1432,7 +1432,7 @@ def reset_match():
     global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, square_bridge_mode
     global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
-    global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer
+    global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1533,6 +1533,7 @@ def reset_match():
     tornado_x = 0.0
     tornado_z = 0.0
     tornado_dust_timer = 0.0
+    tornado_phase = 0.0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2395,6 +2396,7 @@ tornado_time = 0.0                # Accumulated time for deterministic path
 tornado_x = 0.0                   # Current tornado center x
 tornado_z = 0.0                   # Current tornado center z
 tornado_dust_timer = 0.0          # Particle spawn timer
+tornado_phase = 0.0               # Accumulated phase for variable-speed path
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -15350,12 +15352,14 @@ try:
                     if tornado_mode:
                         tornado_time = 0.0
                         tornado_dust_timer = 0.0
+                        tornado_phase = 0.0
                         tornado_x = 0.0
                         tornado_z = 0.0
                         print("TORNADO HAZARD ENABLED (from host)")
                     else:
                         tornado_time = 0.0
                         tornado_dust_timer = 0.0
+                        tornado_phase = 0.0
                         tornado_x = 0.0
                         tornado_z = 0.0
                         print("Tornado hazard disabled (from host)")
@@ -16073,13 +16077,21 @@ try:
 
         # === ARENA TORNADO HAZARD ===
         if tornado_mode:
-            # Update deterministic Lissajous path (same on host and guest)
+            # Update deterministic variable-speed Lissajous path (same on host and guest)
             tornado_time += PHYSICS_TIMESTEP
-            tx = TORNADO_BOUNDS * math.sin(tornado_time * TORNADO_MOVE_SPEED * 1.0)
-            tz = TORNADO_BOUNDS * math.cos(tornado_time * TORNADO_MOVE_SPEED * 0.7)
-            # Secondary wobble for less predictable path
-            tx += 8.0 * math.sin(tornado_time * TORNADO_MOVE_SPEED * 2.3)
-            tz += 8.0 * math.cos(tornado_time * TORNADO_MOVE_SPEED * 1.9)
+            t = tornado_time * TORNADO_MOVE_SPEED
+            # Variable speed: oscillates 0.5x-1.5x so tornado drifts then surges
+            speed_mod = 1.0 + 0.5 * math.sin(t * 0.31) * math.cos(t * 0.19)
+            tornado_phase += PHYSICS_TIMESTEP * TORNADO_MOVE_SPEED * speed_mod
+            # Primary sweep: incommensurate frequencies for full arena coverage
+            tx = TORNADO_BOUNDS * math.sin(tornado_phase * 1.0)
+            tz = TORNADO_BOUNDS * math.cos(tornado_phase * 0.7)
+            # Secondary wobble: unpredictable direction changes
+            tx += 10.0 * math.sin(tornado_phase * 2.3 + 1.7)
+            tz += 10.0 * math.cos(tornado_phase * 1.9 + 0.8)
+            # Tertiary micro-wobble: breaks remaining visual pattern
+            tx += 4.0 * math.sin(tornado_phase * 5.1)
+            tz += 4.0 * math.cos(tornado_phase * 4.3)
             # Clamp to bounds
             tdist = math.sqrt(tx * tx + tz * tz)
             if tdist > TORNADO_BOUNDS:
@@ -18368,12 +18380,14 @@ try:
                 if tornado_mode:
                     tornado_time = 0.0
                     tornado_dust_timer = 0.0
+                    tornado_phase = 0.0
                     tornado_x = 0.0
                     tornado_z = 0.0
                     print("TORNADO HAZARD ENABLED - watch out!")
                 else:
                     tornado_time = 0.0
                     tornado_dust_timer = 0.0
+                    tornado_phase = 0.0
                     tornado_x = 0.0
                     tornado_z = 0.0
                     print("Tornado hazard disabled")
