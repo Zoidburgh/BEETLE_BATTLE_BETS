@@ -1038,9 +1038,9 @@ BODY_ROTATION_DAMPING_STRENGTH = 0.95  # 95% damping (5% speed) when rotating in
 BODY_ROTATION_DAMPING_DECAY = 2.0      # Decay rate per second (~0.5s duration at full strength)
 
 # Spawn downwash effect (dust + push when beetle drops onto arena)
-DOWNWASH_PUSH_FORCE = 60.0        # Outward nudge on enemy
-DOWNWASH_TIP_STRENGTH = 2000.0    # Torque to tip enemy's near side
-DOWNWASH_LIFT_FORCE = 80.0        # Upward pop so enemy leaves ground (lets tip torque work)
+DOWNWASH_PUSH_FORCE = 90.0        # Outward nudge on enemy
+DOWNWASH_TIP_STRENGTH = 3000.0    # Torque to tip enemy's near side
+DOWNWASH_LIFT_FORCE = 120.0       # Upward pop so enemy leaves ground (lets tip torque work)
 DOWNWASH_MIN_STRENGTH = 0.7       # Minimum strength so push hits hard from the start
 DOWNWASH_RADIUS = 20.0            # Push/tip effect radius
 DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
