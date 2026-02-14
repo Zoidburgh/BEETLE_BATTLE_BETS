@@ -1048,6 +1048,18 @@ DOWNWASH_DUST_COUNT = 27          # Particles per burst (overlapping = continuou
 DOWNWASH_LANDING_DUST_COUNT = 200 # Big explosive burst on impact
 DOWNWASH_FADE_TIME = 0.4          # Post-landing push fade
 
+# Arena tornado hazard
+TORNADO_RADIUS = 10.0             # Push/tip effect radius around tornado center
+TORNADO_PUSH_FORCE = 100.0        # Outward push on beetles
+TORNADO_LIFT_FORCE = 150.0        # Upward pop on beetles
+TORNADO_TIP_STRENGTH = 3000.0     # Torque to tip beetles
+TORNADO_SPIN_SPEED = 8.0          # Visual particle spin (rad/s)
+TORNADO_MOVE_SPEED = 0.15         # Lissajous path speed multiplier
+TORNADO_BOUNDS = 34.0             # Movement boundary radius (inside yin-yang outer 38)
+TORNADO_DUST_INTERVAL = 0.02      # ~50Hz particle spawn rate
+TORNADO_DUST_COUNT = 12           # Particles per spawn burst
+TORNADO_HEIGHT = 25.0             # Visual funnel height (voxels above arena)
+
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
 
@@ -1418,6 +1430,7 @@ def reset_match():
     global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, square_bridge_mode
     global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
+    global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1511,6 +1524,13 @@ def reset_match():
     red_downwash_z = 0.0
     red_downwash_dust_timer = 0.0
     red_downwash_fade_timer = 0.0
+
+    # Reset tornado hazard state
+    tornado_mode = False
+    tornado_time = 0.0
+    tornado_x = 0.0
+    tornado_z = 0.0
+    tornado_dust_timer = 0.0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2366,6 +2386,13 @@ red_downwash_x = 0.0
 red_downwash_z = 0.0
 red_downwash_dust_timer = 0.0
 red_downwash_fade_timer = 0.0
+
+# Arena tornado hazard state
+tornado_mode = False              # Toggle state
+tornado_time = 0.0                # Accumulated time for deterministic path
+tornado_x = 0.0                   # Current tornado center x
+tornado_z = 0.0                   # Current tornado center z
+tornado_dust_timer = 0.0          # Particle spawn timer
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -9618,6 +9645,58 @@ def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
             simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
 
 @ti.kernel
+def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
+    """Spawn swirling funnel particles for arena tornado hazard.
+    Vertical spiral column from floor to TORNADO_HEIGHT, funnel-shaped."""
+    floor_y = 33.5  # RENDER_Y_OFFSET + 0.5 (arena surface)
+    height = 25.0   # TORNADO_HEIGHT
+    spin_speed = 8.0  # TORNADO_SPIN_SPEED
+
+    for i in range(12):  # TORNADO_DUST_COUNT
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            # Random height in the column
+            h_frac = ti.random()
+            spawn_y = floor_y + h_frac * height
+            # Funnel shape: tight at base (r=1), wide at top (r=5)
+            funnel_radius = 1.0 + h_frac * 4.0
+            angle = ti.random() * 2.0 * 3.14159
+            spawn_x = pos_x + ti.cos(angle) * funnel_radius
+            spawn_z = pos_z + ti.sin(angle) * funnel_radius
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
+            # Velocity: strong tangential (swirling) + slight outward + upward drift
+            tangential_speed = spin_speed * funnel_radius * (0.7 + ti.random() * 0.6)
+            # Alternate CW/CCW for chaos
+            sign = 1.0
+            if ti.random() < 0.3:
+                sign = -1.0
+            vx = -ti.sin(angle) * tangential_speed * sign + ti.cos(angle) * 2.0
+            vz = ti.cos(angle) * tangential_speed * sign + ti.sin(angle) * 2.0
+            vy = 3.0 + ti.random() * 5.0  # Upward drift
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Gray-brown dust + darker debris tones (stormier than sandy downwash)
+            color_choice = ti.random()
+            if color_choice < 0.4:
+                # Dark gray
+                cr = 0.30 + ti.random() * 0.10
+                cg = 0.28 + ti.random() * 0.10
+                cb = 0.26 + ti.random() * 0.10
+            elif color_choice < 0.7:
+                # Dark brown
+                cr = 0.35 + ti.random() * 0.10
+                cg = 0.25 + ti.random() * 0.08
+                cb = 0.18 + ti.random() * 0.08
+            else:
+                # Medium gray
+                cr = 0.40 + ti.random() * 0.10
+                cg = 0.38 + ti.random() * 0.10
+                cb = 0.35 + ti.random() * 0.10
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.4  # 0.4-0.8s
+
+@ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                            impact_speed: ti.f32, ball_radius: ti.f32):
     """Spawn radial dust ring when ball bounces - more particles for harder impacts"""
@@ -13204,6 +13283,7 @@ spawn_ball_explosion_batch(0.0, -100.0, 0.0, 0, 1, 1)
 spawn_ball_bounce_dust(0.0, -100.0, 0.0, 10.0, 4.0)
 spawn_downwash_dust(0.0, -100.0, 0.5)
 spawn_downwash_landing_burst(0.0, -100.0)
+spawn_tornado_dust(0.0, -100.0, 0.0)
 update_loading(2)
 
 # PHASE 3: Debris/particle kernels - render with debris to warm up renderer's debris code paths
@@ -15260,6 +15340,22 @@ try:
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
+                # Apply tornado mode state (hazard, independent of arena)
+                if opts.get('tornado_mode', False) != tornado_mode:
+                    tornado_mode = opts.get('tornado_mode', False)
+                    if tornado_mode:
+                        tornado_time = 0.0
+                        tornado_dust_timer = 0.0
+                        tornado_x = 0.0
+                        tornado_z = 0.0
+                        print("TORNADO HAZARD ENABLED (from host)")
+                    else:
+                        tornado_time = 0.0
+                        tornado_dust_timer = 0.0
+                        tornado_x = 0.0
+                        tornado_z = 0.0
+                        print("Tornado hazard disabled (from host)")
+
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
         # Local mode: always detect locally
@@ -15970,6 +16066,54 @@ try:
                 if red_downwash_fade_timer <= 0:
                     spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
                     red_downwash_fade_timer = DOWNWASH_FADE_TIME
+
+        # === ARENA TORNADO HAZARD ===
+        if tornado_mode:
+            # Update deterministic Lissajous path (same on host and guest)
+            tornado_time += PHYSICS_TIMESTEP
+            tx = TORNADO_BOUNDS * math.sin(tornado_time * TORNADO_MOVE_SPEED * 1.0)
+            tz = TORNADO_BOUNDS * math.cos(tornado_time * TORNADO_MOVE_SPEED * 0.7)
+            # Secondary wobble for less predictable path
+            tx += 8.0 * math.sin(tornado_time * TORNADO_MOVE_SPEED * 2.3)
+            tz += 8.0 * math.cos(tornado_time * TORNADO_MOVE_SPEED * 1.9)
+            # Clamp to bounds
+            tdist = math.sqrt(tx * tx + tz * tz)
+            if tdist > TORNADO_BOUNDS:
+                tx = tx * TORNADO_BOUNDS / tdist
+                tz = tz * TORNADO_BOUNDS / tdist
+            tornado_x = tx
+            tornado_z = tz
+
+            # Spawn swirling debris particles
+            tornado_dust_timer += PHYSICS_TIMESTEP
+            if tornado_dust_timer >= TORNADO_DUST_INTERVAL:
+                tornado_dust_timer -= TORNADO_DUST_INTERVAL
+                spawn_tornado_dust(tornado_x, tornado_z, tornado_time)
+
+            # Apply push/lift/tip to both beetles
+            for beetle in (beetle_blue, beetle_red):
+                if beetle.active and not beetle.is_falling:
+                    dx_t = beetle.x - tornado_x
+                    dz_t = beetle.z - tornado_z
+                    dist_t = math.sqrt(dx_t * dx_t + dz_t * dz_t)
+                    if dist_t < TORNADO_RADIUS and dist_t > 0.1:
+                        falloff = 1.0 - dist_t / TORNADO_RADIUS
+                        # Outward push
+                        push_mag = TORNADO_PUSH_FORCE * falloff * PHYSICS_TIMESTEP
+                        beetle.vx += (dx_t / dist_t) * push_mag
+                        beetle.vz += (dz_t / dist_t) * push_mag
+                        # Upward lift
+                        beetle.vy += TORNADO_LIFT_FORCE * falloff * PHYSICS_TIMESTEP
+                        # Tipping torque (same local-frame pattern as downwash)
+                        tip_mag = TORNADO_TIP_STRENGTH * falloff * PHYSICS_TIMESTEP
+                        cos_r = math.cos(beetle.rotation)
+                        sin_r = math.sin(beetle.rotation)
+                        dir_x = dx_t / dist_t
+                        dir_z = dz_t / dist_t
+                        local_x = dir_x * cos_r + dir_z * sin_r
+                        local_z = -dir_x * sin_r + dir_z * cos_r
+                        beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
+                        beetle.pitch_velocity += local_z * tip_mag / max(beetle.pitch_inertia, 0.1)
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
@@ -17874,7 +18018,7 @@ try:
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -17942,7 +18086,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -17985,7 +18129,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -18028,7 +18172,7 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -18071,7 +18215,7 @@ try:
                     print("FIGURE 8 ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -18114,7 +18258,7 @@ try:
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -18157,7 +18301,7 @@ try:
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -18201,7 +18345,30 @@ try:
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+
+            # === HAZARDS ===
+            window.GUI.text("")
+            window.GUI.text("=== HAZARDS ===")
+
+            tornado_button_text = "TORNADO: ON" if tornado_mode else "TORNADO: OFF"
+            if window.GUI.button(tornado_button_text):
+                tornado_mode = not tornado_mode
+                if tornado_mode:
+                    tornado_time = 0.0
+                    tornado_dust_timer = 0.0
+                    tornado_x = 0.0
+                    tornado_z = 0.0
+                    print("TORNADO HAZARD ENABLED - watch out!")
+                else:
+                    tornado_time = 0.0
+                    tornado_dust_timer = 0.0
+                    tornado_x = 0.0
+                    tornado_z = 0.0
+                    print("Tornado hazard disabled")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")

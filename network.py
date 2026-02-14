@@ -565,21 +565,22 @@ class NetworkManager:
         type_str = "death" if score_type == 0 else "ball goal"
         print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str}) at ({death_x:.1f}, {death_z:.1f})")
 
-    def send_game_options(self, referee_enabled, ball_active, donut_mode=False, x_stage_mode=False, figure8_mode=False, yinyang_mode=False, hourglass_mode=False):
+    def send_game_options(self, referee_enabled, ball_active, donut_mode=False, x_stage_mode=False, figure8_mode=False, yinyang_mode=False, hourglass_mode=False, tornado_mode=False):
         """
         Host sends game options to guest.
-        Packet format: [type:1][referee:1][ball:1][donut:1][x_stage:1][figure8:1][yinyang:1][hourglass:1] = 8 bytes
+        Packet format: [type:1][referee:1][ball:1][donut:1][x_stage:1][figure8:1][yinyang:1][hourglass:1][tornado:1] = 9 bytes
         """
         if not self.is_host or not self.connected:
             return
-        data = struct.pack('>BBBBBBBB', MSG_GAME_OPTIONS,
+        data = struct.pack('>BBBBBBBBB', MSG_GAME_OPTIONS,
                           1 if referee_enabled else 0,
                           1 if ball_active else 0,
                           1 if donut_mode else 0,
                           1 if x_stage_mode else 0,
                           1 if figure8_mode else 0,
                           1 if yinyang_mode else 0,
-                          1 if hourglass_mode else 0)
+                          1 if hourglass_mode else 0,
+                          1 if tornado_mode else 0)
         self._send_packet(data, reliable=True)
 
     def send_ball_explode(self, pos_x, pos_y, pos_z):
@@ -949,8 +950,22 @@ class NetworkManager:
 
         elif msg_type == MSG_GAME_OPTIONS:
             # Host sends game options (guest receives)
-            if len(data) >= 8 and not self.is_host:
-                # New format with hourglass
+            if len(data) >= 9 and not self.is_host:
+                # New format with tornado
+                _, referee_enabled, ball_active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode = struct.unpack('>BBBBBBBBB', data[:9])
+                self.pending_game_options = {
+                    'referee_enabled': referee_enabled == 1,
+                    'ball_active': ball_active == 1,
+                    'donut_mode': donut_mode == 1,
+                    'x_stage_mode': x_stage_mode == 1,
+                    'figure8_mode': figure8_mode == 1,
+                    'yinyang_mode': yinyang_mode == 1,
+                    'hourglass_mode': hourglass_mode == 1,
+                    'tornado_mode': tornado_mode == 1
+                }
+                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, figure8={figure8_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}")
+            elif len(data) >= 8 and not self.is_host:
+                # Backwards compatibility with 8-byte format (no tornado)
                 _, referee_enabled, ball_active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode = struct.unpack('>BBBBBBBB', data[:8])
                 self.pending_game_options = {
                     'referee_enabled': referee_enabled == 1,
@@ -959,7 +974,8 @@ class NetworkManager:
                     'x_stage_mode': x_stage_mode == 1,
                     'figure8_mode': figure8_mode == 1,
                     'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1
+                    'hourglass_mode': hourglass_mode == 1,
+                    'tornado_mode': False
                 }
                 print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, figure8={figure8_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}")
             elif len(data) >= 7 and not self.is_host:
@@ -972,7 +988,8 @@ class NetworkManager:
                     'x_stage_mode': x_stage_mode == 1,
                     'figure8_mode': figure8_mode == 1,
                     'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': False
+                    'hourglass_mode': False,
+                    'tornado_mode': False
                 }
                 print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, figure8={figure8_mode}, yinyang={yinyang_mode}")
             elif len(data) >= 6 and not self.is_host:
@@ -985,7 +1002,8 @@ class NetworkManager:
                     'x_stage_mode': x_stage_mode == 1,
                     'figure8_mode': figure8_mode == 1,
                     'yinyang_mode': False,
-                    'hourglass_mode': False
+                    'hourglass_mode': False,
+                    'tornado_mode': False
                 }
                 print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, figure8={figure8_mode}")
             elif len(data) >= 5 and not self.is_host:
@@ -998,7 +1016,8 @@ class NetworkManager:
                     'x_stage_mode': x_stage_mode == 1,
                     'figure8_mode': False,
                     'yinyang_mode': False,
-                    'hourglass_mode': False
+                    'hourglass_mode': False,
+                    'tornado_mode': False
                 }
                 print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}")
             elif len(data) >= 4 and not self.is_host:
@@ -1011,7 +1030,8 @@ class NetworkManager:
                     'x_stage_mode': False,
                     'figure8_mode': False,
                     'yinyang_mode': False,
-                    'hourglass_mode': False
+                    'hourglass_mode': False,
+                    'tornado_mode': False
                 }
                 print(f"[Network] Received game options (legacy): referee={referee_enabled}, ball={ball_active}, donut={donut_mode}")
 
