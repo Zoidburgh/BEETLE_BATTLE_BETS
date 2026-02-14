@@ -1037,6 +1037,15 @@ COLLISION_NORMAL_SMOOTHING = 0.3  # 30% blend per frame (0-1, higher = faster re
 BODY_ROTATION_DAMPING_STRENGTH = 0.95  # 95% damping (5% speed) when rotating into spin direction
 BODY_ROTATION_DAMPING_DECAY = 2.0      # Decay rate per second (~0.5s duration at full strength)
 
+# Spawn downwash effect (dust + push when beetle drops onto arena)
+DOWNWASH_PUSH_FORCE = 8.0         # Gentle nudge on enemy
+DOWNWASH_TIP_STRENGTH = 15.0      # Torque to tip enemy's near side
+DOWNWASH_RADIUS = 16.0            # Push/tip effect radius
+DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
+DOWNWASH_DUST_COUNT = 8           # Particles per burst (overlapping = continuous look)
+DOWNWASH_LANDING_DUST_COUNT = 28  # Big satisfying burst on impact
+DOWNWASH_FADE_TIME = 0.4          # Post-landing push fade
+
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
 
@@ -1405,6 +1414,8 @@ def reset_match():
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
     global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, square_bridge_mode
+    global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
+    global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1484,6 +1495,20 @@ def reset_match():
 
     # Reset spray existence flag (CPU optimization)
     spray_might_exist = False
+
+    # Reset downwash state
+    blue_downwash_active = False
+    blue_downwash_strength = 0.0
+    blue_downwash_x = 0.0
+    blue_downwash_z = 0.0
+    blue_downwash_dust_timer = 0.0
+    blue_downwash_fade_timer = 0.0
+    red_downwash_active = False
+    red_downwash_strength = 0.0
+    red_downwash_x = 0.0
+    red_downwash_z = 0.0
+    red_downwash_dust_timer = 0.0
+    red_downwash_fade_timer = 0.0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2325,6 +2350,20 @@ BASE_DIGIT_SCALE = 2.0  # Base size multiplier for score digits (1.0 = 5x7 voxel
 blue_respawn_timer = 0.0  # Timer for blue beetle respawn
 red_respawn_timer = 0.0   # Timer for red beetle respawn
 BEETLE_RESPAWN_DELAY = 4.0  # Same timing as ball celebration
+
+# Spawn downwash state (dust stream + push during beetle drop)
+blue_downwash_active = False
+blue_downwash_strength = 0.0
+blue_downwash_x = 0.0
+blue_downwash_z = 0.0
+blue_downwash_dust_timer = 0.0
+blue_downwash_fade_timer = 0.0
+red_downwash_active = False
+red_downwash_strength = 0.0
+red_downwash_x = 0.0
+red_downwash_z = 0.0
+red_downwash_dust_timer = 0.0
+red_downwash_fade_timer = 0.0
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -9514,6 +9553,71 @@ def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             simulation.debris_lifetime[idx] = 1.0 + ti.random() * 0.1  # 1.0-1.1s consistent trail
 
 @ti.kernel
+def spawn_downwash_dust(pos_x: ti.f32, pos_z: ti.f32, strength: ti.f32):
+    """Spawn continuous dust stream at beetle's ground projection during descent.
+    Strength 0-1 scales radius and speed (lazy when high, energetic near ground)."""
+    color_r = 0.50
+    color_g = 0.44
+    color_b = 0.38
+    floor_y = 33.5  # RENDER_Y_OFFSET + 0.5 (arena surface)
+    max_radius = 2.0 + strength * 6.0  # Grows as beetle descends
+    base_speed = 1.0 + strength * 4.0  # Faster near ground
+
+    for i in range(8):  # DOWNWASH_DUST_COUNT
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            # Random angle and radius (fills area, not a discrete ring)
+            angle = ti.random() * 2.0 * 3.14159
+            radius = 1.0 + ti.random() * (max_radius - 1.0)
+            spawn_x = pos_x + ti.cos(angle) * radius
+            spawn_z = pos_z + ti.sin(angle) * radius
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, floor_y, spawn_z)
+            # Outward radial velocity + slight upward puff
+            particle_speed = base_speed * (0.7 + ti.random() * 0.6)
+            vx = ti.cos(angle) * particle_speed
+            vz = ti.sin(angle) * particle_speed
+            vy = particle_speed * 0.3 * (0.6 + ti.random() * 0.8)
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Brownish-gray with slight variation
+            color_var = 0.85 + ti.random() * 0.3
+            simulation.debris_material[idx] = ti.math.vec3(
+                color_r * color_var, color_g * color_var, color_b * color_var)
+            simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
+
+@ti.kernel
+def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
+    """Satisfying dust burst on beetle landing impact."""
+    color_r = 0.50
+    color_g = 0.44
+    color_b = 0.38
+    floor_y = 33.5  # RENDER_Y_OFFSET + 0.5
+
+    for i in range(28):  # DOWNWASH_LANDING_DUST_COUNT
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            angle = ti.random() * 2.0 * 3.14159
+            # Tight cluster near center
+            radius = ti.random() * 3.0
+            spawn_x = pos_x + ti.cos(angle) * radius
+            spawn_z = pos_z + ti.sin(angle) * radius
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, floor_y, spawn_z)
+            # Fast outward + stronger upward kick
+            particle_speed = 4.0 + ti.random() * 3.0
+            vx = ti.cos(angle) * particle_speed
+            vz = ti.sin(angle) * particle_speed
+            vy = particle_speed * 0.5 * (0.7 + ti.random() * 0.6)
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            color_var = 0.85 + ti.random() * 0.3
+            simulation.debris_material[idx] = ti.math.vec3(
+                color_r * color_var, color_g * color_var, color_b * color_var)
+            # Slightly longer lifetime so it lingers
+            simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.4
+
+@ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                            impact_speed: ti.f32, ball_radius: ti.f32):
     """Spawn radial dust ring when ball bounces - more particles for harder impacts"""
@@ -9660,29 +9764,20 @@ def update_pending_arena_switch(dt):
 
         if mode_name == 'normal':
             simulation.init_beetle_arena()
-            build_floor_height_cache()
         elif mode_name == 'donut':
             simulation.init_donut_arena()
-            build_floor_height_cache()
         elif mode_name == 'x_stage':
             simulation.init_x_stage_arena()
-            build_floor_height_cache()
         elif mode_name == 'figure8':
             simulation.init_figure8_arena()
-            build_floor_height_cache()
         elif mode_name == 'yinyang':
             simulation.init_yinyang_arena()
-            build_floor_height_cache()
         elif mode_name == 'hourglass':
             simulation.init_hourglass_arena()
-            build_floor_height_cache()
         elif mode_name == 'square_bridge':
             simulation.init_square_bridge_arena()
-            build_floor_height_cache()
         elif mode_name == 'ball':
             simulation.init_beetle_arena()
-            simulation.render_bowl_perimeter()
-            build_floor_height_cache()
         elif mode_name == 'ball_off':
             # Restore appropriate arena when ball mode turns off
             if donut_mode:
@@ -9699,7 +9794,11 @@ def update_pending_arena_switch(dt):
                 simulation.init_square_bridge_arena()
             else:
                 simulation.init_beetle_arena()
-            build_floor_height_cache()
+
+        # Re-render bowl perimeter if ball is active (arena rebuild wipes it)
+        if beetle_ball.active:
+            simulation.render_bowl_perimeter()
+        build_floor_height_cache()
     else:
         # Still waiting
         pending_arena_switch = (mode_name, delay_remaining)
@@ -13739,10 +13838,23 @@ try:
             beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
 
             # Sync beetle Y positions (prevents death desync near edges/pits)
+            # After lerping Y, clamp to floor so beetle never gets stuck under arena
             if 'blue_y' in sync:
                 beetle_blue.y += (sync['blue_y'] - beetle_blue.y) * lerp_factor
+                if beetle_blue.active and not beetle_blue.is_falling:
+                    floor_y = check_floor_collision(beetle_blue.x, beetle_blue.z)
+                    if floor_y > -100.0:
+                        floor_surface = floor_y + 0.5
+                        if beetle_blue.y < floor_surface:
+                            beetle_blue.y = floor_surface
             if 'red_y' in sync:
                 beetle_red.y += (sync['red_y'] - beetle_red.y) * lerp_factor
+                if beetle_red.active and not beetle_red.is_falling:
+                    floor_y = check_floor_collision(beetle_red.x, beetle_red.z)
+                    if floor_y > -100.0:
+                        floor_surface = floor_y + 0.5
+                        if beetle_red.y < floor_surface:
+                            beetle_red.y = floor_surface
 
             # Rotation lerp with angle wrapping (shortest path)
             # This prevents beetles from spinning the wrong way when angles wrap around 0/2π
@@ -15063,7 +15175,9 @@ try:
                         g['ball_explosion_timer'] = 0.0
                         g['blue_score'] = 0
                         g['red_score'] = 0
-                        queue_arena_switch('ball')
+                        # Immediately render bowl — don't queue, avoids overwrite by arena switches
+                        simulation.render_bowl_perimeter()
+                        build_floor_height_cache()
                     else:
                         # Disabling ball - clear voxels immediately
                         if ball_last_rendered[None] == 1:
@@ -15074,9 +15188,9 @@ try:
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
+                        build_floor_height_cache()
                         g['blue_score'] = 0
                         g['red_score'] = 0
-                        queue_arena_switch('ball_off')
                     print(f"Ball mode: {opts['ball_active']} (from host)")
 
                 # Apply donut mode state
@@ -15498,6 +15612,13 @@ try:
                     red_celebrating = False
                     red_pulse_timer = 0.0
                     red_confetti_timer = 0.0
+                    # Activate downwash effect (beetle dropping from y=15)
+                    blue_downwash_active = True
+                    blue_downwash_strength = 0.0
+                    blue_downwash_x = spawn_x
+                    blue_downwash_z = spawn_z
+                    blue_downwash_dust_timer = 0.0
+                    blue_downwash_fade_timer = 0.0
                     print("Blue beetle respawned!")
 
         # Blue beetle hover phase (flying to spawn point with goofy spinning)
@@ -15551,6 +15672,13 @@ try:
                 red_celebrating = False
                 red_pulse_timer = 0.0
                 red_confetti_timer = 0.0
+                # Activate downwash effect (beetle dropping from y=15)
+                blue_downwash_active = True
+                blue_downwash_strength = 0.0
+                blue_downwash_x = blue_hover_target_x
+                blue_downwash_z = blue_hover_target_z
+                blue_downwash_dust_timer = 0.0
+                blue_downwash_fade_timer = 0.0
                 print("Blue beetle respawned!")
 
         # Red beetle respawn with assembly animation
@@ -15628,6 +15756,13 @@ try:
                     blue_celebrating = False
                     blue_pulse_timer = 0.0
                     blue_confetti_timer = 0.0
+                    # Activate downwash effect (beetle dropping from y=15)
+                    red_downwash_active = True
+                    red_downwash_strength = 0.0
+                    red_downwash_x = spawn_x
+                    red_downwash_z = spawn_z
+                    red_downwash_dust_timer = 0.0
+                    red_downwash_fade_timer = 0.0
                     print("Red beetle respawned!")
 
         # Red beetle hover phase (flying to spawn point with goofy spinning)
@@ -15681,11 +15816,127 @@ try:
                 blue_celebrating = False
                 blue_pulse_timer = 0.0
                 blue_confetti_timer = 0.0
+                # Activate downwash effect (beetle dropping from y=15)
+                red_downwash_active = True
+                red_downwash_strength = 0.0
+                red_downwash_x = red_hover_target_x
+                red_downwash_z = red_hover_target_z
+                red_downwash_dust_timer = 0.0
+                red_downwash_fade_timer = 0.0
                 print("Red beetle respawned!")
 
         # === RESPAWN TIMERS TIMING END ===
         _t_respawn_end = time.perf_counter()
         _physics_timing['respawn_timers'] += (_t_respawn_end - _t_death_end) * 1000
+
+        # === SPAWN DOWNWASH EFFECTS (dust stream + push/tip during beetle drop) ===
+        # Blue downwash
+        if blue_downwash_active:
+            if blue_downwash_fade_timer > 0:
+                # Post-landing fade: ramp down push strength then deactivate
+                blue_downwash_fade_timer -= PHYSICS_TIMESTEP
+                if blue_downwash_fade_timer <= 0:
+                    blue_downwash_active = False
+                else:
+                    fade_strength = blue_downwash_fade_timer / DOWNWASH_FADE_TIME
+                    # Push/tip enemy during fade
+                    dx_r = beetle_red.x - blue_downwash_x
+                    dz_r = beetle_red.z - blue_downwash_z
+                    dist_r = math.sqrt(dx_r * dx_r + dz_r * dz_r)
+                    if beetle_red.active and not beetle_red.is_falling and dist_r < DOWNWASH_RADIUS and dist_r > 0.1:
+                        falloff = 1.0 - dist_r / DOWNWASH_RADIUS
+                        push_mag = DOWNWASH_PUSH_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
+                        beetle_red.vx += (dx_r / dist_r) * push_mag
+                        beetle_red.vz += (dz_r / dist_r) * push_mag
+                        # Tipping torque: lift the side facing spawn point
+                        tip_mag = DOWNWASH_TIP_STRENGTH * fade_strength * falloff * PHYSICS_TIMESTEP
+                        cos_r = math.cos(beetle_red.rotation)
+                        sin_r = math.sin(beetle_red.rotation)
+                        local_x = dx_r * cos_r + dz_r * sin_r
+                        local_z = -dx_r * sin_r + dz_r * cos_r
+                        beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
+                        beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
+            elif beetle_blue.active and not beetle_blue.on_ground:
+                # Beetle still airborne — stream dust and apply push
+                blue_downwash_x = beetle_blue.x
+                blue_downwash_z = beetle_blue.z
+                # Strength from height: 0 at y=15, 1 at y=0.5
+                blue_downwash_strength = max(0.0, min(1.0, 1.0 - (beetle_blue.y - 0.5) / 14.5))
+                # Spawn dust at interval
+                blue_downwash_dust_timer += PHYSICS_TIMESTEP
+                if blue_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
+                    blue_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
+                    spawn_downwash_dust(blue_downwash_x, blue_downwash_z, blue_downwash_strength)
+                # Push/tip enemy if nearby
+                dx_r = beetle_red.x - blue_downwash_x
+                dz_r = beetle_red.z - blue_downwash_z
+                dist_r = math.sqrt(dx_r * dx_r + dz_r * dz_r)
+                if beetle_red.active and not beetle_red.is_falling and dist_r < DOWNWASH_RADIUS and dist_r > 0.1:
+                    falloff = 1.0 - dist_r / DOWNWASH_RADIUS
+                    push_mag = DOWNWASH_PUSH_FORCE * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
+                    beetle_red.vx += (dx_r / dist_r) * push_mag
+                    beetle_red.vz += (dz_r / dist_r) * push_mag
+                    tip_mag = DOWNWASH_TIP_STRENGTH * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
+                    cos_r = math.cos(beetle_red.rotation)
+                    sin_r = math.sin(beetle_red.rotation)
+                    local_x = dx_r * cos_r + dz_r * sin_r
+                    local_z = -dx_r * sin_r + dz_r * cos_r
+                    beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
+                    beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
+            else:
+                # Beetle just landed — fire landing burst and start fade
+                spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
+                blue_downwash_fade_timer = DOWNWASH_FADE_TIME
+
+        # Red downwash
+        if red_downwash_active:
+            if red_downwash_fade_timer > 0:
+                red_downwash_fade_timer -= PHYSICS_TIMESTEP
+                if red_downwash_fade_timer <= 0:
+                    red_downwash_active = False
+                else:
+                    fade_strength = red_downwash_fade_timer / DOWNWASH_FADE_TIME
+                    dx_b = beetle_blue.x - red_downwash_x
+                    dz_b = beetle_blue.z - red_downwash_z
+                    dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
+                    if beetle_blue.active and not beetle_blue.is_falling and dist_b < DOWNWASH_RADIUS and dist_b > 0.1:
+                        falloff = 1.0 - dist_b / DOWNWASH_RADIUS
+                        push_mag = DOWNWASH_PUSH_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
+                        beetle_blue.vx += (dx_b / dist_b) * push_mag
+                        beetle_blue.vz += (dz_b / dist_b) * push_mag
+                        tip_mag = DOWNWASH_TIP_STRENGTH * fade_strength * falloff * PHYSICS_TIMESTEP
+                        cos_b = math.cos(beetle_blue.rotation)
+                        sin_b = math.sin(beetle_blue.rotation)
+                        local_x = dx_b * cos_b + dz_b * sin_b
+                        local_z = -dx_b * sin_b + dz_b * cos_b
+                        beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
+                        beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
+            elif beetle_red.active and not beetle_red.on_ground:
+                red_downwash_x = beetle_red.x
+                red_downwash_z = beetle_red.z
+                red_downwash_strength = max(0.0, min(1.0, 1.0 - (beetle_red.y - 0.5) / 14.5))
+                red_downwash_dust_timer += PHYSICS_TIMESTEP
+                if red_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
+                    red_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
+                    spawn_downwash_dust(red_downwash_x, red_downwash_z, red_downwash_strength)
+                dx_b = beetle_blue.x - red_downwash_x
+                dz_b = beetle_blue.z - red_downwash_z
+                dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
+                if beetle_blue.active and not beetle_blue.is_falling and dist_b < DOWNWASH_RADIUS and dist_b > 0.1:
+                    falloff = 1.0 - dist_b / DOWNWASH_RADIUS
+                    push_mag = DOWNWASH_PUSH_FORCE * red_downwash_strength * falloff * PHYSICS_TIMESTEP
+                    beetle_blue.vx += (dx_b / dist_b) * push_mag
+                    beetle_blue.vz += (dz_b / dist_b) * push_mag
+                    tip_mag = DOWNWASH_TIP_STRENGTH * red_downwash_strength * falloff * PHYSICS_TIMESTEP
+                    cos_b = math.cos(beetle_blue.rotation)
+                    sin_b = math.sin(beetle_blue.rotation)
+                    local_x = dx_b * cos_b + dz_b * sin_b
+                    local_z = -dx_b * sin_b + dz_b * cos_b
+                    beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
+                    beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
+            else:
+                spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
+                red_downwash_fade_timer = DOWNWASH_FADE_TIME
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
@@ -17994,6 +18245,9 @@ try:
 
         if window.GUI.button(theme_label("STARS", simulation.THEME_STARS)):
             simulation.toggle_theme(simulation.THEME_STARS)
+
+        if window.GUI.button(theme_label("COMET", simulation.THEME_COMET)):
+            simulation.toggle_theme(simulation.THEME_COMET)
 
         if window.GUI.button(theme_label("FIREFLY", simulation.THEME_FIREFLIES)):
             simulation.toggle_theme(simulation.THEME_FIREFLIES)
