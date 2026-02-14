@@ -15869,13 +15869,15 @@ try:
                 # Beetle still airborne — stream dust and apply push
                 blue_downwash_x = beetle_blue.x
                 blue_downwash_z = beetle_blue.z
-                # Strength from height: 0 at y=15, 1 at y=0.5
-                blue_downwash_strength = max(DOWNWASH_MIN_STRENGTH, min(1.0, 1.0 - (beetle_blue.y - 0.5) / 14.5))
-                # Spawn dust at interval
+                # Visual strength: raw 0-1 from height (starts small, grows)
+                visual_strength = max(0.0, min(1.0, 1.0 - (beetle_blue.y - 0.5) / 14.5))
+                # Physics strength: floored for push/tip/lift
+                blue_downwash_strength = max(DOWNWASH_MIN_STRENGTH, visual_strength)
+                # Spawn dust at interval (uses visual strength so it starts concentrated)
                 blue_downwash_dust_timer += PHYSICS_TIMESTEP
                 if blue_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
                     blue_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
-                    spawn_downwash_dust(blue_downwash_x, blue_downwash_z, blue_downwash_strength)
+                    spawn_downwash_dust(blue_downwash_x, blue_downwash_z, visual_strength)
                 # Push/tip enemy if nearby
                 dx_r = beetle_red.x - blue_downwash_x
                 dz_r = beetle_red.z - blue_downwash_z
@@ -15929,11 +15931,12 @@ try:
             elif beetle_red.active and not beetle_red.on_ground:
                 red_downwash_x = beetle_red.x
                 red_downwash_z = beetle_red.z
-                red_downwash_strength = max(DOWNWASH_MIN_STRENGTH, min(1.0, 1.0 - (beetle_red.y - 0.5) / 14.5))
+                visual_strength = max(0.0, min(1.0, 1.0 - (beetle_red.y - 0.5) / 14.5))
+                red_downwash_strength = max(DOWNWASH_MIN_STRENGTH, visual_strength)
                 red_downwash_dust_timer += PHYSICS_TIMESTEP
                 if red_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
                     red_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
-                    spawn_downwash_dust(red_downwash_x, red_downwash_z, red_downwash_strength)
+                    spawn_downwash_dust(red_downwash_x, red_downwash_z, visual_strength)
                 dx_b = beetle_blue.x - red_downwash_x
                 dz_b = beetle_blue.z - red_downwash_z
                 dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
