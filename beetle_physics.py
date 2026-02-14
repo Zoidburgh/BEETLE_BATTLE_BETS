@@ -15619,8 +15619,9 @@ try:
                     blue_downwash_strength = 0.0
                     blue_downwash_x = spawn_x
                     blue_downwash_z = spawn_z
-                    blue_downwash_dust_timer = 0.0
+                    blue_downwash_dust_timer = DOWNWASH_DUST_INTERVAL  # Fire immediately on first tick
                     blue_downwash_fade_timer = 0.0
+                    spawn_downwash_dust(spawn_x, spawn_z, 0.15)  # Immediate small burst
                     print("Blue beetle respawned!")
 
         # Blue beetle hover phase (flying to spawn point with goofy spinning)
@@ -15679,8 +15680,9 @@ try:
                 blue_downwash_strength = 0.0
                 blue_downwash_x = blue_hover_target_x
                 blue_downwash_z = blue_hover_target_z
-                blue_downwash_dust_timer = 0.0
+                blue_downwash_dust_timer = DOWNWASH_DUST_INTERVAL
                 blue_downwash_fade_timer = 0.0
+                spawn_downwash_dust(blue_hover_target_x, blue_hover_target_z, 0.15)
                 print("Blue beetle respawned!")
 
         # Red beetle respawn with assembly animation
@@ -15763,8 +15765,9 @@ try:
                     red_downwash_strength = 0.0
                     red_downwash_x = spawn_x
                     red_downwash_z = spawn_z
-                    red_downwash_dust_timer = 0.0
+                    red_downwash_dust_timer = DOWNWASH_DUST_INTERVAL
                     red_downwash_fade_timer = 0.0
+                    spawn_downwash_dust(spawn_x, spawn_z, 0.15)
                     print("Red beetle respawned!")
 
         # Red beetle hover phase (flying to spawn point with goofy spinning)
@@ -15823,8 +15826,9 @@ try:
                 red_downwash_strength = 0.0
                 red_downwash_x = red_hover_target_x
                 red_downwash_z = red_hover_target_z
-                red_downwash_dust_timer = 0.0
+                red_downwash_dust_timer = DOWNWASH_DUST_INTERVAL
                 red_downwash_fade_timer = 0.0
+                spawn_downwash_dust(red_hover_target_x, red_hover_target_z, 0.15)
                 print("Red beetle respawned!")
 
         # === RESPAWN TIMERS TIMING END ===
