@@ -6719,7 +6719,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         if is_lifted_high == 1:
             # High-frequency wiggle with per-leg variation for chaos
             # Slower wiggle when rotating only (to prevent excessive speed appearance)
-            wiggle_freq = 1.05 if is_rotating_only == 1 else 2.0
+            wiggle_freq = 1.05 if is_rotating_only == 1 else 1.6
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
             # OPTIMIZATION: Pre-calculate wiggle trig
@@ -7265,7 +7265,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         if is_lifted_high == 1:
             # High-frequency wiggle with per-leg variation for chaos
             # Slower wiggle when rotating only (to prevent excessive speed appearance)
-            wiggle_freq = 1.05 if is_rotating_only == 1 else 2.0
+            wiggle_freq = 1.05 if is_rotating_only == 1 else 1.6
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
             # OPTIMIZATION: Pre-calculate wiggle trig
