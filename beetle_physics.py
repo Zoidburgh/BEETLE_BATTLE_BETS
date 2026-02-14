@@ -16100,26 +16100,20 @@ try:
                     dx_t = beetle.x - tornado_x
                     dz_t = beetle.z - tornado_z
                     dist_t = math.sqrt(dx_t * dx_t + dz_t * dz_t)
-                    # Also check horn tip
+                    # Also check horn tip — use for range detection only
                     htx, hty, htz = calculate_horn_tip_position(beetle)
                     dx_h = htx - tornado_x
                     dz_h = htz - tornado_z
                     dist_h = math.sqrt(dx_h * dx_h + dz_h * dz_h)
-                    # Use whichever is closer (stronger effect)
-                    if dist_h < dist_t:
-                        use_dist = dist_h
-                        use_dx = dx_h
-                        use_dz = dz_h
-                    else:
-                        use_dist = dist_t
-                        use_dx = dx_t
-                        use_dz = dz_t
-                    if use_dist < TORNADO_RADIUS and use_dist > 0.1:
-                        falloff = 1.0 - use_dist / TORNADO_RADIUS
+                    # Closest point determines if in range, but forces always from body center
+                    closest_dist = min(dist_t, dist_h)
+                    if closest_dist < TORNADO_RADIUS and dist_t > 0.1:
+                        falloff = 1.0 - closest_dist / TORNADO_RADIUS
+                        # Always use body->tornado direction for natural forces
+                        dir_x = dx_t / dist_t
+                        dir_z = dz_t / dist_t
                         # Outward push
                         push_mag = TORNADO_PUSH_FORCE * falloff * PHYSICS_TIMESTEP
-                        dir_x = use_dx / use_dist
-                        dir_z = use_dz / use_dist
                         beetle.vx += dir_x * push_mag
                         beetle.vz += dir_z * push_mag
                         # Tangential swirl (CCW around tornado center)
