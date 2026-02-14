@@ -16093,18 +16093,33 @@ try:
                 tornado_dust_timer -= TORNADO_DUST_INTERVAL
                 spawn_tornado_dust(tornado_x, tornado_z, tornado_time)
 
-            # Apply push/lift/tip to both beetles
+            # Apply push/lift/tip to both beetles (body OR horn tip in range)
             for beetle in (beetle_blue, beetle_red):
                 if beetle.active and not beetle.is_falling:
+                    # Check body center
                     dx_t = beetle.x - tornado_x
                     dz_t = beetle.z - tornado_z
                     dist_t = math.sqrt(dx_t * dx_t + dz_t * dz_t)
-                    if dist_t < TORNADO_RADIUS and dist_t > 0.1:
-                        falloff = 1.0 - dist_t / TORNADO_RADIUS
+                    # Also check horn tip
+                    htx, hty, htz = calculate_horn_tip_position(beetle)
+                    dx_h = htx - tornado_x
+                    dz_h = htz - tornado_z
+                    dist_h = math.sqrt(dx_h * dx_h + dz_h * dz_h)
+                    # Use whichever is closer (stronger effect)
+                    if dist_h < dist_t:
+                        use_dist = dist_h
+                        use_dx = dx_h
+                        use_dz = dz_h
+                    else:
+                        use_dist = dist_t
+                        use_dx = dx_t
+                        use_dz = dz_t
+                    if use_dist < TORNADO_RADIUS and use_dist > 0.1:
+                        falloff = 1.0 - use_dist / TORNADO_RADIUS
                         # Outward push
                         push_mag = TORNADO_PUSH_FORCE * falloff * PHYSICS_TIMESTEP
-                        dir_x = dx_t / dist_t
-                        dir_z = dz_t / dist_t
+                        dir_x = use_dx / use_dist
+                        dir_z = use_dz / use_dist
                         beetle.vx += dir_x * push_mag
                         beetle.vz += dir_z * push_mag
                         # Tangential swirl (CCW around tornado center)
@@ -16123,9 +16138,6 @@ try:
                         local_z = -dir_x * sin_r + dir_z * cos_r
                         beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
                         beetle.pitch_velocity += local_z * tip_mag / max(beetle.pitch_inertia, 0.1)
-                        # Horn buffeting — directly move horn pitch/yaw (velocity gets overwritten by input)
-                        beetle.horn_pitch += 25.0 * falloff * PHYSICS_TIMESTEP * (0.5 - local_z)
-                        beetle.horn_yaw += 30.0 * falloff * PHYSICS_TIMESTEP * local_x
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
