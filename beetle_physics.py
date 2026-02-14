@@ -1045,7 +1045,7 @@ DOWNWASH_MIN_STRENGTH = 0.7       # Minimum strength so push hits hard from the 
 DOWNWASH_RADIUS = 20.0            # Push/tip effect radius
 DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
 DOWNWASH_DUST_COUNT = 27          # Particles per burst (overlapping = continuous look)
-DOWNWASH_LANDING_DUST_COUNT = 100 # Explosive burst on impact
+DOWNWASH_LANDING_DUST_COUNT = 200 # Big explosive burst on impact
 DOWNWASH_FADE_TIME = 0.4          # Post-landing push fade
 
 # Rendering offset - allows beetles to be visible while falling below arena
@@ -9600,7 +9600,7 @@ def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
     color_b = 0.38
     floor_y = 33.5  # RENDER_Y_OFFSET + 0.5
 
-    for i in range(100):  # DOWNWASH_LANDING_DUST_COUNT
+    for i in range(200):  # DOWNWASH_LANDING_DUST_COUNT
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1
@@ -15686,6 +15686,7 @@ try:
                 blue_downwash_z = blue_hover_target_z
                 blue_downwash_dust_timer = 0.0
                 blue_downwash_fade_timer = 0.0
+                blue_downwash_burst_fired = False
                 print("Blue beetle respawned!")
 
         # Red beetle respawn with assembly animation
@@ -15831,6 +15832,7 @@ try:
                 red_downwash_z = red_hover_target_z
                 red_downwash_dust_timer = 0.0
                 red_downwash_fade_timer = 0.0
+                red_downwash_burst_fired = False
                 print("Red beetle respawned!")
 
         # === RESPAWN TIMERS TIMING END ===
