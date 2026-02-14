@@ -1038,8 +1038,9 @@ BODY_ROTATION_DAMPING_STRENGTH = 0.95  # 95% damping (5% speed) when rotating in
 BODY_ROTATION_DAMPING_DECAY = 2.0      # Decay rate per second (~0.5s duration at full strength)
 
 # Spawn downwash effect (dust + push when beetle drops onto arena)
-DOWNWASH_PUSH_FORCE = 14.0        # Stronger nudge on enemy
-DOWNWASH_TIP_STRENGTH = 50.0      # Torque to tip enemy's near side
+DOWNWASH_PUSH_FORCE = 28.0        # Strong nudge on enemy
+DOWNWASH_TIP_STRENGTH = 100.0     # Torque to tip enemy's near side
+DOWNWASH_MIN_STRENGTH = 0.3       # Minimum strength so push kicks in immediately
 DOWNWASH_RADIUS = 20.0            # Push/tip effect radius
 DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
 DOWNWASH_DUST_COUNT = 27          # Particles per burst (overlapping = continuous look)
@@ -15866,7 +15867,7 @@ try:
                 blue_downwash_x = beetle_blue.x
                 blue_downwash_z = beetle_blue.z
                 # Strength from height: 0 at y=15, 1 at y=0.5
-                blue_downwash_strength = max(0.0, min(1.0, 1.0 - (beetle_blue.y - 0.5) / 14.5))
+                blue_downwash_strength = max(DOWNWASH_MIN_STRENGTH, min(1.0, 1.0 - (beetle_blue.y - 0.5) / 14.5))
                 # Spawn dust at interval
                 blue_downwash_dust_timer += PHYSICS_TIMESTEP
                 if blue_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
@@ -15923,7 +15924,7 @@ try:
             elif beetle_red.active and not beetle_red.on_ground:
                 red_downwash_x = beetle_red.x
                 red_downwash_z = beetle_red.z
-                red_downwash_strength = max(0.0, min(1.0, 1.0 - (beetle_red.y - 0.5) / 14.5))
+                red_downwash_strength = max(DOWNWASH_MIN_STRENGTH, min(1.0, 1.0 - (beetle_red.y - 0.5) / 14.5))
                 red_downwash_dust_timer += PHYSICS_TIMESTEP
                 if red_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
                     red_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
