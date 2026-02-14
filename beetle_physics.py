@@ -16134,11 +16134,11 @@ try:
                         if dist_h < TORNADO_RADIUS:
                             h_falloff = 1.0 - dist_h / TORNADO_RADIUS
                             # Pull body TOWARD tornado (negative = inward)
-                            pull_mag = 80.0 * h_falloff * PHYSICS_TIMESTEP
+                            pull_mag = 300.0 * h_falloff * PHYSICS_TIMESTEP
                             beetle.vx -= (dx_t / dist_t) * pull_mag
                             beetle.vz -= (dz_t / dist_t) * pull_mag
                             # Yaw torque — wind on horn twists the beetle
-                            beetle.rotation += 8.0 * h_falloff * PHYSICS_TIMESTEP
+                            beetle.rotation += 15.0 * h_falloff * PHYSICS_TIMESTEP
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
