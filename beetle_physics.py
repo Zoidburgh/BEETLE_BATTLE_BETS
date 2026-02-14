@@ -1416,8 +1416,8 @@ def reset_match():
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
     global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, square_bridge_mode
-    global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
-    global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
+    global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer, blue_downwash_burst_fired
+    global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer, red_downwash_burst_fired
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1505,12 +1505,14 @@ def reset_match():
     blue_downwash_z = 0.0
     blue_downwash_dust_timer = 0.0
     blue_downwash_fade_timer = 0.0
+    blue_downwash_burst_fired = False
     red_downwash_active = False
     red_downwash_strength = 0.0
     red_downwash_x = 0.0
     red_downwash_z = 0.0
     red_downwash_dust_timer = 0.0
     red_downwash_fade_timer = 0.0
+    red_downwash_burst_fired = False
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2360,12 +2362,14 @@ blue_downwash_x = 0.0
 blue_downwash_z = 0.0
 blue_downwash_dust_timer = 0.0
 blue_downwash_fade_timer = 0.0
+blue_downwash_burst_fired = False
 red_downwash_active = False
 red_downwash_strength = 0.0
 red_downwash_x = 0.0
 red_downwash_z = 0.0
 red_downwash_dust_timer = 0.0
 red_downwash_fade_timer = 0.0
+red_downwash_burst_fired = False
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -15621,6 +15625,7 @@ try:
                     blue_downwash_z = spawn_z
                     blue_downwash_dust_timer = 0.0
                     blue_downwash_fade_timer = 0.0
+                    blue_downwash_burst_fired = False
                     print("Blue beetle respawned!")
 
         # Blue beetle hover phase (flying to spawn point with goofy spinning)
@@ -15765,6 +15770,7 @@ try:
                     red_downwash_z = spawn_z
                     red_downwash_dust_timer = 0.0
                     red_downwash_fade_timer = 0.0
+                    red_downwash_burst_fired = False
                     print("Red beetle respawned!")
 
         # Red beetle hover phase (flying to spawn point with goofy spinning)
@@ -15895,10 +15901,14 @@ try:
                     local_z = -dir_x * sin_r + dir_z * cos_r
                     beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
                     beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
-            else:
-                # Beetle near ground — fire landing burst and start fade
+            elif not blue_downwash_burst_fired:
+                # Beetle near ground — fire landing burst once and start fade
+                blue_downwash_burst_fired = True
                 spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
                 blue_downwash_fade_timer = DOWNWASH_FADE_TIME
+            else:
+                # Burst already fired, just deactivate
+                blue_downwash_active = False
 
         # Red downwash
         if red_downwash_active:
@@ -15953,9 +15963,12 @@ try:
                     local_z = -dir_x * sin_b + dir_z * cos_b
                     beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
                     beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
-            else:
+            elif not red_downwash_burst_fired:
+                red_downwash_burst_fired = True
                 spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
                 red_downwash_fade_timer = DOWNWASH_FADE_TIME
+            else:
+                red_downwash_active = False
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
