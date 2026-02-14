@@ -9660,12 +9660,12 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
             h_frac = ti.random()
             spawn_y = floor_y + h_frac * height
             # Funnel wall radius: tight base (1.0), wide top (10.0)
-            wall_radius = 1.0 + h_frac * h_frac * 9.0  # Quadratic flare, bigger
-            shell_jitter = wall_radius * 0.25 * (ti.random() - 0.5)  # Thicker shell for fullness
+            wall_radius = 1.0 + h_frac * h_frac * 9.0  # Quadratic flare
+            shell_jitter = wall_radius * 0.1 * (ti.random() - 0.5)  # Thin crisp wall
             radius = wall_radius + shell_jitter
-            # Rotating base angle from time — faster spin
-            base_angle = time_val * 14.0 + h_frac * 6.28 * 4.0  # 4 spiral wraps, faster rotation
-            angle = base_angle + ti.random() * 0.8  # Moderate jitter to fill gaps
+            # Rotating base angle from time — faster spin, no spiral wraps (clean cylinder rings)
+            base_angle = time_val * 14.0
+            angle = base_angle + ti.random() * 6.28  # Full random angle around the ring at each height
             spawn_x = pos_x + ti.cos(angle) * radius
             spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
