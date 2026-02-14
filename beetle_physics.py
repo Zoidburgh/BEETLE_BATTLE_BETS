@@ -9671,12 +9671,12 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
             arm = ti.cast(ti.floor(ti.random() * 3.0), ti.i32)  # Pick arm 0, 1, or 2
             arm_base = ti.cast(arm, ti.f32) * 2.094  # 120° apart (2*pi/3)
             # Each arm twists up the funnel + rotates with time
-            angle = arm_base + time_val * 14.0 + h_frac * 3.0 + (ti.random() - 0.5) * 0.7
+            angle = arm_base + time_val * 21.0 + h_frac * 3.0 + (ti.random() - 0.5) * 0.7
             spawn_x = pos_x + ti.cos(angle) * radius
             spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
             # Velocity: tangential swirl + inward pull to stay on funnel + gentle updraft
-            swirl_speed = 22.0 * (0.4 + h_frac * 0.6)  # Horizontal spin
+            swirl_speed = 33.0 * (0.4 + h_frac * 0.6)  # Horizontal spin
             inward = -6.0 - h_frac * 10.0  # Pull toward center (stronger at top where radius is wider)
             vx = -ti.sin(angle) * swirl_speed + ti.cos(angle) * inward
             vz = ti.cos(angle) * swirl_speed + ti.sin(angle) * inward
