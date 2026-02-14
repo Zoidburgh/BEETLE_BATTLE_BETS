@@ -9607,7 +9607,7 @@ def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
             spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, floor_y, spawn_z)
             # Explosive outward + strong upward kick
-            particle_speed = 18.0 + ti.random() * 14.0
+            particle_speed = 32.0 + ti.random() * 20.0
             vx = ti.cos(angle) * particle_speed
             vz = ti.sin(angle) * particle_speed
             vy = particle_speed * 0.6 * (0.7 + ti.random() * 0.6)
