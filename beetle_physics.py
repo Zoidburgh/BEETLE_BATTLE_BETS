@@ -13202,6 +13202,8 @@ update_loading(1)
 spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 1)
 spawn_ball_explosion_batch(0.0, -100.0, 0.0, 0, 1, 1)
 spawn_ball_bounce_dust(0.0, -100.0, 0.0, 10.0, 4.0)
+spawn_downwash_dust(0.0, -100.0, 0.5)
+spawn_downwash_landing_burst(0.0, -100.0)
 update_loading(2)
 
 # PHASE 3: Debris/particle kernels - render with debris to warm up renderer's debris code paths
