@@ -9615,7 +9615,7 @@ def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
             color_var = 0.85 + ti.random() * 0.3
             simulation.debris_material[idx] = ti.math.vec3(
                 color_r * color_var, color_g * color_var, color_b * color_var)
-            simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
+            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.2
 
 @ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
