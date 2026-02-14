@@ -9700,7 +9700,8 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
                 cg = 0.38 + ti.random() * 0.10
                 cb = 0.35 + ti.random() * 0.10
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
-            simulation.debris_lifetime[idx] = 0.25 + ti.random() * 0.35  # 0.25-0.6s
+            # Shorter lifetime at top (wide part) so particles die before drifting off the funnel
+            simulation.debris_lifetime[idx] = (0.35 + ti.random() * 0.25) * (1.0 - h_frac * 0.6)  # base 0.35-0.6s, top 40% of that
 
 @ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
