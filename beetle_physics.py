@@ -1045,7 +1045,7 @@ DOWNWASH_MIN_STRENGTH = 0.7       # Minimum strength so push hits hard from the 
 DOWNWASH_RADIUS = 20.0            # Push/tip effect radius
 DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
 DOWNWASH_DUST_COUNT = 27          # Particles per burst (overlapping = continuous look)
-DOWNWASH_LANDING_DUST_COUNT = 95  # Big satisfying burst on impact
+DOWNWASH_LANDING_DUST_COUNT = 200 # Big explosive burst on impact
 DOWNWASH_FADE_TIME = 0.4          # Post-landing push fade
 
 # Rendering offset - allows beetles to be visible while falling below arena
@@ -9596,28 +9596,26 @@ def spawn_downwash_landing_burst(pos_x: ti.f32, pos_z: ti.f32):
     color_b = 0.38
     floor_y = 33.5  # RENDER_Y_OFFSET + 0.5
 
-    for i in range(95):  # DOWNWASH_LANDING_DUST_COUNT
+    for i in range(200):  # DOWNWASH_LANDING_DUST_COUNT
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1
             ti.atomic_add(simulation.debris_active_count[None], 1)
             angle = ti.random() * 2.0 * 3.14159
-            # Tight cluster near center (3.4x original)
-            radius = ti.random() * 10.2
+            radius = ti.random() * 12.0
             spawn_x = pos_x + ti.cos(angle) * radius
             spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, floor_y, spawn_z)
-            # Fast outward + stronger upward kick (3.4x original)
-            particle_speed = 13.6 + ti.random() * 10.2
+            # Explosive outward + strong upward kick
+            particle_speed = 18.0 + ti.random() * 14.0
             vx = ti.cos(angle) * particle_speed
             vz = ti.sin(angle) * particle_speed
-            vy = particle_speed * 0.5 * (0.7 + ti.random() * 0.6)
+            vy = particle_speed * 0.6 * (0.7 + ti.random() * 0.6)
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
             color_var = 0.85 + ti.random() * 0.3
             simulation.debris_material[idx] = ti.math.vec3(
                 color_r * color_var, color_g * color_var, color_b * color_var)
-            # Slightly longer lifetime so it lingers
-            simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.4
+            simulation.debris_lifetime[idx] = 0.6 + ti.random() * 0.5
 
 @ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
