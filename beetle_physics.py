@@ -1051,7 +1051,7 @@ DOWNWASH_FADE_TIME = 0.4          # Post-landing push fade
 # Arena tornado hazard
 TORNADO_RADIUS = 16.0             # Push/tip effect radius (covers horn reach)
 TORNADO_PUSH_FORCE = 100.0        # Outward push on beetles
-TORNADO_LIFT_FORCE = 150.0        # Upward pop on beetles
+TORNADO_LIFT_FORCE = 180.0        # Upward pop on beetles
 TORNADO_TIP_STRENGTH = 5000.0     # Torque to tip beetles
 TORNADO_SPIN_FORCE = 120.0        # Tangential swirl push on beetles
 TORNADO_YAW_STRENGTH = 12.0       # Yaw spin (rotation) applied to beetles
