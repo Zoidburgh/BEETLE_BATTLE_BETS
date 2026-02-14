@@ -16093,23 +16093,14 @@ try:
                 tornado_dust_timer -= TORNADO_DUST_INTERVAL
                 spawn_tornado_dust(tornado_x, tornado_z, tornado_time)
 
-            # Apply push/lift/tip to both beetles (body OR horn tip in range)
+            # Apply push/lift/tip to both beetles
             for beetle in (beetle_blue, beetle_red):
                 if beetle.active and not beetle.is_falling:
-                    # Check body center
                     dx_t = beetle.x - tornado_x
                     dz_t = beetle.z - tornado_z
                     dist_t = math.sqrt(dx_t * dx_t + dz_t * dz_t)
-                    # Also check horn tip — use for range detection only
-                    htx, hty, htz = calculate_horn_tip_position(beetle)
-                    dx_h = htx - tornado_x
-                    dz_h = htz - tornado_z
-                    dist_h = math.sqrt(dx_h * dx_h + dz_h * dz_h)
-                    # Closest point determines if in range, but forces always from body center
-                    closest_dist = min(dist_t, dist_h)
-                    if closest_dist < TORNADO_RADIUS and dist_t > 0.1:
-                        falloff = 1.0 - closest_dist / TORNADO_RADIUS
-                        # Always use body->tornado direction for natural forces
+                    if dist_t < TORNADO_RADIUS and dist_t > 0.1:
+                        falloff = 1.0 - dist_t / TORNADO_RADIUS
                         dir_x = dx_t / dist_t
                         dir_z = dz_t / dist_t
                         # Outward push
