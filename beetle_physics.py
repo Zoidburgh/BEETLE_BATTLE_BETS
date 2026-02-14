@@ -1042,7 +1042,7 @@ DOWNWASH_PUSH_FORCE = 135.0       # Outward nudge on enemy
 DOWNWASH_TIP_STRENGTH = 4500.0    # Torque to tip enemy's near side
 DOWNWASH_LIFT_FORCE = 180.0       # Upward pop so enemy leaves ground (lets tip torque work)
 DOWNWASH_MIN_STRENGTH = 0.7       # Minimum strength so push hits hard from the start
-DOWNWASH_RADIUS = 20.0            # Push/tip effect radius
+DOWNWASH_RADIUS = 24.0            # Push/tip effect radius
 DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
 DOWNWASH_DUST_COUNT = 27          # Particles per burst (overlapping = continuous look)
 DOWNWASH_LANDING_DUST_COUNT = 200 # Big explosive burst on impact
