@@ -1052,7 +1052,9 @@ DOWNWASH_FADE_TIME = 0.4          # Post-landing push fade
 TORNADO_RADIUS = 10.0             # Push/tip effect radius around tornado center
 TORNADO_PUSH_FORCE = 100.0        # Outward push on beetles
 TORNADO_LIFT_FORCE = 150.0        # Upward pop on beetles
-TORNADO_TIP_STRENGTH = 3000.0     # Torque to tip beetles
+TORNADO_TIP_STRENGTH = 5000.0     # Torque to tip beetles
+TORNADO_SPIN_FORCE = 120.0        # Tangential swirl push on beetles
+TORNADO_YAW_STRENGTH = 12.0       # Yaw spin (rotation) applied to beetles
 TORNADO_SPIN_SPEED = 8.0          # Visual particle spin (rad/s)
 TORNADO_MOVE_SPEED = 0.15         # Lissajous path speed multiplier
 TORNADO_BOUNDS = 34.0             # Movement boundary radius (inside yin-yang outer 38)
@@ -16101,16 +16103,22 @@ try:
                         falloff = 1.0 - dist_t / TORNADO_RADIUS
                         # Outward push
                         push_mag = TORNADO_PUSH_FORCE * falloff * PHYSICS_TIMESTEP
-                        beetle.vx += (dx_t / dist_t) * push_mag
-                        beetle.vz += (dz_t / dist_t) * push_mag
+                        dir_x = dx_t / dist_t
+                        dir_z = dz_t / dist_t
+                        beetle.vx += dir_x * push_mag
+                        beetle.vz += dir_z * push_mag
+                        # Tangential swirl (CCW around tornado center)
+                        swirl_mag = TORNADO_SPIN_FORCE * falloff * PHYSICS_TIMESTEP
+                        beetle.vx += -dir_z * swirl_mag
+                        beetle.vz += dir_x * swirl_mag
                         # Upward lift
                         beetle.vy += TORNADO_LIFT_FORCE * falloff * PHYSICS_TIMESTEP
+                        # Yaw spin (rotate the beetle itself)
+                        beetle.rotation += TORNADO_YAW_STRENGTH * falloff * PHYSICS_TIMESTEP
                         # Tipping torque (same local-frame pattern as downwash)
                         tip_mag = TORNADO_TIP_STRENGTH * falloff * PHYSICS_TIMESTEP
                         cos_r = math.cos(beetle.rotation)
                         sin_r = math.sin(beetle.rotation)
-                        dir_x = dx_t / dist_t
-                        dir_z = dz_t / dist_t
                         local_x = dir_x * cos_r + dir_z * sin_r
                         local_z = -dir_x * sin_r + dir_z * cos_r
                         beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
