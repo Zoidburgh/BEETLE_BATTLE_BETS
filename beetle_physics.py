@@ -1038,9 +1038,9 @@ BODY_ROTATION_DAMPING_STRENGTH = 0.95  # 95% damping (5% speed) when rotating in
 BODY_ROTATION_DAMPING_DECAY = 2.0      # Decay rate per second (~0.5s duration at full strength)
 
 # Spawn downwash effect (dust + push when beetle drops onto arena)
-DOWNWASH_PUSH_FORCE = 90.0        # Outward nudge on enemy
-DOWNWASH_TIP_STRENGTH = 3000.0    # Torque to tip enemy's near side
-DOWNWASH_LIFT_FORCE = 120.0       # Upward pop so enemy leaves ground (lets tip torque work)
+DOWNWASH_PUSH_FORCE = 135.0       # Outward nudge on enemy
+DOWNWASH_TIP_STRENGTH = 4500.0    # Torque to tip enemy's near side
+DOWNWASH_LIFT_FORCE = 180.0       # Upward pop so enemy leaves ground (lets tip torque work)
 DOWNWASH_MIN_STRENGTH = 0.7       # Minimum strength so push hits hard from the start
 DOWNWASH_RADIUS = 20.0            # Push/tip effect radius
 DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
@@ -1416,8 +1416,8 @@ def reset_match():
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
     global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, square_bridge_mode
-    global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer, blue_downwash_burst_fired
-    global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer, red_downwash_burst_fired
+    global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
+    global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1505,14 +1505,12 @@ def reset_match():
     blue_downwash_z = 0.0
     blue_downwash_dust_timer = 0.0
     blue_downwash_fade_timer = 0.0
-    blue_downwash_burst_fired = False
     red_downwash_active = False
     red_downwash_strength = 0.0
     red_downwash_x = 0.0
     red_downwash_z = 0.0
     red_downwash_dust_timer = 0.0
     red_downwash_fade_timer = 0.0
-    red_downwash_burst_fired = False
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2362,14 +2360,12 @@ blue_downwash_x = 0.0
 blue_downwash_z = 0.0
 blue_downwash_dust_timer = 0.0
 blue_downwash_fade_timer = 0.0
-blue_downwash_burst_fired = False
 red_downwash_active = False
 red_downwash_strength = 0.0
 red_downwash_x = 0.0
 red_downwash_z = 0.0
 red_downwash_dust_timer = 0.0
 red_downwash_fade_timer = 0.0
-red_downwash_burst_fired = False
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -15625,7 +15621,6 @@ try:
                     blue_downwash_z = spawn_z
                     blue_downwash_dust_timer = 0.0
                     blue_downwash_fade_timer = 0.0
-                    blue_downwash_burst_fired = False
                     print("Blue beetle respawned!")
 
         # Blue beetle hover phase (flying to spawn point with goofy spinning)
@@ -15686,7 +15681,6 @@ try:
                 blue_downwash_z = blue_hover_target_z
                 blue_downwash_dust_timer = 0.0
                 blue_downwash_fade_timer = 0.0
-                blue_downwash_burst_fired = False
                 print("Blue beetle respawned!")
 
         # Red beetle respawn with assembly animation
@@ -15771,7 +15765,6 @@ try:
                     red_downwash_z = spawn_z
                     red_downwash_dust_timer = 0.0
                     red_downwash_fade_timer = 0.0
-                    red_downwash_burst_fired = False
                     print("Red beetle respawned!")
 
         # Red beetle hover phase (flying to spawn point with goofy spinning)
@@ -15832,7 +15825,6 @@ try:
                 red_downwash_z = red_hover_target_z
                 red_downwash_dust_timer = 0.0
                 red_downwash_fade_timer = 0.0
-                red_downwash_burst_fired = False
                 print("Red beetle respawned!")
 
         # === RESPAWN TIMERS TIMING END ===
@@ -15871,7 +15863,7 @@ try:
                         local_z = -dir_x * sin_r + dir_z * cos_r
                         beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
                         beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
-            elif beetle_blue.active and beetle_blue.y > 1.5:
+            elif beetle_blue.active and not beetle_blue.on_ground:
                 # Beetle still airborne — stream dust and apply push
                 blue_downwash_x = beetle_blue.x
                 blue_downwash_z = beetle_blue.z
@@ -15903,14 +15895,10 @@ try:
                     local_z = -dir_x * sin_r + dir_z * cos_r
                     beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
                     beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
-            elif not blue_downwash_burst_fired:
-                # Beetle near ground — fire landing burst once and start fade
-                blue_downwash_burst_fired = True
+            else:
+                # Beetle just landed — fire landing burst and start fade
                 spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
                 blue_downwash_fade_timer = DOWNWASH_FADE_TIME
-            else:
-                # Burst already fired, just deactivate
-                blue_downwash_active = False
 
         # Red downwash
         if red_downwash_active:
@@ -15938,7 +15926,7 @@ try:
                         local_z = -dir_x * sin_b + dir_z * cos_b
                         beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
                         beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
-            elif beetle_red.active and beetle_red.y > 1.5:
+            elif beetle_red.active and not beetle_red.on_ground:
                 red_downwash_x = beetle_red.x
                 red_downwash_z = beetle_red.z
                 visual_strength = max(0.0, min(1.0, 1.0 - (beetle_red.y - 0.5) / 14.5))
@@ -15965,12 +15953,9 @@ try:
                     local_z = -dir_x * sin_b + dir_z * cos_b
                     beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
                     beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
-            elif not red_downwash_burst_fired:
-                red_downwash_burst_fired = True
+            else:
                 spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
                 red_downwash_fade_timer = DOWNWASH_FADE_TIME
-            else:
-                red_downwash_active = False
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
