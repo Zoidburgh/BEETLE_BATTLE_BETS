@@ -9660,8 +9660,8 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1
             ti.atomic_add(simulation.debris_active_count[None], 1)
-            # Uniform height distribution — even coverage top to bottom
-            h_frac = ti.random()
+            # Top-biased height: sqrt pushes more particles toward top to compensate for shorter lifetime there
+            h_frac = ti.sqrt(ti.random())
             spawn_y = floor_y + h_frac * height
             # Funnel wall radius: tight base (1.0), wide top (10.0)
             wall_radius = 1.0 + h_frac * h_frac * 9.0  # Quadratic flare
