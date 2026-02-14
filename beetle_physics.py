@@ -15619,9 +15619,8 @@ try:
                     blue_downwash_strength = 0.0
                     blue_downwash_x = spawn_x
                     blue_downwash_z = spawn_z
-                    blue_downwash_dust_timer = DOWNWASH_DUST_INTERVAL  # Fire immediately on first tick
+                    blue_downwash_dust_timer = 0.0
                     blue_downwash_fade_timer = 0.0
-                    spawn_downwash_dust(spawn_x, spawn_z, 0.15)  # Immediate small burst
                     print("Blue beetle respawned!")
 
         # Blue beetle hover phase (flying to spawn point with goofy spinning)
@@ -15680,9 +15679,8 @@ try:
                 blue_downwash_strength = 0.0
                 blue_downwash_x = blue_hover_target_x
                 blue_downwash_z = blue_hover_target_z
-                blue_downwash_dust_timer = DOWNWASH_DUST_INTERVAL
+                blue_downwash_dust_timer = 0.0
                 blue_downwash_fade_timer = 0.0
-                spawn_downwash_dust(blue_hover_target_x, blue_hover_target_z, 0.15)
                 print("Blue beetle respawned!")
 
         # Red beetle respawn with assembly animation
@@ -15765,9 +15763,8 @@ try:
                     red_downwash_strength = 0.0
                     red_downwash_x = spawn_x
                     red_downwash_z = spawn_z
-                    red_downwash_dust_timer = DOWNWASH_DUST_INTERVAL
+                    red_downwash_dust_timer = 0.0
                     red_downwash_fade_timer = 0.0
-                    spawn_downwash_dust(spawn_x, spawn_z, 0.15)
                     print("Red beetle respawned!")
 
         # Red beetle hover phase (flying to spawn point with goofy spinning)
@@ -15826,9 +15823,8 @@ try:
                 red_downwash_strength = 0.0
                 red_downwash_x = red_hover_target_x
                 red_downwash_z = red_hover_target_z
-                red_downwash_dust_timer = DOWNWASH_DUST_INTERVAL
+                red_downwash_dust_timer = 0.0
                 red_downwash_fade_timer = 0.0
-                spawn_downwash_dust(red_hover_target_x, red_hover_target_z, 0.15)
                 print("Red beetle respawned!")
 
         # === RESPAWN TIMERS TIMING END ===
@@ -15867,7 +15863,7 @@ try:
                         local_z = -dir_x * sin_r + dir_z * cos_r
                         beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
                         beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
-            elif beetle_blue.active and not beetle_blue.on_ground:
+            elif beetle_blue.active and beetle_blue.y > 1.5:
                 # Beetle still airborne — stream dust and apply push
                 blue_downwash_x = beetle_blue.x
                 blue_downwash_z = beetle_blue.z
@@ -15900,7 +15896,7 @@ try:
                     beetle_red.roll_velocity += local_x * tip_mag / max(beetle_red.roll_inertia, 0.1)
                     beetle_red.pitch_velocity += local_z * tip_mag / max(beetle_red.pitch_inertia, 0.1)
             else:
-                # Beetle just landed — fire landing burst and start fade
+                # Beetle near ground — fire landing burst and start fade
                 spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
                 blue_downwash_fade_timer = DOWNWASH_FADE_TIME
 
@@ -15930,7 +15926,7 @@ try:
                         local_z = -dir_x * sin_b + dir_z * cos_b
                         beetle_blue.roll_velocity += local_x * tip_mag / max(beetle_blue.roll_inertia, 0.1)
                         beetle_blue.pitch_velocity += local_z * tip_mag / max(beetle_blue.pitch_inertia, 0.1)
-            elif beetle_red.active and not beetle_red.on_ground:
+            elif beetle_red.active and beetle_red.y > 1.5:
                 red_downwash_x = beetle_red.x
                 red_downwash_z = beetle_red.z
                 visual_strength = max(0.0, min(1.0, 1.0 - (beetle_red.y - 0.5) / 14.5))
