@@ -9663,9 +9663,11 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
             wall_radius = 1.0 + h_frac * h_frac * 9.0  # Quadratic flare
             shell_jitter = wall_radius * 0.1 * (ti.random() - 0.5)  # Thin crisp wall
             radius = wall_radius + shell_jitter
-            # Rotating base angle from time — faster spin, no spiral wraps (clean cylinder rings)
-            base_angle = time_val * 14.0
-            angle = base_angle + ti.random() * 6.28  # Full random angle around the ring at each height
+            # 3 spiral arms that rotate with time — visible spin like a galaxy
+            arm = ti.cast(ti.floor(ti.random() * 3.0), ti.i32)  # Pick arm 0, 1, or 2
+            arm_base = ti.cast(arm, ti.f32) * 2.094  # 120° apart (2*pi/3)
+            # Each arm twists up the funnel + rotates with time
+            angle = arm_base + time_val * 14.0 + h_frac * 3.0 + (ti.random() - 0.5) * 0.7
             spawn_x = pos_x + ti.cos(angle) * radius
             spawn_z = pos_z + ti.sin(angle) * radius
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
