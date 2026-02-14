@@ -1038,8 +1038,9 @@ BODY_ROTATION_DAMPING_STRENGTH = 0.95  # 95% damping (5% speed) when rotating in
 BODY_ROTATION_DAMPING_DECAY = 2.0      # Decay rate per second (~0.5s duration at full strength)
 
 # Spawn downwash effect (dust + push when beetle drops onto arena)
-DOWNWASH_PUSH_FORCE = 56.0        # Strong nudge on enemy
-DOWNWASH_TIP_STRENGTH = 800.0     # Torque to tip enemy's near side (high to overcome ground correction)
+DOWNWASH_PUSH_FORCE = 20.0        # Outward nudge on enemy (collision does most pushing)
+DOWNWASH_TIP_STRENGTH = 400.0     # Torque to tip enemy's near side
+DOWNWASH_LIFT_FORCE = 12.0        # Upward pop so enemy leaves ground (lets tip torque work)
 DOWNWASH_MIN_STRENGTH = 0.7       # Minimum strength so push hits hard from the start
 DOWNWASH_RADIUS = 20.0            # Push/tip effect radius
 DOWNWASH_DUST_INTERVAL = 0.033    # ~30Hz spawn rate for continuous stream
@@ -15851,6 +15852,8 @@ try:
                         push_mag = DOWNWASH_PUSH_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
                         beetle_red.vx += (dx_r / dist_r) * push_mag
                         beetle_red.vz += (dz_r / dist_r) * push_mag
+                        # Pop enemy off ground so tip torque isn't fought by floor correction
+                        beetle_red.vy += DOWNWASH_LIFT_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
                         # Tipping torque: lift the side facing spawn point
                         tip_mag = DOWNWASH_TIP_STRENGTH * fade_strength * falloff * PHYSICS_TIMESTEP
                         cos_r = math.cos(beetle_red.rotation)
@@ -15882,6 +15885,7 @@ try:
                     push_mag = DOWNWASH_PUSH_FORCE * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
                     beetle_red.vx += (dx_r / dist_r) * push_mag
                     beetle_red.vz += (dz_r / dist_r) * push_mag
+                    beetle_red.vy += DOWNWASH_LIFT_FORCE * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
                     tip_mag = DOWNWASH_TIP_STRENGTH * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
                     cos_r = math.cos(beetle_red.rotation)
                     sin_r = math.sin(beetle_red.rotation)
@@ -15912,6 +15916,7 @@ try:
                         push_mag = DOWNWASH_PUSH_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
                         beetle_blue.vx += (dx_b / dist_b) * push_mag
                         beetle_blue.vz += (dz_b / dist_b) * push_mag
+                        beetle_blue.vy += DOWNWASH_LIFT_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
                         tip_mag = DOWNWASH_TIP_STRENGTH * fade_strength * falloff * PHYSICS_TIMESTEP
                         cos_b = math.cos(beetle_blue.rotation)
                         sin_b = math.sin(beetle_blue.rotation)
@@ -15937,6 +15942,7 @@ try:
                     push_mag = DOWNWASH_PUSH_FORCE * red_downwash_strength * falloff * PHYSICS_TIMESTEP
                     beetle_blue.vx += (dx_b / dist_b) * push_mag
                     beetle_blue.vz += (dz_b / dist_b) * push_mag
+                    beetle_blue.vy += DOWNWASH_LIFT_FORCE * red_downwash_strength * falloff * PHYSICS_TIMESTEP
                     tip_mag = DOWNWASH_TIP_STRENGTH * red_downwash_strength * falloff * PHYSICS_TIMESTEP
                     cos_b = math.cos(beetle_blue.rotation)
                     sin_b = math.sin(beetle_blue.rotation)
