@@ -1072,6 +1072,21 @@ SANDSTORM_DUST_MAX = 20           # Max particles per spawn at peak
 SANDSTORM_PARTICLE_SPEED = 40.0   # Horizontal streak speed
 SANDSTORM_PARTICLE_HEIGHT = 5.0   # Max particle height above arena floor
 
+# Arena UFO laser hazard
+UFO_ALTITUDE = 27.0              # Height above arena (world Y)
+UFO_ORBIT_SPEED = 0.12           # Path base speed
+UFO_ORBIT_BOUNDS = 30.0          # Orbit radius
+UFO_BEAM_RADIUS = 6.0            # Effect radius on ground for physics falloff
+UFO_PUSH_FORCE = 6000.0          # Per-tick horizontal push (sandstorm is 200, laser is 30x stronger)
+UFO_LIFT_FORCE = 800.0           # Per-tick upward pop
+UFO_TIP_STRENGTH = 20000.0       # Per-tick tipping torque
+UFO_CRUISE_DURATION = 3.0
+UFO_TELEGRAPH_DURATION = 1.5
+UFO_FIRE_DURATION = 1.0
+UFO_COOLDOWN_DURATION = 1.5
+UFO_CYCLE_TOTAL = 7.0
+UFO_DUST_INTERVAL = 0.02         # Particle spawn rate
+
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
 
@@ -1444,6 +1459,7 @@ def reset_match():
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
     global sandstorm_mode, sandstorm_time, sandstorm_dust_timer, sandstorm_force_intensity
+    global ufo_mode, ufo_time, ufo_phase, ufo_x, ufo_z, ufo_target_x, ufo_target_z, ufo_dust_timer, ufo_prev_x, ufo_prev_z
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1551,6 +1567,18 @@ def reset_match():
     sandstorm_time = 0.0
     sandstorm_dust_timer = 0.0
     sandstorm_force_intensity = 0.0
+
+    # Reset UFO hazard state
+    ufo_mode = False
+    ufo_time = 0.0
+    ufo_phase = 0.0
+    ufo_x = 0.0
+    ufo_z = 0.0
+    ufo_target_x = 0.0
+    ufo_target_z = 0.0
+    ufo_dust_timer = 0.0
+    ufo_prev_x = 0.0
+    ufo_prev_z = 0.0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2420,6 +2448,18 @@ sandstorm_mode = False
 sandstorm_time = 0.0
 sandstorm_dust_timer = 0.0
 sandstorm_force_intensity = 0.0   # Smoothed intensity for physics (decays slowly, lingers after particles)
+
+# Arena UFO laser hazard state
+ufo_mode = False
+ufo_time = 0.0
+ufo_phase = 0.0
+ufo_x = 0.0
+ufo_z = 0.0
+ufo_target_x = 0.0
+ufo_target_z = 0.0
+ufo_dust_timer = 0.0
+ufo_prev_x = 0.0
+ufo_prev_z = 0.0
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -6742,7 +6782,7 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
         if is_lifted_high == 1:
             # High-frequency wiggle with per-leg variation for chaos
             # Slower wiggle when rotating only (to prevent excessive speed appearance)
-            wiggle_freq = 1.05 if is_rotating_only == 1 else 1.6
+            wiggle_freq = 1.05 if is_rotating_only == 1 else 2.2
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
             # OPTIMIZATION: Pre-calculate wiggle trig
@@ -7288,7 +7328,7 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
         if is_lifted_high == 1:
             # High-frequency wiggle with per-leg variation for chaos
             # Slower wiggle when rotating only (to prevent excessive speed appearance)
-            wiggle_freq = 1.05 if is_rotating_only == 1 else 1.6
+            wiggle_freq = 1.05 if is_rotating_only == 1 else 2.2
             wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
 
             # OPTIMIZATION: Pre-calculate wiggle trig
@@ -9744,7 +9784,7 @@ def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, ti
             # far ones so you can see the storm coming from a distance
             perp_x = -wind_dz
             perp_z = wind_dx
-            spawn_dist = 25.0 + ti.random() * 75.0  # 25-100 units upwind
+            spawn_dist = 60.0 + ti.random() * 140.0  # 60-200 units upwind
             spread = (ti.random() - 0.5) * 90.0  # Wide perpendicular spread
             spawn_x = -wind_dx * spawn_dist + perp_x * spread
             spawn_z = -wind_dz * spawn_dist + perp_z * spread
@@ -9800,8 +9840,8 @@ def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, ti
             simulation.debris_radius[idx] = 0.24
             # Lifetime scales with spawn distance — far particles live longer to make the trip,
             # close ones die fast so screen clears quickly when gust ends.
-            # spawn_dist/spd = travel time to arena. Add margin to cross arena + exit.
-            simulation.debris_lifetime[idx] = spawn_dist / spd + 0.4 + ti.random() * 0.15
+            # spawn_dist/spd = travel time to arena. Add margin to cross arena + blow out the other side.
+            simulation.debris_lifetime[idx] = spawn_dist / spd + 1.2 + ti.random() * 0.4
 
 @ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
@@ -11101,11 +11141,287 @@ for wing_id, wing_voxels in enumerate(LADYBUG_WINGS):
     offset += len(wing_voxels)
     ladybug_wing_end_idx[wing_id] = offset
 
+# === UFO GEOMETRY ===
+def generate_ufo_geometry():
+    """Generate classic flying saucer: flat disc (radius 6) + dome on top (radius 3).
+    Returns list of (dx, dy, dz, voxel_type) tuples in local coords."""
+    voxels = []
+    disc_radius = 6
+    dome_radius = 3
+
+    # Disc body - flat saucer shape (2 voxels thick)
+    for dx in range(-disc_radius, disc_radius + 1):
+        for dz in range(-disc_radius, disc_radius + 1):
+            dist = math.sqrt(dx * dx + dz * dz)
+            if dist <= disc_radius:
+                is_rim = dist > disc_radius - 1.5
+                vtype = simulation.UFO_RIM if is_rim else simulation.UFO_HULL
+                voxels.append((dx, 0, dz, vtype))
+                voxels.append((dx, 1, dz, vtype))
+
+    # Dome on top - hemisphere
+    for dx in range(-dome_radius, dome_radius + 1):
+        for dy in range(0, dome_radius + 1):
+            for dz in range(-dome_radius, dome_radius + 1):
+                dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                if dist <= dome_radius and dist > dome_radius - 1.5:
+                    voxels.append((dx, 2 + dy, dz, simulation.UFO_DOME))
+
+    # Bottom center detail (small undercarriage)
+    for dx in range(-2, 3):
+        for dz in range(-2, 3):
+            dist = math.sqrt(dx * dx + dz * dz)
+            if dist <= 2:
+                voxels.append((dx, -1, dz, simulation.UFO_LIGHTS))
+
+    return voxels
+
+UFO_VOXELS = generate_ufo_geometry()
+
+# Taichi fields for UFO geometry cache
+MAX_UFO_VOXELS = 600
+ufo_cache_size = ti.field(ti.i32, shape=())
+ufo_cache_x = ti.field(ti.i32, shape=MAX_UFO_VOXELS)
+ufo_cache_y = ti.field(ti.i32, shape=MAX_UFO_VOXELS)
+ufo_cache_z = ti.field(ti.i32, shape=MAX_UFO_VOXELS)
+ufo_cache_type = ti.field(ti.i32, shape=MAX_UFO_VOXELS)
+
+# Initialize UFO cache
+simulation.ufo_dome_flash[None] = 1.0
+ufo_cache_size[None] = len(UFO_VOXELS)
+for i, (dx, dy, dz, vtype) in enumerate(UFO_VOXELS):
+    if i < MAX_UFO_VOXELS:
+        ufo_cache_x[i] = dx
+        ufo_cache_y[i] = dy
+        ufo_cache_z[i] = dz
+        ufo_cache_type[i] = vtype
+
 # Active ladybugs list (spawned on win, cleared on reset)
 active_ladybugs = []
 
 # Test ladybug for preview
 test_ladybug = None
+
+@ti.kernel
+def clear_ufo_bounded(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32):
+    """Clear UFO voxels in bounding box around position"""
+    margin = 15
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_y = int(world_y + RENDER_Y_OFFSET)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+    min_x = ti.max(0, center_x - margin)
+    max_x = ti.min(simulation.n_grid, center_x + margin)
+    min_y = ti.max(0, center_y - margin)
+    max_y = ti.min(simulation.n_grid, center_y + margin)
+    min_z = ti.max(0, center_z - margin)
+    max_z = ti.min(simulation.n_grid, center_z + margin)
+    for i in range(min_x, max_x):
+        for j in range(min_y, max_y):
+            for k in range(min_z, max_z):
+                vtype = simulation.voxel_type[i, j, k]
+                if vtype == simulation.UFO_HULL or vtype == simulation.UFO_DOME or \
+                   vtype == simulation.UFO_LIGHTS or vtype == simulation.UFO_RIM:
+                    simulation.voxel_type[i, j, k] = simulation.EMPTY
+
+@ti.kernel
+def place_ufo_kernel(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, time_val: ti.f32):
+    """Place UFO at world position — clean flat saucer, no tilt"""
+    center_x = int(world_x + simulation.n_grid / 2.0)
+    center_y = int(world_y + RENDER_Y_OFFSET)
+    center_z = int(world_z + simulation.n_grid / 2.0)
+    for i in range(ufo_cache_size[None]):
+        grid_x = center_x + ufo_cache_x[i]
+        grid_y = center_y + ufo_cache_y[i]
+        grid_z = center_z + ufo_cache_z[i]
+        if 0 <= grid_x < simulation.n_grid and 0 <= grid_y < simulation.n_grid and 0 <= grid_z < simulation.n_grid:
+            existing = simulation.voxel_type[grid_x, grid_y, grid_z]
+            if existing == simulation.EMPTY:
+                simulation.voxel_type[grid_x, grid_y, grid_z] = ufo_cache_type[i]
+
+@ti.kernel
+def clear_ufo_beam_bounded(target_x: ti.f32, target_z: ti.f32, ufo_y: ti.f32):
+    """Clear beam column voxels from UFO down through arena gaps"""
+    beam_radius = 6  # Wide enough for spiral offset + 3x3 cluster
+    cx = int(target_x + simulation.n_grid / 2.0)
+    cz = int(target_z + simulation.n_grid / 2.0)
+    min_y = ti.max(0, int(RENDER_Y_OFFSET) - 10)  # Extend below arena to catch voxels in gaps
+    max_y = ti.min(simulation.n_grid, int(ufo_y + RENDER_Y_OFFSET + 5))
+    for dx in range(-beam_radius, beam_radius + 1):
+        for dy in range(min_y, max_y):
+            for dz in range(-beam_radius, beam_radius + 1):
+                gx = cx + dx
+                gz = cz + dz
+                if 0 <= gx < simulation.n_grid and 0 <= gz < simulation.n_grid:
+                    if simulation.voxel_type[gx, dy, gz] == simulation.UFO_BEAM:
+                        simulation.voxel_type[gx, dy, gz] = simulation.EMPTY
+
+@ti.kernel
+def render_ufo_beam(beam_x: ti.f32, ufo_y: ti.f32, beam_z: ti.f32,
+                    head_progress: ti.f32, tail_progress: ti.f32,
+                    spiral_phase: ti.f32):
+    """Render traveling laser beam from UFO down to ground with spiral effect.
+    head_progress/tail_progress: 0=at UFO, 1=at ground. Head leads, tail follows."""
+    beam_height = ufo_y  # Total height in voxels
+    num_points = int(beam_height * 1.5)
+    cx = beam_x + simulation.n_grid / 2.0
+    cz = beam_z + simulation.n_grid / 2.0
+    top_y = ufo_y + RENDER_Y_OFFSET
+    base_y = RENDER_Y_OFFSET
+
+    for i in range(num_points):
+        t = float(i) / float(num_points)  # 0=top (UFO), 1=bottom (ground)
+        # Only draw between head and tail
+        if t > head_progress or t < tail_progress:
+            continue
+
+        py = top_y - t * beam_height  # Top to bottom
+        # Spiral offset (tighter near ground)
+        spiral_radius = 1.5 * (1.0 - t * 0.6)
+        spiral_angle = spiral_phase + t * 10.0
+        offset_x = ti.cos(spiral_angle) * spiral_radius
+        offset_z = ti.sin(spiral_angle) * spiral_radius
+
+        grid_x = int(cx + offset_x)
+        grid_y = int(py)
+        grid_z = int(cz + offset_z)
+
+        # Place 3x3x3 cluster for thick beam
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                for dz in range(-1, 2):
+                    gx = grid_x + dx
+                    gy = grid_y + dy
+                    gz = grid_z + dz
+                    if 0 <= gx < simulation.n_grid and 0 <= gy < simulation.n_grid and 0 <= gz < simulation.n_grid:
+                        existing = simulation.voxel_type[gx, gy, gz]
+                        if existing == simulation.EMPTY:
+                            simulation.voxel_type[gx, gy, gz] = simulation.UFO_BEAM
+
+# UFO beam collision result fields
+ufo_beam_hit_blue = ti.field(ti.i32, shape=())
+ufo_beam_hit_red = ti.field(ti.i32, shape=())
+
+@ti.kernel
+def check_ufo_beam_collision(target_x: ti.f32, target_z: ti.f32, ufo_y: ti.f32):
+    """Check beam voxels against beetle body parts (3x3x3 neighborhood).
+    Sets ufo_beam_hit_blue/red = 1 if any beetle body part found near beam."""
+    ufo_beam_hit_blue[None] = 0
+    ufo_beam_hit_red[None] = 0
+    beam_radius = 2
+    cx = int(target_x + simulation.n_grid / 2.0)
+    cz = int(target_z + simulation.n_grid / 2.0)
+    base_y = int(RENDER_Y_OFFSET)
+    beam_height = int(ufo_y)
+    # Check along the beam column
+    for dy in range(ti.min(beam_height, 20)):  # Only check lower portion where beetles are
+        gy = base_y + dy
+        if 0 <= gy < simulation.n_grid:
+            for dx in range(-beam_radius, beam_radius + 1):
+                for dz in range(-beam_radius, beam_radius + 1):
+                    gx = cx + dx
+                    gz = cz + dz
+                    if 0 <= gx < simulation.n_grid and 0 <= gz < simulation.n_grid:
+                        # Check 3x3x3 neighborhood
+                        for nx in range(-1, 2):
+                            for ny in range(-1, 2):
+                                for nz in range(-1, 2):
+                                    check_x = gx + nx
+                                    check_y = gy + ny
+                                    check_z = gz + nz
+                                    if 0 <= check_x < simulation.n_grid and 0 <= check_y < simulation.n_grid and 0 <= check_z < simulation.n_grid:
+                                        vtype = simulation.voxel_type[check_x, check_y, check_z]
+                                        # Blue beetle parts
+                                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
+                                           vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
+                                           vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE or \
+                                           vtype == simulation.VENOM_TIP_BLUE:
+                                            ufo_beam_hit_blue[None] = 1
+                                        # Red beetle parts
+                                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
+                                           vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
+                                           vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
+                                           vtype == simulation.VENOM_TIP_RED:
+                                            ufo_beam_hit_red[None] = 1
+
+@ti.kernel
+def spawn_ufo_telegraph(target_x: ti.f32, target_z: ti.f32, phase: ti.f32):
+    """Spawn subtle pulsing green ring on arena floor — warning only"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    ring_radius = 4.0
+    pulse = 0.5 + 0.5 * ti.sin(phase * 8.0)
+    for i in range(8):  # Fewer particles for subtle warning
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            angle = float(i) / 8.0 * 6.2832 + phase * 3.0
+            r = ring_radius * (0.8 + 0.4 * ti.random())
+            spawn_x = target_x + ti.cos(angle) * r
+            spawn_z = target_z + ti.sin(angle) * r
+            spawn_y = floor_y + ti.random() * 1.0
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
+            vx = -ti.cos(angle) * 3.0 + (ti.random() - 0.5) * 2.0
+            vz = -ti.sin(angle) * 3.0 + (ti.random() - 0.5) * 2.0
+            vy = 1.5 + ti.random() * 2.0
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            cr = 0.1 + ti.random() * 0.1
+            cg = 0.4 + ti.random() * 0.3 * pulse
+            cb = 0.1 + ti.random() * 0.1
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.2
+
+@ti.kernel
+def spawn_ufo_beam_impact(target_x: ti.f32, target_z: ti.f32, phase: ti.f32):
+    """Big dramatic ring at beam impact point — the full effect when beam hits ground"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    ring_radius = 6.0
+    pulse = 0.5 + 0.5 * ti.sin(phase * 8.0)
+    for i in range(20):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            angle = float(i) / 20.0 * 6.2832 + phase * 3.0
+            r = ring_radius * (0.8 + 0.4 * ti.random())
+            spawn_x = target_x + ti.cos(angle) * r
+            spawn_z = target_z + ti.sin(angle) * r
+            spawn_y = floor_y + ti.random() * 2.0
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
+            vx = -ti.cos(angle) * 5.0 + (ti.random() - 0.5) * 3.0
+            vz = -ti.sin(angle) * 5.0 + (ti.random() - 0.5) * 3.0
+            vy = 3.0 + ti.random() * 5.0
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            cr = 0.1 + ti.random() * 0.15
+            cg = 0.6 + ti.random() * 0.4 * pulse
+            cb = 0.1 + ti.random() * 0.15
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
+
+@ti.kernel
+def spawn_ufo_beam_sparks(target_x: ti.f32, target_z: ti.f32, time_val: ti.f32):
+    """Spawn impact sparks where beam hits the ground"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    for i in range(15):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            angle = ti.random() * 6.2832
+            speed = 10.0 + ti.random() * 20.0
+            spawn_x = target_x + (ti.random() - 0.5) * 3.0
+            spawn_z = target_z + (ti.random() - 0.5) * 3.0
+            spawn_y = floor_y + ti.random() * 1.0
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
+            vx = ti.cos(angle) * speed
+            vz = ti.sin(angle) * speed
+            vy = 8.0 + ti.random() * 15.0
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Bright green/white sparks
+            cr = 0.5 + ti.random() * 0.5
+            cg = 0.8 + ti.random() * 0.2
+            cb = 0.3 + ti.random() * 0.4
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.2
 
 @ti.kernel
 def clear_ladybug_voxels():
@@ -13392,6 +13708,14 @@ spawn_downwash_dust(0.0, -100.0, 0.5)
 spawn_downwash_landing_burst(0.0, -100.0)
 spawn_tornado_dust(0.0, -100.0, 0.0)
 spawn_sandstorm_dust(1.0, 0.0, 1.0, 0.0)
+clear_ufo_bounded(0.0, -100.0, 0.0)
+place_ufo_kernel(0.0, -100.0, 0.0, 0.0)
+clear_ufo_beam_bounded(0.0, 0.0, 30.0)
+render_ufo_beam(0.0, 30.0, 0.0, 1.0, 0.0, 0.0)
+check_ufo_beam_collision(0.0, 0.0, 30.0)
+spawn_ufo_telegraph(0.0, -100.0, 0.0)
+spawn_ufo_beam_impact(0.0, -100.0, 0.0)
+spawn_ufo_beam_sparks(0.0, -100.0, 0.0)
 update_loading(2)
 
 # PHASE 3: Debris/particle kernels - render with debris to warm up renderer's debris code paths
@@ -15481,6 +15805,34 @@ try:
                         sandstorm_force_intensity = 0.0
                         print("Sandstorm hazard disabled (from host)")
 
+                # Apply UFO mode state (hazard, independent of arena)
+                if opts.get('ufo_mode', False) != ufo_mode:
+                    ufo_mode = opts.get('ufo_mode', False)
+                    if ufo_mode:
+                        ufo_time = 0.0
+                        ufo_phase = 0.0
+                        ufo_x = 0.0
+                        ufo_z = 0.0
+                        ufo_target_x = 0.0
+                        ufo_target_z = 0.0
+                        ufo_dust_timer = 0.0
+                        ufo_prev_x = 0.0
+                        ufo_prev_z = 0.0
+                        print("UFO LASER HAZARD ENABLED (from host)")
+                    else:
+                        clear_ufo_bounded(ufo_x, UFO_ALTITUDE, ufo_z)
+                        clear_ufo_beam_bounded(ufo_target_x, ufo_target_z, UFO_ALTITUDE)
+                        ufo_time = 0.0
+                        ufo_phase = 0.0
+                        ufo_x = 0.0
+                        ufo_z = 0.0
+                        ufo_target_x = 0.0
+                        ufo_target_z = 0.0
+                        ufo_dust_timer = 0.0
+                        ufo_prev_x = 0.0
+                        ufo_prev_z = 0.0
+                        print("UFO laser hazard disabled (from host)")
+
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
         # Local mode: always detect locally
@@ -16316,6 +16668,147 @@ try:
 
                         # Tiny yaw wiggle to sell the wind feel
                         beetle.rotation += SANDSTORM_YAW * sandstorm_force_intensity * PHYSICS_TIMESTEP * math.sin(sandstorm_time * 3.0)
+
+        # === ARENA UFO LASER HAZARD ===
+        if ufo_mode:
+            ufo_time += PHYSICS_TIMESTEP
+
+            # Determine cycle phase
+            cycle_pos = ufo_time % UFO_CYCLE_TOTAL
+            cycle_count = int(ufo_time / UFO_CYCLE_TOTAL)
+
+            # Determine current phase: cruise / telegraph / fire / cooldown
+            if cycle_pos < UFO_CRUISE_DURATION:
+                current_phase = 0  # Cruise
+                phase_progress = cycle_pos / UFO_CRUISE_DURATION
+            elif cycle_pos < UFO_CRUISE_DURATION + UFO_TELEGRAPH_DURATION:
+                current_phase = 1  # Telegraph
+                phase_progress = (cycle_pos - UFO_CRUISE_DURATION) / UFO_TELEGRAPH_DURATION
+            elif cycle_pos < UFO_CRUISE_DURATION + UFO_TELEGRAPH_DURATION + UFO_FIRE_DURATION:
+                current_phase = 2  # Fire
+                phase_progress = (cycle_pos - UFO_CRUISE_DURATION - UFO_TELEGRAPH_DURATION) / UFO_FIRE_DURATION
+            else:
+                current_phase = 3  # Cooldown
+                phase_progress = (cycle_pos - UFO_CRUISE_DURATION - UFO_TELEGRAPH_DURATION - UFO_FIRE_DURATION) / UFO_COOLDOWN_DURATION
+
+            # Dome flash: pulses during telegraph, bright during fire, normal otherwise
+            if current_phase == 1:
+                simulation.ufo_dome_flash[None] = 1.0 + 0.8 * abs(math.sin(ufo_time * 6.0))
+            elif current_phase == 2:
+                simulation.ufo_dome_flash[None] = 2.0
+            else:
+                simulation.ufo_dome_flash[None] = 1.0
+
+            # Deterministic target from cycle count (golden ratio distribution)
+            # Computed early so cruise can fly toward it
+            golden = 1.6180339887
+            target_angle = (cycle_count * golden) * 6.2832
+            target_radius = UFO_ORBIT_BOUNDS * 0.6 * (0.5 + 0.5 * math.sin(cycle_count * golden * 2.3))
+            ufo_target_x = math.cos(target_angle) * target_radius
+            ufo_target_z = math.sin(target_angle) * target_radius
+
+            ufo_prev_x = ufo_x
+            ufo_prev_z = ufo_z
+
+            # Compute desired position based on phase, then smoothly damp toward it
+            # This prevents all jerky transitions between phases
+            t = ufo_time * UFO_ORBIT_SPEED
+            speed_mod = 1.0 + 0.5 * math.sin(t * 0.37) * math.cos(t * 0.23)
+            ufo_phase += PHYSICS_TIMESTEP * UFO_ORBIT_SPEED * speed_mod
+
+            # Orbit position (always computed so phase stays in sync)
+            orbit_x = UFO_ORBIT_BOUNDS * math.sin(ufo_phase * 1.0)
+            orbit_z = UFO_ORBIT_BOUNDS * math.cos(ufo_phase * 0.73)
+            orbit_x += 8.0 * math.sin(ufo_phase * 2.1 + 1.3)
+            orbit_z += 8.0 * math.cos(ufo_phase * 1.7 + 0.6)
+            udist = math.sqrt(orbit_x * orbit_x + orbit_z * orbit_z)
+            if udist > UFO_ORBIT_BOUNDS:
+                orbit_x = orbit_x * UFO_ORBIT_BOUNDS / udist
+                orbit_z = orbit_z * UFO_ORBIT_BOUNDS / udist
+
+            if current_phase == 0:
+                # Cruise: free orbit first half, steer toward target second half
+                if phase_progress < 0.4:
+                    desired_x = orbit_x
+                    desired_z = orbit_z
+                    damp_speed = 8.0
+                else:
+                    # Blend desired toward target with increasing weight
+                    steer_t = (phase_progress - 0.4) / 0.6  # 0→1 over last 60%
+                    desired_x = orbit_x + (ufo_target_x - orbit_x) * steer_t
+                    desired_z = orbit_z + (ufo_target_z - orbit_z) * steer_t
+                    damp_speed = 4.0 + steer_t * 6.0  # Faster damping as we approach
+            elif current_phase == 1 or current_phase == 2:
+                # Telegraph + Fire: hover over target with tiny wobble
+                desired_x = ufo_target_x + math.sin(ufo_time * 3.0) * 0.3
+                desired_z = ufo_target_z + math.cos(ufo_time * 2.7) * 0.3
+                damp_speed = 10.0
+            else:
+                # Cooldown: head back to orbit
+                desired_x = orbit_x
+                desired_z = orbit_z
+                damp_speed = 3.0  # Gentle return
+
+            # Exponential damping: smooth movement regardless of phase transitions
+            damp_factor = 1.0 - math.exp(-damp_speed * PHYSICS_TIMESTEP)
+            ufo_x += (desired_x - ufo_x) * damp_factor
+            ufo_z += (desired_z - ufo_z) * damp_factor
+
+            # Telegraph/Fire particle spawning
+            if current_phase == 1 or current_phase == 2:
+                ufo_dust_timer += PHYSICS_TIMESTEP
+                if ufo_dust_timer >= UFO_DUST_INTERVAL:
+                    ufo_dust_timer -= UFO_DUST_INTERVAL
+                    if current_phase == 1:
+                        spawn_ufo_telegraph(ufo_target_x, ufo_target_z, ufo_time)
+                    else:
+                        spawn_ufo_beam_sparks(ufo_x, ufo_z, ufo_time)
+                        spawn_ufo_beam_impact(ufo_x, ufo_z, ufo_time)
+            else:
+                ufo_dust_timer = 0.0
+
+            # Fire phase: beam collision + knockback (only while beam is visually present)
+            if current_phase == 2 and phase_progress < 0.6:
+                # Check beam collision against beetles (beam is at UFO position)
+                check_ufo_beam_collision(ufo_x, ufo_z, UFO_ALTITUDE)
+
+                hit_blue = ufo_beam_hit_blue[None]
+                hit_red = ufo_beam_hit_red[None]
+
+                # Apply continuous force to hit beetles (like wind but stronger)
+                for beetle, was_hit in [(beetle_blue, hit_blue), (beetle_red, hit_red)]:
+                    if was_hit and beetle.active and not beetle.is_falling:
+                        dx_b = beetle.x - ufo_x
+                        dz_b = beetle.z - ufo_z
+                        dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
+
+                        # Guaranteed push direction — if beetle is right at center,
+                        # push based on beetle's facing so it always flies away
+                        if dist_b > 1.0:
+                            dir_x = dx_b / dist_b
+                            dir_z = dz_b / dist_b
+                        else:
+                            dir_x = math.cos(beetle.rotation)
+                            dir_z = math.sin(beetle.rotation)
+
+                        # Continuous horizontal push (same pattern as sandstorm wind)
+                        beetle.vx += dir_x * UFO_PUSH_FORCE * PHYSICS_TIMESTEP
+                        beetle.vz += dir_z * UFO_PUSH_FORCE * PHYSICS_TIMESTEP
+                        # Upward lift
+                        beetle.vy += UFO_LIFT_FORCE * PHYSICS_TIMESTEP
+
+                        # Tipping torque (local frame)
+                        tip_mag = UFO_TIP_STRENGTH * PHYSICS_TIMESTEP
+                        cos_r = math.cos(beetle.rotation)
+                        sin_r = math.sin(beetle.rotation)
+                        local_x = dir_x * cos_r + dir_z * sin_r
+                        local_z = -dir_x * sin_r + dir_z * cos_r
+                        beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
+                        beetle.pitch_velocity += local_z * tip_mag / max(beetle.pitch_inertia, 0.1)
+
+                        # Green impact explosion at beetle position
+                        hit_render_y = beetle.y + RENDER_Y_OFFSET
+                        spawn_spray_explosion(beetle.x, hit_render_y, beetle.z, 0.2, 1.0, 0.3)
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
@@ -17407,6 +17900,36 @@ try:
         clear_ladybug_bounded(referee_ladybug.x, referee_ladybug.y, referee_ladybug.z)
         render_ladybug(referee_ladybug, frame_dt)
 
+    # Render UFO saucer and beam (interpolated for smooth movement)
+    if ufo_mode:
+        # Interpolate UFO position for smooth rendering (same as beetle alpha lerp)
+        ufo_render_x = ufo_prev_x + (ufo_x - ufo_prev_x) * alpha
+        ufo_render_z = ufo_prev_z + (ufo_z - ufo_prev_z) * alpha
+
+        # Clear previous and current positions
+        clear_ufo_bounded(ufo_prev_x, UFO_ALTITUDE, ufo_prev_z)
+        clear_ufo_bounded(ufo_x, UFO_ALTITUDE, ufo_z)
+        clear_ufo_bounded(ufo_render_x, UFO_ALTITUDE, ufo_render_z)
+        # Place UFO at interpolated position
+        place_ufo_kernel(ufo_render_x, UFO_ALTITUDE, ufo_render_z, ufo_time)
+
+        # Determine cycle phase for beam rendering
+        cycle_pos = ufo_time % UFO_CYCLE_TOTAL
+        # Clear beam at all positions to avoid leftovers
+        clear_ufo_beam_bounded(ufo_prev_x, ufo_prev_z, UFO_ALTITUDE)
+        clear_ufo_beam_bounded(ufo_x, ufo_z, UFO_ALTITUDE)
+        clear_ufo_beam_bounded(ufo_render_x, ufo_render_z, UFO_ALTITUDE)
+        clear_ufo_beam_bounded(ufo_target_x, ufo_target_z, UFO_ALTITUDE)
+        if cycle_pos >= UFO_CRUISE_DURATION + UFO_TELEGRAPH_DURATION and \
+           cycle_pos < UFO_CRUISE_DURATION + UFO_TELEGRAPH_DURATION + UFO_FIRE_DURATION:
+            # Fire phase - traveling beam from UFO down to ground
+            fire_progress = (cycle_pos - UFO_CRUISE_DURATION - UFO_TELEGRAPH_DURATION) / UFO_FIRE_DURATION
+            # Head races down (0→1), tail follows with delay
+            head_prog = min(1.0, fire_progress * 2.5)  # Head reaches ground at 40% through fire
+            tail_prog = max(0.0, (fire_progress - 0.6) * 2.5)  # Tail starts retracting at 60%
+            spiral_phase = ufo_time * 15.0  # Fast spinning spiral
+            render_ufo_beam(ufo_render_x, UFO_ALTITUDE, ufo_render_z, head_prog, tail_prog, spiral_phase)
+
     perf_monitor.stop('beetle_render')
 
     # Update silk stuck to beetles/ball - positions need to match transforms
@@ -18220,7 +18743,7 @@ try:
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -18288,7 +18811,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -18331,7 +18854,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -18374,7 +18897,7 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -18417,7 +18940,7 @@ try:
                     print("FIGURE 8 ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -18460,7 +18983,7 @@ try:
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -18503,7 +19026,7 @@ try:
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -18547,7 +19070,7 @@ try:
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             # === HAZARDS ===
             window.GUI.text("")
@@ -18572,7 +19095,7 @@ try:
                     print("Tornado hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
             sandstorm_button_text = "SANDSTORM: ON" if sandstorm_mode else "SANDSTORM: OFF"
             if window.GUI.button(sandstorm_button_text):
@@ -18589,7 +19112,39 @@ try:
                     print("Sandstorm hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+
+            ufo_button_text = "UFO LASER: ON" if ufo_mode else "UFO LASER: OFF"
+            if window.GUI.button(ufo_button_text):
+                ufo_mode = not ufo_mode
+                if ufo_mode:
+                    ufo_time = 0.0
+                    ufo_phase = 0.0
+                    ufo_x = 0.0
+                    ufo_z = 0.0
+                    ufo_target_x = 0.0
+                    ufo_target_z = 0.0
+                    ufo_dust_timer = 0.0
+                    ufo_prev_x = 0.0
+                    ufo_prev_z = 0.0
+                    print("UFO LASER HAZARD ENABLED - watch the skies!")
+                else:
+                    # Clear UFO voxels when disabling
+                    clear_ufo_bounded(ufo_x, UFO_ALTITUDE, ufo_z)
+                    clear_ufo_beam_bounded(ufo_target_x, ufo_target_z, UFO_ALTITUDE)
+                    ufo_time = 0.0
+                    ufo_phase = 0.0
+                    ufo_x = 0.0
+                    ufo_z = 0.0
+                    ufo_target_x = 0.0
+                    ufo_target_z = 0.0
+                    ufo_dust_timer = 0.0
+                    ufo_prev_x = 0.0
+                    ufo_prev_z = 0.0
+                    print("UFO laser hazard disabled")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")

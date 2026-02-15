@@ -324,6 +324,14 @@ TITLE_RED = 41      # "BATTLE" text - red team color
 TITLE_GOLD = 42     # "BROS" text - gold/amber accent
 TITLE_WHITE = 43    # Controls text - soft white/cream
 TITLE_CYAN = 44     # "PRESS SPACE" text - cyan highlight
+UFO_HULL = 45       # UFO saucer hull - silver metallic
+UFO_DOME = 46       # UFO cockpit dome - green glass
+UFO_LIGHTS = 47     # UFO running lights - pulsing cyan
+UFO_BEAM = 48       # UFO laser beam - bright green
+UFO_RIM = 49        # UFO middle belt/rim band
+
+# UFO dome flash (1.0 = normal, >1.0 = bright flash for telegraph/fire)
+ufo_dome_flash = ti.field(dtype=ti.f32, shape=())
 
 # Score digit flash brightness (1.0 = normal, >1.0 = bright flash)
 blue_score_flash = ti.field(dtype=ti.f32, shape=())

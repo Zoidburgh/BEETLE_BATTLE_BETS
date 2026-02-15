@@ -205,9 +205,20 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 44:  # TITLE_PINK - "SPACE/A/START" text (with flash)
         flash = simulation.title_flash[None]
         color = ti.math.vec3(1.0 * flash, 0.4 * flash, 0.7 * flash)  # Nice pink
+    elif voxel_type == 45:  # UFO_HULL - silver metallic
+        color = ti.math.vec3(0.75, 0.78, 0.82)
+    elif voxel_type == 46:  # UFO_DOME - green glass (flashes during telegraph/fire)
+        flash = simulation.ufo_dome_flash[None]
+        color = ti.math.vec3(0.2 * flash, 0.85 * flash, 0.3 * flash)
+    elif voxel_type == 47:  # UFO_LIGHTS - warm orange engine glow
+        color = ti.math.vec3(1.0, 0.6, 0.15)
+    elif voxel_type == 48:  # UFO_BEAM - bright green
+        color = ti.math.vec3(0.3, 1.0, 0.3)
+    elif voxel_type == 49:  # UFO_RIM - bright purple belt
+        color = ti.math.vec3(0.7, 0.15, 0.95)
 
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
-    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34 or voxel_type == 35:  # All beetle/ladybug shell parts
+    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34 or voxel_type == 35 or voxel_type == 45 or voxel_type == 49:  # All beetle/ladybug shell/UFO hull/rim parts
         shimmer = get_shimmer_from_lut(world_x, world_z)
         color *= shimmer
 
