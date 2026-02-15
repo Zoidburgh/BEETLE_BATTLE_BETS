@@ -9769,6 +9769,44 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
             simulation.debris_lifetime[idx] = (0.35 + ti.random() * 0.25) * (1.0 - h_frac * 0.6)  # base 0.35-0.6s, top 40% of that
 
 @ti.kernel
+def spawn_tornado_ground_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
+    """Spawn radial dust spray where tornado base meets solid arena floor."""
+    grid_cx = int(pos_x + simulation.n_grid / 2.0)
+    grid_cz = int(pos_z + simulation.n_grid / 2.0)
+    # Check if tornado center is over solid floor
+    if 0 <= grid_cx < 128 and 0 <= grid_cz < 128:
+        floor_y = floor_height_cache[grid_cx, grid_cz]
+        if floor_y > -500.0:  # Has floor (not a hole)
+            spawn_y = RENDER_Y_OFFSET + floor_y + 0.5
+            for i in range(8):
+                idx = ti.atomic_add(simulation.num_debris[None], 1)
+                if idx < simulation.MAX_DEBRIS:
+                    simulation.debris_active[idx] = 1
+                    ti.atomic_add(simulation.debris_active_count[None], 1)
+                    # Radial burst outward from tornado base
+                    angle = ti.random() * 6.283
+                    speed = 8.0 + ti.random() * 12.0
+                    # Spawn at base with slight random offset
+                    off_r = ti.random() * 2.0
+                    simulation.debris_pos[idx] = ti.math.vec3(
+                        pos_x + ti.cos(angle) * off_r,
+                        spawn_y + ti.random() * 1.5,
+                        pos_z + ti.sin(angle) * off_r
+                    )
+                    simulation.debris_vel[idx] = ti.math.vec3(
+                        ti.cos(angle) * speed + (ti.random() - 0.5) * 4.0,
+                        1.0 + ti.random() * 3.0,
+                        ti.sin(angle) * speed + (ti.random() - 0.5) * 4.0
+                    )
+                    # Dusty brown/tan tones
+                    cr = 0.55 + ti.random() * 0.15
+                    cg = 0.45 + ti.random() * 0.12
+                    cb = 0.30 + ti.random() * 0.10
+                    simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+                    simulation.debris_radius[idx] = 0.20
+                    simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
+
+@ti.kernel
 def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, time_val: ti.f32):
     """Fast chaotic sand blasting through the arena, synced to gust intensity."""
     floor_y = 33.5  # RENDER_Y_OFFSET + 0.5 (arena surface)
@@ -13707,6 +13745,7 @@ spawn_ball_bounce_dust(0.0, -100.0, 0.0, 10.0, 4.0)
 spawn_downwash_dust(0.0, -100.0, 0.5)
 spawn_downwash_landing_burst(0.0, -100.0)
 spawn_tornado_dust(0.0, -100.0, 0.0)
+spawn_tornado_ground_dust(0.0, -100.0, 0.0)
 spawn_sandstorm_dust(1.0, 0.0, 1.0, 0.0)
 clear_ufo_bounded(0.0, -100.0, 0.0)
 place_ufo_kernel(0.0, -100.0, 0.0, 0.0)
@@ -16574,6 +16613,7 @@ try:
             if tornado_dust_timer >= TORNADO_DUST_INTERVAL:
                 tornado_dust_timer -= TORNADO_DUST_INTERVAL
                 spawn_tornado_dust(tornado_x, tornado_z, tornado_time)
+                spawn_tornado_ground_dust(tornado_x, tornado_z, tornado_time)
 
             # Apply push/lift/tip to both beetles
             for beetle in (beetle_blue, beetle_red):
