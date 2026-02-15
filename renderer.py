@@ -260,15 +260,20 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
             base_color = simulation.debris_material[idx]
             lifetime = simulation.debris_lifetime[idx]
 
+            # Per-particle radius: use custom if set, otherwise default
+            base_radius = simulation.debris_radius[idx]
+            if base_radius < 0.01:
+                base_radius = DEBRIS_RADIUS
+
             if lifetime < 0.4:
                 t = lifetime / 0.4
                 alpha = ti.max(t * t, 0.0)
                 fade_target = base_color * 0.3 + ti.math.vec3(0.7, 0.7, 0.7)
                 voxel_colors[write_idx] = base_color * alpha + fade_target * (1.0 - alpha)
-                voxel_radii[write_idx] = DEBRIS_RADIUS * (0.3 + 0.7 * t)
+                voxel_radii[write_idx] = base_radius * (0.3 + 0.7 * t)
             else:
                 voxel_colors[write_idx] = base_color
-                voxel_radii[write_idx] = DEBRIS_RADIUS
+                voxel_radii[write_idx] = base_radius
 
     # ===== PHASE 3: Extract spray particles =====
     spray_count = simulation.num_spray[None]

@@ -126,6 +126,7 @@ debris_material = ti.Vector.field(3, dtype=ti.f32, shape=MAX_DEBRIS)  # RGB colo
 debris_lifetime = ti.field(dtype=ti.f32, shape=MAX_DEBRIS)  # Time alive (seconds)
 debris_active = ti.field(dtype=ti.i32, shape=MAX_DEBRIS)  # 1=alive, 0=dead (for free list pattern)
 debris_active_count = ti.field(dtype=ti.i32, shape=())  # Actual live particle count (for high water mark reset)
+debris_radius = ti.field(dtype=ti.f32, shape=MAX_DEBRIS)  # Per-particle radius (0 = use default DEBRIS_RADIUS)
 
 # Spray particle system (bombardier beetle acid spray)
 MAX_SPRAY = 500  # Pre-allocated pool for spray particles
@@ -268,6 +269,7 @@ THEME_CLOUDS = 14
 THEME_PTERODACTYL = 15
 THEME_SWAMP = 16
 THEME_DESERT = 17
+THEME_COMET = 18
 
 # Track each theme's voxel range
 theme_start_idx = {}   # theme_id -> start index in bg_* arrays
@@ -3674,6 +3676,7 @@ def toggle_theme(theme_id: int):
             THEME_PTERODACTYL: lambda: add_pterodactyl(),
             THEME_SWAMP: lambda: add_swamp(),
             THEME_DESERT: lambda: add_desert(),
+            THEME_COMET: lambda: add_comet(),
         }
         if theme_id in add_functions:
             add_functions[theme_id]()
@@ -3885,9 +3888,24 @@ def add_stars(count: int = 1200, seed: int = 42):
         idx += 1
         placed += 1
 
-    # === GIANT COMET - dome front pushing through space, tail streaming off ===
-    comet_voxels = 0
-    dome_R = 4.5   # physical radius of the dome
+    theme_start_idx[THEME_STARS] = start_idx
+    theme_count[THEME_STARS] = idx - start_idx
+    active_themes.add(THEME_STARS)
+    num_bg_voxels[None] = idx
+    print(f"Added {idx - start_idx} star voxels (total: {idx})")
+
+def add_comet():
+    """Add a giant comet orbiting the arena."""
+    global active_themes, theme_start_idx, theme_count
+    import math
+
+    if THEME_COMET in active_themes:
+        return
+
+    start_idx = num_bg_voxels[None]
+    idx = start_idx
+
+    dome_R = 4.5
     orbit_R = 112.0
 
     def add_comet_voxel(idx, trail, lateral, vertical, size, r, g, b):
@@ -3907,25 +3925,22 @@ def add_stars(count: int = 1200, seed: int = 42):
     # === FRONT TIP: static bright core ===
     tip_trail = -(dome_R) / orbit_R
     add_comet_voxel(idx, tip_trail, 0.0, 0.0, 4.1, 1.0, 0.4, 0.1)
-    idx += 1; comet_voxels += 1
+    idx += 1
 
     # === ANIMATED RINGS: flow from dome front to tail end ===
-    # 10 rings x 8 voxels each, staggered evenly across the cycle
     num_rings = 10
     voxels_per_ring = 8
-    cycle_period = 3.5
     for ring_id in range(num_rings):
         cycle_offset = ring_id * (8.0 / num_rings)
         for k in range(voxels_per_ring):
             if idx >= MAX_BACKGROUND_VOXELS - 5: break
             theta = k * 2 * math.pi / voxels_per_ring
-            # amplitude >= 100 flags this as animated ring; theta stored as amplitude-100
             bg_positions[idx] = ti.Vector([0.0, 40.0, 0.0])
-            bg_colors[idx] = ti.Vector([1.0, 0.3, 0.05])  # glowing red
+            bg_colors[idx] = ti.Vector([1.0, 0.3, 0.05])
             bg_size[idx] = 0.9
             bg_anim_type[idx] = BG_ANIM_COMET
-            bg_phase[idx] = cycle_offset       # stagger within cycle
-            bg_anim_amplitude[idx] = 100.0 + theta  # flag + ring angle
+            bg_phase[idx] = cycle_offset
+            bg_anim_amplitude[idx] = 100.0 + theta
             bg_anim_speed[idx] = 0.0
             bg_brightness[idx] = 1.0
             bg_offset_x[idx] = 0.0
@@ -3933,7 +3948,6 @@ def add_stars(count: int = 1200, seed: int = 42):
             bg_offset_z[idx] = 0.0
             bg_active[idx] = 1
             idx += 1
-            comet_voxels += 1
 
     # === CORE SPINE: static center tail line ===
     num_core = 15
@@ -3946,13 +3960,13 @@ def add_stars(count: int = 1200, seed: int = 42):
         g = 0.35 - frac * 0.25
         b = 0.08 - frac * 0.05
         add_comet_voxel(idx, trail, 0.0, 0.0, size, r, g, b)
-        idx += 1; comet_voxels += 1
+        idx += 1
 
-    theme_start_idx[THEME_STARS] = start_idx
-    theme_count[THEME_STARS] = idx - start_idx
-    active_themes.add(THEME_STARS)
+    theme_start_idx[THEME_COMET] = start_idx
+    theme_count[THEME_COMET] = idx - start_idx
+    active_themes.add(THEME_COMET)
     num_bg_voxels[None] = idx
-    print(f"Added {idx - start_idx} star voxels ({idx - start_idx - placed - comet_voxels} constellation, {placed} background, {comet_voxels} comet) (total: {idx})")
+    print(f"Added {idx - start_idx} comet voxels (total: {idx})")
 
 def add_grass(count: int = 625, seed: int = 42):
     """Add lush grass with ground cover, clumps, varied heights, and wildflowers."""

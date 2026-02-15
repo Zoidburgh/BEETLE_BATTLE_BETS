@@ -1062,6 +1062,16 @@ TORNADO_DUST_INTERVAL = 0.013     # ~75Hz particle spawn rate
 TORNADO_DUST_COUNT = 35           # Particles per spawn burst
 TORNADO_HEIGHT = 35.0             # Visual funnel height (voxels above arena)
 
+# Arena sandstorm hazard
+SANDSTORM_FORCE = 200.0           # Lateral push strength (must overpower 0.88 friction to feel meaningful)
+SANDSTORM_LIFT = 55.0             # Upward pop during gusts (linear scaling, kicks in above 20% intensity)
+SANDSTORM_TIP = 2000.0            # Tipping torque at strong gusts (tornado is 5000, this is gentler)
+SANDSTORM_YAW = 1.5               # Slight yaw wobble from wind buffeting
+SANDSTORM_DUST_INTERVAL = 0.013   # 75Hz spawn rate (same as tornado)
+SANDSTORM_DUST_MAX = 20           # Max particles per spawn at peak
+SANDSTORM_PARTICLE_SPEED = 40.0   # Horizontal streak speed
+SANDSTORM_PARTICLE_HEIGHT = 5.0   # Max particle height above arena floor
+
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
 
@@ -1433,6 +1443,7 @@ def reset_match():
     global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
+    global sandstorm_mode, sandstorm_time, sandstorm_dust_timer, sandstorm_force_intensity
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1534,6 +1545,12 @@ def reset_match():
     tornado_z = 0.0
     tornado_dust_timer = 0.0
     tornado_phase = 0.0
+
+    # Reset sandstorm hazard state
+    sandstorm_mode = False
+    sandstorm_time = 0.0
+    sandstorm_dust_timer = 0.0
+    sandstorm_force_intensity = 0.0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2397,6 +2414,12 @@ tornado_x = 0.0                   # Current tornado center x
 tornado_z = 0.0                   # Current tornado center z
 tornado_dust_timer = 0.0          # Particle spawn timer
 tornado_phase = 0.0               # Accumulated phase for variable-speed path
+
+# Arena sandstorm hazard state
+sandstorm_mode = False
+sandstorm_time = 0.0
+sandstorm_dust_timer = 0.0
+sandstorm_force_intensity = 0.0   # Smoothed intensity for physics (decays slowly, lingers after particles)
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -9336,6 +9359,7 @@ def update_debris_particles(dt: ti.f32):
         # Mark dead particles as inactive (will be skipped next frame, slot reusable)
         if simulation.debris_lifetime[idx] <= 0.0:
             simulation.debris_active[idx] = 0
+            simulation.debris_radius[idx] = 0.0  # Reset so next occupant gets default size
             ti.atomic_sub(simulation.debris_active_count[None], 1)  # Track live count
             continue
 
@@ -9361,6 +9385,7 @@ def cleanup_dead_debris():
                 simulation.debris_vel[write_idx] = simulation.debris_vel[read_idx]
                 simulation.debris_material[write_idx] = simulation.debris_material[read_idx]
                 simulation.debris_lifetime[write_idx] = simulation.debris_lifetime[read_idx]
+                simulation.debris_radius[write_idx] = simulation.debris_radius[read_idx]
                 simulation.debris_active[write_idx] = 1  # Mark compacted slot as active
             write_idx += 1
 
@@ -9702,6 +9727,81 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
             # Shorter lifetime at top (wide part) so particles die before drifting off the funnel
             simulation.debris_lifetime[idx] = (0.35 + ti.random() * 0.25) * (1.0 - h_frac * 0.6)  # base 0.35-0.6s, top 40% of that
+
+@ti.kernel
+def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, time_val: ti.f32):
+    """Fast chaotic sand blasting through the arena, synced to gust intensity."""
+    floor_y = 33.5  # RENDER_Y_OFFSET + 0.5 (arena surface)
+
+    for i in range(50):  # Big pool — intensity skip thins at low, dense wall at peak
+        if ti.random() > intensity * intensity:  # Quadratic: ramps up hard at high intensity
+            continue
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            # Mix of close and far spawns — close ones for responsiveness,
+            # far ones so you can see the storm coming from a distance
+            perp_x = -wind_dz
+            perp_z = wind_dx
+            spawn_dist = 25.0 + ti.random() * 75.0  # 25-100 units upwind
+            spread = (ti.random() - 0.5) * 90.0  # Wide perpendicular spread
+            spawn_x = -wind_dx * spawn_dist + perp_x * spread
+            spawn_z = -wind_dz * spawn_dist + perp_z * spread
+            # Spawn above arena surface — enough to not sink through during short flight
+            spawn_y = floor_y + 2.0 + ti.random() * 6.0
+            simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
+            # Speed scales hard with intensity: visible breeze → ripping blast
+            spd = (80.0 + intensity * 270.0) + ti.random() * 40.0  # 80-390 units/s
+            # Chaotic direction: ±15% lateral wobble
+            dir_spread = (ti.random() - 0.5) * 0.3
+            vx = (wind_dx + perp_x * dir_spread) * spd
+            vz = (wind_dz + perp_z * dir_spread) * spd
+            # Upward kick to fight gravity — scale with spawn distance (far ones fly longer)
+            vy = 3.0 + spawn_dist * 0.06 + ti.random() * 3.0
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Yellow/brown sandy tones — initialize before branches (Taichi scoping)
+            cr = 0.80
+            cg = 0.70
+            cb = 0.25
+            color_choice = ti.random()
+            if color_choice < 0.2:
+                # Bright yellow sand
+                cr = 0.85 + ti.random() * 0.10
+                cg = 0.75 + ti.random() * 0.10
+                cb = 0.20 + ti.random() * 0.10
+            elif color_choice < 0.4:
+                # Golden yellow
+                cr = 0.90 + ti.random() * 0.10
+                cg = 0.70 + ti.random() * 0.10
+                cb = 0.15 + ti.random() * 0.10
+            elif color_choice < 0.55:
+                # Dusty brown
+                cr = 0.60 + ti.random() * 0.10
+                cg = 0.45 + ti.random() * 0.08
+                cb = 0.20 + ti.random() * 0.08
+            elif color_choice < 0.75:
+                # Dark earth brown
+                cr = 0.50 + ti.random() * 0.10
+                cg = 0.38 + ti.random() * 0.08
+                cb = 0.18 + ti.random() * 0.08
+            elif color_choice < 0.9:
+                # Deep dark brown
+                cr = 0.40 + ti.random() * 0.10
+                cg = 0.30 + ti.random() * 0.08
+                cb = 0.14 + ti.random() * 0.06
+            else:
+                # Warm ochre yellow
+                cr = 0.80 + ti.random() * 0.10
+                cg = 0.65 + ti.random() * 0.10
+                cb = 0.18 + ti.random() * 0.10
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            # Sand grain size
+            simulation.debris_radius[idx] = 0.24
+            # Lifetime scales with spawn distance — far particles live longer to make the trip,
+            # close ones die fast so screen clears quickly when gust ends.
+            # spawn_dist/spd = travel time to arena. Add margin to cross arena + exit.
+            simulation.debris_lifetime[idx] = spawn_dist / spd + 0.4 + ti.random() * 0.15
 
 @ti.kernel
 def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
@@ -13291,6 +13391,7 @@ spawn_ball_bounce_dust(0.0, -100.0, 0.0, 10.0, 4.0)
 spawn_downwash_dust(0.0, -100.0, 0.5)
 spawn_downwash_landing_burst(0.0, -100.0)
 spawn_tornado_dust(0.0, -100.0, 0.0)
+spawn_sandstorm_dust(1.0, 0.0, 1.0, 0.0)
 update_loading(2)
 
 # PHASE 3: Debris/particle kernels - render with debris to warm up renderer's debris code paths
@@ -14872,7 +14973,8 @@ try:
 
             # Compact when approaching MAX_DEBRIS_CHECK (5000) to keep particles renderable
             # New particles spawned beyond 5000 won't be rendered or updated!
-            if simulation.num_debris[None] > 4000:
+            # Lower threshold (2500) to prevent sandstorm from starving other particle effects
+            if simulation.num_debris[None] > 2500:
                 cleanup_dead_debris()
         _t_debris_only = time.perf_counter()
         _physics_timing['debris_update'] = _physics_timing.get('debris_update', 0) + (_t_debris_only - _t_debris_start) * 1000
@@ -15364,6 +15466,20 @@ try:
                         tornado_x = 0.0
                         tornado_z = 0.0
                         print("Tornado hazard disabled (from host)")
+
+                # Apply sandstorm mode state (hazard, independent of arena)
+                if opts.get('sandstorm_mode', False) != sandstorm_mode:
+                    sandstorm_mode = opts.get('sandstorm_mode', False)
+                    if sandstorm_mode:
+                        sandstorm_time = 0.0
+                        sandstorm_dust_timer = 0.0
+                        sandstorm_force_intensity = 0.0
+                        print("SANDSTORM HAZARD ENABLED (from host)")
+                    else:
+                        sandstorm_time = 0.0
+                        sandstorm_dust_timer = 0.0
+                        sandstorm_force_intensity = 0.0
+                        print("Sandstorm hazard disabled (from host)")
 
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
@@ -16138,6 +16254,68 @@ try:
                         local_z = -dir_x * sin_r + dir_z * cos_r
                         beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
                         beetle.pitch_velocity += local_z * tip_mag / max(beetle.pitch_inertia, 0.1)
+
+        # === ARENA SANDSTORM HAZARD ===
+        if sandstorm_mode:
+            sandstorm_time += PHYSICS_TIMESTEP
+
+            # Storm envelope: main sine drives timing (~10s cycle), second modulates strength
+            # This gives full rise-peak-fall storms with varying intensity, no blips
+            envelope = math.sin(sandstorm_time * 0.6)
+            strength_mod = 0.8 + 0.2 * math.sin(sandstorm_time * 0.21)  # 0.6-1.0 strength variation
+            raw = envelope * strength_mod
+            sandstorm_intensity = max(0.0, (raw - 0.1)) / 0.9
+            sandstorm_intensity = min(sandstorm_intensity, 1.0)
+            # Floor: every active storm is at least 50% — no weak storms
+            if sandstorm_intensity > 0.0 and sandstorm_intensity < 0.5:
+                sandstorm_intensity = 0.5
+
+            # Wind direction: slow rotation with slight wobble
+            sandstorm_angle = sandstorm_time * 0.15 + math.sin(sandstorm_time * 0.37) * 0.5
+            wind_dx = math.cos(sandstorm_angle)
+            wind_dz = math.sin(sandstorm_angle)
+
+            # Spawn sand particles (driven by raw intensity)
+            if sandstorm_intensity > 0.0:
+                sandstorm_dust_timer += PHYSICS_TIMESTEP
+                if sandstorm_dust_timer >= SANDSTORM_DUST_INTERVAL:
+                    sandstorm_dust_timer -= SANDSTORM_DUST_INTERVAL
+                    spawn_sandstorm_dust(wind_dx, wind_dz, sandstorm_intensity, sandstorm_time)
+            else:
+                sandstorm_dust_timer = 0.0
+
+            # Smoothed force intensity — snaps up instantly, decays slowly (~0.8s tail)
+            # so push/lift lingers after particles thin out
+            if sandstorm_intensity > sandstorm_force_intensity:
+                sandstorm_force_intensity = sandstorm_intensity
+            else:
+                sandstorm_force_intensity = max(sandstorm_intensity, sandstorm_force_intensity - PHYSICS_TIMESTEP * 1.2)
+
+            # Apply forces to both beetles (using smoothed intensity)
+            if sandstorm_force_intensity > 0.0:
+                for beetle in (beetle_blue, beetle_red):
+                    if beetle.active and not beetle.is_falling:
+                        # Lateral push (always active during gusts)
+                        push_x = wind_dx * SANDSTORM_FORCE * sandstorm_force_intensity * PHYSICS_TIMESTEP
+                        push_z = wind_dz * SANDSTORM_FORCE * sandstorm_force_intensity * PHYSICS_TIMESTEP
+                        beetle.vx += push_x
+                        beetle.vz += push_z
+
+                        # Lift — kicks in above 20% intensity, so even moderate storms lift a bit
+                        gust_extra = max(0.0, sandstorm_force_intensity - 0.2) / 0.8
+                        beetle.vy += SANDSTORM_LIFT * gust_extra * PHYSICS_TIMESTEP
+
+                        # Tipping torque — wind pushes beetle over in wind direction (local frame)
+                        tip_mag = SANDSTORM_TIP * gust_extra * PHYSICS_TIMESTEP
+                        cos_r = math.cos(beetle.rotation)
+                        sin_r = math.sin(beetle.rotation)
+                        local_x = wind_dx * cos_r + wind_dz * sin_r
+                        local_z = -wind_dx * sin_r + wind_dz * cos_r
+                        beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
+                        beetle.pitch_velocity += local_z * tip_mag / max(beetle.pitch_inertia, 0.1)
+
+                        # Tiny yaw wiggle to sell the wind feel
+                        beetle.rotation += SANDSTORM_YAW * sandstorm_force_intensity * PHYSICS_TIMESTEP * math.sin(sandstorm_time * 3.0)
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
@@ -18042,7 +18220,7 @@ try:
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -18110,7 +18288,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -18153,7 +18331,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -18196,7 +18374,7 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -18239,7 +18417,7 @@ try:
                     print("FIGURE 8 ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -18282,7 +18460,7 @@ try:
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -18325,7 +18503,7 @@ try:
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -18369,7 +18547,7 @@ try:
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
             # === HAZARDS ===
             window.GUI.text("")
@@ -18394,7 +18572,24 @@ try:
                     print("Tornado hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
+
+            sandstorm_button_text = "SANDSTORM: ON" if sandstorm_mode else "SANDSTORM: OFF"
+            if window.GUI.button(sandstorm_button_text):
+                sandstorm_mode = not sandstorm_mode
+                if sandstorm_mode:
+                    sandstorm_time = 0.0
+                    sandstorm_dust_timer = 0.0
+                    sandstorm_force_intensity = 0.0
+                    print("SANDSTORM HAZARD ENABLED - brace for wind!")
+                else:
+                    sandstorm_time = 0.0
+                    sandstorm_dust_timer = 0.0
+                    sandstorm_force_intensity = 0.0
+                    print("Sandstorm hazard disabled")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")
