@@ -11780,7 +11780,7 @@ BEETLE_PRESETS = [
     {"name": "Obsidian",      "body": (0.12, 0.1, 0.15),  "legs": (0.2, 0.17, 0.22), "leg_tips": (0.05, 0.04, 0.06),"stripe": (0.85, 0.7, 0.2),  "horn_tips": (0.75, 0.6, 0.15)},
     {"name": "Sakura",        "body": (1.0, 0.6, 0.7),    "legs": (0.95, 0.85, 0.88),"leg_tips": (0.3, 0.1, 0.15),  "stripe": (1.0, 0.8, 0.85),  "horn_tips": (0.8, 0.3, 0.4)},
     {"name": "Tiger",         "body": (1.0, 0.55, 0.05),  "legs": (0.95, 0.9, 0.85), "leg_tips": (0.1, 0.08, 0.02), "stripe": (0.1, 0.08, 0.02), "horn_tips": (0.15, 0.1, 0.02)},
-    {"name": "Poison Frog",   "body": (0.1, 0.9, 0.2),    "legs": (0.3, 0.2, 0.9),   "leg_tips": (0.05, 0.02, 0.2), "stripe": (0.9, 0.95, 0.1),  "horn_tips": (0.2, 0.1, 0.8)},
+    {"name": "Poison Frog",   "body": (0.1, 0.9, 0.2),    "legs": (0.3, 0.2, 0.9),   "leg_tips": (0.1, 0.15, 0.9),  "stripe": (0.9, 0.95, 0.1),  "horn_tips": (0.2, 0.1, 0.8)},
     {"name": "Inferno",       "body": (0.95, 0.2, 0.0),   "legs": (1.0, 0.6, 0.0),   "leg_tips": (0.2, 0.02, 0.0),  "stripe": (1.0, 0.9, 0.1),   "horn_tips": (1.0, 0.4, 0.0)},
     {"name": "Ocean",         "body": (0.05, 0.3, 0.7),   "legs": (0.1, 0.5, 0.75),  "leg_tips": (0.02, 0.08, 0.2), "stripe": (0.2, 0.8, 0.85),  "horn_tips": (0.05, 0.2, 0.5)},
     {"name": "Gold",          "body": (0.85, 0.7, 0.15),  "legs": (0.95, 0.8, 0.3),  "leg_tips": (0.25, 0.18, 0.02),"stripe": (1.0, 0.95, 0.5),  "horn_tips": (0.6, 0.45, 0.05)},
@@ -11789,7 +11789,7 @@ BEETLE_PRESETS = [
     {"name": "Coral",         "body": (1.0, 0.45, 0.4),   "legs": (1.0, 0.7, 0.6),   "leg_tips": (0.3, 0.1, 0.08),  "stripe": (1.0, 0.85, 0.7),  "horn_tips": (0.8, 0.3, 0.25)},
     {"name": "Stealth",       "body": (0.2, 0.2, 0.22),   "legs": (0.3, 0.3, 0.32),  "leg_tips": (0.05, 0.05, 0.06),"stripe": (0.85, 0.15, 0.1), "horn_tips": (0.7, 0.1, 0.08)},
     {"name": "Lime",          "body": (0.6, 0.95, 0.1),   "legs": (0.75, 1.0, 0.4),  "leg_tips": (0.15, 0.25, 0.02),"stripe": (0.85, 1.0, 0.5),  "horn_tips": (0.4, 0.65, 0.05)},
-    {"name": "Cyberpunk",     "body": (0.12, 0.05, 0.18), "legs": (0.08, 0.25, 0.3), "leg_tips": (0.03, 0.02, 0.05),"stripe": (0.0, 1.0, 0.9),   "horn_tips": (0.0, 0.75, 0.7)},
+    {"name": "Cyberpunk",     "body": (0.12, 0.05, 0.18), "legs": (0.08, 0.25, 0.3), "leg_tips": (0.0, 0.85, 0.8),  "stripe": (0.0, 1.0, 0.9),   "horn_tips": (0.0, 0.75, 0.7)},
     {"name": "Phantom",       "body": (0.95, 0.93, 0.9),  "legs": (0.8, 0.78, 0.75), "leg_tips": (0.2, 0.18, 0.17), "stripe": (0.85, 0.05, 0.05),"horn_tips": (0.15, 0.12, 0.12)},
     {"name": "Toxic",         "body": (0.65, 1.0, 0.0),   "legs": (0.8, 0.95, 0.4),  "leg_tips": (0.1, 0.02, 0.15), "stripe": (0.9, 0.0, 0.5),   "horn_tips": (0.15, 0.05, 0.2)},
     {"name": "Midnight",      "body": (0.05, 0.05, 0.2),  "legs": (0.1, 0.12, 0.35), "leg_tips": (0.02, 0.02, 0.06),"stripe": (1.0, 0.85, 0.1),  "horn_tips": (0.8, 0.65, 0.08)},
@@ -11801,13 +11801,13 @@ BEETLE_PRESETS = [
     {"name": "Glacier",       "body": (0.15, 0.75, 0.8),  "legs": (0.45, 0.85, 0.88),"leg_tips": (0.04, 0.2, 0.22), "stripe": (0.92, 0.97, 1.0), "horn_tips": (0.1, 0.45, 0.5)},
     {"name": "Wasp",          "body": (0.06, 0.06, 0.04), "legs": (0.95, 0.9, 0.05), "leg_tips": (0.03, 0.03, 0.02),"stripe": (1.0, 0.95, 0.0),  "horn_tips": (0.04, 0.04, 0.02)},
     {"name": "Crimson",       "body": (0.6, 0.02, 0.05),  "legs": (0.75, 0.2, 0.15), "leg_tips": (0.15, 0.02, 0.02),"stripe": (1.0, 0.82, 0.1),  "horn_tips": (0.7, 0.55, 0.08)},
-    {"name": "Electric",      "body": (0.05, 0.35, 1.0),  "legs": (0.35, 0.6, 1.0),  "leg_tips": (0.02, 0.05, 0.25),"stripe": (1.0, 0.92, 0.05), "horn_tips": (0.8, 0.7, 0.0)},
-    {"name": "Lava",          "body": (0.12, 0.08, 0.08), "legs": (0.25, 0.15, 0.1), "leg_tips": (0.05, 0.03, 0.02),"stripe": (1.0, 0.55, 0.0),  "horn_tips": (0.9, 0.35, 0.05)},
+    {"name": "Electric",      "body": (0.05, 0.35, 1.0),  "legs": (0.35, 0.6, 1.0),  "leg_tips": (0.95, 0.9, 0.3),  "stripe": (1.0, 0.92, 0.05), "horn_tips": (0.8, 0.7, 0.0)},
+    {"name": "Lava",          "body": (0.12, 0.08, 0.08), "legs": (0.25, 0.15, 0.1), "leg_tips": (1.0, 0.4, 0.05),  "stripe": (1.0, 0.55, 0.0),  "horn_tips": (0.9, 0.35, 0.05)},
     {"name": "Vaporwave",     "body": (0.65, 0.5, 0.9),   "legs": (0.5, 0.85, 0.7),  "leg_tips": (0.15, 0.08, 0.25),"stripe": (1.0, 0.4, 0.7),   "horn_tips": (0.35, 0.65, 0.55)},
     {"name": "Tundra",        "body": (0.35, 0.45, 0.58), "legs": (0.6, 0.65, 0.7),  "leg_tips": (0.1, 0.1, 0.13),  "stripe": (0.95, 0.65, 0.1), "horn_tips": (0.7, 0.45, 0.08)},
     {"name": "Shadow",        "body": (0.08, 0.04, 0.06), "legs": (0.18, 0.06, 0.08),"leg_tips": (0.03, 0.01, 0.02),"stripe": (0.85, 0.08, 0.1), "horn_tips": (0.45, 0.04, 0.06)},
     {"name": "Monarch",       "body": (0.95, 0.45, 0.0),  "legs": (0.08, 0.06, 0.03),"leg_tips": (0.03, 0.02, 0.01),"stripe": (0.95, 0.92, 0.88),"horn_tips": (0.06, 0.04, 0.02)},
-    {"name": "Plasma",        "body": (0.85, 0.05, 0.55), "legs": (0.1, 0.8, 0.85),  "leg_tips": (0.15, 0.03, 0.1), "stripe": (0.95, 1.0, 0.15), "horn_tips": (0.08, 0.6, 0.65)},
+    {"name": "Plasma",        "body": (0.85, 0.05, 0.55), "legs": (0.1, 0.8, 0.85),  "leg_tips": (0.9, 0.1, 0.6),   "stripe": (0.95, 1.0, 0.15), "horn_tips": (0.08, 0.6, 0.65)},
     {"name": "Jade",          "body": (0.1, 0.5, 0.35),   "legs": (0.25, 0.65, 0.5), "leg_tips": (0.03, 0.12, 0.08),"stripe": (0.9, 0.82, 0.45), "horn_tips": (0.05, 0.3, 0.2)},
     # --- Batch 3: Pop Culture & Iconic References (#41-60) ---
     {"name": "Hulk",          "body": (0.15, 0.65, 0.1),  "legs": (0.5, 0.15, 0.65), "leg_tips": (0.04, 0.18, 0.03),"stripe": (0.55, 0.2, 0.7),  "horn_tips": (0.25, 0.08, 0.35)},
@@ -11815,10 +11815,10 @@ BEETLE_PRESETS = [
     {"name": "Superman",      "body": (0.1, 0.12, 0.85),  "legs": (0.85, 0.1, 0.08), "leg_tips": (0.03, 0.03, 0.2), "stripe": (0.9, 0.12, 0.1),  "horn_tips": (0.9, 0.8, 0.1)},
     {"name": "Joker",         "body": (0.4, 0.1, 0.55),   "legs": (0.2, 0.7, 0.15),  "leg_tips": (0.1, 0.03, 0.15), "stripe": (0.3, 0.85, 0.2),  "horn_tips": (0.1, 0.3, 0.05)},
     {"name": "Deadpool",      "body": (0.85, 0.08, 0.08), "legs": (0.15, 0.05, 0.05),"leg_tips": (0.04, 0.02, 0.02),"stripe": (0.95, 0.92, 0.9), "horn_tips": (0.08, 0.05, 0.05)},
-    {"name": "Wolverine",     "body": (0.95, 0.8, 0.05),  "legs": (0.1, 0.12, 0.45), "leg_tips": (0.22, 0.18, 0.02),"stripe": (0.12, 0.15, 0.5), "horn_tips": (0.7, 0.7, 0.72)},
+    {"name": "Wolverine",     "body": (0.95, 0.8, 0.05),  "legs": (0.1, 0.12, 0.45), "leg_tips": (0.75, 0.78, 0.82),"stripe": (0.12, 0.15, 0.5), "horn_tips": (0.7, 0.7, 0.72)},
     {"name": "Cap America",   "body": (0.1, 0.15, 0.7),   "legs": (0.8, 0.12, 0.1),  "leg_tips": (0.03, 0.05, 0.18),"stripe": (0.95, 0.93, 0.9), "horn_tips": (0.7, 0.1, 0.08)},
     {"name": "Thanos",        "body": (0.45, 0.12, 0.65), "legs": (0.55, 0.25, 0.7), "leg_tips": (0.12, 0.04, 0.18),"stripe": (0.95, 0.8, 0.15), "horn_tips": (0.75, 0.6, 0.1)},
-    {"name": "Iron Man",      "body": (0.7, 0.08, 0.05),  "legs": (0.85, 0.7, 0.12), "leg_tips": (0.18, 0.03, 0.02),"stripe": (0.9, 0.75, 0.1),  "horn_tips": (0.5, 0.04, 0.03)},
+    {"name": "Iron Man",      "body": (0.7, 0.08, 0.05),  "legs": (0.85, 0.7, 0.12), "leg_tips": (0.4, 0.7, 1.0),   "stripe": (0.9, 0.75, 0.1),  "horn_tips": (0.5, 0.04, 0.03)},
     {"name": "Mario",         "body": (0.9, 0.12, 0.08),  "legs": (0.15, 0.2, 0.75), "leg_tips": (0.22, 0.03, 0.02),"stripe": (0.95, 0.93, 0.9), "horn_tips": (0.35, 0.2, 0.05)},
     {"name": "Luigi",         "body": (0.15, 0.7, 0.15),  "legs": (0.12, 0.1, 0.5),  "leg_tips": (0.04, 0.18, 0.04),"stripe": (0.92, 0.9, 0.85), "horn_tips": (0.08, 0.06, 0.28)},
     {"name": "Sonic",         "body": (0.05, 0.35, 0.95), "legs": (0.85, 0.15, 0.1), "leg_tips": (0.02, 0.08, 0.22),"stripe": (0.95, 0.8, 0.6),  "horn_tips": (0.9, 0.75, 0.1)},
@@ -11847,7 +11847,7 @@ BEETLE_PRESETS = [
     {"name": "Portal",        "body": (0.88, 0.9, 0.92),  "legs": (0.95, 0.55, 0.05),"leg_tips": (0.2, 0.2, 0.22),  "stripe": (0.15, 0.55, 1.0), "horn_tips": (0.5, 0.3, 0.03)},
     # Movies, TV & Memes
     {"name": "Shrek",         "body": (0.3, 0.5, 0.1),    "legs": (0.4, 0.25, 0.1),  "leg_tips": (0.08, 0.12, 0.03),"stripe": (0.75, 0.65, 0.45),"horn_tips": (0.25, 0.18, 0.06)},
-    {"name": "Tron",          "body": (0.04, 0.06, 0.08), "legs": (0.06, 0.08, 0.1), "leg_tips": (0.02, 0.03, 0.04),"stripe": (0.0, 0.95, 1.0),  "horn_tips": (0.0, 0.5, 0.55)},
+    {"name": "Tron",          "body": (0.04, 0.06, 0.08), "legs": (0.06, 0.08, 0.1), "leg_tips": (0.0, 0.8, 0.85),  "stripe": (0.0, 0.95, 1.0),  "horn_tips": (0.0, 0.5, 0.55)},
     {"name": "Boba Fett",     "body": (0.35, 0.45, 0.2),  "legs": (0.7, 0.6, 0.4),   "leg_tips": (0.1, 0.12, 0.06), "stripe": (0.6, 0.15, 0.08), "horn_tips": (0.35, 0.1, 0.05)},
     {"name": "Ghostbusters",  "body": (0.72, 0.65, 0.45), "legs": (0.6, 0.55, 0.38), "leg_tips": (0.18, 0.15, 0.1), "stripe": (0.08, 0.08, 0.08),"horn_tips": (0.75, 0.12, 0.08)},
     {"name": "Grimace",       "body": (0.42, 0.08, 0.55), "legs": (0.55, 0.2, 0.65), "leg_tips": (0.12, 0.03, 0.15),"stripe": (0.5, 0.15, 0.6),  "horn_tips": (0.35, 0.06, 0.42)},
@@ -11855,7 +11855,91 @@ BEETLE_PRESETS = [
     {"name": "Rasta",         "body": (0.15, 0.55, 0.08), "legs": (0.7, 0.12, 0.08), "leg_tips": (0.04, 0.14, 0.02),"stripe": (0.95, 0.8, 0.1),  "horn_tips": (0.4, 0.08, 0.04)},
     {"name": "Garfield",      "body": (0.9, 0.45, 0.02),  "legs": (0.1, 0.08, 0.06), "leg_tips": (0.22, 0.1, 0.01), "stripe": (0.08, 0.07, 0.05),"horn_tips": (0.06, 0.05, 0.03)},
     {"name": "Ryu",           "body": (0.92, 0.9, 0.85),  "legs": (0.55, 0.35, 0.15),"leg_tips": (0.2, 0.18, 0.08), "stripe": (0.9, 0.12, 0.05), "horn_tips": (0.3, 0.2, 0.08)},
+    # Brands & Vibes
+    {"name": "McDonald's",    "body": (0.85, 0.1, 0.05),  "legs": (1.0, 0.85, 0.0),  "leg_tips": (0.25, 0.03, 0.02),"stripe": (0.95, 0.8, 0.05), "horn_tips": (0.5, 0.05, 0.03)},
+    {"name": "Coca-Cola",     "body": (0.72, 0.02, 0.02), "legs": (0.95, 0.93, 0.9), "leg_tips": (0.18, 0.01, 0.01),"stripe": (0.97, 0.95, 0.92),"horn_tips": (0.55, 0.02, 0.02)},
+    {"name": "Dunkin'",       "body": (0.95, 0.45, 0.0),  "legs": (0.9, 0.2, 0.45),  "leg_tips": (0.25, 0.1, 0.0),  "stripe": (0.85, 0.15, 0.4), "horn_tips": (0.7, 0.35, 0.0)},
+    {"name": "Reese's",       "body": (0.35, 0.18, 0.05), "legs": (0.95, 0.55, 0.0), "leg_tips": (0.12, 0.06, 0.02),"stripe": (0.85, 0.65, 0.25),"horn_tips": (0.7, 0.4, 0.0)},
+    {"name": "Hot Cheetos",   "body": (0.9, 0.15, 0.02),  "legs": (1.0, 0.4, 0.02),  "leg_tips": (0.25, 0.04, 0.01),"stripe": (0.95, 0.55, 0.0), "horn_tips": (0.8, 0.08, 0.02)},
+    {"name": "Oreo",          "body": (0.08, 0.06, 0.05), "legs": (0.92, 0.88, 0.75),"leg_tips": (0.04, 0.03, 0.02),"stripe": (0.95, 0.92, 0.8), "horn_tips": (0.1, 0.2, 0.6)},
+    {"name": "Candy Corn",    "body": (1.0, 0.7, 0.1),    "legs": (1.0, 0.85, 0.0),  "leg_tips": (0.95, 0.92, 0.82),"stripe": (0.98, 0.95, 0.85),"horn_tips": (0.85, 0.45, 0.0)},
+    {"name": "IKEA",          "body": (0.0, 0.28, 0.7),   "legs": (0.05, 0.22, 0.55),"leg_tips": (0.02, 0.08, 0.18),"stripe": (1.0, 0.82, 0.0),  "horn_tips": (0.8, 0.65, 0.0)},
+    {"name": "John Deere",    "body": (0.15, 0.5, 0.1),   "legs": (0.12, 0.4, 0.08), "leg_tips": (0.04, 0.15, 0.03),"stripe": (1.0, 0.85, 0.0),  "horn_tips": (0.8, 0.68, 0.0)},
+    {"name": "Barbie",        "body": (0.95, 0.15, 0.55), "legs": (0.95, 0.92, 0.9), "leg_tips": (0.25, 0.04, 0.14),"stripe": (1.0, 0.25, 0.6),  "horn_tips": (0.9, 0.75, 0.15)},
+    {"name": "Monster",       "body": (0.02, 0.02, 0.02), "legs": (0.05, 0.05, 0.05),"leg_tips": (0.01, 0.01, 0.01),"stripe": (0.3, 0.95, 0.1),  "horn_tips": (0.15, 0.5, 0.05)},
+    {"name": "Neapolitan",    "body": (0.9, 0.55, 0.55),  "legs": (0.4, 0.2, 0.1),   "leg_tips": (0.22, 0.08, 0.05),"stripe": (0.95, 0.9, 0.75), "horn_tips": (0.6, 0.3, 0.15)},
+    {"name": "Tide Pod",      "body": (0.95, 0.5, 0.1),   "legs": (0.1, 0.35, 0.85), "leg_tips": (0.25, 0.12, 0.0), "stripe": (0.95, 0.95, 0.92),"horn_tips": (0.05, 0.2, 0.55)},
+    {"name": "Christmas",    "body": (0.8, 0.05, 0.05),  "legs": (0.1, 0.55, 0.1),  "leg_tips": (0.22, 0.02, 0.02),"stripe": (0.95, 0.85, 0.15),"horn_tips": (0.04, 0.2, 0.04)},
+    {"name": "Lakers",       "body": (0.35, 0.1, 0.6),   "legs": (0.95, 0.75, 0.1), "leg_tips": (0.12, 0.04, 0.2), "stripe": (0.9, 0.8, 0.15),  "horn_tips": (0.7, 0.55, 0.05)},
+    {"name": "SpongeBob",    "body": (0.95, 0.85, 0.15), "legs": (0.45, 0.28, 0.08),"leg_tips": (0.2, 0.1, 0.03),  "stripe": (0.95, 0.93, 0.88),"horn_tips": (0.3, 0.18, 0.05)},
+    {"name": "Kirby",        "body": (0.95, 0.45, 0.55), "legs": (0.85, 0.15, 0.15),"leg_tips": (0.25, 0.05, 0.08),"stripe": (0.95, 0.7, 0.75), "horn_tips": (0.65, 0.1, 0.12)},
+    {"name": "Yoshi",        "body": (0.25, 0.75, 0.15), "legs": (0.92, 0.9, 0.85), "leg_tips": (0.08, 0.2, 0.04), "stripe": (0.85, 0.15, 0.05),"horn_tips": (0.65, 0.1, 0.03)},
+    {"name": "Gulf Racing",  "body": (0.55, 0.8, 0.92),  "legs": (0.7, 0.88, 0.95), "leg_tips": (0.15, 0.25, 0.3), "stripe": (0.95, 0.5, 0.15), "horn_tips": (0.75, 0.35, 0.08)},
+    {"name": "Among Us",     "body": (0.78, 0.08, 0.08), "legs": (0.65, 0.06, 0.06),"leg_tips": (0.2, 0.02, 0.02), "stripe": (0.3, 0.85, 0.95), "horn_tips": (0.15, 0.55, 0.6)},
+    # --- Category 1: Neon Tips (#101-106) ---
+    {"name": "Neon Frost",    "body": (0.08, 0.1, 0.2),  "legs": (0.15, 0.2, 0.3),  "leg_tips": (0.1, 0.95, 0.9),  "stripe": (0.12, 0.15, 0.25), "horn_tips": (0.05, 0.85, 0.8)},
+    {"name": "Neon Bloom",    "body": (0.1, 0.18, 0.08), "legs": (0.2, 0.28, 0.15), "leg_tips": (0.95, 0.1, 0.7),  "stripe": (0.15, 0.22, 0.1),  "horn_tips": (0.85, 0.05, 0.6)},
+    {"name": "Neon Pulse",    "body": (0.15, 0.05, 0.2), "legs": (0.25, 0.12, 0.3), "leg_tips": (0.5, 1.0, 0.1),   "stripe": (0.2, 0.08, 0.25),  "horn_tips": (0.4, 0.9, 0.05)},
+    {"name": "Neon Venom",    "body": (0.06, 0.08, 0.06),"legs": (0.12, 0.15, 0.12),"leg_tips": (0.3, 1.0, 0.15),  "stripe": (0.08, 0.1, 0.08),  "horn_tips": (0.2, 0.9, 0.1)},
+    {"name": "Neon Circuit",  "body": (0.05, 0.15, 0.18),"legs": (0.1, 0.25, 0.3),  "leg_tips": (1.0, 0.95, 0.1),  "stripe": (0.08, 0.2, 0.22),  "horn_tips": (0.9, 0.85, 0.05)},
+    {"name": "Neon Dusk",     "body": (0.2, 0.1, 0.18),  "legs": (0.35, 0.2, 0.3),  "leg_tips": (1.0, 0.45, 0.2),  "stripe": (0.25, 0.14, 0.22), "horn_tips": (0.9, 0.35, 0.15)},
+    # --- Category 2: Gradient Flow (#107-113) ---
+    {"name": "Sunrise",       "body": (0.6, 0.08, 0.02), "legs": (0.9, 0.4, 0.05),  "leg_tips": (1.0, 0.9, 0.2),   "stripe": (0.95, 0.6, 0.1),   "horn_tips": (1.0, 0.85, 0.15)},
+    {"name": "Deep Sea",      "body": (0.03, 0.05, 0.25),"legs": (0.05, 0.25, 0.45),"leg_tips": (0.15, 0.8, 0.9),  "stripe": (0.08, 0.35, 0.55), "horn_tips": (0.1, 0.7, 0.85)},
+    {"name": "Orchid Fade",   "body": (0.5, 0.05, 0.35), "legs": (0.75, 0.35, 0.6), "leg_tips": (0.85, 0.65, 0.95),"stripe": (0.65, 0.2, 0.5),   "horn_tips": (0.8, 0.6, 0.9)},
+    {"name": "Forest Floor",  "body": (0.25, 0.15, 0.05),"legs": (0.35, 0.45, 0.12),"leg_tips": (0.6, 0.85, 0.25), "stripe": (0.4, 0.5, 0.15),   "horn_tips": (0.55, 0.8, 0.2)},
+    {"name": "Twilight",      "body": (0.1, 0.02, 0.3),  "legs": (0.35, 0.15, 0.55),"leg_tips": (0.9, 0.4, 0.7),   "stripe": (0.25, 0.08, 0.45), "horn_tips": (0.85, 0.35, 0.65)},
+    {"name": "Ember Glow",    "body": (0.1, 0.03, 0.02), "legs": (0.4, 0.08, 0.03), "leg_tips": (1.0, 0.55, 0.1),  "stripe": (0.25, 0.05, 0.02), "horn_tips": (0.95, 0.5, 0.08)},
+    {"name": "Arctic Aurora",  "body": (0.88, 0.92, 0.95),"legs": (0.5, 0.7, 0.85), "leg_tips": (0.2, 0.9, 0.4),   "stripe": (0.6, 0.78, 0.88),  "horn_tips": (0.15, 0.85, 0.35)},
+    # --- Category 3: Metallic / Iridescent (#114-119) ---
+    {"name": "Rose Gold",     "body": (0.72, 0.45, 0.4), "legs": (0.82, 0.58, 0.52),"leg_tips": (0.95, 0.65, 0.35),"stripe": (0.9, 0.72, 0.62),  "horn_tips": (0.88, 0.55, 0.3)},
+    {"name": "Chrome",        "body": (0.6, 0.62, 0.68), "legs": (0.5, 0.52, 0.58), "leg_tips": (0.85, 0.88, 0.95),"stripe": (0.7, 0.72, 0.78),  "horn_tips": (0.8, 0.82, 0.9)},
+    {"name": "Bronze Age",    "body": (0.55, 0.35, 0.15),"legs": (0.4, 0.25, 0.1),  "leg_tips": (0.9, 0.75, 0.3),  "stripe": (0.7, 0.5, 0.2),    "horn_tips": (0.85, 0.7, 0.25)},
+    {"name": "Iridescent",    "body": (0.15, 0.4, 0.55), "legs": (0.2, 0.55, 0.4),  "leg_tips": (0.7, 0.3, 0.85),  "stripe": (0.25, 0.5, 0.5),   "horn_tips": (0.65, 0.25, 0.8)},
+    {"name": "Gunmetal",      "body": (0.22, 0.24, 0.28),"legs": (0.15, 0.16, 0.2), "leg_tips": (0.3, 0.5, 0.95),  "stripe": (0.28, 0.3, 0.35),  "horn_tips": (0.25, 0.45, 0.9)},
+    {"name": "Patina",        "body": (0.35, 0.5, 0.4),  "legs": (0.25, 0.45, 0.4), "leg_tips": (0.3, 0.85, 0.75), "stripe": (0.5, 0.35, 0.2),   "horn_tips": (0.25, 0.8, 0.7)},
+    # --- Category 4: Jewel Tones (#120-125) ---
+    {"name": "Amethyst",      "body": (0.3, 0.08, 0.45), "legs": (0.22, 0.06, 0.35),"leg_tips": (0.18, 0.04, 0.28),"stripe": (0.45, 0.15, 0.6),  "horn_tips": (0.7, 0.35, 0.85)},
+    {"name": "Ruby",          "body": (0.6, 0.02, 0.08), "legs": (0.4, 0.05, 0.08), "leg_tips": (0.95, 0.15, 0.2), "stripe": (0.75, 0.1, 0.15),  "horn_tips": (0.9, 0.1, 0.15)},
+    {"name": "Sapphire",      "body": (0.05, 0.1, 0.5),  "legs": (0.03, 0.08, 0.35),"leg_tips": (0.2, 0.4, 0.95),  "stripe": (0.1, 0.2, 0.65),   "horn_tips": (0.15, 0.35, 0.9)},
+    {"name": "Topaz",         "body": (0.75, 0.55, 0.1), "legs": (0.55, 0.35, 0.08),"leg_tips": (0.4, 0.28, 0.05), "stripe": (0.85, 0.65, 0.15), "horn_tips": (0.9, 0.8, 0.25)},
+    {"name": "Emerald Cut",   "body": (0.02, 0.4, 0.2),  "legs": (0.02, 0.3, 0.15), "leg_tips": (0.15, 0.9, 0.4),  "stripe": (0.05, 0.55, 0.3),  "horn_tips": (0.1, 0.85, 0.35)},
+    {"name": "Garnet",        "body": (0.45, 0.08, 0.1), "legs": (0.35, 0.05, 0.1), "leg_tips": (0.25, 0.03, 0.06),"stripe": (0.55, 0.12, 0.15), "horn_tips": (0.8, 0.15, 0.2)},
+    # --- Category 5: Pastel Harmony (#126-130) ---
+    {"name": "Cotton Candy",  "body": (0.9, 0.7, 0.8),   "legs": (0.75, 0.7, 0.9),  "leg_tips": (0.95, 0.5, 0.7),  "stripe": (0.8, 0.75, 0.85),  "horn_tips": (0.7, 0.55, 0.85)},
+    {"name": "Sea Glass",     "body": (0.6, 0.82, 0.75), "legs": (0.7, 0.88, 0.85), "leg_tips": (0.5, 0.72, 0.68), "stripe": (0.75, 0.9, 0.88),  "horn_tips": (0.45, 0.68, 0.62)},
+    {"name": "Peach Blossom", "body": (0.95, 0.75, 0.65),"legs": (0.92, 0.85, 0.78),"leg_tips": (0.82, 0.62, 0.55),"stripe": (0.98, 0.88, 0.82), "horn_tips": (0.9, 0.4, 0.3)},
+    {"name": "Lavender Mist", "body": (0.75, 0.68, 0.88),"legs": (0.65, 0.7, 0.85), "leg_tips": (0.6, 0.3, 0.95),  "stripe": (0.82, 0.78, 0.92), "horn_tips": (0.55, 0.25, 0.9)},
+    {"name": "Butter Mint",   "body": (0.92, 0.9, 0.6),  "legs": (0.7, 0.88, 0.72), "leg_tips": (0.58, 0.75, 0.55),"stripe": (0.85, 0.9, 0.68),  "horn_tips": (0.35, 0.85, 0.4)},
+    # --- Category 6: Earth Tones (#131-135) ---
+    {"name": "Desert Bloom",  "body": (0.75, 0.6, 0.38), "legs": (0.55, 0.38, 0.22),"leg_tips": (0.9, 0.2, 0.5),   "stripe": (0.65, 0.5, 0.3),   "horn_tips": (0.85, 0.15, 0.45)},
+    {"name": "Volcanic",      "body": (0.22, 0.18, 0.16),"legs": (0.32, 0.25, 0.2), "leg_tips": (0.95, 0.15, 0.02),"stripe": (0.4, 0.15, 0.05),  "horn_tips": (0.9, 0.1, 0.02)},
+    {"name": "Driftwood",     "body": (0.45, 0.42, 0.38),"legs": (0.6, 0.57, 0.5),  "leg_tips": (0.35, 0.32, 0.28),"stripe": (0.55, 0.52, 0.45), "horn_tips": (0.3, 0.28, 0.22)},
+    {"name": "Terracotta",    "body": (0.7, 0.35, 0.18), "legs": (0.5, 0.28, 0.12), "leg_tips": (0.15, 0.85, 0.8), "stripe": (0.6, 0.3, 0.15),   "horn_tips": (0.1, 0.8, 0.75)},
+    {"name": "Moss Stone",    "body": (0.35, 0.4, 0.32), "legs": (0.25, 0.28, 0.22),"leg_tips": (0.18, 0.22, 0.15),"stripe": (0.4, 0.45, 0.35),  "horn_tips": (0.9, 0.75, 0.1)},
+    # --- Category 7: Monochrome + Complementary Pop (#136-140) ---
+    {"name": "Blue Flame",    "body": (0.15, 0.25, 0.55),"legs": (0.1, 0.18, 0.4),  "leg_tips": (1.0, 0.55, 0.1),  "stripe": (0.2, 0.32, 0.6),   "horn_tips": (0.95, 0.5, 0.05)},
+    {"name": "Green Flash",   "body": (0.12, 0.4, 0.18), "legs": (0.08, 0.3, 0.12), "leg_tips": (0.95, 0.15, 0.1), "stripe": (0.15, 0.5, 0.22),  "horn_tips": (0.9, 0.1, 0.08)},
+    {"name": "Violet Spark",  "body": (0.35, 0.15, 0.5), "legs": (0.25, 0.1, 0.4),  "leg_tips": (0.8, 0.95, 0.2),  "stripe": (0.45, 0.2, 0.6),   "horn_tips": (0.75, 0.9, 0.15)},
+    {"name": "Crimson Spark", "body": (0.55, 0.1, 0.05), "legs": (0.45, 0.06, 0.03),"leg_tips": (0.15, 0.4, 0.95), "stripe": (0.65, 0.12, 0.08), "horn_tips": (0.1, 0.35, 0.9)},
+    {"name": "Amber Glow",    "body": (0.6, 0.4, 0.1),   "legs": (0.45, 0.3, 0.08), "leg_tips": (0.1, 0.85, 0.75), "stripe": (0.7, 0.5, 0.15),   "horn_tips": (0.08, 0.8, 0.7)},
+    # --- Category 8: Tonal / Low Contrast (#141-144) ---
+    {"name": "Storm",         "body": (0.2, 0.25, 0.35), "legs": (0.15, 0.18, 0.28),"leg_tips": (0.1, 0.12, 0.2),  "stripe": (0.25, 0.3, 0.42),  "horn_tips": (0.12, 0.15, 0.25)},
+    {"name": "Autumn",        "body": (0.6, 0.35, 0.12), "legs": (0.5, 0.28, 0.1),  "leg_tips": (0.35, 0.18, 0.06),"stripe": (0.7, 0.45, 0.15),  "horn_tips": (0.45, 0.25, 0.08)},
+    {"name": "Fog",           "body": (0.72, 0.75, 0.78),"legs": (0.65, 0.68, 0.72),"leg_tips": (0.55, 0.58, 0.62),"stripe": (0.8, 0.82, 0.85),  "horn_tips": (0.6, 0.62, 0.68)},
+    {"name": "Dusty Rose",    "body": (0.65, 0.45, 0.48),"legs": (0.55, 0.38, 0.42),"leg_tips": (0.4, 0.25, 0.3),  "stripe": (0.72, 0.55, 0.58), "horn_tips": (0.5, 0.32, 0.38)},
+    # --- Category 9: Triadic & Split-Complementary (#145-148) ---
+    {"name": "Triad Warm",    "body": (0.85, 0.45, 0.1), "legs": (0.2, 0.6, 0.25),  "leg_tips": (0.65, 0.3, 0.85), "stripe": (0.9, 0.55, 0.15),  "horn_tips": (0.6, 0.25, 0.8)},
+    {"name": "Triad Cool",    "body": (0.15, 0.3, 0.7),  "legs": (0.75, 0.3, 0.1),  "leg_tips": (0.6, 0.85, 0.2),  "stripe": (0.2, 0.4, 0.8),    "horn_tips": (0.55, 0.8, 0.15)},
+    {"name": "Split Sun",     "body": (0.9, 0.82, 0.15), "legs": (0.25, 0.2, 0.65), "leg_tips": (0.8, 0.2, 0.55),  "stripe": (0.95, 0.88, 0.2),  "horn_tips": (0.75, 0.15, 0.5)},
+    {"name": "Split Ocean",   "body": (0.1, 0.5, 0.55),  "legs": (0.75, 0.25, 0.1), "leg_tips": (0.95, 0.7, 0.15), "stripe": (0.15, 0.6, 0.62),  "horn_tips": (0.9, 0.65, 0.1)},
+    # --- Category 10: Inverted / Bioluminescent (#149-150) ---
+    {"name": "Bioluminescent","body": (0.05, 0.1, 0.12), "legs": (0.12, 0.3, 0.35), "leg_tips": (0.2, 1.0, 0.9),   "stripe": (0.08, 0.2, 0.25),  "horn_tips": (0.15, 0.95, 0.85)},
+    {"name": "Firefly",       "body": (0.15, 0.12, 0.05),"legs": (0.2, 0.15, 0.06), "leg_tips": (0.95, 0.8, 0.15), "stripe": (0.18, 0.14, 0.05), "horn_tips": (0.9, 0.75, 0.1)},
 ]
+
+# Beetle type list for slider cycling
+BEETLE_TYPES = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "spider"]
 
 # Track current preset index per beetle
 blue_preset_index = 0
@@ -11864,6 +11948,51 @@ red_preset_index = 1
 def get_preset_palette(index):
     """Get a beetle color preset by index. Returns dict with body, legs, leg_tips, stripe, horn_tips."""
     return BEETLE_PRESETS[index % len(BEETLE_PRESETS)]
+
+def apply_preset(palette, window, simulation, side):
+    """Apply a preset palette to a beetle's window + simulation colors.
+    side: 'blue' or 'red'"""
+    setattr(window, f'{side}_body_color', palette['body'])
+    setattr(window, f'{side}_leg_color', palette['legs'])
+    setattr(window, f'{side}_leg_tip_color', palette['leg_tips'])
+    setattr(window, f'{side}_stripe_color', palette['stripe'])
+    setattr(window, f'{side}_horn_tip_color', palette['horn_tips'])
+    getattr(simulation, f'{side}_body_color')[None] = ti.Vector(list(palette['body']))
+    getattr(simulation, f'{side}_leg_color')[None] = ti.Vector(list(palette['legs']))
+    getattr(simulation, f'{side}_leg_tip_color')[None] = ti.Vector(list(palette['leg_tips']))
+    getattr(simulation, f'{side}_stripe_color')[None] = ti.Vector(list(palette['stripe']))
+    getattr(simulation, f'{side}_horn_tip_color')[None] = ti.Vector(list(palette['horn_tips']))
+
+def apply_horn_defaults(beetle, horn_type):
+    """Set horn pitch/yaw defaults for a given beetle type."""
+    if horn_type == "scorpion":
+        beetle.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+        beetle.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+        beetle.horn_yaw = 0.0
+    elif horn_type == "stag":
+        beetle.horn_pitch = HORN_DEFAULT_PITCH_STAG
+        beetle.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
+        beetle.horn_yaw = HORN_DEFAULT_YAW_STAG
+    elif horn_type == "hercules":
+        beetle.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+        beetle.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
+        beetle.horn_yaw = 0.0
+    elif horn_type == "atlas":
+        beetle.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+        beetle.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
+        beetle.horn_yaw = 0.0
+    elif horn_type == "bombardier":
+        beetle.horn_pitch = 0.0
+        beetle.prev_horn_pitch = 0.0
+        beetle.horn_yaw = 0.0
+    elif horn_type == "spider":
+        beetle.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+        beetle.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
+        beetle.horn_yaw = 0.0
+    else:  # rhino
+        beetle.horn_pitch = HORN_DEFAULT_PITCH
+        beetle.prev_horn_pitch = HORN_DEFAULT_PITCH
+        beetle.horn_yaw = 0.0
 
 def toggle_referee():
     """Toggle flying referee on/off (local only - doesn't sync over network)"""
@@ -19246,90 +19375,39 @@ try:
         window.GUI.text("")
         window.GUI.text("=== BEETLE 1 TYPE ===")
         if can_edit_blue and show_full_customization:
-            if blue_horn_type == "rhino":
-                blue_button_text = "B1: RHINO (CLICK FOR STAG)"
-            elif blue_horn_type == "stag":
-                blue_button_text = "B1: STAG (CLICK FOR HERCULES)"
-            elif blue_horn_type == "hercules":
-                blue_button_text = "B1: HERCULES (CLICK FOR SCORPION)"
-            elif blue_horn_type == "scorpion":
-                blue_button_text = "B1: SCORPION (CLICK FOR ATLAS)"
-            elif blue_horn_type == "atlas":
-                blue_button_text = "B1: ATLAS (CLICK FOR BOMBARDIER)"
-            elif blue_horn_type == "bombardier":
-                blue_button_text = "B1: BOMBARDIER (CLICK FOR SPIDER)"
-            else:  # spider
-                blue_button_text = "B1: SPIDER (CLICK FOR RHINO)"
+            blue_type_idx = BEETLE_TYPES.index(blue_horn_type) if blue_horn_type in BEETLE_TYPES else 0
+            window.GUI.text(f"B1 TYPE: {blue_horn_type.upper()}")
+            old_blue_type_idx = blue_type_idx
+            new_blue_type_idx = window.GUI.slider_int("B1 Type", blue_type_idx, 0, len(BEETLE_TYPES) - 1)
+            b1_type_prev = window.GUI.button("< B1 PREV TYPE")
+            b1_type_next = window.GUI.button("> B1 NEXT TYPE")
+            if new_blue_type_idx != blue_type_idx:
+                blue_type_idx = new_blue_type_idx
+            elif b1_type_prev:
+                blue_type_idx = (blue_type_idx - 1) % len(BEETLE_TYPES)
+            elif b1_type_next:
+                blue_type_idx = (blue_type_idx + 1) % len(BEETLE_TYPES)
+            if blue_type_idx != old_blue_type_idx:
+                blue_horn_type = BEETLE_TYPES[blue_type_idx]
+                print(f"Blue beetle switching to {blue_horn_type.upper()}...")
+                apply_horn_defaults(beetle_blue, blue_horn_type)
+                rebuild_blue_beetle(
+                    window.blue_horn_shaft_value,
+                    window.blue_horn_prong_value,
+                    front_body_height,
+                    window.blue_back_body_height_value,
+                    window.blue_body_length_value,
+                    window.blue_body_width_value,
+                    window.blue_leg_length_value,
+                    blue_horn_type,
+                    stinger_curvature=0.0
+                )
+                reset_walk_phase_on_geometry_change(beetle_blue)
+                if network_manager and network_manager.connected and network_manager.is_host:
+                    send_local_beetle_config(network_manager, is_host=True)
         else:
             # Read-only display (opponent's beetle OR throttled during gameplay)
             window.GUI.text(f"B1: {blue_horn_type.upper()}")
-            blue_button_text = None
-
-        if blue_button_text and window.GUI.button(blue_button_text):
-            # Cycle blue beetle horn type
-            if blue_horn_type == "rhino":
-                blue_horn_type = "stag"
-            elif blue_horn_type == "stag":
-                blue_horn_type = "hercules"
-            elif blue_horn_type == "hercules":
-                blue_horn_type = "scorpion"
-            elif blue_horn_type == "scorpion":
-                blue_horn_type = "atlas"
-            elif blue_horn_type == "atlas":
-                blue_horn_type = "bombardier"
-            elif blue_horn_type == "bombardier":
-                blue_horn_type = "spider"
-            else:
-                blue_horn_type = "rhino"
-
-            print(f"Blue beetle switching to {blue_horn_type.upper()}...")
-
-            # Update blue beetle horn pitch and yaw defaults
-            if blue_horn_type == "scorpion":
-                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-                beetle_blue.horn_yaw = 0.0
-            elif blue_horn_type == "stag":
-                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_STAG
-                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
-                beetle_blue.horn_yaw = HORN_DEFAULT_YAW_STAG  # Stag pincers start more open
-            elif blue_horn_type == "hercules":
-                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-                beetle_blue.horn_yaw = 0.0
-            elif blue_horn_type == "atlas":
-                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-                beetle_blue.horn_yaw = 0.0
-            elif blue_horn_type == "bombardier":
-                beetle_blue.horn_pitch = 0.0  # No horn - firing controls instead
-                beetle_blue.prev_horn_pitch = 0.0
-                beetle_blue.horn_yaw = 0.0
-            elif blue_horn_type == "spider":
-                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH_SCORPION  # Fangs similar to scorpion
-                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-                beetle_blue.horn_yaw = 0.0
-            else:  # rhino
-                beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
-                beetle_blue.prev_horn_pitch = HORN_DEFAULT_PITCH
-                beetle_blue.horn_yaw = 0.0
-
-            # Rebuild blue beetle with new horn type and reset walk phase
-            rebuild_blue_beetle(
-                window.blue_horn_shaft_value,
-                window.blue_horn_prong_value,
-                front_body_height,
-                window.blue_back_body_height_value,
-                window.blue_body_length_value,
-                window.blue_body_width_value,
-                window.blue_leg_length_value,
-                blue_horn_type,
-                stinger_curvature=0.0
-            )
-            reset_walk_phase_on_geometry_change(beetle_blue)
-            # Send config immediately when host changes blue beetle type
-            if network_manager and network_manager.connected and network_manager.is_host:
-                send_local_beetle_config(network_manager, is_host=True)
 
         if can_edit_blue:
             window.GUI.text("=== BEETLE 1 GENETICS ===")
@@ -19439,21 +19517,22 @@ try:
             if blue_color_changed and network_manager and network_manager.connected and network_manager.is_host:
                 send_local_beetle_config(network_manager, is_host=True)
 
-            # Cycle B1 skin preset button - under color pickers
+            # B1 skin preset controls - slider + prev/next buttons
             b1_skin_name = BEETLE_PRESETS[blue_preset_index % len(BEETLE_PRESETS)]["name"]
-            if window.GUI.button(f"B1 SKIN: {b1_skin_name}"):
+            window.GUI.text(f"B1 SKIN: {b1_skin_name}")
+            old_blue_preset = blue_preset_index
+            new_blue_preset = window.GUI.slider_int("B1 Skin", blue_preset_index, 0, len(BEETLE_PRESETS) - 1)
+            b1_prev = window.GUI.button("< B1 PREV SKIN")
+            b1_next = window.GUI.button("> B1 NEXT SKIN")
+            if new_blue_preset != blue_preset_index:
+                blue_preset_index = new_blue_preset
+            elif b1_prev:
+                blue_preset_index = (blue_preset_index - 1) % len(BEETLE_PRESETS)
+            elif b1_next:
                 blue_preset_index = (blue_preset_index + 1) % len(BEETLE_PRESETS)
+            if blue_preset_index != old_blue_preset:
                 palette = get_preset_palette(blue_preset_index)
-                window.blue_body_color = palette['body']
-                window.blue_leg_color = palette['legs']
-                window.blue_leg_tip_color = palette['leg_tips']
-                window.blue_stripe_color = palette['stripe']
-                window.blue_horn_tip_color = palette['horn_tips']
-                simulation.blue_body_color[None] = ti.Vector(list(palette['body']))
-                simulation.blue_leg_color[None] = ti.Vector(list(palette['legs']))
-                simulation.blue_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
-                simulation.blue_stripe_color[None] = ti.Vector(list(palette['stripe']))
-                simulation.blue_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
+                apply_preset(palette, window, simulation, 'blue')
                 if network_manager and network_manager.connected and network_manager.is_host:
                     send_local_beetle_config(network_manager, is_host=True)
                 print(f"B1 skin: {palette['name']}")
@@ -19462,90 +19541,39 @@ try:
         window.GUI.text("")
         window.GUI.text("=== BEETLE 2 TYPE ===")
         if can_edit_red and show_full_customization:
-            if red_horn_type == "rhino":
-                red_button_text = "B2: RHINO (CLICK FOR STAG)"
-            elif red_horn_type == "stag":
-                red_button_text = "B2: STAG (CLICK FOR HERCULES)"
-            elif red_horn_type == "hercules":
-                red_button_text = "B2: HERCULES (CLICK FOR SCORPION)"
-            elif red_horn_type == "scorpion":
-                red_button_text = "B2: SCORPION (CLICK FOR ATLAS)"
-            elif red_horn_type == "atlas":
-                red_button_text = "B2: ATLAS (CLICK FOR BOMBARDIER)"
-            elif red_horn_type == "bombardier":
-                red_button_text = "B2: BOMBARDIER (CLICK FOR SPIDER)"
-            else:  # spider
-                red_button_text = "B2: SPIDER (CLICK FOR RHINO)"
+            red_type_idx = BEETLE_TYPES.index(red_horn_type) if red_horn_type in BEETLE_TYPES else 0
+            window.GUI.text(f"B2 TYPE: {red_horn_type.upper()}")
+            old_red_type_idx = red_type_idx
+            new_red_type_idx = window.GUI.slider_int("B2 Type", red_type_idx, 0, len(BEETLE_TYPES) - 1)
+            b2_type_prev = window.GUI.button("< B2 PREV TYPE")
+            b2_type_next = window.GUI.button("> B2 NEXT TYPE")
+            if new_red_type_idx != red_type_idx:
+                red_type_idx = new_red_type_idx
+            elif b2_type_prev:
+                red_type_idx = (red_type_idx - 1) % len(BEETLE_TYPES)
+            elif b2_type_next:
+                red_type_idx = (red_type_idx + 1) % len(BEETLE_TYPES)
+            if red_type_idx != old_red_type_idx:
+                red_horn_type = BEETLE_TYPES[red_type_idx]
+                print(f"Red beetle switching to {red_horn_type.upper()}...")
+                apply_horn_defaults(beetle_red, red_horn_type)
+                rebuild_red_beetle(
+                    window.red_horn_shaft_value,
+                    window.red_horn_prong_value,
+                    front_body_height,
+                    window.red_back_body_height_value,
+                    window.red_body_length_value,
+                    window.red_body_width_value,
+                    window.red_leg_length_value,
+                    red_horn_type,
+                    stinger_curvature=0.0
+                )
+                reset_walk_phase_on_geometry_change(beetle_red)
+                if network_manager and network_manager.connected and not network_manager.is_host:
+                    send_local_beetle_config(network_manager, is_host=False)
         else:
             # Read-only display (opponent's beetle OR throttled during gameplay)
             window.GUI.text(f"B2: {red_horn_type.upper()}")
-            red_button_text = None
-
-        if red_button_text and window.GUI.button(red_button_text):
-            # Cycle red beetle horn type
-            if red_horn_type == "rhino":
-                red_horn_type = "stag"
-            elif red_horn_type == "stag":
-                red_horn_type = "hercules"
-            elif red_horn_type == "hercules":
-                red_horn_type = "scorpion"
-            elif red_horn_type == "scorpion":
-                red_horn_type = "atlas"
-            elif red_horn_type == "atlas":
-                red_horn_type = "bombardier"
-            elif red_horn_type == "bombardier":
-                red_horn_type = "spider"
-            else:
-                red_horn_type = "rhino"
-
-            print(f"Red beetle switching to {red_horn_type.upper()}...")
-
-            # Update red beetle horn pitch and yaw defaults
-            if red_horn_type == "scorpion":
-                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-                beetle_red.horn_yaw = 0.0
-            elif red_horn_type == "stag":
-                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_STAG
-                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_STAG
-                beetle_red.horn_yaw = HORN_DEFAULT_YAW_STAG  # Stag pincers start more open
-            elif red_horn_type == "hercules":
-                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-                beetle_red.horn_yaw = 0.0
-            elif red_horn_type == "atlas":
-                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-                beetle_red.horn_yaw = 0.0
-            elif red_horn_type == "bombardier":
-                beetle_red.horn_pitch = 0.0  # No horn - firing controls instead
-                beetle_red.prev_horn_pitch = 0.0
-                beetle_red.horn_yaw = 0.0
-            elif red_horn_type == "spider":
-                beetle_red.horn_pitch = HORN_DEFAULT_PITCH_SCORPION  # Fangs similar to scorpion
-                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-                beetle_red.horn_yaw = 0.0
-            else:  # rhino
-                beetle_red.horn_pitch = HORN_DEFAULT_PITCH
-                beetle_red.prev_horn_pitch = HORN_DEFAULT_PITCH
-                beetle_red.horn_yaw = 0.0
-
-            # Rebuild red beetle with new horn type and reset walk phase
-            rebuild_red_beetle(
-                window.red_horn_shaft_value,
-                window.red_horn_prong_value,
-                front_body_height,
-                window.red_back_body_height_value,
-                window.red_body_length_value,
-                window.red_body_width_value,
-                window.red_leg_length_value,
-                red_horn_type,
-                stinger_curvature=0.0
-            )
-            reset_walk_phase_on_geometry_change(beetle_red)
-            # Send config immediately when guest changes red beetle type
-            if network_manager and network_manager.connected and not network_manager.is_host:
-                send_local_beetle_config(network_manager, is_host=False)
 
         if can_edit_red:
             window.GUI.text("=== BEETLE 2 GENETICS ===")
@@ -19655,21 +19683,22 @@ try:
             if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
                 send_local_beetle_config(network_manager, is_host=False)
 
-            # Cycle B2 skin preset button - under color pickers
+            # B2 skin preset controls - slider + prev/next buttons
             b2_skin_name = BEETLE_PRESETS[red_preset_index % len(BEETLE_PRESETS)]["name"]
-            if window.GUI.button(f"B2 SKIN: {b2_skin_name}"):
+            window.GUI.text(f"B2 SKIN: {b2_skin_name}")
+            old_red_preset = red_preset_index
+            new_red_preset = window.GUI.slider_int("B2 Skin", red_preset_index, 0, len(BEETLE_PRESETS) - 1)
+            b2_prev = window.GUI.button("< B2 PREV SKIN")
+            b2_next = window.GUI.button("> B2 NEXT SKIN")
+            if new_red_preset != red_preset_index:
+                red_preset_index = new_red_preset
+            elif b2_prev:
+                red_preset_index = (red_preset_index - 1) % len(BEETLE_PRESETS)
+            elif b2_next:
                 red_preset_index = (red_preset_index + 1) % len(BEETLE_PRESETS)
+            if red_preset_index != old_red_preset:
                 palette = get_preset_palette(red_preset_index)
-                window.red_body_color = palette['body']
-                window.red_leg_color = palette['legs']
-                window.red_leg_tip_color = palette['leg_tips']
-                window.red_stripe_color = palette['stripe']
-                window.red_horn_tip_color = palette['horn_tips']
-                simulation.red_body_color[None] = ti.Vector(list(palette['body']))
-                simulation.red_leg_color[None] = ti.Vector(list(palette['legs']))
-                simulation.red_leg_tip_color[None] = ti.Vector(list(palette['leg_tips']))
-                simulation.red_stripe_color[None] = ti.Vector(list(palette['stripe']))
-                simulation.red_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
+                apply_preset(palette, window, simulation, 'red')
                 if network_manager and network_manager.connected and not network_manager.is_host:
                     send_local_beetle_config(network_manager, is_host=False)
                 print(f"B2 skin: {palette['name']}")
