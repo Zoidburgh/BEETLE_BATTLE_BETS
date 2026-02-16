@@ -9,7 +9,6 @@ import renderer
 import time
 import math
 import random
-import colorsys
 import os
 import sys
 import atexit
@@ -11769,187 +11768,36 @@ referee_ladybug = None
 referee_enabled = True  # Enabled by default
 referee_time = 0.0  # Time accumulator for organic movement
 
-def generate_harmonious_palette():
-    """Generate a harmonious color palette for a beetle using color theory.
-    Returns dict with keys: body, legs, leg_tips, stripe, horn_tips
-    Each value is (r, g, b) tuple with values 0.0-1.0"""
-    base_hue = random.random()
+BEETLE_PRESETS = [
+    {"name": "Classic Blue",  "body": (0.25, 0.55, 0.95), "legs": (0.4, 0.7, 1.0),   "leg_tips": (0.0, 0.0, 0.3),   "stripe": (0.6, 0.9, 1.0),   "horn_tips": (0.4, 0.75, 1.0)},
+    {"name": "Classic Red",   "body": (0.95, 0.25, 0.15), "legs": (1.0, 0.5, 0.3),   "leg_tips": (0.3, 0.0, 0.0),   "stripe": (0.85, 0.65, 0.2),  "horn_tips": (0.4, 0.1, 0.1)},
+    {"name": "Bumblebee",     "body": (0.95, 0.85, 0.1),  "legs": (0.15, 0.12, 0.05),"leg_tips": (0.05, 0.05, 0.02),"stripe": (0.15, 0.12, 0.05),"horn_tips": (0.1, 0.08, 0.02)},
+    {"name": "Spiderman",     "body": (0.9, 0.1, 0.1),    "legs": (0.15, 0.2, 0.8),  "leg_tips": (0.05, 0.05, 0.15),"stripe": (0.2, 0.3, 0.9),   "horn_tips": (0.9, 0.15, 0.15)},
+    {"name": "Emerald",       "body": (0.1, 0.75, 0.3),   "legs": (0.2, 0.9, 0.45),  "leg_tips": (0.02, 0.2, 0.05), "stripe": (0.5, 1.0, 0.6),   "horn_tips": (0.05, 0.35, 0.1)},
+    {"name": "Royal Purple",  "body": (0.55, 0.15, 0.85), "legs": (0.7, 0.4, 0.95),  "leg_tips": (0.15, 0.02, 0.25),"stripe": (0.85, 0.5, 1.0),  "horn_tips": (0.3, 0.05, 0.5)},
+    {"name": "Sunset",        "body": (1.0, 0.5, 0.1),    "legs": (1.0, 0.7, 0.3),   "leg_tips": (0.3, 0.1, 0.0),   "stripe": (1.0, 0.85, 0.2),  "horn_tips": (0.8, 0.3, 0.05)},
+    {"name": "Arctic",        "body": (0.85, 0.92, 1.0),  "legs": (0.6, 0.8, 0.95),  "leg_tips": (0.15, 0.2, 0.35), "stripe": (0.95, 0.98, 1.0), "horn_tips": (0.4, 0.55, 0.7)},
+    {"name": "Obsidian",      "body": (0.12, 0.1, 0.15),  "legs": (0.2, 0.17, 0.22), "leg_tips": (0.05, 0.04, 0.06),"stripe": (0.85, 0.7, 0.2),  "horn_tips": (0.75, 0.6, 0.15)},
+    {"name": "Sakura",        "body": (1.0, 0.6, 0.7),    "legs": (0.95, 0.85, 0.88),"leg_tips": (0.3, 0.1, 0.15),  "stripe": (1.0, 0.8, 0.85),  "horn_tips": (0.8, 0.3, 0.4)},
+    {"name": "Tiger",         "body": (1.0, 0.55, 0.05),  "legs": (0.95, 0.9, 0.85), "leg_tips": (0.1, 0.08, 0.02), "stripe": (0.1, 0.08, 0.02), "horn_tips": (0.15, 0.1, 0.02)},
+    {"name": "Poison Frog",   "body": (0.1, 0.9, 0.2),    "legs": (0.3, 0.2, 0.9),   "leg_tips": (0.05, 0.02, 0.2), "stripe": (0.9, 0.95, 0.1),  "horn_tips": (0.2, 0.1, 0.8)},
+    {"name": "Inferno",       "body": (0.95, 0.2, 0.0),   "legs": (1.0, 0.6, 0.0),   "leg_tips": (0.2, 0.02, 0.0),  "stripe": (1.0, 0.9, 0.1),   "horn_tips": (1.0, 0.4, 0.0)},
+    {"name": "Ocean",         "body": (0.05, 0.3, 0.7),   "legs": (0.1, 0.5, 0.75),  "leg_tips": (0.02, 0.08, 0.2), "stripe": (0.2, 0.8, 0.85),  "horn_tips": (0.05, 0.2, 0.5)},
+    {"name": "Gold",          "body": (0.85, 0.7, 0.15),  "legs": (0.95, 0.8, 0.3),  "leg_tips": (0.25, 0.18, 0.02),"stripe": (1.0, 0.95, 0.5),  "horn_tips": (0.6, 0.45, 0.05)},
+    {"name": "Candy",         "body": (1.0, 0.15, 0.6),   "legs": (0.95, 0.5, 0.75), "leg_tips": (0.3, 0.02, 0.15), "stripe": (0.95, 0.85, 0.9), "horn_tips": (0.8, 0.1, 0.45)},
+    {"name": "Military",      "body": (0.35, 0.4, 0.2),   "legs": (0.55, 0.5, 0.35), "leg_tips": (0.1, 0.1, 0.05),  "stripe": (0.5, 0.45, 0.3),  "horn_tips": (0.2, 0.2, 0.1)},
+    {"name": "Coral",         "body": (1.0, 0.45, 0.4),   "legs": (1.0, 0.7, 0.6),   "leg_tips": (0.3, 0.1, 0.08),  "stripe": (1.0, 0.85, 0.7),  "horn_tips": (0.8, 0.3, 0.25)},
+    {"name": "Stealth",       "body": (0.2, 0.2, 0.22),   "legs": (0.3, 0.3, 0.32),  "leg_tips": (0.05, 0.05, 0.06),"stripe": (0.85, 0.15, 0.1), "horn_tips": (0.7, 0.1, 0.08)},
+    {"name": "Lime",          "body": (0.6, 0.95, 0.1),   "legs": (0.75, 1.0, 0.4),  "leg_tips": (0.15, 0.25, 0.02),"stripe": (0.85, 1.0, 0.5),  "horn_tips": (0.4, 0.65, 0.05)},
+]
 
-    # Pick a mood first - this drives the overall feel
-    mood = random.choice(['vivid', 'pastel', 'dark', 'earthy', 'neon', 'jewel', 'muted', 'warm', 'cool'])
+# Track current preset index per beetle
+blue_preset_index = 0
+red_preset_index = 1
 
-    # Pick a harmony scheme - wider variety
-    scheme = random.choice(['analogous', 'complementary', 'triadic', 'split_complementary',
-                            'monochromatic', 'clash', 'tetradic'])
-
-    # Generate hues based on scheme - with wider separations
-    if scheme == 'analogous':
-        hue_body = base_hue
-        hue_accent = (base_hue + random.uniform(0.06, 0.14)) % 1.0
-        hue_stripe = (base_hue + random.uniform(-0.14, -0.06)) % 1.0
-    elif scheme == 'complementary':
-        hue_body = base_hue
-        hue_accent = (base_hue + 0.5 + random.uniform(-0.06, 0.06)) % 1.0
-        hue_stripe = (base_hue + random.uniform(-0.08, 0.08)) % 1.0
-    elif scheme == 'triadic':
-        hue_body = base_hue
-        hue_accent = (base_hue + 0.333 + random.uniform(-0.05, 0.05)) % 1.0
-        hue_stripe = (base_hue + 0.667 + random.uniform(-0.05, 0.05)) % 1.0
-    elif scheme == 'split_complementary':
-        hue_body = base_hue
-        hue_accent = (base_hue + 0.42 + random.uniform(-0.03, 0.03)) % 1.0
-        hue_stripe = (base_hue + 0.58 + random.uniform(-0.03, 0.03)) % 1.0
-    elif scheme == 'clash':
-        # Intentionally dissonant but eye-catching
-        hue_body = base_hue
-        hue_accent = (base_hue + random.uniform(0.2, 0.3)) % 1.0
-        hue_stripe = (base_hue + random.uniform(0.55, 0.7)) % 1.0
-    elif scheme == 'tetradic':
-        hue_body = base_hue
-        hue_accent = (base_hue + 0.25) % 1.0
-        hue_stripe = (base_hue + 0.5) % 1.0
-    else:  # monochromatic
-        hue_body = base_hue
-        hue_accent = base_hue
-        hue_stripe = base_hue
-
-    # Mood sets the saturation/value character
-    if mood == 'vivid':
-        body_s, body_v = random.uniform(0.75, 1.0), random.uniform(0.50, 0.80)
-        leg_s, leg_v_mult = random.uniform(0.60, 0.90), random.uniform(0.5, 0.8)
-    elif mood == 'pastel':
-        body_s, body_v = random.uniform(0.25, 0.50), random.uniform(0.70, 0.95)
-        leg_s, leg_v_mult = random.uniform(0.20, 0.45), random.uniform(0.7, 0.9)
-    elif mood == 'dark':
-        body_s, body_v = random.uniform(0.50, 0.85), random.uniform(0.15, 0.35)
-        leg_s, leg_v_mult = random.uniform(0.30, 0.70), random.uniform(0.4, 0.7)
-    elif mood == 'earthy':
-        # Push hues toward warm range (reds/oranges/yellows/browns)
-        hue_body = random.uniform(0.02, 0.12)  # Orange-brown range
-        hue_accent = (hue_body + random.uniform(-0.05, 0.08)) % 1.0
-        hue_stripe = (hue_body + random.uniform(0.03, 0.15)) % 1.0
-        body_s, body_v = random.uniform(0.40, 0.70), random.uniform(0.25, 0.55)
-        leg_s, leg_v_mult = random.uniform(0.30, 0.60), random.uniform(0.5, 0.8)
-    elif mood == 'neon':
-        body_s, body_v = random.uniform(0.85, 1.0), random.uniform(0.75, 1.0)
-        leg_s, leg_v_mult = random.uniform(0.70, 1.0), random.uniform(0.4, 0.7)
-    elif mood == 'jewel':
-        body_s, body_v = random.uniform(0.70, 0.95), random.uniform(0.35, 0.60)
-        leg_s, leg_v_mult = random.uniform(0.50, 0.80), random.uniform(0.4, 0.7)
-    elif mood == 'muted':
-        body_s, body_v = random.uniform(0.15, 0.40), random.uniform(0.35, 0.60)
-        leg_s, leg_v_mult = random.uniform(0.10, 0.35), random.uniform(0.6, 0.9)
-    elif mood == 'warm':
-        hue_body = random.uniform(0.95, 1.08) % 1.0  # Reds/oranges
-        hue_accent = (hue_body + random.uniform(0.0, 0.1)) % 1.0
-        hue_stripe = (hue_body + random.uniform(-0.05, 0.15)) % 1.0
-        body_s, body_v = random.uniform(0.55, 0.90), random.uniform(0.40, 0.75)
-        leg_s, leg_v_mult = random.uniform(0.40, 0.75), random.uniform(0.5, 0.8)
-    else:  # cool
-        hue_body = random.uniform(0.5, 0.72)  # Blues/teals/purples
-        hue_accent = (hue_body + random.uniform(-0.08, 0.12)) % 1.0
-        hue_stripe = (hue_body + random.uniform(-0.15, 0.15)) % 1.0
-        body_s, body_v = random.uniform(0.50, 0.85), random.uniform(0.35, 0.70)
-        leg_s, leg_v_mult = random.uniform(0.35, 0.70), random.uniform(0.5, 0.8)
-
-    # === BRIGHTNESS HIERARCHY ===
-    # Enforce contrast: pick 3 distinct brightness tiers, then assign parts to tiers
-    # This prevents the "everything same shade" problem
-    tier_order = random.choice([
-        'stripe_bright',   # stripe > body > tips (classic)
-        'body_bright',     # body > stripe > tips
-        'tips_pop',        # tips bright, body medium, legs dark
-        'all_bright',      # everything vivid, contrast via hue not shade
-        'all_dark',        # deep rich tones, stripe pops
-        'legs_light',      # lighter legs on dark body
-    ])
-
-    if tier_order == 'stripe_bright':
-        bright_v = random.uniform(0.65, 0.95)
-        mid_v = random.uniform(0.35, 0.60)
-        dark_v = random.uniform(0.05, 0.20)
-    elif tier_order == 'body_bright':
-        bright_v = random.uniform(0.60, 0.85)
-        mid_v = random.uniform(0.35, 0.55)
-        dark_v = random.uniform(0.05, 0.20)
-    elif tier_order == 'tips_pop':
-        bright_v = random.uniform(0.55, 0.85)
-        mid_v = random.uniform(0.30, 0.55)
-        dark_v = random.uniform(0.10, 0.30)
-    elif tier_order == 'all_bright':
-        bright_v = random.uniform(0.75, 1.0)
-        mid_v = random.uniform(0.60, 0.85)
-        dark_v = random.uniform(0.45, 0.65)
-    elif tier_order == 'all_dark':
-        bright_v = random.uniform(0.50, 0.70)
-        mid_v = random.uniform(0.20, 0.40)
-        dark_v = random.uniform(0.05, 0.15)
-    else:  # legs_light
-        bright_v = random.uniform(0.65, 0.90)
-        mid_v = random.uniform(0.30, 0.50)
-        dark_v = random.uniform(0.08, 0.22)
-
-    # Body
-    if tier_order in ('body_bright', 'all_bright'):
-        body = colorsys.hsv_to_rgb(hue_body, body_s, bright_v)
-        body_v_actual = bright_v
-    elif tier_order == 'all_dark':
-        body = colorsys.hsv_to_rgb(hue_body, body_s, mid_v)
-        body_v_actual = mid_v
-    else:
-        body = colorsys.hsv_to_rgb(hue_body, body_s, mid_v)
-        body_v_actual = mid_v
-
-    # Legs
-    if tier_order == 'legs_light':
-        # Lighter legs on dark body
-        legs = colorsys.hsv_to_rgb(hue_accent, leg_s, bright_v)
-    elif tier_order == 'all_bright':
-        legs = colorsys.hsv_to_rgb(hue_accent, leg_s, mid_v)
-    else:
-        leg_v = body_v_actual * random.uniform(0.35, 0.65)
-        legs = colorsys.hsv_to_rgb(hue_accent, leg_s, max(0.05, leg_v))
-
-    # Leg tips
-    if tier_order == 'tips_pop':
-        leg_tips = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.6, 0.95), bright_v)
-    elif tier_order == 'all_bright':
-        tip_hue = random.choice([hue_body, hue_accent, hue_stripe])
-        leg_tips = colorsys.hsv_to_rgb(tip_hue, random.uniform(0.5, 0.9), dark_v)
-    elif tier_order == 'legs_light':
-        leg_tips = colorsys.hsv_to_rgb(hue_body, random.uniform(0.4, 0.8), dark_v)
-    else:
-        tip_hue = random.choice([hue_body, hue_accent, hue_stripe])
-        leg_tips = colorsys.hsv_to_rgb(tip_hue, random.uniform(0.3, 0.8), dark_v)
-
-    # Stripe
-    if tier_order == 'stripe_bright':
-        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.55, 1.0), bright_v)
-    elif tier_order == 'all_dark':
-        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.65, 1.0), bright_v)  # Pop on dark body
-    elif tier_order == 'all_bright':
-        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.55, 1.0), bright_v)
-    elif tier_order == 'legs_light':
-        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.55, 1.0), mid_v)
-    else:
-        stripe = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.55, 1.0), mid_v)
-
-    # Horn tips: always contrast with body
-    horn_contrast = random.choice(['darker', 'brighter', 'accent'])
-    if horn_contrast == 'darker':
-        horn_tips = colorsys.hsv_to_rgb(hue_body, random.uniform(0.3, 0.7), max(0.05, body_v_actual * random.uniform(0.15, 0.4)))
-    elif horn_contrast == 'brighter':
-        horn_tips = colorsys.hsv_to_rgb(hue_accent, random.uniform(0.5, 0.9), min(1.0, body_v_actual * random.uniform(1.3, 1.8)))
-    else:
-        horn_tips = colorsys.hsv_to_rgb(hue_stripe, random.uniform(0.5, 0.9), random.uniform(0.3, 0.6))
-
-    return {
-        'body': body,
-        'legs': legs,
-        'leg_tips': leg_tips,
-        'stripe': stripe,
-        'horn_tips': horn_tips,
-    }
+def get_preset_palette(index):
+    """Get a beetle color preset by index. Returns dict with body, legs, leg_tips, stripe, horn_tips."""
+    return BEETLE_PRESETS[index % len(BEETLE_PRESETS)]
 
 def toggle_referee():
     """Toggle flying referee on/off (local only - doesn't sync over network)"""
@@ -19525,9 +19373,11 @@ try:
             if blue_color_changed and network_manager and network_manager.connected and network_manager.is_host:
                 send_local_beetle_config(network_manager, is_host=True)
 
-            # Randomize B1 colors button - under color pickers
-            if window.GUI.button("RANDOMIZE B1 COLORS"):
-                palette = generate_harmonious_palette()
+            # Cycle B1 skin preset button - under color pickers
+            b1_skin_name = BEETLE_PRESETS[blue_preset_index % len(BEETLE_PRESETS)]["name"]
+            if window.GUI.button(f"B1 SKIN: {b1_skin_name}"):
+                blue_preset_index = (blue_preset_index + 1) % len(BEETLE_PRESETS)
+                palette = get_preset_palette(blue_preset_index)
                 window.blue_body_color = palette['body']
                 window.blue_leg_color = palette['legs']
                 window.blue_leg_tip_color = palette['leg_tips']
@@ -19540,7 +19390,7 @@ try:
                 simulation.blue_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
                 if network_manager and network_manager.connected and network_manager.is_host:
                     send_local_beetle_config(network_manager, is_host=True)
-                print(f"Randomized B1 colors: {palette}")
+                print(f"B1 skin: {palette['name']}")
 
         # === BEETLE 2 TYPE ===
         window.GUI.text("")
@@ -19739,9 +19589,11 @@ try:
             if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
                 send_local_beetle_config(network_manager, is_host=False)
 
-            # Randomize B2 colors button - under color pickers
-            if window.GUI.button("RANDOMIZE B2 COLORS"):
-                palette = generate_harmonious_palette()
+            # Cycle B2 skin preset button - under color pickers
+            b2_skin_name = BEETLE_PRESETS[red_preset_index % len(BEETLE_PRESETS)]["name"]
+            if window.GUI.button(f"B2 SKIN: {b2_skin_name}"):
+                red_preset_index = (red_preset_index + 1) % len(BEETLE_PRESETS)
+                palette = get_preset_palette(red_preset_index)
                 window.red_body_color = palette['body']
                 window.red_leg_color = palette['legs']
                 window.red_leg_tip_color = palette['leg_tips']
@@ -19754,7 +19606,7 @@ try:
                 simulation.red_horn_tip_color[None] = ti.Vector(list(palette['horn_tips']))
                 if network_manager and network_manager.connected and not network_manager.is_host:
                     send_local_beetle_config(network_manager, is_host=False)
-                print(f"Randomized B2 colors: {palette}")
+                print(f"B2 skin: {palette['name']}")
 
         # Winner announcement and restart button
         if blue_celebrating or red_celebrating:
