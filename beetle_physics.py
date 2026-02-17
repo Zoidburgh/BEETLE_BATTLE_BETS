@@ -1457,7 +1457,7 @@ def reset_match():
     global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
-    global sandstorm_mode, sandstorm_time, sandstorm_dust_timer, sandstorm_force_intensity
+    global sandstorm_mode, sandstorm_time, sandstorm_dust_timer, sandstorm_force_intensity, debris_cleanup_was_high
     global ufo_mode, ufo_time, ufo_phase, ufo_x, ufo_z, ufo_target_x, ufo_target_z, ufo_dust_timer, ufo_prev_x, ufo_prev_z
 
     # Sync GPU to ensure any pending operations complete before reset
@@ -1566,6 +1566,7 @@ def reset_match():
     sandstorm_time = 0.0
     sandstorm_dust_timer = 0.0
     sandstorm_force_intensity = 0.0
+    debris_cleanup_was_high = False
 
     # Reset UFO hazard state
     ufo_mode = False
@@ -2447,6 +2448,9 @@ sandstorm_mode = False
 sandstorm_time = 0.0
 sandstorm_dust_timer = 0.0
 sandstorm_force_intensity = 0.0   # Smoothed intensity for physics (decays slowly, lingers after particles)
+
+# Debris cleanup hysteresis state
+debris_cleanup_was_high = False
 
 # Arena UFO laser hazard state
 ufo_mode = False
@@ -9746,38 +9750,30 @@ def spawn_tornado_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
             vz = ti.cos(angle) * swirl_speed + ti.sin(angle) * inward
             vy = 1.5 + h_frac * 3.0  # Gentle updraft
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-            # Dark stormy colors — initialize before branches (Taichi scoping)
-            cr = 0.35
-            cg = 0.30
-            cb = 0.26
-            color_choice = ti.random()
-            if color_choice < 0.4:
-                cr = 0.30 + ti.random() * 0.10
-                cg = 0.28 + ti.random() * 0.10
-                cb = 0.26 + ti.random() * 0.10
-            elif color_choice < 0.7:
-                cr = 0.35 + ti.random() * 0.10
-                cg = 0.25 + ti.random() * 0.08
-                cb = 0.18 + ti.random() * 0.08
+            # Dark stormy color from palette + variation
+            color_idx = ti.cast(ti.random() * 3.0, ti.i32) % 3
+            cr = 0.0
+            cg = 0.0
+            cb = 0.0
+            if color_idx == 0:
+                cr, cg, cb = 0.35, 0.33, 0.31
+            elif color_idx == 1:
+                cr, cg, cb = 0.40, 0.29, 0.22
             else:
-                cr = 0.40 + ti.random() * 0.10
-                cg = 0.38 + ti.random() * 0.10
-                cb = 0.35 + ti.random() * 0.10
+                cr, cg, cb = 0.45, 0.43, 0.40
+            cr += (ti.random() - 0.5) * 0.10
+            cg += (ti.random() - 0.5) * 0.08
+            cb += (ti.random() - 0.5) * 0.08
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
             # Shorter lifetime at top (wide part) so particles die before drifting off the funnel
             simulation.debris_lifetime[idx] = (0.35 + ti.random() * 0.25) * (1.0 - h_frac * 0.6)  # base 0.35-0.6s, top 40% of that
 
 @ti.kernel
-def spawn_tornado_ground_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
-    """Spawn radial dust spray where tornado base meets solid arena floor."""
-    grid_cx = int(pos_x + simulation.n_grid / 2.0)
-    grid_cz = int(pos_z + simulation.n_grid / 2.0)
-    # Check if tornado center is over solid floor
-    if 0 <= grid_cx < 128 and 0 <= grid_cz < 128:
-        floor_y = floor_height_cache[grid_cx, grid_cz]
-        if floor_y > -500.0:  # Has floor (not a hole)
-            spawn_y = RENDER_Y_OFFSET + floor_y + 0.5
-            for i in range(8):
+def spawn_tornado_ground_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32, spawn_y: ti.f32):
+    """Spawn radial dust spray where tornado base meets solid arena floor.
+    Floor height pre-checked on CPU and passed as spawn_y (-1 = no floor)."""
+    if spawn_y > 0.0:
+        for i in range(8):
                 idx = ti.atomic_add(simulation.num_debris[None], 1)
                 if idx < simulation.MAX_DEBRIS:
                     simulation.debris_active[idx] = 1
@@ -9806,13 +9802,11 @@ def spawn_tornado_ground_dust(pos_x: ti.f32, pos_z: ti.f32, time_val: ti.f32):
                     simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
 
 @ti.kernel
-def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, time_val: ti.f32):
-    """Fast chaotic sand blasting through the arena, synced to gust intensity."""
+def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, time_val: ti.f32, count: ti.i32):
+    """Fast chaotic sand blasting through the arena, count pre-computed on CPU."""
     floor_y = 33.5  # RENDER_Y_OFFSET + 0.5 (arena surface)
 
-    for i in range(50):  # Big pool — intensity skip thins at low, dense wall at peak
-        if ti.random() > intensity * intensity:  # Quadratic: ramps up hard at high intensity
-            continue
+    for i in range(count):
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1
@@ -9837,44 +9831,31 @@ def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, ti
             # Upward kick to fight gravity — scale with spawn distance (far ones fly longer)
             vy = 3.0 + spawn_dist * 0.06 + ti.random() * 3.0
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-            # Yellow/brown sandy tones — initialize before branches (Taichi scoping)
-            cr = 0.80
-            cg = 0.70
-            cb = 0.25
-            color_choice = ti.random()
-            if color_choice < 0.2:
-                # Bright yellow sand
-                cr = 0.85 + ti.random() * 0.10
-                cg = 0.75 + ti.random() * 0.10
-                cb = 0.20 + ti.random() * 0.10
-            elif color_choice < 0.4:
-                # Golden yellow
-                cr = 0.90 + ti.random() * 0.10
-                cg = 0.70 + ti.random() * 0.10
-                cb = 0.15 + ti.random() * 0.10
-            elif color_choice < 0.55:
-                # Dusty brown
-                cr = 0.60 + ti.random() * 0.10
-                cg = 0.45 + ti.random() * 0.08
-                cb = 0.20 + ti.random() * 0.08
-            elif color_choice < 0.75:
-                # Dark earth brown
-                cr = 0.50 + ti.random() * 0.10
-                cg = 0.38 + ti.random() * 0.08
-                cb = 0.18 + ti.random() * 0.08
-            elif color_choice < 0.9:
-                # Deep dark brown
-                cr = 0.40 + ti.random() * 0.10
-                cg = 0.30 + ti.random() * 0.08
-                cb = 0.14 + ti.random() * 0.06
+            # Sandy color from palette + small variation (fewer RNG calls than branching)
+            color_idx = ti.cast(ti.random() * 6.0, ti.i32) % 6
+            # Palette: bright sand, golden, dusty brown, dark earth, deep brown, warm ochre
+            cr = 0.0
+            cg = 0.0
+            cb = 0.0
+            if color_idx == 0:
+                cr, cg, cb = 0.90, 0.80, 0.25
+            elif color_idx == 1:
+                cr, cg, cb = 0.95, 0.75, 0.20
+            elif color_idx == 2:
+                cr, cg, cb = 0.65, 0.49, 0.24
+            elif color_idx == 3:
+                cr, cg, cb = 0.55, 0.42, 0.22
+            elif color_idx == 4:
+                cr, cg, cb = 0.45, 0.34, 0.17
             else:
-                # Warm ochre yellow
-                cr = 0.80 + ti.random() * 0.10
-                cg = 0.65 + ti.random() * 0.10
-                cb = 0.18 + ti.random() * 0.10
+                cr, cg, cb = 0.85, 0.70, 0.23
+            # Tiny variation so particles aren't uniform
+            cr += (ti.random() - 0.5) * 0.10
+            cg += (ti.random() - 0.5) * 0.08
+            cb += (ti.random() - 0.5) * 0.06
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
             # Sand grain size
-            simulation.debris_radius[idx] = 0.24
+            simulation.debris_radius[idx] = 0.168
             # Lifetime scales with spawn distance — far particles live longer to make the trip,
             # close ones die fast so screen clears quickly when gust ends.
             # spawn_dist/spd = travel time to arena. Add margin to cross arena + blow out the other side.
@@ -11769,113 +11750,110 @@ referee_enabled = True  # Enabled by default
 referee_time = 0.0  # Time accumulator for organic movement
 
 BEETLE_PRESETS = [
+    # --- Viral Headliners ---
+    {"name": "Arachnid",     "body": (0.9, 0.1, 0.1),    "legs": (0.15, 0.2, 0.8),  "leg_tips": (0.05, 0.05, 0.15),"stripe": (0.2, 0.3, 0.9),   "horn_tips": (0.9, 0.15, 0.15)},
+    {"name": "Jester",         "body": (0.4, 0.1, 0.55),   "legs": (0.2, 0.7, 0.15),  "leg_tips": (0.1, 0.03, 0.15), "stripe": (0.3, 0.85, 0.2),  "horn_tips": (0.1, 0.3, 0.05)},
+    {"name": "Gamma",          "body": (0.15, 0.65, 0.1),  "legs": (0.5, 0.15, 0.65), "leg_tips": (0.04, 0.18, 0.03),"stripe": (0.55, 0.2, 0.7),  "horn_tips": (0.25, 0.08, 0.35)},
+    {"name": "Forge",      "body": (0.7, 0.08, 0.05),  "legs": (0.85, 0.7, 0.12), "leg_tips": (0.4, 0.7, 1.0),   "stripe": (0.9, 0.75, 0.1),  "horn_tips": (0.5, 0.04, 0.03)},
+    {"name": "Thunderbolt",       "body": (1.0, 0.9, 0.1),   "legs": (0.95, 0.82, 0.15),"leg_tips": (0.15, 0.1, 0.02), "stripe": (0.85, 0.15, 0.1), "horn_tips": (0.12, 0.08, 0.03)},
+    {"name": "Plumber Red",         "body": (0.9, 0.12, 0.08),  "legs": (0.15, 0.2, 0.75), "leg_tips": (0.22, 0.03, 0.02),"stripe": (0.95, 0.93, 0.9), "horn_tips": (0.35, 0.2, 0.05)},
+    {"name": "Blur",         "body": (0.05, 0.35, 0.95), "legs": (0.85, 0.15, 0.1), "leg_tips": (0.02, 0.08, 0.22),"stripe": (0.95, 0.8, 0.6),  "horn_tips": (0.9, 0.75, 0.1)},
+    {"name": "Nightwatch",        "body": (0.15, 0.15, 0.17), "legs": (0.25, 0.25, 0.28),"leg_tips": (0.05, 0.05, 0.06),"stripe": (1.0, 0.9, 0.0),   "horn_tips": (0.1, 0.1, 0.12)},
+    {"name": "Impostor",      "body": (0.78, 0.08, 0.08), "legs": (0.65, 0.06, 0.06),"leg_tips": (0.2, 0.02, 0.02), "stripe": (0.3, 0.85, 0.95), "horn_tips": (0.15, 0.55, 0.6)},
+    {"name": "Sea Sponge",     "body": (0.95, 0.85, 0.15), "legs": (0.45, 0.28, 0.08),"leg_tips": (0.2, 0.1, 0.03),  "stripe": (0.95, 0.93, 0.88),"horn_tips": (0.3, 0.18, 0.05)},
+    {"name": "Ogre",         "body": (0.3, 0.5, 0.1),    "legs": (0.4, 0.25, 0.1),  "leg_tips": (0.08, 0.12, 0.03),"stripe": (0.75, 0.65, 0.45),"horn_tips": (0.25, 0.18, 0.06)},
+    {"name": "Mercenary",      "body": (0.85, 0.08, 0.08), "legs": (0.15, 0.05, 0.05),"leg_tips": (0.04, 0.02, 0.02),"stripe": (0.95, 0.92, 0.9), "horn_tips": (0.08, 0.05, 0.05)},
+    {"name": "Caped Blue",      "body": (0.1, 0.12, 0.85),  "legs": (0.85, 0.1, 0.08), "leg_tips": (0.03, 0.03, 0.2), "stripe": (0.9, 0.12, 0.1),  "horn_tips": (0.9, 0.8, 0.1)},
+    {"name": "Clownfish",          "body": (1.0, 0.45, 0.05),  "legs": (0.95, 0.9, 0.85), "leg_tips": (0.06, 0.05, 0.04),"stripe": (0.97, 0.95, 0.9), "horn_tips": (0.8, 0.35, 0.03)},
+    {"name": "Berserker",     "body": (0.95, 0.8, 0.05),  "legs": (0.1, 0.12, 0.45), "leg_tips": (0.75, 0.78, 0.82),"stripe": (0.12, 0.15, 0.5), "horn_tips": (0.7, 0.7, 0.72)},
+    {"name": "Pixel Boom",       "body": (0.35, 0.7, 0.2),   "legs": (0.15, 0.3, 0.08), "leg_tips": (0.05, 0.12, 0.03),"stripe": (0.08, 0.08, 0.06),"horn_tips": (0.1, 0.2, 0.06)},
+    {"name": "Plumber Green",         "body": (0.15, 0.7, 0.15),  "legs": (0.12, 0.1, 0.5),  "leg_tips": (0.04, 0.18, 0.04),"stripe": (0.92, 0.9, 0.85), "horn_tips": (0.08, 0.06, 0.28)},
+    {"name": "Tabby",      "body": (0.9, 0.45, 0.02),  "legs": (0.1, 0.08, 0.06), "leg_tips": (0.22, 0.1, 0.01), "stripe": (0.08, 0.07, 0.05),"horn_tips": (0.06, 0.05, 0.03)},
+    {"name": "Shinobi",        "body": (1.0, 0.55, 0.08),  "legs": (0.08, 0.08, 0.35),"leg_tips": (0.25, 0.12, 0.02),"stripe": (0.06, 0.06, 0.08),"horn_tips": (0.05, 0.05, 0.22)},
+    {"name": "Dojo",          "body": (1.0, 0.5, 0.05),   "legs": (0.12, 0.18, 0.7), "leg_tips": (0.3, 0.12, 0.02), "stripe": (0.15, 0.2, 0.75), "horn_tips": (0.08, 0.1, 0.4)},
+    # --- More Pop Culture ---
+    {"name": "Puffball",         "body": (0.95, 0.45, 0.55), "legs": (0.85, 0.15, 0.15),"leg_tips": (0.25, 0.05, 0.08),"stripe": (0.95, 0.7, 0.75), "horn_tips": (0.65, 0.1, 0.12)},
+    {"name": "Dino",         "body": (0.25, 0.75, 0.15), "legs": (0.92, 0.9, 0.85), "leg_tips": (0.08, 0.2, 0.04), "stripe": (0.85, 0.15, 0.05),"horn_tips": (0.65, 0.1, 0.03)},
+    {"name": "Ladybug",       "body": (0.9, 0.1, 0.08),   "legs": (0.08, 0.06, 0.05),"leg_tips": (0.03, 0.02, 0.02),"stripe": (0.06, 0.05, 0.04),"horn_tips": (0.05, 0.04, 0.03)},
+    {"name": "Space Ranger",          "body": (0.9, 0.92, 0.88),  "legs": (0.2, 0.65, 0.15), "leg_tips": (0.2, 0.05, 0.25), "stripe": (0.25, 0.7, 0.2),  "horn_tips": (0.35, 0.12, 0.45)},
+    {"name": "Adventurer",          "body": (0.2, 0.6, 0.15),   "legs": (0.45, 0.3, 0.12), "leg_tips": (0.06, 0.15, 0.04),"stripe": (0.65, 0.55, 0.3), "horn_tips": (0.9, 0.8, 0.15)},
+    {"name": "Blaster",      "body": (0.15, 0.65, 0.95), "legs": (0.05, 0.1, 0.4),  "leg_tips": (0.04, 0.15, 0.22),"stripe": (0.5, 0.82, 1.0),  "horn_tips": (0.03, 0.08, 0.3)},
+    {"name": "Grid Runner",          "body": (0.04, 0.06, 0.08), "legs": (0.06, 0.08, 0.1), "leg_tips": (0.0, 0.8, 0.85),  "stripe": (0.0, 0.95, 1.0),  "horn_tips": (0.0, 0.5, 0.55)},
+    {"name": "Mecha",        "body": (0.35, 0.05, 0.5),  "legs": (0.3, 0.95, 0.1),  "leg_tips": (0.1, 0.02, 0.15), "stripe": (0.2, 0.85, 0.1),  "horn_tips": (0.9, 0.55, 0.0)},
+    {"name": "White Mech",        "body": (0.92, 0.92, 0.9),  "legs": (0.1, 0.2, 0.7),   "leg_tips": (0.2, 0.2, 0.18),  "stripe": (0.85, 0.1, 0.1),  "horn_tips": (0.95, 0.85, 0.1)},
+    {"name": "Spartan",  "body": (0.45, 0.55, 0.25), "legs": (0.35, 0.42, 0.2), "leg_tips": (0.1, 0.12, 0.06), "stripe": (0.95, 0.75, 0.1),  "horn_tips": (0.55, 0.62, 0.3)},
+    {"name": "Bounty Hunter",         "body": (0.92, 0.6, 0.08),  "legs": (0.75, 0.2, 0.05), "leg_tips": (0.22, 0.08, 0.02),"stripe": (0.15, 0.8, 0.25), "horn_tips": (0.1, 0.55, 0.15)},
+    {"name": "Warp Gate",        "body": (0.88, 0.9, 0.92),  "legs": (0.95, 0.55, 0.05),"leg_tips": (0.2, 0.2, 0.22),  "stripe": (0.15, 0.55, 1.0), "horn_tips": (0.5, 0.3, 0.03)},
+    {"name": "Star Shield",   "body": (0.1, 0.15, 0.7),   "legs": (0.8, 0.12, 0.1),  "leg_tips": (0.03, 0.05, 0.18),"stripe": (0.95, 0.93, 0.9), "horn_tips": (0.7, 0.1, 0.08)},
+    {"name": "Titan",        "body": (0.45, 0.12, 0.65), "legs": (0.55, 0.25, 0.7), "leg_tips": (0.12, 0.04, 0.18),"stripe": (0.95, 0.8, 0.15), "horn_tips": (0.75, 0.6, 0.1)},
+    {"name": "Royal Warrior",        "body": (0.08, 0.1, 0.55),  "legs": (0.9, 0.88, 0.82), "leg_tips": (0.02, 0.03, 0.15),"stripe": (0.95, 0.85, 0.15),"horn_tips": (0.5, 0.45, 0.08)},
+    {"name": "Swordsman",          "body": (0.08, 0.45, 0.12), "legs": (0.08, 0.07, 0.06),"leg_tips": (0.03, 0.12, 0.04),"stripe": (0.92, 0.9, 0.85), "horn_tips": (0.85, 0.75, 0.15)},
+    {"name": "Forest Spirit",        "body": (0.55, 0.52, 0.48), "legs": (0.45, 0.42, 0.38),"leg_tips": (0.15, 0.12, 0.1), "stripe": (0.9, 0.88, 0.78), "horn_tips": (0.3, 0.25, 0.2)},
+    {"name": "Karate",           "body": (0.92, 0.9, 0.85),  "legs": (0.55, 0.35, 0.15),"leg_tips": (0.2, 0.18, 0.08), "stripe": (0.9, 0.12, 0.05), "horn_tips": (0.3, 0.2, 0.08)},
+    {"name": "Jetpack",     "body": (0.35, 0.45, 0.2),  "legs": (0.7, 0.6, 0.4),   "leg_tips": (0.1, 0.12, 0.06), "stripe": (0.6, 0.15, 0.08), "horn_tips": (0.35, 0.1, 0.05)},
+    {"name": "Paranormal",  "body": (0.72, 0.65, 0.45), "legs": (0.6, 0.55, 0.38), "leg_tips": (0.18, 0.15, 0.1), "stripe": (0.08, 0.08, 0.08),"horn_tips": (0.75, 0.12, 0.08)},
+    {"name": "Purple Blob",       "body": (0.42, 0.08, 0.55), "legs": (0.55, 0.2, 0.65), "leg_tips": (0.12, 0.03, 0.15),"stripe": (0.5, 0.15, 0.6),  "horn_tips": (0.35, 0.06, 0.42)},
+    {"name": "Rasta",         "body": (0.15, 0.55, 0.08), "legs": (0.7, 0.12, 0.08), "leg_tips": (0.04, 0.14, 0.02),"stripe": (0.95, 0.8, 0.1),  "horn_tips": (0.4, 0.08, 0.04)},
+    # --- Brands & Vibes ---
+    {"name": "Fast Food",    "body": (0.85, 0.1, 0.05),  "legs": (1.0, 0.85, 0.0),  "leg_tips": (0.25, 0.03, 0.02),"stripe": (0.95, 0.8, 0.05), "horn_tips": (0.5, 0.05, 0.03)},
+    {"name": "Cola",     "body": (0.72, 0.02, 0.02), "legs": (0.95, 0.93, 0.9), "leg_tips": (0.18, 0.01, 0.01),"stripe": (0.97, 0.95, 0.92),"horn_tips": (0.55, 0.02, 0.02)},
+    {"name": "Spicy Chip",   "body": (0.9, 0.15, 0.02),  "legs": (1.0, 0.4, 0.02),  "leg_tips": (0.25, 0.04, 0.01),"stripe": (0.95, 0.55, 0.0), "horn_tips": (0.8, 0.08, 0.02)},
+    {"name": "Cookie Cream",          "body": (0.08, 0.06, 0.05), "legs": (0.92, 0.88, 0.75),"leg_tips": (0.04, 0.03, 0.02),"stripe": (0.95, 0.92, 0.8), "horn_tips": (0.1, 0.2, 0.6)},
+    {"name": "Pink Doll",        "body": (0.95, 0.15, 0.55), "legs": (0.95, 0.92, 0.9), "leg_tips": (0.25, 0.04, 0.14),"stripe": (1.0, 0.25, 0.6),  "horn_tips": (0.9, 0.75, 0.15)},
+    {"name": "Flatpack",          "body": (0.0, 0.28, 0.7),   "legs": (0.05, 0.22, 0.55),"leg_tips": (0.02, 0.08, 0.18),"stripe": (1.0, 0.82, 0.0),  "horn_tips": (0.8, 0.65, 0.0)},
+    {"name": "Laundry Pod",      "body": (0.95, 0.5, 0.1),   "legs": (0.1, 0.35, 0.85), "leg_tips": (0.25, 0.12, 0.0), "stripe": (0.95, 0.95, 0.92),"horn_tips": (0.05, 0.2, 0.55)},
+    {"name": "Peanut Cup",       "body": (0.35, 0.18, 0.05), "legs": (0.95, 0.55, 0.0), "leg_tips": (0.12, 0.06, 0.02),"stripe": (0.85, 0.65, 0.25),"horn_tips": (0.7, 0.4, 0.0)},
+    {"name": "Donut Shop",       "body": (0.95, 0.45, 0.0),  "legs": (0.9, 0.2, 0.45),  "leg_tips": (0.25, 0.1, 0.0),  "stripe": (0.85, 0.15, 0.4), "horn_tips": (0.7, 0.35, 0.0)},
+    {"name": "Energy Drink",       "body": (0.02, 0.02, 0.02), "legs": (0.05, 0.05, 0.05),"leg_tips": (0.01, 0.01, 0.01),"stripe": (0.3, 0.95, 0.1),  "horn_tips": (0.15, 0.5, 0.05)},
+    {"name": "Candy Corn",    "body": (1.0, 0.7, 0.1),    "legs": (1.0, 0.85, 0.0),  "leg_tips": (0.95, 0.92, 0.82),"stripe": (0.98, 0.95, 0.85),"horn_tips": (0.85, 0.45, 0.0)},
+    {"name": "Tractor",    "body": (0.15, 0.5, 0.1),   "legs": (0.12, 0.4, 0.08), "leg_tips": (0.04, 0.15, 0.03),"stripe": (1.0, 0.85, 0.0),  "horn_tips": (0.8, 0.68, 0.0)},
+    {"name": "Endurance",   "body": (0.55, 0.8, 0.92),  "legs": (0.7, 0.88, 0.95), "leg_tips": (0.15, 0.25, 0.3), "stripe": (0.95, 0.5, 0.15), "horn_tips": (0.75, 0.35, 0.08)},
+    {"name": "Purple Gold",        "body": (0.35, 0.1, 0.6),   "legs": (0.95, 0.75, 0.1), "leg_tips": (0.12, 0.04, 0.2), "stripe": (0.9, 0.8, 0.15),  "horn_tips": (0.7, 0.55, 0.05)},
+    {"name": "Christmas",     "body": (0.8, 0.05, 0.05),  "legs": (0.1, 0.55, 0.1),  "leg_tips": (0.22, 0.02, 0.02),"stripe": (0.95, 0.85, 0.15),"horn_tips": (0.04, 0.2, 0.04)},
+    {"name": "Neapolitan",    "body": (0.9, 0.55, 0.55),  "legs": (0.4, 0.2, 0.1),   "leg_tips": (0.22, 0.08, 0.05),"stripe": (0.95, 0.9, 0.75), "horn_tips": (0.6, 0.3, 0.15)},
+    # --- Color Aesthetics ---
+    {"name": "Bumblebee",     "body": (0.95, 0.85, 0.1),  "legs": (0.15, 0.12, 0.05),"leg_tips": (0.05, 0.05, 0.02),"stripe": (0.15, 0.12, 0.05),"horn_tips": (0.1, 0.08, 0.02)},
+    {"name": "Tiger",         "body": (1.0, 0.55, 0.05),  "legs": (0.95, 0.9, 0.85), "leg_tips": (0.1, 0.08, 0.02), "stripe": (0.1, 0.08, 0.02), "horn_tips": (0.15, 0.1, 0.02)},
+    {"name": "Watermelon",    "body": (0.15, 0.6, 0.15),  "legs": (0.3, 0.75, 0.35), "leg_tips": (0.05, 0.18, 0.05),"stripe": (0.9, 0.15, 0.15), "horn_tips": (0.08, 0.25, 0.08)},
+    {"name": "Flamingo",      "body": (1.0, 0.5, 0.45),   "legs": (0.1, 0.08, 0.07), "leg_tips": (0.03, 0.02, 0.02),"stripe": (1.0, 0.75, 0.65), "horn_tips": (0.12, 0.06, 0.05)},
+    {"name": "Wasp",          "body": (0.06, 0.06, 0.04), "legs": (0.95, 0.9, 0.05), "leg_tips": (0.03, 0.03, 0.02),"stripe": (1.0, 0.95, 0.0),  "horn_tips": (0.04, 0.04, 0.02)},
+    {"name": "Monarch",       "body": (0.95, 0.45, 0.0),  "legs": (0.08, 0.06, 0.03),"leg_tips": (0.03, 0.02, 0.01),"stripe": (0.95, 0.92, 0.88),"horn_tips": (0.06, 0.04, 0.02)},
+    {"name": "Tuxedo",        "body": (0.08, 0.08, 0.1),  "legs": (0.9, 0.88, 0.85), "leg_tips": (0.03, 0.03, 0.04),"stripe": (0.95, 0.93, 0.9), "horn_tips": (0.06, 0.06, 0.07)},
+    {"name": "Poison Frog",   "body": (0.1, 0.9, 0.2),    "legs": (0.3, 0.2, 0.9),   "leg_tips": (0.1, 0.15, 0.9),  "stripe": (0.9, 0.95, 0.1),  "horn_tips": (0.2, 0.1, 0.8)},
     {"name": "Classic Blue",  "body": (0.25, 0.55, 0.95), "legs": (0.4, 0.7, 1.0),   "leg_tips": (0.0, 0.0, 0.3),   "stripe": (0.6, 0.9, 1.0),   "horn_tips": (0.4, 0.75, 1.0)},
     {"name": "Classic Red",   "body": (0.95, 0.25, 0.15), "legs": (1.0, 0.5, 0.3),   "leg_tips": (0.3, 0.0, 0.0),   "stripe": (0.85, 0.65, 0.2),  "horn_tips": (0.4, 0.1, 0.1)},
-    {"name": "Bumblebee",     "body": (0.95, 0.85, 0.1),  "legs": (0.15, 0.12, 0.05),"leg_tips": (0.05, 0.05, 0.02),"stripe": (0.15, 0.12, 0.05),"horn_tips": (0.1, 0.08, 0.02)},
-    {"name": "Spiderman",     "body": (0.9, 0.1, 0.1),    "legs": (0.15, 0.2, 0.8),  "leg_tips": (0.05, 0.05, 0.15),"stripe": (0.2, 0.3, 0.9),   "horn_tips": (0.9, 0.15, 0.15)},
-    {"name": "Emerald",       "body": (0.1, 0.75, 0.3),   "legs": (0.2, 0.9, 0.45),  "leg_tips": (0.02, 0.2, 0.05), "stripe": (0.5, 1.0, 0.6),   "horn_tips": (0.05, 0.35, 0.1)},
-    {"name": "Royal Purple",  "body": (0.55, 0.15, 0.85), "legs": (0.7, 0.4, 0.95),  "leg_tips": (0.15, 0.02, 0.25),"stripe": (0.85, 0.5, 1.0),  "horn_tips": (0.3, 0.05, 0.5)},
-    {"name": "Sunset",        "body": (1.0, 0.5, 0.1),    "legs": (1.0, 0.7, 0.3),   "leg_tips": (0.3, 0.1, 0.0),   "stripe": (1.0, 0.85, 0.2),  "horn_tips": (0.8, 0.3, 0.05)},
-    {"name": "Arctic",        "body": (0.85, 0.92, 1.0),  "legs": (0.6, 0.8, 0.95),  "leg_tips": (0.15, 0.2, 0.35), "stripe": (0.95, 0.98, 1.0), "horn_tips": (0.4, 0.55, 0.7)},
-    {"name": "Obsidian",      "body": (0.12, 0.1, 0.15),  "legs": (0.2, 0.17, 0.22), "leg_tips": (0.05, 0.04, 0.06),"stripe": (0.85, 0.7, 0.2),  "horn_tips": (0.75, 0.6, 0.15)},
-    {"name": "Sakura",        "body": (1.0, 0.6, 0.7),    "legs": (0.95, 0.85, 0.88),"leg_tips": (0.3, 0.1, 0.15),  "stripe": (1.0, 0.8, 0.85),  "horn_tips": (0.8, 0.3, 0.4)},
-    {"name": "Tiger",         "body": (1.0, 0.55, 0.05),  "legs": (0.95, 0.9, 0.85), "leg_tips": (0.1, 0.08, 0.02), "stripe": (0.1, 0.08, 0.02), "horn_tips": (0.15, 0.1, 0.02)},
-    {"name": "Poison Frog",   "body": (0.1, 0.9, 0.2),    "legs": (0.3, 0.2, 0.9),   "leg_tips": (0.1, 0.15, 0.9),  "stripe": (0.9, 0.95, 0.1),  "horn_tips": (0.2, 0.1, 0.8)},
-    {"name": "Inferno",       "body": (0.95, 0.2, 0.0),   "legs": (1.0, 0.6, 0.0),   "leg_tips": (0.2, 0.02, 0.0),  "stripe": (1.0, 0.9, 0.1),   "horn_tips": (1.0, 0.4, 0.0)},
-    {"name": "Ocean",         "body": (0.05, 0.3, 0.7),   "legs": (0.1, 0.5, 0.75),  "leg_tips": (0.02, 0.08, 0.2), "stripe": (0.2, 0.8, 0.85),  "horn_tips": (0.05, 0.2, 0.5)},
     {"name": "Gold",          "body": (0.85, 0.7, 0.15),  "legs": (0.95, 0.8, 0.3),  "leg_tips": (0.25, 0.18, 0.02),"stripe": (1.0, 0.95, 0.5),  "horn_tips": (0.6, 0.45, 0.05)},
-    {"name": "Candy",         "body": (1.0, 0.15, 0.6),   "legs": (0.95, 0.5, 0.75), "leg_tips": (0.3, 0.02, 0.15), "stripe": (0.95, 0.85, 0.9), "horn_tips": (0.8, 0.1, 0.45)},
-    {"name": "Military",      "body": (0.35, 0.4, 0.2),   "legs": (0.55, 0.5, 0.35), "leg_tips": (0.1, 0.1, 0.05),  "stripe": (0.5, 0.45, 0.3),  "horn_tips": (0.2, 0.2, 0.1)},
-    {"name": "Coral",         "body": (1.0, 0.45, 0.4),   "legs": (1.0, 0.7, 0.6),   "leg_tips": (0.3, 0.1, 0.08),  "stripe": (1.0, 0.85, 0.7),  "horn_tips": (0.8, 0.3, 0.25)},
-    {"name": "Stealth",       "body": (0.2, 0.2, 0.22),   "legs": (0.3, 0.3, 0.32),  "leg_tips": (0.05, 0.05, 0.06),"stripe": (0.85, 0.15, 0.1), "horn_tips": (0.7, 0.1, 0.08)},
-    {"name": "Lime",          "body": (0.6, 0.95, 0.1),   "legs": (0.75, 1.0, 0.4),  "leg_tips": (0.15, 0.25, 0.02),"stripe": (0.85, 1.0, 0.5),  "horn_tips": (0.4, 0.65, 0.05)},
-    {"name": "Cyberpunk",     "body": (0.12, 0.05, 0.18), "legs": (0.08, 0.25, 0.3), "leg_tips": (0.0, 0.85, 0.8),  "stripe": (0.0, 1.0, 0.9),   "horn_tips": (0.0, 0.75, 0.7)},
-    {"name": "Phantom",       "body": (0.95, 0.93, 0.9),  "legs": (0.8, 0.78, 0.75), "leg_tips": (0.2, 0.18, 0.17), "stripe": (0.85, 0.05, 0.05),"horn_tips": (0.15, 0.12, 0.12)},
-    {"name": "Toxic",         "body": (0.65, 1.0, 0.0),   "legs": (0.8, 0.95, 0.4),  "leg_tips": (0.1, 0.02, 0.15), "stripe": (0.9, 0.0, 0.5),   "horn_tips": (0.15, 0.05, 0.2)},
-    {"name": "Midnight",      "body": (0.05, 0.05, 0.2),  "legs": (0.1, 0.12, 0.35), "leg_tips": (0.02, 0.02, 0.06),"stripe": (1.0, 0.85, 0.1),  "horn_tips": (0.8, 0.65, 0.08)},
-    {"name": "Bubblegum",     "body": (1.0, 0.35, 0.6),   "legs": (1.0, 0.65, 0.75), "leg_tips": (0.3, 0.05, 0.12), "stripe": (0.45, 0.75, 1.0), "horn_tips": (0.3, 0.5, 0.85)},
-    {"name": "Copper",        "body": (0.7, 0.3, 0.1),    "legs": (0.8, 0.5, 0.25),  "leg_tips": (0.15, 0.06, 0.02),"stripe": (0.0, 0.8, 0.7),   "horn_tips": (0.05, 0.4, 0.35)},
-    {"name": "Neon Rose",     "body": (1.0, 0.05, 0.4),   "legs": (1.0, 0.45, 0.6),  "leg_tips": (0.3, 0.02, 0.1),  "stripe": (0.98, 0.92, 0.93),"horn_tips": (0.55, 0.0, 0.2)},
-    {"name": "Void",          "body": (0.04, 0.03, 0.07), "legs": (0.08, 0.07, 0.12),"leg_tips": (0.02, 0.01, 0.03),"stripe": (0.1, 0.5, 1.0),   "horn_tips": (0.08, 0.35, 0.8)},
-    {"name": "Peach",         "body": (1.0, 0.65, 0.45),  "legs": (1.0, 0.8, 0.65),  "leg_tips": (0.3, 0.12, 0.05), "stripe": (1.0, 0.93, 0.75), "horn_tips": (0.6, 0.4, 0.15)},
-    {"name": "Glacier",       "body": (0.15, 0.75, 0.8),  "legs": (0.45, 0.85, 0.88),"leg_tips": (0.04, 0.2, 0.22), "stripe": (0.92, 0.97, 1.0), "horn_tips": (0.1, 0.45, 0.5)},
-    {"name": "Wasp",          "body": (0.06, 0.06, 0.04), "legs": (0.95, 0.9, 0.05), "leg_tips": (0.03, 0.03, 0.02),"stripe": (1.0, 0.95, 0.0),  "horn_tips": (0.04, 0.04, 0.02)},
-    {"name": "Crimson",       "body": (0.6, 0.02, 0.05),  "legs": (0.75, 0.2, 0.15), "leg_tips": (0.15, 0.02, 0.02),"stripe": (1.0, 0.82, 0.1),  "horn_tips": (0.7, 0.55, 0.08)},
-    {"name": "Electric",      "body": (0.05, 0.35, 1.0),  "legs": (0.35, 0.6, 1.0),  "leg_tips": (0.95, 0.9, 0.3),  "stripe": (1.0, 0.92, 0.05), "horn_tips": (0.8, 0.7, 0.0)},
+    {"name": "Inferno",       "body": (0.95, 0.2, 0.0),   "legs": (1.0, 0.6, 0.0),   "leg_tips": (0.2, 0.02, 0.0),  "stripe": (1.0, 0.9, 0.1),   "horn_tips": (1.0, 0.4, 0.0)},
     {"name": "Lava",          "body": (0.12, 0.08, 0.08), "legs": (0.25, 0.15, 0.1), "leg_tips": (1.0, 0.4, 0.05),  "stripe": (1.0, 0.55, 0.0),  "horn_tips": (0.9, 0.35, 0.05)},
-    {"name": "Vaporwave",     "body": (0.65, 0.5, 0.9),   "legs": (0.5, 0.85, 0.7),  "leg_tips": (0.15, 0.08, 0.25),"stripe": (1.0, 0.4, 0.7),   "horn_tips": (0.35, 0.65, 0.55)},
-    {"name": "Tundra",        "body": (0.35, 0.45, 0.58), "legs": (0.6, 0.65, 0.7),  "leg_tips": (0.1, 0.1, 0.13),  "stripe": (0.95, 0.65, 0.1), "horn_tips": (0.7, 0.45, 0.08)},
-    {"name": "Shadow",        "body": (0.08, 0.04, 0.06), "legs": (0.18, 0.06, 0.08),"leg_tips": (0.03, 0.01, 0.02),"stripe": (0.85, 0.08, 0.1), "horn_tips": (0.45, 0.04, 0.06)},
-    {"name": "Monarch",       "body": (0.95, 0.45, 0.0),  "legs": (0.08, 0.06, 0.03),"leg_tips": (0.03, 0.02, 0.01),"stripe": (0.95, 0.92, 0.88),"horn_tips": (0.06, 0.04, 0.02)},
+    {"name": "Electric",      "body": (0.05, 0.35, 1.0),  "legs": (0.35, 0.6, 1.0),  "leg_tips": (0.95, 0.9, 0.3),  "stripe": (1.0, 0.92, 0.05), "horn_tips": (0.8, 0.7, 0.0)},
+    {"name": "Cyberpunk",     "body": (0.12, 0.05, 0.18), "legs": (0.08, 0.25, 0.3), "leg_tips": (0.0, 0.85, 0.8),  "stripe": (0.0, 1.0, 0.9),   "horn_tips": (0.0, 0.75, 0.7)},
     {"name": "Plasma",        "body": (0.85, 0.05, 0.55), "legs": (0.1, 0.8, 0.85),  "leg_tips": (0.9, 0.1, 0.6),   "stripe": (0.95, 1.0, 0.15), "horn_tips": (0.08, 0.6, 0.65)},
+    {"name": "Toxic",         "body": (0.65, 1.0, 0.0),   "legs": (0.8, 0.95, 0.4),  "leg_tips": (0.1, 0.02, 0.15), "stripe": (0.9, 0.0, 0.5),   "horn_tips": (0.15, 0.05, 0.2)},
+    {"name": "Neon Rose",     "body": (1.0, 0.05, 0.4),   "legs": (1.0, 0.45, 0.6),  "leg_tips": (0.3, 0.02, 0.1),  "stripe": (0.98, 0.92, 0.93),"horn_tips": (0.55, 0.0, 0.2)},
+    {"name": "Vaporwave",     "body": (0.65, 0.5, 0.9),   "legs": (0.5, 0.85, 0.7),  "leg_tips": (0.15, 0.08, 0.25),"stripe": (1.0, 0.4, 0.7),   "horn_tips": (0.35, 0.65, 0.55)},
+    {"name": "Bubblegum",     "body": (1.0, 0.35, 0.6),   "legs": (1.0, 0.65, 0.75), "leg_tips": (0.3, 0.05, 0.12), "stripe": (0.45, 0.75, 1.0), "horn_tips": (0.3, 0.5, 0.85)},
+    {"name": "Candy",         "body": (1.0, 0.15, 0.6),   "legs": (0.95, 0.5, 0.75), "leg_tips": (0.3, 0.02, 0.15), "stripe": (0.95, 0.85, 0.9), "horn_tips": (0.8, 0.1, 0.45)},
+    {"name": "Sakura",        "body": (1.0, 0.6, 0.7),    "legs": (0.95, 0.85, 0.88),"leg_tips": (0.3, 0.1, 0.15),  "stripe": (1.0, 0.8, 0.85),  "horn_tips": (0.8, 0.3, 0.4)},
+    {"name": "Coral",         "body": (1.0, 0.45, 0.4),   "legs": (1.0, 0.7, 0.6),   "leg_tips": (0.3, 0.1, 0.08),  "stripe": (1.0, 0.85, 0.7),  "horn_tips": (0.8, 0.3, 0.25)},
+    {"name": "Peach",         "body": (1.0, 0.65, 0.45),  "legs": (1.0, 0.8, 0.65),  "leg_tips": (0.3, 0.12, 0.05), "stripe": (1.0, 0.93, 0.75), "horn_tips": (0.6, 0.4, 0.15)},
+    {"name": "Sunset",        "body": (1.0, 0.5, 0.1),    "legs": (1.0, 0.7, 0.3),   "leg_tips": (0.3, 0.1, 0.0),   "stripe": (1.0, 0.85, 0.2),  "horn_tips": (0.8, 0.3, 0.05)},
+    {"name": "Emerald",       "body": (0.1, 0.75, 0.3),   "legs": (0.2, 0.9, 0.45),  "leg_tips": (0.02, 0.2, 0.05), "stripe": (0.5, 1.0, 0.6),   "horn_tips": (0.05, 0.35, 0.1)},
     {"name": "Jade",          "body": (0.1, 0.5, 0.35),   "legs": (0.25, 0.65, 0.5), "leg_tips": (0.03, 0.12, 0.08),"stripe": (0.9, 0.82, 0.45), "horn_tips": (0.05, 0.3, 0.2)},
-    # --- Batch 3: Pop Culture & Iconic References (#41-60) ---
-    {"name": "Hulk",          "body": (0.15, 0.65, 0.1),  "legs": (0.5, 0.15, 0.65), "leg_tips": (0.04, 0.18, 0.03),"stripe": (0.55, 0.2, 0.7),  "horn_tips": (0.25, 0.08, 0.35)},
-    {"name": "Batman",        "body": (0.15, 0.15, 0.17), "legs": (0.25, 0.25, 0.28),"leg_tips": (0.05, 0.05, 0.06),"stripe": (1.0, 0.9, 0.0),   "horn_tips": (0.1, 0.1, 0.12)},
-    {"name": "Superman",      "body": (0.1, 0.12, 0.85),  "legs": (0.85, 0.1, 0.08), "leg_tips": (0.03, 0.03, 0.2), "stripe": (0.9, 0.12, 0.1),  "horn_tips": (0.9, 0.8, 0.1)},
-    {"name": "Joker",         "body": (0.4, 0.1, 0.55),   "legs": (0.2, 0.7, 0.15),  "leg_tips": (0.1, 0.03, 0.15), "stripe": (0.3, 0.85, 0.2),  "horn_tips": (0.1, 0.3, 0.05)},
-    {"name": "Deadpool",      "body": (0.85, 0.08, 0.08), "legs": (0.15, 0.05, 0.05),"leg_tips": (0.04, 0.02, 0.02),"stripe": (0.95, 0.92, 0.9), "horn_tips": (0.08, 0.05, 0.05)},
-    {"name": "Wolverine",     "body": (0.95, 0.8, 0.05),  "legs": (0.1, 0.12, 0.45), "leg_tips": (0.75, 0.78, 0.82),"stripe": (0.12, 0.15, 0.5), "horn_tips": (0.7, 0.7, 0.72)},
-    {"name": "Cap America",   "body": (0.1, 0.15, 0.7),   "legs": (0.8, 0.12, 0.1),  "leg_tips": (0.03, 0.05, 0.18),"stripe": (0.95, 0.93, 0.9), "horn_tips": (0.7, 0.1, 0.08)},
-    {"name": "Thanos",        "body": (0.45, 0.12, 0.65), "legs": (0.55, 0.25, 0.7), "leg_tips": (0.12, 0.04, 0.18),"stripe": (0.95, 0.8, 0.15), "horn_tips": (0.75, 0.6, 0.1)},
-    {"name": "Iron Man",      "body": (0.7, 0.08, 0.05),  "legs": (0.85, 0.7, 0.12), "leg_tips": (0.4, 0.7, 1.0),   "stripe": (0.9, 0.75, 0.1),  "horn_tips": (0.5, 0.04, 0.03)},
-    {"name": "Mario",         "body": (0.9, 0.12, 0.08),  "legs": (0.15, 0.2, 0.75), "leg_tips": (0.22, 0.03, 0.02),"stripe": (0.95, 0.93, 0.9), "horn_tips": (0.35, 0.2, 0.05)},
-    {"name": "Luigi",         "body": (0.15, 0.7, 0.15),  "legs": (0.12, 0.1, 0.5),  "leg_tips": (0.04, 0.18, 0.04),"stripe": (0.92, 0.9, 0.85), "horn_tips": (0.08, 0.06, 0.28)},
-    {"name": "Sonic",         "body": (0.05, 0.35, 0.95), "legs": (0.85, 0.15, 0.1), "leg_tips": (0.02, 0.08, 0.22),"stripe": (0.95, 0.8, 0.6),  "horn_tips": (0.9, 0.75, 0.1)},
-    {"name": "Pikachu",       "body": (1.0, 0.9, 0.1),   "legs": (0.95, 0.82, 0.15),"leg_tips": (0.15, 0.1, 0.02), "stripe": (0.85, 0.15, 0.1), "horn_tips": (0.12, 0.08, 0.03)},
-    {"name": "Goku",          "body": (1.0, 0.5, 0.05),   "legs": (0.12, 0.18, 0.7), "leg_tips": (0.3, 0.12, 0.02), "stripe": (0.15, 0.2, 0.75), "horn_tips": (0.08, 0.1, 0.4)},
-    {"name": "Ladybug",       "body": (0.9, 0.1, 0.08),   "legs": (0.08, 0.06, 0.05),"leg_tips": (0.03, 0.02, 0.02),"stripe": (0.06, 0.05, 0.04),"horn_tips": (0.05, 0.04, 0.03)},
-    {"name": "Nemo",          "body": (1.0, 0.45, 0.05),  "legs": (0.95, 0.9, 0.85), "leg_tips": (0.06, 0.05, 0.04),"stripe": (0.97, 0.95, 0.9), "horn_tips": (0.8, 0.35, 0.03)},
-    {"name": "Watermelon",    "body": (0.15, 0.6, 0.15),  "legs": (0.3, 0.75, 0.35), "leg_tips": (0.05, 0.18, 0.05),"stripe": (0.9, 0.15, 0.15), "horn_tips": (0.08, 0.25, 0.08)},
-    {"name": "Tuxedo",        "body": (0.08, 0.08, 0.1),  "legs": (0.9, 0.88, 0.85), "leg_tips": (0.03, 0.03, 0.04),"stripe": (0.95, 0.93, 0.9), "horn_tips": (0.06, 0.06, 0.07)},
-    {"name": "Flamingo",      "body": (1.0, 0.5, 0.45),   "legs": (0.1, 0.08, 0.07), "leg_tips": (0.03, 0.02, 0.02),"stripe": (1.0, 0.75, 0.65), "horn_tips": (0.12, 0.06, 0.05)},
-    {"name": "Buzz",          "body": (0.9, 0.92, 0.88),  "legs": (0.2, 0.65, 0.15), "leg_tips": (0.2, 0.05, 0.25), "stripe": (0.25, 0.7, 0.2),  "horn_tips": (0.35, 0.12, 0.45)},
-    # --- IYKYK Presets (#61-80) ---
-    # Anime & Manga
-    {"name": "Eva-01",        "body": (0.35, 0.05, 0.5),  "legs": (0.3, 0.95, 0.1),  "leg_tips": (0.1, 0.02, 0.15), "stripe": (0.2, 0.85, 0.1),  "horn_tips": (0.9, 0.55, 0.0)},
-    {"name": "Gundam",        "body": (0.92, 0.92, 0.9),  "legs": (0.1, 0.2, 0.7),   "leg_tips": (0.2, 0.2, 0.18),  "stripe": (0.85, 0.1, 0.1),  "horn_tips": (0.95, 0.85, 0.1)},
-    {"name": "Naruto",        "body": (1.0, 0.55, 0.08),  "legs": (0.08, 0.08, 0.35),"leg_tips": (0.25, 0.12, 0.02),"stripe": (0.06, 0.06, 0.08),"horn_tips": (0.05, 0.05, 0.22)},
-    {"name": "Vegeta",        "body": (0.08, 0.1, 0.55),  "legs": (0.9, 0.88, 0.82), "leg_tips": (0.02, 0.03, 0.15),"stripe": (0.95, 0.85, 0.15),"horn_tips": (0.5, 0.45, 0.08)},
-    {"name": "Totoro",        "body": (0.55, 0.52, 0.48), "legs": (0.45, 0.42, 0.38),"leg_tips": (0.15, 0.12, 0.1), "stripe": (0.9, 0.88, 0.78), "horn_tips": (0.3, 0.25, 0.2)},
-    {"name": "Zoro",          "body": (0.08, 0.45, 0.12), "legs": (0.08, 0.07, 0.06),"leg_tips": (0.03, 0.12, 0.04),"stripe": (0.92, 0.9, 0.85), "horn_tips": (0.85, 0.75, 0.15)},
-    # Gaming Deep Cuts
-    {"name": "Master Chief",  "body": (0.45, 0.55, 0.25), "legs": (0.35, 0.42, 0.2), "leg_tips": (0.1, 0.12, 0.06), "stripe": (0.95, 0.75, 0.1),  "horn_tips": (0.55, 0.62, 0.3)},
-    {"name": "Samus",         "body": (0.92, 0.6, 0.08),  "legs": (0.75, 0.2, 0.05), "leg_tips": (0.22, 0.08, 0.02),"stripe": (0.15, 0.8, 0.25), "horn_tips": (0.1, 0.55, 0.15)},
-    {"name": "Mega Man",      "body": (0.15, 0.65, 0.95), "legs": (0.05, 0.1, 0.4),  "leg_tips": (0.04, 0.15, 0.22),"stripe": (0.5, 0.82, 1.0),  "horn_tips": (0.03, 0.08, 0.3)},
-    {"name": "Creeper",       "body": (0.35, 0.7, 0.2),   "legs": (0.15, 0.3, 0.08), "leg_tips": (0.05, 0.12, 0.03),"stripe": (0.08, 0.08, 0.06),"horn_tips": (0.1, 0.2, 0.06)},
-    {"name": "Link",          "body": (0.2, 0.6, 0.15),   "legs": (0.45, 0.3, 0.12), "leg_tips": (0.06, 0.15, 0.04),"stripe": (0.65, 0.55, 0.3), "horn_tips": (0.9, 0.8, 0.15)},
-    {"name": "Portal",        "body": (0.88, 0.9, 0.92),  "legs": (0.95, 0.55, 0.05),"leg_tips": (0.2, 0.2, 0.22),  "stripe": (0.15, 0.55, 1.0), "horn_tips": (0.5, 0.3, 0.03)},
-    # Movies, TV & Memes
-    {"name": "Shrek",         "body": (0.3, 0.5, 0.1),    "legs": (0.4, 0.25, 0.1),  "leg_tips": (0.08, 0.12, 0.03),"stripe": (0.75, 0.65, 0.45),"horn_tips": (0.25, 0.18, 0.06)},
-    {"name": "Tron",          "body": (0.04, 0.06, 0.08), "legs": (0.06, 0.08, 0.1), "leg_tips": (0.0, 0.8, 0.85),  "stripe": (0.0, 0.95, 1.0),  "horn_tips": (0.0, 0.5, 0.55)},
-    {"name": "Boba Fett",     "body": (0.35, 0.45, 0.2),  "legs": (0.7, 0.6, 0.4),   "leg_tips": (0.1, 0.12, 0.06), "stripe": (0.6, 0.15, 0.08), "horn_tips": (0.35, 0.1, 0.05)},
-    {"name": "Ghostbusters",  "body": (0.72, 0.65, 0.45), "legs": (0.6, 0.55, 0.38), "leg_tips": (0.18, 0.15, 0.1), "stripe": (0.08, 0.08, 0.08),"horn_tips": (0.75, 0.12, 0.08)},
-    {"name": "Grimace",       "body": (0.42, 0.08, 0.55), "legs": (0.55, 0.2, 0.65), "leg_tips": (0.12, 0.03, 0.15),"stripe": (0.5, 0.15, 0.6),  "horn_tips": (0.35, 0.06, 0.42)},
-    # Wild Cards
-    {"name": "Rasta",         "body": (0.15, 0.55, 0.08), "legs": (0.7, 0.12, 0.08), "leg_tips": (0.04, 0.14, 0.02),"stripe": (0.95, 0.8, 0.1),  "horn_tips": (0.4, 0.08, 0.04)},
-    {"name": "Garfield",      "body": (0.9, 0.45, 0.02),  "legs": (0.1, 0.08, 0.06), "leg_tips": (0.22, 0.1, 0.01), "stripe": (0.08, 0.07, 0.05),"horn_tips": (0.06, 0.05, 0.03)},
-    {"name": "Ryu",           "body": (0.92, 0.9, 0.85),  "legs": (0.55, 0.35, 0.15),"leg_tips": (0.2, 0.18, 0.08), "stripe": (0.9, 0.12, 0.05), "horn_tips": (0.3, 0.2, 0.08)},
-    # Brands & Vibes
-    {"name": "McDonald's",    "body": (0.85, 0.1, 0.05),  "legs": (1.0, 0.85, 0.0),  "leg_tips": (0.25, 0.03, 0.02),"stripe": (0.95, 0.8, 0.05), "horn_tips": (0.5, 0.05, 0.03)},
-    {"name": "Coca-Cola",     "body": (0.72, 0.02, 0.02), "legs": (0.95, 0.93, 0.9), "leg_tips": (0.18, 0.01, 0.01),"stripe": (0.97, 0.95, 0.92),"horn_tips": (0.55, 0.02, 0.02)},
-    {"name": "Dunkin'",       "body": (0.95, 0.45, 0.0),  "legs": (0.9, 0.2, 0.45),  "leg_tips": (0.25, 0.1, 0.0),  "stripe": (0.85, 0.15, 0.4), "horn_tips": (0.7, 0.35, 0.0)},
-    {"name": "Reese's",       "body": (0.35, 0.18, 0.05), "legs": (0.95, 0.55, 0.0), "leg_tips": (0.12, 0.06, 0.02),"stripe": (0.85, 0.65, 0.25),"horn_tips": (0.7, 0.4, 0.0)},
-    {"name": "Hot Cheetos",   "body": (0.9, 0.15, 0.02),  "legs": (1.0, 0.4, 0.02),  "leg_tips": (0.25, 0.04, 0.01),"stripe": (0.95, 0.55, 0.0), "horn_tips": (0.8, 0.08, 0.02)},
-    {"name": "Oreo",          "body": (0.08, 0.06, 0.05), "legs": (0.92, 0.88, 0.75),"leg_tips": (0.04, 0.03, 0.02),"stripe": (0.95, 0.92, 0.8), "horn_tips": (0.1, 0.2, 0.6)},
-    {"name": "Candy Corn",    "body": (1.0, 0.7, 0.1),    "legs": (1.0, 0.85, 0.0),  "leg_tips": (0.95, 0.92, 0.82),"stripe": (0.98, 0.95, 0.85),"horn_tips": (0.85, 0.45, 0.0)},
-    {"name": "IKEA",          "body": (0.0, 0.28, 0.7),   "legs": (0.05, 0.22, 0.55),"leg_tips": (0.02, 0.08, 0.18),"stripe": (1.0, 0.82, 0.0),  "horn_tips": (0.8, 0.65, 0.0)},
-    {"name": "John Deere",    "body": (0.15, 0.5, 0.1),   "legs": (0.12, 0.4, 0.08), "leg_tips": (0.04, 0.15, 0.03),"stripe": (1.0, 0.85, 0.0),  "horn_tips": (0.8, 0.68, 0.0)},
-    {"name": "Barbie",        "body": (0.95, 0.15, 0.55), "legs": (0.95, 0.92, 0.9), "leg_tips": (0.25, 0.04, 0.14),"stripe": (1.0, 0.25, 0.6),  "horn_tips": (0.9, 0.75, 0.15)},
-    {"name": "Monster",       "body": (0.02, 0.02, 0.02), "legs": (0.05, 0.05, 0.05),"leg_tips": (0.01, 0.01, 0.01),"stripe": (0.3, 0.95, 0.1),  "horn_tips": (0.15, 0.5, 0.05)},
-    {"name": "Neapolitan",    "body": (0.9, 0.55, 0.55),  "legs": (0.4, 0.2, 0.1),   "leg_tips": (0.22, 0.08, 0.05),"stripe": (0.95, 0.9, 0.75), "horn_tips": (0.6, 0.3, 0.15)},
-    {"name": "Tide Pod",      "body": (0.95, 0.5, 0.1),   "legs": (0.1, 0.35, 0.85), "leg_tips": (0.25, 0.12, 0.0), "stripe": (0.95, 0.95, 0.92),"horn_tips": (0.05, 0.2, 0.55)},
-    {"name": "Christmas",    "body": (0.8, 0.05, 0.05),  "legs": (0.1, 0.55, 0.1),  "leg_tips": (0.22, 0.02, 0.02),"stripe": (0.95, 0.85, 0.15),"horn_tips": (0.04, 0.2, 0.04)},
-    {"name": "Lakers",       "body": (0.35, 0.1, 0.6),   "legs": (0.95, 0.75, 0.1), "leg_tips": (0.12, 0.04, 0.2), "stripe": (0.9, 0.8, 0.15),  "horn_tips": (0.7, 0.55, 0.05)},
-    {"name": "SpongeBob",    "body": (0.95, 0.85, 0.15), "legs": (0.45, 0.28, 0.08),"leg_tips": (0.2, 0.1, 0.03),  "stripe": (0.95, 0.93, 0.88),"horn_tips": (0.3, 0.18, 0.05)},
-    {"name": "Kirby",        "body": (0.95, 0.45, 0.55), "legs": (0.85, 0.15, 0.15),"leg_tips": (0.25, 0.05, 0.08),"stripe": (0.95, 0.7, 0.75), "horn_tips": (0.65, 0.1, 0.12)},
-    {"name": "Yoshi",        "body": (0.25, 0.75, 0.15), "legs": (0.92, 0.9, 0.85), "leg_tips": (0.08, 0.2, 0.04), "stripe": (0.85, 0.15, 0.05),"horn_tips": (0.65, 0.1, 0.03)},
-    {"name": "Gulf Racing",  "body": (0.55, 0.8, 0.92),  "legs": (0.7, 0.88, 0.95), "leg_tips": (0.15, 0.25, 0.3), "stripe": (0.95, 0.5, 0.15), "horn_tips": (0.75, 0.35, 0.08)},
-    {"name": "Among Us",     "body": (0.78, 0.08, 0.08), "legs": (0.65, 0.06, 0.06),"leg_tips": (0.2, 0.02, 0.02), "stripe": (0.3, 0.85, 0.95), "horn_tips": (0.15, 0.55, 0.6)},
+    {"name": "Lime",          "body": (0.6, 0.95, 0.1),   "legs": (0.75, 1.0, 0.4),  "leg_tips": (0.15, 0.25, 0.02),"stripe": (0.85, 1.0, 0.5),  "horn_tips": (0.4, 0.65, 0.05)},
+    {"name": "Ocean",         "body": (0.05, 0.3, 0.7),   "legs": (0.1, 0.5, 0.75),  "leg_tips": (0.02, 0.08, 0.2), "stripe": (0.2, 0.8, 0.85),  "horn_tips": (0.05, 0.2, 0.5)},
+    {"name": "Glacier",       "body": (0.15, 0.75, 0.8),  "legs": (0.45, 0.85, 0.88),"leg_tips": (0.04, 0.2, 0.22), "stripe": (0.92, 0.97, 1.0), "horn_tips": (0.1, 0.45, 0.5)},
+    {"name": "Arctic",        "body": (0.85, 0.92, 1.0),  "legs": (0.6, 0.8, 0.95),  "leg_tips": (0.15, 0.2, 0.35), "stripe": (0.95, 0.98, 1.0), "horn_tips": (0.4, 0.55, 0.7)},
+    {"name": "Midnight",      "body": (0.05, 0.05, 0.2),  "legs": (0.1, 0.12, 0.35), "leg_tips": (0.02, 0.02, 0.06),"stripe": (1.0, 0.85, 0.1),  "horn_tips": (0.8, 0.65, 0.08)},
+    {"name": "Void",          "body": (0.04, 0.03, 0.07), "legs": (0.08, 0.07, 0.12),"leg_tips": (0.02, 0.01, 0.03),"stripe": (0.1, 0.5, 1.0),   "horn_tips": (0.08, 0.35, 0.8)},
+    {"name": "Shadow",        "body": (0.08, 0.04, 0.06), "legs": (0.18, 0.06, 0.08),"leg_tips": (0.03, 0.01, 0.02),"stripe": (0.85, 0.08, 0.1), "horn_tips": (0.45, 0.04, 0.06)},
+    {"name": "Stealth",       "body": (0.2, 0.2, 0.22),   "legs": (0.3, 0.3, 0.32),  "leg_tips": (0.05, 0.05, 0.06),"stripe": (0.85, 0.15, 0.1), "horn_tips": (0.7, 0.1, 0.08)},
+    {"name": "Military",      "body": (0.35, 0.4, 0.2),   "legs": (0.55, 0.5, 0.35), "leg_tips": (0.1, 0.1, 0.05),  "stripe": (0.5, 0.45, 0.3),  "horn_tips": (0.2, 0.2, 0.1)},
+    {"name": "Obsidian",      "body": (0.12, 0.1, 0.15),  "legs": (0.2, 0.17, 0.22), "leg_tips": (0.05, 0.04, 0.06),"stripe": (0.85, 0.7, 0.2),  "horn_tips": (0.75, 0.6, 0.15)},
+    {"name": "Royal Purple",  "body": (0.55, 0.15, 0.85), "legs": (0.7, 0.4, 0.95),  "leg_tips": (0.15, 0.02, 0.25),"stripe": (0.85, 0.5, 1.0),  "horn_tips": (0.3, 0.05, 0.5)},
+    {"name": "Phantom",       "body": (0.95, 0.93, 0.9),  "legs": (0.8, 0.78, 0.75), "leg_tips": (0.2, 0.18, 0.17), "stripe": (0.85, 0.05, 0.05),"horn_tips": (0.15, 0.12, 0.12)},
+    {"name": "Copper",        "body": (0.7, 0.3, 0.1),    "legs": (0.8, 0.5, 0.25),  "leg_tips": (0.15, 0.06, 0.02),"stripe": (0.0, 0.8, 0.7),   "horn_tips": (0.05, 0.4, 0.35)},
+    {"name": "Crimson",       "body": (0.6, 0.02, 0.05),  "legs": (0.75, 0.2, 0.15), "leg_tips": (0.15, 0.02, 0.02),"stripe": (1.0, 0.82, 0.1),  "horn_tips": (0.7, 0.55, 0.08)},
+    {"name": "Tundra",        "body": (0.35, 0.45, 0.58), "legs": (0.6, 0.65, 0.7),  "leg_tips": (0.1, 0.1, 0.13),  "stripe": (0.95, 0.65, 0.1), "horn_tips": (0.7, 0.45, 0.08)},
     # --- Category 1: Neon Tips (#101-106) ---
     {"name": "Neon Frost",    "body": (0.08, 0.1, 0.2),  "legs": (0.15, 0.2, 0.3),  "leg_tips": (0.1, 0.95, 0.9),  "stripe": (0.12, 0.15, 0.25), "horn_tips": (0.05, 0.85, 0.8)},
     {"name": "Neon Bloom",    "body": (0.1, 0.18, 0.08), "legs": (0.2, 0.28, 0.15), "leg_tips": (0.95, 0.1, 0.7),  "stripe": (0.15, 0.22, 0.1),  "horn_tips": (0.85, 0.05, 0.6)},
@@ -11942,8 +11920,8 @@ BEETLE_PRESETS = [
 BEETLE_TYPES = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "spider"]
 
 # Track current preset index per beetle
-blue_preset_index = 0
-red_preset_index = 1
+blue_preset_index = 66
+red_preset_index = 67
 
 def get_preset_palette(index):
     """Get a beetle color preset by index. Returns dict with body, legs, leg_tips, stripe, horn_tips."""
@@ -13788,8 +13766,8 @@ spawn_ball_bounce_dust(0.0, -100.0, 0.0, 10.0, 4.0)
 spawn_downwash_dust(0.0, -100.0, 0.5)
 spawn_downwash_landing_burst(0.0, -100.0)
 spawn_tornado_dust(0.0, -100.0, 0.0)
-spawn_tornado_ground_dust(0.0, -100.0, 0.0)
-spawn_sandstorm_dust(1.0, 0.0, 1.0, 0.0)
+spawn_tornado_ground_dust(0.0, -100.0, 0.0, -1.0)
+spawn_sandstorm_dust(1.0, 0.0, 1.0, 0.0, 1)
 clear_ufo_bounded(0.0, -100.0, 0.0)
 place_ufo_kernel(0.0, -100.0, 0.0, 0.0)
 clear_ufo_beam_bounded(0.0, 0.0, 30.0)
@@ -15378,10 +15356,14 @@ try:
             update_debris_particles(PHYSICS_TIMESTEP)
 
             # Compact when approaching MAX_DEBRIS_CHECK (5000) to keep particles renderable
-            # New particles spawned beyond 5000 won't be rendered or updated!
-            # Lower threshold (2500) to prevent sandstorm from starving other particle effects
-            if simulation.num_debris[None] > 2500:
+            # Hysteresis: trigger at 3500, don't re-trigger until below 2000
+            # Prevents thrashing the expensive serialized cleanup during sustained effects
+            debris_count = simulation.num_debris[None]
+            if debris_count > 3500 or (debris_count > 2000 and debris_cleanup_was_high):
                 cleanup_dead_debris()
+                debris_cleanup_was_high = simulation.num_debris[None] > 2500
+            else:
+                debris_cleanup_was_high = False
         _t_debris_only = time.perf_counter()
         _physics_timing['debris_update'] = _physics_timing.get('debris_update', 0) + (_t_debris_only - _t_debris_start) * 1000
 
@@ -16656,7 +16638,15 @@ try:
             if tornado_dust_timer >= TORNADO_DUST_INTERVAL:
                 tornado_dust_timer -= TORNADO_DUST_INTERVAL
                 spawn_tornado_dust(tornado_x, tornado_z, tornado_time)
-                spawn_tornado_ground_dust(tornado_x, tornado_z, tornado_time)
+                # Pre-check floor height on CPU (avoids 8 grid lookups in kernel)
+                grid_cx = int(tornado_x + simulation.n_grid / 2.0)
+                grid_cz = int(tornado_z + simulation.n_grid / 2.0)
+                ground_spawn_y = -1.0
+                if 0 <= grid_cx < 128 and 0 <= grid_cz < 128:
+                    cached_floor = floor_height_cache[grid_cx, grid_cz]
+                    if cached_floor > -500.0:
+                        ground_spawn_y = RENDER_Y_OFFSET + cached_floor + 0.5
+                spawn_tornado_ground_dust(tornado_x, tornado_z, tornado_time, ground_spawn_y)
 
             # Apply push/lift/tip to both beetles
             for beetle in (beetle_blue, beetle_red):
@@ -16715,7 +16705,9 @@ try:
                 sandstorm_dust_timer += PHYSICS_TIMESTEP
                 if sandstorm_dust_timer >= SANDSTORM_DUST_INTERVAL:
                     sandstorm_dust_timer -= SANDSTORM_DUST_INTERVAL
-                    spawn_sandstorm_dust(wind_dx, wind_dz, sandstorm_intensity, sandstorm_time)
+                    # Pre-compute particle count on CPU (quadratic ramp, same distribution as before)
+                    sand_count = max(1, int(20 * sandstorm_intensity * sandstorm_intensity))
+                    spawn_sandstorm_dust(wind_dx, wind_dz, sandstorm_intensity, sandstorm_time, sand_count)
             else:
                 sandstorm_dust_timer = 0.0
 
