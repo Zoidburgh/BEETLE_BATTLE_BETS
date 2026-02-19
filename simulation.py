@@ -229,6 +229,8 @@ BG_ANIM_DUST_DEVIL = 29     # Dust devil: phased spiral column with lifecycle
 BG_ANIM_SCORPION = 30       # Scorpion: ground orbit with tail curl, claw pinch
 BG_ANIM_TOAD = 31           # Toad: hopping orbit with idle breathing + throat puff
 BG_ANIM_MUD_SPLASH = 32     # Mud splash: burst on toad landing
+BG_ANIM_JUMPING_FISH = 33   # Giant fish: periodic jump arc above waves
+BG_ANIM_FISH_SPLASH = 34    # Splash burst on fish water entry/exit
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -2537,6 +2539,228 @@ def animate_background(time: ti.f32):
                 # No splash active — hide underground so no dark voxels
                 bg_brightness[i] = 0.0
                 bg_offset_y[i] = -200.0
+
+        elif anim == BG_ANIM_JUMPING_FISH:
+            # Giant fish: periodic jump arc above ocean waves
+            # amplitude = part index (0-24 body), phase = fish ID, speed = jump offset
+            part_jf = amplitude
+            fish_id_jf = phase
+            jump_offset_jf = speed
+            water_min_y_jf = 14.0  # Lowest wave trough — hide below this
+            jump_period = 10.0     # Seconds per full cycle
+            orbit_radius_jf = 45.0
+
+            # Jump cycle timing
+            cycle_jf = (time + jump_offset_jf) % jump_period
+
+            if cycle_jf < 7.0:
+                # UNDERWATER — hidden, skip all math
+                bg_offset_y[i] = -200.0
+                bg_brightness[i] = 0.0
+            else:
+                # JUMP PHASE (7.0 to 10.0 = 3 seconds of arc)
+                jump_t = cycle_jf - 7.0  # 0 to 3
+                jump_norm = jump_t / 3.0  # 0 to 1
+
+                # Orbit position — fish advances angle each jump
+                jump_count = ti.floor((time + jump_offset_jf) / jump_period)
+                fish_angle = jump_count * 0.8 + fish_id_jf * 3.14  # ~46 deg per jump
+                cos_fa = ti.cos(fish_angle)
+                sin_fa = ti.sin(fish_angle)
+
+                # Direction vectors (tangent to orbit = fish forward)
+                fwd_x = -sin_fa
+                fwd_z = cos_fa
+                perp_x_jf = -fwd_z
+                perp_z_jf = fwd_x
+
+                # Center of jump on orbit
+                cx_jf = orbit_radius_jf * cos_fa
+                cz_jf = orbit_radius_jf * sin_fa
+
+                # Parabolic arc: up fast, peak at middle, down
+                # Peak height ~20 above water (Y=17), so peak at Y~37
+                up_vel = 28.0
+                gravity_jf = 18.67  # Tuned so arc peaks at jump_norm=0.5
+                arc_y = water_min_y_jf + up_vel * jump_norm - gravity_jf * jump_norm * jump_norm
+
+                # Forward travel during jump (fish moves forward along orbit)
+                fwd_travel = jump_norm * 12.0 - 6.0  # -6 to +6
+
+                # Body pitch — nose up on ascent, level at peak, nose down on descent
+                pitch = (0.5 - jump_norm) * 2.0  # +1 ascending, 0 peak, -1 descending
+                pitch_up = pitch * 4.0  # Vertical offset per segment from pitch
+
+                # Segment delay — trailing body parts lag behind
+                seg_delay = 0.0
+                seg_idx_jf = part_jf
+                if part_jf <= 11:
+                    seg_delay = part_jf * 0.015  # Body follows head
+                    seg_idx_jf = part_jf
+                elif part_jf <= 16:
+                    seg_delay = 11.0 * 0.015 + (part_jf - 11.0) * 0.01  # Tail fin
+                    seg_idx_jf = part_jf
+                elif part_jf <= 20:
+                    # Dorsal fin — attached to body segments 3-6
+                    seg_delay = (3.0 + (part_jf - 17.0)) * 0.015
+                elif part_jf <= 22:
+                    # Pectoral fins — attached to body segment 2
+                    seg_delay = 2.0 * 0.015
+                else:
+                    # Eyes — on head
+                    seg_delay = 0.0
+
+                # Delayed jump progress for this segment
+                delayed_norm = ti.max(0.0, ti.min(1.0, jump_norm - seg_delay * 3.0))
+                seg_arc_y = water_min_y_jf + up_vel * delayed_norm - gravity_jf * delayed_norm * delayed_norm
+                seg_fwd = delayed_norm * 12.0 - 6.0
+                seg_pitch = (0.5 - delayed_norm) * 2.0
+
+                # Body wave — subtle S-curve
+                body_wave = 0.0
+                if part_jf <= 11:
+                    wave_phase = part_jf * 0.4 - time * 3.0
+                    body_wave = ti.sin(wave_phase) * 1.5 * (part_jf / 11.0)
+
+                # Build position based on part type
+                px_jf = cx_jf + fwd_x * seg_fwd
+                py_jf = seg_arc_y
+                pz_jf = cz_jf + fwd_z * seg_fwd
+
+                if part_jf <= 11:
+                    # BODY SEGMENTS (0=head, 1-9=body, 10-11=peduncle)
+                    trail = -part_jf * 2.2  # Space between segments
+                    px_jf = cx_jf + fwd_x * (seg_fwd + trail) + perp_x_jf * body_wave
+                    pz_jf = cz_jf + fwd_z * (seg_fwd + trail) + perp_z_jf * body_wave
+                    py_jf = seg_arc_y - part_jf * seg_pitch * 0.5
+
+                elif part_jf <= 16:
+                    # TAIL FIN — fan behind peduncle
+                    tail_i = part_jf - 12  # 0-4
+                    tail_spread = (tail_i - 2.0) * 1.8  # -3.6 to +3.6
+                    tail_trail = -11.0 * 2.2 - 3.0
+                    px_jf = cx_jf + fwd_x * (seg_fwd + tail_trail) + perp_x_jf * tail_spread
+                    pz_jf = cz_jf + fwd_z * (seg_fwd + tail_trail) + perp_z_jf * tail_spread
+                    # Tail fans out during jump
+                    fan_amount = ti.sin(delayed_norm * 3.14159) * 2.0
+                    py_jf = seg_arc_y - 11.0 * seg_pitch * 0.5 + (tail_i - 2.0) * fan_amount * 0.5
+
+                elif part_jf <= 20:
+                    # DORSAL FIN — on top of body segments 3-6
+                    dorsal_seg = 3.0 + (part_jf - 17.0)
+                    dorsal_trail = -dorsal_seg * 2.2
+                    dorsal_wave_phase = dorsal_seg * 0.4 - time * 3.0
+                    dorsal_wave = ti.sin(dorsal_wave_phase) * 1.5 * (dorsal_seg / 11.0)
+                    px_jf = cx_jf + fwd_x * (seg_fwd + dorsal_trail) + perp_x_jf * dorsal_wave
+                    pz_jf = cz_jf + fwd_z * (seg_fwd + dorsal_trail) + perp_z_jf * dorsal_wave
+                    py_jf = seg_arc_y - dorsal_seg * seg_pitch * 0.5 + 2.5  # Above body
+
+                elif part_jf <= 22:
+                    # PECTORAL FINS — left (21) right (22)
+                    pec_side = -1.0 if part_jf < 22 else 1.0
+                    pec_seg = 2.0  # Attached to segment 2
+                    pec_trail = -pec_seg * 2.2
+                    pec_wave_phase = pec_seg * 0.4 - time * 3.0
+                    pec_wave = ti.sin(pec_wave_phase) * 1.5 * (pec_seg / 11.0)
+                    # Fins angle out from body
+                    flap_angle = ti.sin(delayed_norm * 3.14159) * 1.5  # Flap during jump
+                    px_jf = cx_jf + fwd_x * (seg_fwd + pec_trail) + perp_x_jf * (pec_wave + pec_side * (3.0 + flap_angle))
+                    pz_jf = cz_jf + fwd_z * (seg_fwd + pec_trail) + perp_z_jf * (pec_wave + pec_side * (3.0 + flap_angle))
+                    py_jf = seg_arc_y - pec_seg * seg_pitch * 0.5 - 1.0  # Below body
+
+                else:
+                    # EYES — left (23) right (24)
+                    eye_side = -1.0 if part_jf < 24 else 1.0
+                    px_jf = cx_jf + fwd_x * (seg_fwd + 1.0) + perp_x_jf * eye_side * 1.5
+                    pz_jf = cz_jf + fwd_z * (seg_fwd + 1.0) + perp_z_jf * eye_side * 1.5
+                    py_jf = seg_arc_y + 1.0  # Top of head
+
+                # Visibility: only show when above lowest wave trough
+                if py_jf > water_min_y_jf:
+                    bg_offset_x[i] = px_jf
+                    bg_offset_y[i] = py_jf
+                    bg_offset_z[i] = pz_jf
+                    bg_brightness[i] = 1.0
+                else:
+                    bg_offset_y[i] = -200.0
+                    bg_brightness[i] = 0.0
+
+        elif anim == BG_ANIM_FISH_SPLASH:
+            # Splash burst when jumping fish exits/enters water
+            # amplitude = splash index (0-15), phase = fish ID, speed = jump offset
+            sp_idx_fs = amplitude
+            num_sp_fs = 16.0
+            jump_offset_fs = speed
+            jump_period_fs = 10.0
+            orbit_radius_fs = 45.0
+            water_y_fs = 17.0  # Water surface for splash height
+
+            cycle_fs = (time + jump_offset_fs) % jump_period_fs
+
+            # Splash triggers at two moments: exit water (~7.15s) and re-enter (~9.85s)
+            # Pick the closest splash event
+            exit_time = 7.15
+            enter_time = 9.85
+            splash_t_fs = -1.0
+            splash_type = 0  # 0=exit(upward), 1=enter(downward)
+
+            dt_exit = cycle_fs - exit_time
+            dt_enter = cycle_fs - enter_time
+
+            if dt_exit >= 0.0 and dt_exit < 1.5:
+                splash_t_fs = dt_exit
+                splash_type = 0
+            elif dt_enter >= 0.0 and dt_enter < 1.5:
+                splash_t_fs = dt_enter
+                splash_type = 1
+
+            if splash_t_fs >= 0.0:
+                # Fish position at splash moment
+                jump_count_fs = ti.floor((time + jump_offset_fs) / jump_period_fs)
+                fish_angle_fs = jump_count_fs * 0.8 + phase * 3.14
+                cos_fs = ti.cos(fish_angle_fs)
+                sin_fs = ti.sin(fish_angle_fs)
+
+                # Forward along orbit at splash moment
+                fwd_x_fs = -sin_fs
+                fwd_z_fs = cos_fs
+                splash_fwd = 0.0
+                if splash_type == 0:
+                    splash_fwd = -4.0  # Exit: early in jump, near start
+                else:
+                    splash_fwd = 4.0   # Enter: late in jump, near end
+
+                splash_cx_fs = orbit_radius_fs * cos_fs + fwd_x_fs * splash_fwd
+                splash_cz_fs = orbit_radius_fs * sin_fs + fwd_z_fs * splash_fwd
+
+                # Burst ring
+                burst_ang_fs = sp_idx_fs * (6.28318 / num_sp_fs)
+                burst_dx_fs = ti.cos(burst_ang_fs)
+                burst_dz_fs = ti.sin(burst_ang_fs)
+
+                burst_spd_fs = 8.0 + ti.sin(sp_idx_fs * 2.3) * 3.0
+                up_spd_fs = 18.0 + ti.cos(sp_idx_fs * 1.7) * 6.0
+                gravity_fs = 28.0
+                t_ground_fs = up_spd_fs / gravity_fs
+                t_horiz_fs = ti.min(splash_t_fs, t_ground_fs)
+
+                sp_py = water_y_fs + up_spd_fs * splash_t_fs - gravity_fs * splash_t_fs * splash_t_fs
+                sp_px = splash_cx_fs + burst_dx_fs * burst_spd_fs * t_horiz_fs
+                sp_pz = splash_cz_fs + burst_dz_fs * burst_spd_fs * t_horiz_fs
+
+                if sp_py >= water_y_fs - 2.0:
+                    bg_offset_x[i] = sp_px
+                    bg_offset_y[i] = sp_py
+                    bg_offset_z[i] = sp_pz
+                    fade_fs = ti.max(0.0, 1.0 - splash_t_fs * 0.8)
+                    bg_brightness[i] = fade_fs
+                else:
+                    bg_offset_y[i] = -200.0
+                    bg_brightness[i] = 0.0
+            else:
+                # No splash active
+                bg_offset_y[i] = -200.0
+                bg_brightness[i] = 0.0
 
         elif anim == BG_ANIM_TREE:
             # Tree branch sway - wind effect
@@ -5273,13 +5497,93 @@ def add_waves(count: int = 1600, seed: int = 42):
             idx += 1
 
 
+    # === ADD GIANT JUMPING FISH (2 fish) ===
+    water_min_y = 14.0  # Lowest possible wave trough — hide fish below this
+    num_jumping_fish = 2
+    num_fish_parts = 25  # Body parts per fish
+    num_fish_splash = 16  # Splash particles per fish
+
+    for fish_id in range(num_jumping_fish):
+        if idx >= MAX_BACKGROUND_VOXELS - (num_fish_parts + num_fish_splash + 10):
+            break
+
+        # Stagger jump timing so fish don't jump simultaneously
+        jump_offset = fish_id * 4.7  # ~5s offset between fish
+
+        for part in range(num_fish_parts):
+            _bg_pos_np[idx] = [0.0, water_min_y, 0.0]
+            _bg_anim_type_np[idx] = BG_ANIM_JUMPING_FISH
+            _bg_phase_np[idx] = float(fish_id)
+            _bg_anim_amp_np[idx] = float(part)
+            _bg_anim_speed_np[idx] = jump_offset
+            _bg_brightness_np[idx] = 0.0  # Start hidden underwater
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = -200.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
+
+            if part == 0:
+                # HEAD — pointed, silver-blue
+                _bg_col_np[idx] = [0.72, 0.78, 0.88]
+                _bg_size_np[idx] = 2.8
+            elif part <= 9:
+                # BODY — tapered, widest at segments 4-5
+                t = part / 9.0
+                # Bell curve for width: peaks at middle
+                width = 1.0 - abs(t - 0.45) * 1.8
+                width = max(0.3, width)
+                _bg_size_np[idx] = 2.0 + width * 1.8
+                # Silver top, blue-silver sides
+                blue_shift = t * 0.3
+                _bg_col_np[idx] = [0.55 - blue_shift, 0.60 - blue_shift * 0.5, 0.75 + blue_shift * 0.2]
+            elif part <= 11:
+                # TAIL PEDUNCLE — narrow transition to tail
+                _bg_col_np[idx] = [0.25, 0.35, 0.55]
+                _bg_size_np[idx] = 1.6
+            elif part <= 16:
+                # TAIL FIN — fan shape (5 voxels)
+                tail_i = part - 12
+                _bg_col_np[idx] = [0.15, 0.25, 0.50]
+                _bg_size_np[idx] = 1.8 - abs(tail_i - 2) * 0.2
+            elif part <= 20:
+                # DORSAL FIN — 4 along top of body
+                _bg_col_np[idx] = [0.20, 0.30, 0.52]
+                _bg_size_np[idx] = 1.3
+            elif part <= 22:
+                # PECTORAL FINS — left (21) and right (22)
+                _bg_col_np[idx] = [0.50, 0.58, 0.72]
+                _bg_size_np[idx] = 1.5
+            else:
+                # EYES — left (23) and right (24)
+                _bg_col_np[idx] = [0.05, 0.05, 0.08]
+                _bg_size_np[idx] = 0.8
+
+            idx += 1
+
+        # SPLASH PARTICLES
+        for s in range(num_fish_splash):
+            _bg_pos_np[idx] = [0.0, water_min_y, 0.0]
+            white_mix = random.uniform(0.3, 0.7)
+            _bg_col_np[idx] = [0.5 + 0.5 * white_mix, 0.65 + 0.35 * white_mix, 0.85 + 0.15 * white_mix]
+            _bg_size_np[idx] = random.uniform(0.5, 1.0)
+            _bg_anim_type_np[idx] = BG_ANIM_FISH_SPLASH
+            _bg_phase_np[idx] = float(fish_id)
+            _bg_anim_amp_np[idx] = float(s)
+            _bg_anim_speed_np[idx] = jump_offset
+            _bg_brightness_np[idx] = 0.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = -200.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
+            idx += 1
+
     wave_count = idx - start_idx
     theme_start_idx[THEME_WAVES] = start_idx
     theme_count[THEME_WAVES] = wave_count
     active_themes.add(THEME_WAVES)
     _bg_count = idx
     bg_flush()
-    print(f"Added {wave_count} wave voxels + sea serpent (total: {idx})")
+    print(f"Added {wave_count} wave voxels + sea serpent + jumping fish (total: {idx})")
 
 def add_tree_branches(count: int = 12, seed: int = 42):
     """Add palm trees to the background (appends to existing voxels)."""
@@ -6085,121 +6389,6 @@ def add_desert(seed: int = 42):
             fy = sand_y + 1.5 + barrel_h * 2.8 + 0.5
             place_cactus_voxel(cx, fy, cz, 1.2, fc[0], fc[1], fc[2],
                                BG_ANIM_GLOW_PULSE, 1.0, 0.6, random.uniform(0, 6.28))
-
-    # === STAG BEETLE SPHINX ===
-    sphinx_angle = 2.5
-    sphinx_radius = 78.0
-    sphinx_cx = math.cos(sphinx_angle) * sphinx_radius
-    sphinx_cz = math.sin(sphinx_angle) * sphinx_radius
-    # Face toward arena center
-    face_angle = sphinx_angle + math.pi
-    fwd_x = math.cos(face_angle)
-    fwd_z = math.sin(face_angle)
-    side_x = -fwd_z  # perpendicular (left is negative side)
-    side_z = fwd_x
-
-    S = 2.0  # Scale factor
-    def sphinx_voxel(fwd, side, up, size, r, g, b, anim=BG_ANIM_NONE, spd=0.0, amp=0.0):
-        x = sphinx_cx + fwd_x * fwd * S + side_x * side * S
-        z = sphinx_cz + fwd_z * fwd * S + side_z * side * S
-        y = sand_y + up * S
-        place_cactus_voxel(x, y, z, size * S, r, g, b, anim, spd, amp, random.uniform(0, 6.28))
-
-    # --- BODY (3 layers, recumbent lion pose) ---
-    # Sandstone colors
-    body_r, body_g, body_b = 0.60, 0.48, 0.28
-    for layer in range(3):
-        up = 0.5 + layer * 2.0
-        # Taper: wider at front, narrower at back
-        length = 4 if layer < 2 else 3
-        width_range = [-2, 0, 2] if layer < 2 else [-1, 1]
-        for fi in range(length):
-            fwd = -6 + fi * 2.0
-            for si in width_range:
-                rv = body_r + random.uniform(-0.02, 0.02)
-                gv = body_g + random.uniform(-0.02, 0.02)
-                bv = body_b + random.uniform(-0.02, 0.02)
-                sphinx_voxel(fwd, si * 1.0, up, 2.2, rv, gv, bv)
-
-    # --- FRONT PAWS (extending forward, flat on ground) ---
-    paw_r, paw_g, paw_b = 0.58, 0.46, 0.27
-    for paw_side in [-2.5, 2.5]:
-        for paw_fwd in [2, 4, 6]:
-            sphinx_voxel(paw_fwd, paw_side, 0.3, 1.8,
-                         paw_r + random.uniform(-0.02, 0.02),
-                         paw_g + random.uniform(-0.02, 0.02),
-                         paw_b + random.uniform(-0.02, 0.02))
-
-    # --- RUMP (slightly raised at back) ---
-    for rump_side in [-1.5, 1.5]:
-        for rump_up in [3.5, 5.0]:
-            sphinx_voxel(-7, rump_side, rump_up, 2.0,
-                         paw_r + random.uniform(-0.02, 0.02),
-                         paw_g + random.uniform(-0.02, 0.02),
-                         paw_b + random.uniform(-0.02, 0.02))
-
-    # --- BEETLE HEAD (wider than body, 3 layers) ---
-    head_r, head_g, head_b = 0.55, 0.43, 0.25
-    # Layer 0: wide base
-    for si in [-3, -1.5, 0, 1.5, 3]:
-        sphinx_voxel(1, si, 5.5, 2.0,
-                     head_r + random.uniform(-0.02, 0.02),
-                     head_g + random.uniform(-0.02, 0.02),
-                     head_b + random.uniform(-0.02, 0.02))
-    # Layer 1: mid head
-    for si in [-2.5, -1, 0, 1, 2.5]:
-        sphinx_voxel(2, si, 7.0, 1.8,
-                     head_r + random.uniform(-0.02, 0.02),
-                     head_g + random.uniform(-0.02, 0.02),
-                     head_b + random.uniform(-0.02, 0.02))
-    # Layer 2: top of head (narrower)
-    for si in [-1.5, 0, 1.5]:
-        sphinx_voxel(1.5, si, 8.5, 1.8,
-                     head_r + random.uniform(-0.02, 0.02),
-                     head_g + random.uniform(-0.02, 0.02),
-                     head_b + random.uniform(-0.02, 0.02))
-
-    # --- NEMES HEADDRESS (drapes down sides of head) ---
-    nemes_r, nemes_g, nemes_b = 0.48, 0.38, 0.22
-    for nemes_side in [-3.5, 3.5]:
-        for nemes_up in [4.0, 2.5]:
-            sphinx_voxel(0.5, nemes_side, nemes_up, 1.5, nemes_r, nemes_g, nemes_b)
-
-    # --- MANDIBLES (signature stag beetle horns!) ---
-    mandible_r, mandible_g, mandible_b = 0.50, 0.40, 0.24
-    # Left mandible: sweeping J-curve forward, out, up, then back inward
-    left_mandible = [
-        (4.0, -2.5, 6.0, 1.5),    # base
-        (5.5, -3.5, 6.5, 1.4),    # sweeping out
-        (7.0, -4.5, 7.0, 1.3),    # further out and up
-        (8.5, -5.0, 7.5, 1.3),    # widest point
-        (10.0, -4.5, 8.0, 1.2),   # curving back in
-        (11.0, -3.5, 8.5, 1.2),
-        (12.0, -2.5, 9.0, 1.1),
-    ]
-    for fwd, side, up, sz in left_mandible:
-        sphinx_voxel(fwd, side, up, sz,
-                     mandible_r + random.uniform(-0.02, 0.02),
-                     mandible_g + random.uniform(-0.02, 0.02),
-                     mandible_b + random.uniform(-0.02, 0.02))
-    # Right mandible: mirror
-    for fwd, side, up, sz in left_mandible:
-        sphinx_voxel(fwd, -side, up, sz,
-                     mandible_r + random.uniform(-0.02, 0.02),
-                     mandible_g + random.uniform(-0.02, 0.02),
-                     mandible_b + random.uniform(-0.02, 0.02))
-
-    # Mandible tips (glowing gold)
-    sphinx_voxel(12.5, -1.5, 9.2, 1.0, 0.85, 0.70, 0.15,
-                 BG_ANIM_GLOW_PULSE, 0.8, 0.6)
-    sphinx_voxel(12.5, 1.5, 9.2, 1.0, 0.85, 0.70, 0.15,
-                 BG_ANIM_GLOW_PULSE, 0.8, 0.6)
-
-    # --- EYES (glowing compound eyes) ---
-    sphinx_voxel(3.0, -1.8, 8.0, 0.9, 0.85, 0.70, 0.15,
-                 BG_ANIM_GLOW_PULSE, 1.0, 0.5)
-    sphinx_voxel(3.0, 1.8, 8.0, 0.9, 0.85, 0.70, 0.15,
-                 BG_ANIM_GLOW_PULSE, 1.0, 0.5)
 
     # === DUST DEVILS (3 cyclones, 200 tiny particles each) ===
     cyclone_spots = [
