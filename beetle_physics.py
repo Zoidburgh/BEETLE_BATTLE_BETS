@@ -13819,6 +13819,9 @@ clear_ufo_beam_bounded(0.0, 0.0, 30.0)  # Clean up beam voxels (arena floor clea
 spawn_ufo_telegraph(0.0, -100.0, 0.0)
 spawn_ufo_beam_impact(0.0, -100.0, 0.0)
 spawn_ufo_beam_sparks(0.0, -100.0, 0.0)
+spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup
+spawn_arena_transition_rings(0.0, 4.0, 1)  # Arena transition rings warmup
+simulation.num_debris[None] = 0  # Clear warmup debris from transition rings
 update_loading(2)
 
 # PHASE 3: Debris/particle kernels - render with debris to warm up renderer's debris code paths
@@ -13920,8 +13923,31 @@ simulation.init_yinyang_arena()
 simulation.init_square_bridge_arena()
 simulation.init_beetle_arena()  # Restore normal arena
 
-# Warm up background animation kernel
-simulation.animate_background(0.0)
+# Warm up background system: bg_flush() from_numpy transfers + all animation branches
+# Populate one sample voxel per animation type (0-34) at offscreen positions
+for anim_type in range(35):
+    simulation._bg_pos_np[anim_type] = [0.0, -200.0, 0.0]  # Offscreen
+    simulation._bg_col_np[anim_type] = [0.5, 0.5, 0.5]
+    simulation._bg_phase_np[anim_type] = 0.0
+    simulation._bg_size_np[anim_type] = 1.0
+    simulation._bg_anim_type_np[anim_type] = anim_type
+    simulation._bg_anim_speed_np[anim_type] = 1.0
+    simulation._bg_anim_amp_np[anim_type] = 0.0
+    simulation._bg_active_np[anim_type] = 1
+    simulation._bg_brightness_np[anim_type] = 1.0
+    simulation._bg_offset_x_np[anim_type] = 0.0
+    simulation._bg_offset_y_np[anim_type] = 0.0
+    simulation._bg_offset_z_np[anim_type] = 0.0
+    simulation._bg_angle_np[anim_type] = 0.0
+simulation._bg_count = 35
+simulation.bg_flush()  # Warm up all 14 from_numpy() transfers
+simulation.bg_theme_active[None] = 1  # Enable so renderer PHASE 6 compiles
+simulation.animate_background(0.0)  # Now hits all animation branches
+# Quick render pass to compile renderer's bg extraction path (PHASE 6)
+renderer.num_voxels[None] = 0
+renderer.extract_all_particles(simulation.voxel_type, 128)
+# Clean up — clear bg and restore state
+simulation.clear_background()  # Resets bg_theme_active to 0, zeros all buffers
 
 setup_title_screen()
 
