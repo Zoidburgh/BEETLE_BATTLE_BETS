@@ -9966,6 +9966,46 @@ def process_pending_arena_transition():
         # Spawn first ring immediately - will be visible this frame
         spawn_arena_transition_ring(4.0, 4.0, 12)
 
+@ti.kernel
+def spawn_arena_transition_rings(start_radius: ti.f32, ring_spacing: ti.f32, num_rings: ti.i32):
+    """Spawn all pending transition rings in a single kernel launch.
+    Flat loop over num_rings * 60 slots; each thread computes its ring and angle."""
+    board_col = simulation.board_color[None]
+    color_r = board_col[0] * 1.3
+    color_g = board_col[1] * 1.3
+    color_b = board_col[2] * 1.3
+
+    for flat_idx in range(num_rings * 60):
+        ring_idx = flat_idx // 60
+        particle_idx = flat_idx % 60
+
+        ring_radius = start_radius + ti.cast(ring_idx, ti.f32) * ring_spacing
+        num_particles = ti.cast(ti.max(12.0, ti.min(ring_radius * 2.0, 60.0)), ti.i32)
+
+        if particle_idx < num_particles:
+            angle = ti.cast(particle_idx, ti.f32) * 6.28318 / ti.cast(num_particles, ti.f32)
+
+            r = ring_radius + (ti.random() - 0.5) * ring_spacing
+            pos_x = ti.cos(angle) * r
+            pos_z = ti.sin(angle) * r
+            pos_y = RENDER_Y_OFFSET + 0.5
+
+            outward_speed = 15.0 + ti.random() * 10.0
+            upward_speed = 20.0 + ti.random() * 15.0
+            vx = ti.cos(angle) * outward_speed
+            vz = ti.sin(angle) * outward_speed
+            vy = upward_speed
+
+            idx = ti.atomic_add(simulation.num_debris[None], 1)
+            if idx < simulation.MAX_DEBRIS:
+                simulation.debris_active[idx] = 1
+                ti.atomic_add(simulation.debris_active_count[None], 1)
+                simulation.debris_pos[idx] = ti.math.vec3(pos_x, pos_y, pos_z)
+                simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+                color_var = 0.85 + ti.random() * 0.3
+                simulation.debris_material[idx] = ti.math.vec3(color_r * color_var, color_g * color_var, color_b * color_var)
+                simulation.debris_lifetime[idx] = 0.6 + ti.random() * 0.3
+
 def update_arena_transition(dt):
     """Update arena transition effect - spawn debris rings expanding outward."""
     global arena_transition_active, arena_transition_timer, arena_transition_radius
@@ -9979,14 +10019,16 @@ def update_arena_transition(dt):
     progress = arena_transition_timer / ARENA_TRANSITION_DURATION
     target_radius = progress * ARENA_TRANSITION_MAX_RADIUS
 
-    # Spawn ring every ~3 units of radius expansion
+    # Count rings to spawn, then batch into single kernel launch
     ring_spacing = 4.0
+    num_rings = 0
+    start_radius = arena_transition_radius + ring_spacing
     while arena_transition_radius + ring_spacing < target_radius:
         arena_transition_radius += ring_spacing
-        # More particles for larger rings
-        num_particles = int(arena_transition_radius * 2)
-        num_particles = max(12, min(num_particles, 60))
-        spawn_arena_transition_ring(arena_transition_radius, ring_spacing, num_particles)
+        num_rings += 1
+
+    if num_rings > 0:
+        spawn_arena_transition_rings(start_radius, ring_spacing, num_rings)
 
     # End transition when complete
     if progress >= 1.0:

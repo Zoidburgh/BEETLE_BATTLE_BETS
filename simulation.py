@@ -620,8 +620,8 @@ def init_beetle_arena():
     """
     BEETLE BATTLE ARENA - Circular fighting pit
     """
-    # Clear everything first
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
         voxel_type[i, j, k] = EMPTY
 
     # Arena center (updated for 128 grid)
@@ -657,8 +657,8 @@ def init_donut_arena():
     """
     DONUT ARENA - Circular fighting pit with hole in the middle
     """
-    # Clear everything first
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
         voxel_type[i, j, k] = EMPTY
 
     # Arena center (updated for 128 grid)
@@ -691,8 +691,8 @@ def init_x_stage_arena():
     Arms extend in cardinal directions (N/S/E/W)
     Beetles fall off if they walk into the cut-out corner wedges
     """
-    # Clear everything first
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
         voxel_type[i, j, k] = EMPTY
 
     center_x = 64
@@ -725,8 +725,8 @@ def init_figure8_arena():
     FIGURE 8 ARENA - Two circles connected by a narrow bridge
     Longer than normal arena, beetles can fall off edges or into gaps
     """
-    # Clear everything first
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
         voxel_type[i, j, k] = EMPTY
 
     # Two circles connected by bridge
@@ -768,8 +768,8 @@ def init_yinyang_arena():
     YIN-YANG ARENA - Large hollow ring with S-curved bridge through middle
     The bridge curves like a yin-yang symbol, creating interesting movement paths
     """
-    # Clear everything first
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
         voxel_type[i, j, k] = EMPTY
 
     center_x = 64
@@ -833,8 +833,8 @@ def init_hourglass_arena():
     HOURGLASS ARENA - Two triangles meeting at a narrow pinch point
     Forces close combat at the center waist, easy to knock off at the sides
     """
-    # Clear everything first
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
         voxel_type[i, j, k] = EMPTY
 
     center_x = 64
@@ -875,8 +875,8 @@ def init_square_bridge_arena():
     SQUARE BRIDGE ARENA - Rectangular ring (perimeter) with long bridge through middle
     Like yin-yang but rectangular shape with straight bridge running the long way
     """
-    # Clear everything first
-    for i, j, k in ti.ndrange(n_grid, n_grid, n_grid):
+    # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
         voxel_type[i, j, k] = EMPTY
 
     center_x = 64
@@ -2882,10 +2882,9 @@ def animate_background(time: ti.f32):
 
 @ti.kernel
 def clear_background():
-    """Clear all background voxels."""
+    """Clear all background voxels (GPU parallel — avoids 48K serial CPU→GPU writes)."""
     num_bg_voxels[None] = 0
     bg_theme_active[None] = 0
-    # Reset all slots fully
     for i in range(MAX_BACKGROUND_VOXELS):
         bg_active[i] = 0
         bg_brightness[i] = 1.0
