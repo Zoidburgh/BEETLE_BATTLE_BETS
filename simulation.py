@@ -2574,8 +2574,8 @@ def animate_background(time: ti.f32):
                     # === BLOWHOLE SPRAY (parts 16-23) ===
                     # Brief upward mist burst at the peak of the jump
                     spray_idx_d = part_d - 16.0
-                    spray_start_d = 0.40
-                    spray_end_d = 0.62
+                    spray_start_d = 0.38
+                    spray_end_d = 0.75
                     spray_norm_d = (pn_head_d - spray_start_d) / (spray_end_d - spray_start_d)
 
                     if spray_norm_d > 0.0 and spray_norm_d < 1.0:
@@ -2606,7 +2606,9 @@ def animate_background(time: ti.f32):
                         out_x_d = hx_d + ti.cos(sp_ang_d) * sp_horiz_d
                         out_y_d = head_arc_d + sp_up_d
                         out_z_d = hz_d + ti.sin(sp_ang_d) * sp_horiz_d
-                        out_b_d = 1.0 - spray_norm_d * 0.7  # fade as they rise
+                        # Smooth fade: bright for first 40%, then ease to 0
+                        fade_d = 1.0 - spray_norm_d
+                        out_b_d = fade_d * fade_d * (3.0 - 2.0 * fade_d)  # smoothstep-like
 
                 else:
                     # === BODY (parts 0-15) ===
