@@ -2550,8 +2550,8 @@ def animate_background(time: ti.f32):
             dolphin_id_d = phase
             jump_offset_d = speed
             water_y_d = 14.0       # Lowest wave trough
-            period_d = 10.0        # Full cycle
-            underwater_d = 6.5     # Hidden phase (0-6.5s)
+            period_d = 30.0        # Full cycle (rare jumps)
+            underwater_d = 26.5    # Hidden phase (0-26.5s)
             arc_dur_d = 2.5        # Head's parabola duration
             peak_h_d = 28.0        # Peak height above water
             orbit_r_d = 45.0
@@ -2692,8 +2692,8 @@ def animate_background(time: ti.f32):
             sp_idx_ds = amplitude
             num_sp_ds = 16.0
             jump_offset_ds = speed
-            period_ds = 10.0
-            underwater_ds = 6.5
+            period_ds = 30.0
+            underwater_ds = 26.5
             arc_dur_ds = 2.5
             orbit_r_ds = 45.0
             travel_ds = 100.0
@@ -5501,7 +5501,7 @@ def add_waves(count: int = 1600, seed: int = 42):
             break
 
         # Stagger timing so dolphins don't jump simultaneously
-        jump_offset = dolph_id * 4.5  # ~half cycle offset
+        jump_offset = dolph_id * 14.0  # ~half cycle offset
 
         for part in range(num_dolphin_parts):
             _bg_pos_np[idx] = [0.0, 0.0, 0.0]  # Origin — offsets are absolute
