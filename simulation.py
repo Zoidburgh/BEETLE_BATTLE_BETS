@@ -229,8 +229,8 @@ BG_ANIM_DUST_DEVIL = 29     # Dust devil: phased spiral column with lifecycle
 BG_ANIM_SCORPION = 30       # Scorpion: ground orbit with tail curl, claw pinch
 BG_ANIM_TOAD = 31           # Toad: hopping orbit with idle breathing + throat puff
 BG_ANIM_MUD_SPLASH = 32     # Mud splash: burst on toad landing
-BG_ANIM_JUMPING_FISH = 33   # Giant fish: periodic jump arc above waves
-BG_ANIM_FISH_SPLASH = 34    # Splash burst on fish water entry/exit
+BG_ANIM_JUMPING_FISH = 33   # Dolphin: periodic jump arc above waves
+BG_ANIM_FISH_SPLASH = 34    # Splash burst on dolphin water entry/exit
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -2541,199 +2541,175 @@ def animate_background(time: ti.f32):
                 bg_offset_y[i] = -200.0
 
         elif anim == BG_ANIM_JUMPING_FISH:
-            # Giant fish: periodic jump arc above ocean waves
-            # amplitude = part index (0-24 body), phase = fish ID, speed = jump offset
-            part_jf = amplitude
-            fish_id_jf = phase
-            jump_offset_jf = speed
-            water_min_y_jf = 14.0  # Lowest wave trough — hide below this
-            jump_period = 8.0      # Seconds per full cycle
-            orbit_radius_jf = 45.0
+            # Dolphin: periodic jump arc above ocean waves
+            # Each body part follows the same parabolic path, offset in time
+            # Head exits/enters water first, tail last → natural body curve
+            # amplitude = part index (0-15), phase = dolphin ID, speed = jump offset
+            # Base position is (0,0,0) so offsets are absolute world coords
+            part_d = amplitude
+            dolphin_id_d = phase
+            jump_offset_d = speed
+            water_y_d = 14.0       # Lowest wave trough
+            period_d = 10.0        # Full cycle
+            underwater_d = 7.0     # Hidden phase
+            arc_dur_d = 2.0        # Parabola duration per part
+            seg_delay_d = 0.07     # Seconds delay per body segment index
+            peak_h_d = 25.0        # Peak height above water
+            orbit_r_d = 45.0
+            travel_d = 22.0        # Forward distance during arc
 
-            # Jump cycle timing
-            cycle_jf = (time + jump_offset_jf) % jump_period
+            cycle_d = (time + jump_offset_d) % period_d
 
-            if cycle_jf < 6.0:
-                # UNDERWATER — hidden, skip all math
-                bg_offset_y[i] = -200.0
-                bg_brightness[i] = 0.0
-            else:
-                # JUMP PHASE (6.0 to 8.0 = 2 seconds of arc)
-                jump_t = cycle_jf - 6.0  # 0 to 2
-                jump_norm = jump_t / 2.0  # 0 to 1
+            # Pre-initialize outputs before conditionals (Taichi requirement)
+            out_x_d = 0.0
+            out_y_d = -200.0
+            out_z_d = 0.0
+            out_b_d = 0.0
 
-                # Orbit position — fish advances angle each jump
-                jump_count = ti.floor((time + jump_offset_jf) / jump_period)
-                fish_angle = jump_count * 0.8 + fish_id_jf * 3.14  # ~46 deg per jump
-                cos_fa = ti.cos(fish_angle)
-                sin_fa = ti.sin(fish_angle)
+            if cycle_d >= underwater_d:
+                jump_t_d = cycle_d - underwater_d  # 0 to 3.0
 
-                # Direction vectors (tangent to orbit = fish forward)
-                fwd_x = -sin_fa
-                fwd_z = cos_fa
-                perp_x_jf = -fwd_z
-                perp_z_jf = fwd_x
-
-                # Center of jump on orbit
-                cx_jf = orbit_radius_jf * cos_fa
-                cz_jf = orbit_radius_jf * sin_fa
-
-                # Parabolic arc: starts at water, peaks at Y~35, returns to water
-                # For arc_y(0)=water and arc_y(1)=water: gravity must equal up_vel
-                # Peak at t=0.5: water + up_vel*0.25 → up_vel=84 gives peak 21 above water
-                up_vel = 84.0
-                gravity_jf = 84.0
-                arc_y = water_min_y_jf + up_vel * jump_norm - gravity_jf * jump_norm * jump_norm
-
-                # Forward travel during jump
-                fwd_offset = jump_norm * 12.0 - 6.0  # -6 to +6
-
-                # Body pitch — nose up on ascent, nose down on descent
-                # Envelope tapers pitch to 0 at start/end so whole fish enters water together
-                pitch_envelope = ti.min(jump_norm * 5.0, (1.0 - jump_norm) * 5.0)
-                pitch_envelope = ti.min(1.0, pitch_envelope)
-                pitch = (0.5 - jump_norm) * 2.0 * pitch_envelope
-
-                # Body wave — subtle S-curve (also tapers at start/end)
-                body_wave = 0.0
-                if part_jf <= 11:
-                    wave_phase = part_jf * 0.4 - time * 3.0
-                    body_wave = ti.sin(wave_phase) * 1.5 * (part_jf / 11.0) * pitch_envelope
-
-                # Build position based on part type
-                px_jf = cx_jf + fwd_x * fwd_offset
-                py_jf = arc_y
-                pz_jf = cz_jf + fwd_z * fwd_offset
-
-                if part_jf <= 11:
-                    # BODY SEGMENTS (0=head, 1-9=body, 10-11=peduncle)
-                    trail = -part_jf * 2.2  # Space between segments
-                    px_jf = cx_jf + fwd_x * (fwd_offset + trail) + perp_x_jf * body_wave
-                    pz_jf = cz_jf + fwd_z * (fwd_offset + trail) + perp_z_jf * body_wave
-                    py_jf = arc_y - part_jf * pitch * 0.5
-
-                elif part_jf <= 16:
-                    # TAIL FIN — fan behind peduncle
-                    tail_i = part_jf - 12  # 0-4
-                    tail_spread = (tail_i - 2.0) * 1.8  # -3.6 to +3.6
-                    tail_trail = -11.0 * 2.2 - 3.0
-                    px_jf = cx_jf + fwd_x * (fwd_offset + tail_trail) + perp_x_jf * tail_spread
-                    pz_jf = cz_jf + fwd_z * (fwd_offset + tail_trail) + perp_z_jf * tail_spread
-                    # Tail fans out during jump
-                    fan_amount = ti.sin(jump_norm * 3.14159) * 2.0
-                    py_jf = arc_y - 11.0 * pitch * 0.5 + (tail_i - 2.0) * fan_amount * 0.5
-
-                elif part_jf <= 20:
-                    # DORSAL FIN — on top of body segments 3-6
-                    dorsal_seg = 3.0 + (part_jf - 17.0)
-                    dorsal_trail = -dorsal_seg * 2.2
-                    dorsal_wave_phase = dorsal_seg * 0.4 - time * 3.0
-                    dorsal_wave = ti.sin(dorsal_wave_phase) * 1.5 * (dorsal_seg / 11.0) * pitch_envelope
-                    px_jf = cx_jf + fwd_x * (fwd_offset + dorsal_trail) + perp_x_jf * dorsal_wave
-                    pz_jf = cz_jf + fwd_z * (fwd_offset + dorsal_trail) + perp_z_jf * dorsal_wave
-                    py_jf = arc_y - dorsal_seg * pitch * 0.5 + 2.5  # Above body
-
-                elif part_jf <= 22:
-                    # PECTORAL FINS — left (21) right (22)
-                    pec_side = -1.0 if part_jf < 22 else 1.0
-                    pec_seg = 2.0  # Attached to segment 2
-                    pec_trail = -pec_seg * 2.2
-                    pec_wave_phase = pec_seg * 0.4 - time * 3.0
-                    pec_wave = ti.sin(pec_wave_phase) * 1.5 * (pec_seg / 11.0) * pitch_envelope
-                    # Fins angle out from body
-                    flap_angle = ti.sin(jump_norm * 3.14159) * 1.5  # Flap during jump
-                    px_jf = cx_jf + fwd_x * (fwd_offset + pec_trail) + perp_x_jf * (pec_wave + pec_side * (3.0 + flap_angle))
-                    pz_jf = cz_jf + fwd_z * (fwd_offset + pec_trail) + perp_z_jf * (pec_wave + pec_side * (3.0 + flap_angle))
-                    py_jf = arc_y - pec_seg * pitch * 0.5 - 1.0  # Below body
-
+                # Map part to body segment index for sequential delay
+                # 0-8: main body chain, 9-10: flukes(9), 11: dorsal(5),
+                # 12-13: flippers(2), 14-15: eyes(1)
+                seg_i_d = 0.0
+                if part_d <= 8.0:
+                    seg_i_d = part_d
+                elif part_d <= 10.0:
+                    seg_i_d = 9.0
+                elif part_d <= 11.0:
+                    seg_i_d = 5.0
+                elif part_d <= 13.0:
+                    seg_i_d = 2.0
                 else:
-                    # EYES — left (23) right (24)
-                    eye_side = -1.0 if part_jf < 24 else 1.0
-                    px_jf = cx_jf + fwd_x * (fwd_offset + 1.0) + perp_x_jf * eye_side * 1.5
-                    pz_jf = cz_jf + fwd_z * (fwd_offset + 1.0) + perp_z_jf * eye_side * 1.5
-                    py_jf = arc_y + 1.0  # Top of head
+                    seg_i_d = 1.0
 
-                # Always visible during jump phase — let the whole body
-                # enter the water before hiding (cycle reset handles hide)
-                bg_offset_x[i] = px_jf
-                bg_offset_y[i] = py_jf
-                bg_offset_z[i] = pz_jf
-                bg_brightness[i] = 1.0
+                part_t_d = jump_t_d - seg_i_d * seg_delay_d
+
+                if part_t_d >= 0.0 and part_t_d <= arc_dur_d:
+                    pn_d = part_t_d / arc_dur_d  # 0 to 1
+                    # Parabolic arc: peak at pn=0.5, returns to water at pn=1.0
+                    arc_y_d = water_y_d + peak_h_d * 4.0 * pn_d * (1.0 - pn_d)
+
+                    if arc_y_d >= water_y_d:
+                        # Orbit — advances angle each jump
+                        jc_d = ti.floor((time + jump_offset_d) / period_d)
+                        da_d = jc_d * 0.8 + dolphin_id_d * 3.14
+                        cos_da = ti.cos(da_d)
+                        sin_da = ti.sin(da_d)
+
+                        fx_d = -sin_da      # Forward (tangent)
+                        fz_d = cos_da
+                        lx_d = -fz_d        # Lateral (perpendicular)
+                        lz_d = fx_d
+
+                        cx_d = orbit_r_d * cos_da
+                        cz_d = orbit_r_d * sin_da
+
+                        # Forward travel centered on arc midpoint
+                        fwd_d = (pn_d - 0.5) * travel_d
+
+                        out_x_d = cx_d + fx_d * fwd_d
+                        out_y_d = arc_y_d
+                        out_z_d = cz_d + fz_d * fwd_d
+
+                        # Attached-part offsets
+                        if part_d > 8.5 and part_d < 10.5:
+                            # TAIL FLUKES — horizontal spread
+                            fluke_s = (part_d - 9.5) * 2.0  # -1 or +1
+                            out_x_d += lx_d * fluke_s * 3.0
+                            out_z_d += lz_d * fluke_s * 3.0
+                        elif part_d > 10.5 and part_d < 11.5:
+                            # DORSAL FIN — on top of body
+                            out_y_d += 2.8
+                        elif part_d > 11.5 and part_d < 13.5:
+                            # PECTORAL FLIPPERS — spread from body
+                            flip_s = (part_d - 12.5) * 2.0  # -1 or +1
+                            out_x_d += lx_d * flip_s * 3.5
+                            out_z_d += lz_d * flip_s * 3.5
+                            out_y_d -= 1.0
+                        elif part_d > 13.5:
+                            # EYES — on head sides
+                            eye_s = (part_d - 14.5) * 2.0  # -1 or +1
+                            out_x_d += lx_d * eye_s * 1.5 + fx_d * 1.0
+                            out_z_d += lz_d * eye_s * 1.5 + fz_d * 1.0
+                            out_y_d += 0.8
+
+                        out_b_d = 1.0
+
+            bg_offset_x[i] = out_x_d
+            bg_offset_y[i] = out_y_d
+            bg_offset_z[i] = out_z_d
+            bg_brightness[i] = out_b_d
 
         elif anim == BG_ANIM_FISH_SPLASH:
-            # Splash burst when jumping fish exits/enters water
-            # amplitude = splash index (0-15), phase = fish ID, speed = jump offset
-            sp_idx_fs = amplitude
-            num_sp_fs = 16.0
-            jump_offset_fs = speed
-            jump_period_fs = 8.0
-            orbit_radius_fs = 45.0
-            water_y_fs = 17.0  # Water surface for splash height
+            # Splash burst when dolphin exits/enters water
+            # amplitude = splash index (0-15), phase = dolphin ID, speed = jump offset
+            # Base position is (0,0,0) so offsets are absolute world coords
+            sp_idx_ds = amplitude
+            num_sp_ds = 16.0
+            jump_offset_ds = speed
+            period_ds = 10.0
+            underwater_ds = 7.0
+            arc_dur_ds = 2.0
+            orbit_r_ds = 45.0
+            travel_ds = 22.0
+            water_surf_ds = 17.0   # Wave surface Y for splash height
 
-            cycle_fs = (time + jump_offset_fs) % jump_period_fs
+            cycle_ds = (time + jump_offset_ds) % period_ds
 
-            # Splash triggers at two moments: exit water (~6.1s) and re-enter (~7.9s)
-            # Pick the closest splash event
-            exit_time = 6.1
-            enter_time = 7.9
-            splash_t_fs = -1.0
-            splash_type = 0  # 0=exit(upward), 1=enter(downward)
+            # Splash at two moments: head exits water, head re-enters water
+            exit_cycle_ds = underwater_ds + 0.1
+            enter_cycle_ds = underwater_ds + arc_dur_ds
+            splash_t_ds = -1.0
+            splash_fwd_ds = 0.0
 
-            dt_exit = cycle_fs - exit_time
-            dt_enter = cycle_fs - enter_time
+            dt_exit_ds = cycle_ds - exit_cycle_ds
+            dt_enter_ds = cycle_ds - enter_cycle_ds
 
-            if dt_exit >= 0.0 and dt_exit < 1.5:
-                splash_t_fs = dt_exit
-                splash_type = 0
-            elif dt_enter >= 0.0 and dt_enter < 1.5:
-                splash_t_fs = dt_enter
-                splash_type = 1
+            if dt_exit_ds >= 0.0 and dt_exit_ds < 1.5:
+                splash_t_ds = dt_exit_ds
+                splash_fwd_ds = -travel_ds * 0.45   # Near start of arc
+            elif dt_enter_ds >= 0.0 and dt_enter_ds < 1.5:
+                splash_t_ds = dt_enter_ds
+                splash_fwd_ds = travel_ds * 0.45    # Near end of arc
 
-            if splash_t_fs >= 0.0:
-                # Fish position at splash moment
-                jump_count_fs = ti.floor((time + jump_offset_fs) / jump_period_fs)
-                fish_angle_fs = jump_count_fs * 0.8 + phase * 3.14
-                cos_fs = ti.cos(fish_angle_fs)
-                sin_fs = ti.sin(fish_angle_fs)
+            if splash_t_ds >= 0.0:
+                jc_ds = ti.floor((time + jump_offset_ds) / period_ds)
+                da_ds = jc_ds * 0.8 + phase * 3.14
+                cos_ds = ti.cos(da_ds)
+                sin_ds = ti.sin(da_ds)
+                fx_ds = -sin_ds
+                fz_ds = cos_ds
 
-                # Forward along orbit at splash moment
-                fwd_x_fs = -sin_fs
-                fwd_z_fs = cos_fs
-                splash_fwd = 0.0
-                if splash_type == 0:
-                    splash_fwd = -4.0  # Exit: early in jump, near start
-                else:
-                    splash_fwd = 4.0   # Enter: late in jump, near end
-
-                splash_cx_fs = orbit_radius_fs * cos_fs + fwd_x_fs * splash_fwd
-                splash_cz_fs = orbit_radius_fs * sin_fs + fwd_z_fs * splash_fwd
+                scx_ds = orbit_r_ds * cos_ds + fx_ds * splash_fwd_ds
+                scz_ds = orbit_r_ds * sin_ds + fz_ds * splash_fwd_ds
 
                 # Burst ring
-                burst_ang_fs = sp_idx_fs * (6.28318 / num_sp_fs)
-                burst_dx_fs = ti.cos(burst_ang_fs)
-                burst_dz_fs = ti.sin(burst_ang_fs)
+                bang_ds = sp_idx_ds * (6.28318 / num_sp_ds)
+                bdx_ds = ti.cos(bang_ds)
+                bdz_ds = ti.sin(bang_ds)
 
-                burst_spd_fs = 8.0 + ti.sin(sp_idx_fs * 2.3) * 3.0
-                up_spd_fs = 18.0 + ti.cos(sp_idx_fs * 1.7) * 6.0
-                gravity_fs = 28.0
-                t_ground_fs = up_spd_fs / gravity_fs
-                t_horiz_fs = ti.min(splash_t_fs, t_ground_fs)
+                bspd_ds = 8.0 + ti.sin(sp_idx_ds * 2.3) * 3.0
+                uspd_ds = 18.0 + ti.cos(sp_idx_ds * 1.7) * 6.0
+                grav_ds = 28.0
+                t_gnd_ds = uspd_ds / grav_ds
+                t_hz_ds = ti.min(splash_t_ds, t_gnd_ds)
 
-                sp_py = water_y_fs + up_spd_fs * splash_t_fs - gravity_fs * splash_t_fs * splash_t_fs
-                sp_px = splash_cx_fs + burst_dx_fs * burst_spd_fs * t_horiz_fs
-                sp_pz = splash_cz_fs + burst_dz_fs * burst_spd_fs * t_horiz_fs
+                spy_ds = water_surf_ds + uspd_ds * splash_t_ds - grav_ds * splash_t_ds * splash_t_ds
+                spx_ds = scx_ds + bdx_ds * bspd_ds * t_hz_ds
+                spz_ds = scz_ds + bdz_ds * bspd_ds * t_hz_ds
 
-                if sp_py >= water_y_fs - 2.0:
-                    bg_offset_x[i] = sp_px
-                    bg_offset_y[i] = sp_py
-                    bg_offset_z[i] = sp_pz
-                    fade_fs = ti.max(0.0, 1.0 - splash_t_fs * 0.8)
-                    bg_brightness[i] = fade_fs
+                if spy_ds >= water_surf_ds - 2.0:
+                    bg_offset_x[i] = spx_ds
+                    bg_offset_y[i] = spy_ds
+                    bg_offset_z[i] = spz_ds
+                    fade_ds = ti.max(0.0, 1.0 - splash_t_ds * 0.8)
+                    bg_brightness[i] = fade_ds
                 else:
                     bg_offset_y[i] = -200.0
                     bg_brightness[i] = 0.0
             else:
-                # No splash active
                 bg_offset_y[i] = -200.0
                 bg_brightness[i] = 0.0
 
@@ -5472,77 +5448,78 @@ def add_waves(count: int = 1600, seed: int = 42):
             idx += 1
 
 
-    # === ADD GIANT JUMPING FISH (2 fish) ===
-    water_min_y = 14.0  # Lowest possible wave trough — hide fish below this
-    num_jumping_fish = 2
-    num_fish_parts = 25  # Body parts per fish
-    num_fish_splash = 16  # Splash particles per fish
+    # === ADD JUMPING DOLPHINS (2 dolphins) ===
+    # Base pos (0,0,0) — animation offsets are absolute world coordinates
+    num_dolphins = 2
+    num_dolphin_parts = 16   # Body parts per dolphin
+    num_dolphin_splash = 16  # Splash particles per dolphin
 
-    for fish_id in range(num_jumping_fish):
-        if idx >= MAX_BACKGROUND_VOXELS - (num_fish_parts + num_fish_splash + 10):
+    for dolph_id in range(num_dolphins):
+        if idx >= MAX_BACKGROUND_VOXELS - (num_dolphin_parts + num_dolphin_splash + 10):
             break
 
-        # Stagger jump timing so fish don't jump simultaneously
-        jump_offset = fish_id * 3.7  # ~4s offset between fish (half cycle)
+        # Stagger timing so dolphins don't jump simultaneously
+        jump_offset = dolph_id * 4.5  # ~half cycle offset
 
-        for part in range(num_fish_parts):
-            _bg_pos_np[idx] = [0.0, water_min_y, 0.0]
+        for part in range(num_dolphin_parts):
+            _bg_pos_np[idx] = [0.0, 0.0, 0.0]  # Origin — offsets are absolute
             _bg_anim_type_np[idx] = BG_ANIM_JUMPING_FISH
-            _bg_phase_np[idx] = float(fish_id)
+            _bg_phase_np[idx] = float(dolph_id)
             _bg_anim_amp_np[idx] = float(part)
             _bg_anim_speed_np[idx] = jump_offset
-            _bg_brightness_np[idx] = 0.0  # Start hidden underwater
+            _bg_brightness_np[idx] = 0.0  # Start hidden
             _bg_offset_x_np[idx] = 0.0
             _bg_offset_y_np[idx] = -200.0
             _bg_offset_z_np[idx] = 0.0
             _bg_active_np[idx] = 1
 
             if part == 0:
-                # HEAD — pointed, silver-blue
-                _bg_col_np[idx] = [0.72, 0.78, 0.88]
-                _bg_size_np[idx] = 2.8
-            elif part <= 9:
-                # BODY — tapered, widest at segments 4-5
-                t = part / 9.0
-                # Bell curve for width: peaks at middle
-                width = 1.0 - abs(t - 0.45) * 1.8
+                # ROSTRUM (beak) — small, light grey
+                _bg_col_np[idx] = [0.65, 0.68, 0.72]
+                _bg_size_np[idx] = 1.8
+            elif part == 1:
+                # HEAD (melon) — rounded, medium grey
+                _bg_col_np[idx] = [0.50, 0.53, 0.58]
+                _bg_size_np[idx] = 3.2
+            elif part <= 7:
+                # BODY segments (2-7) — tapered, widest at 3-4
+                t = (part - 2) / 5.0  # 0 to 1
+                width = 1.0 - abs(t - 0.35) * 2.0
                 width = max(0.3, width)
-                _bg_size_np[idx] = 2.0 + width * 1.8
-                # Silver top, blue-silver sides
-                blue_shift = t * 0.3
-                _bg_col_np[idx] = [0.55 - blue_shift, 0.60 - blue_shift * 0.5, 0.75 + blue_shift * 0.2]
-            elif part <= 11:
-                # TAIL PEDUNCLE — narrow transition to tail
-                _bg_col_np[idx] = [0.25, 0.35, 0.55]
+                _bg_size_np[idx] = 2.2 + width * 2.0
+                # Dark blue-grey
+                _bg_col_np[idx] = [0.33 + t * 0.04, 0.36 + t * 0.04, 0.45 + t * 0.03]
+            elif part == 8:
+                # TAIL STOCK — narrow
+                _bg_col_np[idx] = [0.30, 0.33, 0.40]
                 _bg_size_np[idx] = 1.6
-            elif part <= 16:
-                # TAIL FIN — fan shape (5 voxels)
-                tail_i = part - 12
-                _bg_col_np[idx] = [0.15, 0.25, 0.50]
-                _bg_size_np[idx] = 1.8 - abs(tail_i - 2) * 0.2
-            elif part <= 20:
-                # DORSAL FIN — 4 along top of body
-                _bg_col_np[idx] = [0.20, 0.30, 0.52]
-                _bg_size_np[idx] = 1.3
-            elif part <= 22:
-                # PECTORAL FINS — left (21) and right (22)
-                _bg_col_np[idx] = [0.50, 0.58, 0.72]
+            elif part <= 10:
+                # TAIL FLUKES (9-10) — horizontal spread
+                _bg_col_np[idx] = [0.28, 0.31, 0.38]
+                _bg_size_np[idx] = 2.0
+            elif part == 11:
+                # DORSAL FIN — prominent
+                _bg_col_np[idx] = [0.30, 0.33, 0.40]
+                _bg_size_np[idx] = 2.0
+            elif part <= 13:
+                # PECTORAL FLIPPERS (12-13)
+                _bg_col_np[idx] = [0.42, 0.45, 0.52]
                 _bg_size_np[idx] = 1.5
             else:
-                # EYES — left (23) and right (24)
+                # EYES (14-15)
                 _bg_col_np[idx] = [0.05, 0.05, 0.08]
                 _bg_size_np[idx] = 0.8
 
             idx += 1
 
         # SPLASH PARTICLES
-        for s in range(num_fish_splash):
-            _bg_pos_np[idx] = [0.0, water_min_y, 0.0]
+        for s in range(num_dolphin_splash):
+            _bg_pos_np[idx] = [0.0, 0.0, 0.0]  # Origin — offsets are absolute
             white_mix = random.uniform(0.3, 0.7)
             _bg_col_np[idx] = [0.5 + 0.5 * white_mix, 0.65 + 0.35 * white_mix, 0.85 + 0.15 * white_mix]
             _bg_size_np[idx] = random.uniform(0.5, 1.0)
             _bg_anim_type_np[idx] = BG_ANIM_FISH_SPLASH
-            _bg_phase_np[idx] = float(fish_id)
+            _bg_phase_np[idx] = float(dolph_id)
             _bg_anim_amp_np[idx] = float(s)
             _bg_anim_speed_np[idx] = jump_offset
             _bg_brightness_np[idx] = 0.0
@@ -5558,7 +5535,7 @@ def add_waves(count: int = 1600, seed: int = 42):
     active_themes.add(THEME_WAVES)
     _bg_count = idx
     bg_flush()
-    print(f"Added {wave_count} wave voxels + sea serpent + jumping fish (total: {idx})")
+    print(f"Added {wave_count} wave voxels + sea serpent + dolphins (total: {idx})")
 
 def add_tree_branches(count: int = 12, seed: int = 42):
     """Add palm trees to the background (appends to existing voxels)."""
