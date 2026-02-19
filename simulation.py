@@ -2634,9 +2634,8 @@ def animate_background(time: ti.f32):
                     # Arc height — naturally negative outside [0,1] → below water
                     arc_y_d = water_y_d + peak_h_d * 4.0 * seg_pn_d * (1.0 - seg_pn_d)
 
-                    # Hide threshold at wave surface (Y=17) so spheres emerge
-                    # from the water cleanly, not from below
-                    if arc_y_d > water_y_d + 3.0:
+                    # Hide threshold just above wave troughs so tail sinks fully
+                    if arc_y_d > water_y_d + 1.5:
                         # Orbit — advances angle each jump
                         jc_d = ti.floor((time + jump_offset_d) / period_d)
                         da_d = jc_d * 0.8 + dolphin_id_d * 3.14
