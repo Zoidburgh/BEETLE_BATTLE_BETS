@@ -281,6 +281,41 @@ stadium_excitement = ti.field(dtype=ti.f32, shape=())  # 0-1, current excitement
 stadium_excitement_target = ti.field(dtype=ti.f32, shape=())  # Target to ramp toward
 bg_angle = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)  # Angle around arena
 
+# ---- Numpy staging buffers for background voxel batch writes ----
+# Theme builders write here (fast CPU array ops), then bg_flush() copies to GPU in bulk.
+import numpy as np
+_bg_pos_np = np.zeros((MAX_BACKGROUND_VOXELS, 3), dtype=np.float32)
+_bg_col_np = np.zeros((MAX_BACKGROUND_VOXELS, 3), dtype=np.float32)
+_bg_phase_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_size_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_anim_type_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.int32)
+_bg_anim_speed_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_anim_amp_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_active_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.int32)
+_bg_brightness_np = np.ones(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_offset_x_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_offset_y_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_offset_z_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_angle_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_count = 0  # Python-side voxel counter (mirrors num_bg_voxels on GPU)
+
+def bg_flush():
+    """Bulk-copy numpy background buffers to GPU Taichi fields (fast batch transfer)."""
+    bg_positions.from_numpy(_bg_pos_np)
+    bg_colors.from_numpy(_bg_col_np)
+    bg_phase.from_numpy(_bg_phase_np)
+    bg_size.from_numpy(_bg_size_np)
+    bg_anim_type.from_numpy(_bg_anim_type_np)
+    bg_anim_speed.from_numpy(_bg_anim_speed_np)
+    bg_anim_amplitude.from_numpy(_bg_anim_amp_np)
+    bg_active.from_numpy(_bg_active_np)
+    bg_brightness.from_numpy(_bg_brightness_np)
+    bg_offset_x.from_numpy(_bg_offset_x_np)
+    bg_offset_y.from_numpy(_bg_offset_y_np)
+    bg_offset_z.from_numpy(_bg_offset_z_np)
+    bg_angle.from_numpy(_bg_angle_np)
+    num_bg_voxels[None] = _bg_count
+
 # Voxel types
 EMPTY = 0
 STEEL = 1
@@ -2880,24 +2915,24 @@ def animate_background(time: ti.f32):
                     bg_offset_z[i] = base_oz
                     bg_brightness[i] = smooth * (1.6 + 0.3 * ti.sin(time * 1.2 + phase))
 
-@ti.kernel
 def clear_background():
-    """Clear all background voxels (GPU parallel — avoids 48K serial CPU→GPU writes)."""
-    num_bg_voxels[None] = 0
+    """Clear all background voxels by zeroing numpy buffers and flushing to GPU."""
+    global _bg_count
+    _bg_pos_np[:] = 0; _bg_col_np[:] = 0; _bg_phase_np[:] = 0
+    _bg_size_np[:] = 0; _bg_anim_type_np[:] = 0; _bg_anim_speed_np[:] = 0
+    _bg_anim_amp_np[:] = 0; _bg_active_np[:] = 0; _bg_angle_np[:] = 0
+    _bg_brightness_np[:] = 1.0
+    _bg_offset_x_np[:] = 0; _bg_offset_y_np[:] = 0; _bg_offset_z_np[:] = 0
+    _bg_count = 0
     bg_theme_active[None] = 0
-    for i in range(MAX_BACKGROUND_VOXELS):
-        bg_active[i] = 0
-        bg_brightness[i] = 1.0
-        bg_offset_x[i] = 0.0
-        bg_offset_y[i] = 0.0
-        bg_offset_z[i] = 0.0
-        bg_size[i] = 0.0
+    bg_flush()
 
 def generate_stars(count: int = 2400, seed: int = 42):
     """
     Generate stars on the outer edges, far from arena.
     Dense starfield surrounding the play area.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -2921,36 +2956,37 @@ def generate_stars(count: int = 2400, seed: int = 42):
         if dist_xz < min_dist:
             continue  # Too close to arena
 
-        bg_positions[idx] = ti.Vector([x, y, z])
+        _bg_pos_np[idx] = [x, y, z]
 
         # Color: white to pale blue, slight variation
         blue_tint = random.uniform(0.0, 0.2)
         brightness = random.uniform(0.6, 1.0)
-        bg_colors[idx] = ti.Vector([
+        _bg_col_np[idx] = [
             brightness * (1.0 - blue_tint * 0.5),
             brightness * (1.0 - blue_tint * 0.3),
             brightness
-        ])
+        ]
 
         # Size: varied, some bigger bright stars
         if random.random() < 0.1:
-            bg_size[idx] = random.uniform(0.3, 0.45)  # Bigger bright stars
+            _bg_size_np[idx] = random.uniform(0.3, 0.45)  # Bigger bright stars
         else:
-            bg_size[idx] = random.uniform(0.12, 0.25)
+            _bg_size_np[idx] = random.uniform(0.12, 0.25)
 
         # Animation: twinkle with varied speeds
-        bg_anim_type[idx] = BG_ANIM_TWINKLE
-        bg_anim_speed[idx] = random.uniform(1.5, 4.0)
-        bg_anim_amplitude[idx] = 0.0
-        bg_phase[idx] = random.uniform(0, 6.28)
+        _bg_anim_type_np[idx] = BG_ANIM_TWINKLE
+        _bg_anim_speed_np[idx] = random.uniform(1.5, 4.0)
+        _bg_anim_amp_np[idx] = 0.0
+        _bg_phase_np[idx] = random.uniform(0, 6.28)
 
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     bg_theme_active[None] = 1  # Stars theme
     print(f"Generated {idx} stars for background")
 
@@ -2959,6 +2995,7 @@ def generate_grass(count: int = 2500, seed: int = 42):
     Generate grass carpet just below the arena (where beetles fall into).
     Each blade is 3 voxels tall for actual length.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -2999,32 +3036,33 @@ def generate_grass(count: int = 2500, seed: int = 42):
 
                 y = y_base + h * 1.0  # Vertical spacing (bigger)
 
-                bg_positions[idx] = ti.Vector([x, y, z])
+                _bg_pos_np[idx] = [x, y, z]
 
                 # Color: darker at base, brighter at top
                 brightness = 0.7 + h * 0.15
-                bg_colors[idx] = ti.Vector([
+                _bg_col_np[idx] = [
                     random.uniform(0.1, 0.25) * brightness,
                     green_var * brightness,
                     random.uniform(0.05, 0.15) * brightness
-                ])
+                ]
 
                 # Size: slightly smaller at top (tapered blade) - 30% bigger again
-                bg_size[idx] = 0.76 - h * 0.135
+                _bg_size_np[idx] = 0.76 - h * 0.135
 
                 # Animation: top sways more than bottom - more intense
-                bg_anim_type[idx] = BG_ANIM_SWAY
-                bg_anim_speed[idx] = blade_speed
-                bg_anim_amplitude[idx] = 0.6 + h * 0.8  # Bottom: 0.6, Top: 2.2
-                bg_phase[idx] = blade_phase
+                _bg_anim_type_np[idx] = BG_ANIM_SWAY
+                _bg_anim_speed_np[idx] = blade_speed
+                _bg_anim_amp_np[idx] = 0.6 + h * 0.8  # Bottom: 0.6, Top: 2.2
+                _bg_phase_np[idx] = blade_phase
 
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     bg_theme_active[None] = 2  # Grass theme
     print(f"Generated {idx} grass voxels for background")
 
@@ -3033,6 +3071,7 @@ def generate_fireflies(count: int = 2800, seed: int = 42):
     Generate floating fireflies on outer edges, far from arena.
     Fireflies wander in gentle paths and glow.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -3053,31 +3092,32 @@ def generate_fireflies(count: int = 2800, seed: int = 42):
         z = math.sin(angle) * dist
         y = random.uniform(15, 90)
 
-        bg_positions[idx] = ti.Vector([x, y, z])
+        _bg_pos_np[idx] = [x, y, z]
 
         # Color: warm yellow/green glow (more natural firefly color)
-        bg_colors[idx] = ti.Vector([
+        _bg_col_np[idx] = [
             random.uniform(0.8, 1.0),
             random.uniform(0.9, 1.0),
             random.uniform(0.1, 0.3)
-        ])
+        ]
 
         # Size: tiny glowing dots
-        bg_size[idx] = random.uniform(0.05, 0.12)
+        _bg_size_np[idx] = random.uniform(0.05, 0.12)
 
         # Animation: firefly wandering path + glow
-        bg_anim_type[idx] = BG_ANIM_FIREFLY
-        bg_anim_speed[idx] = random.uniform(0.4, 1.0)
-        bg_anim_amplitude[idx] = random.uniform(8.0, 20.0)  # Wander radius - long distances
-        bg_phase[idx] = random.uniform(0, 6.28)
+        _bg_anim_type_np[idx] = BG_ANIM_FIREFLY
+        _bg_anim_speed_np[idx] = random.uniform(0.4, 1.0)
+        _bg_anim_amp_np[idx] = random.uniform(8.0, 20.0)  # Wander radius - long distances
+        _bg_phase_np[idx] = random.uniform(0, 6.28)
 
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     bg_theme_active[None] = 3  # Fireflies theme
     print(f"Generated {idx} fireflies for background")
 
@@ -3085,6 +3125,7 @@ def generate_water(count: int = 3000, seed: int = 42):
     """
     Generate whirlpool water particles in uniform concentric rings.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -3115,28 +3156,29 @@ def generate_water(count: int = 3000, seed: int = 42):
         z = math.sin(angle) * radius
         y = water_y_base
 
-        bg_positions[idx] = ti.Vector([x, y, z])
+        _bg_pos_np[idx] = [x, y, z]
 
         # Tree branch browns/tans
-        bg_colors[idx] = ti.Vector([0.45, 0.30, 0.15])
+        _bg_col_np[idx] = [0.45, 0.30, 0.15]
 
         # Size - 30% smaller
-        bg_size[idx] = random.uniform(0.22, 0.32)
+        _bg_size_np[idx] = random.uniform(0.22, 0.32)
 
         # Animation: store initial angle and radius
-        bg_anim_type[idx] = BG_ANIM_WATER
-        bg_phase[idx] = angle  # Initial angle
-        bg_anim_amplitude[idx] = radius  # Initial radius
-        bg_anim_speed[idx] = 1.0  # All same speed
+        _bg_anim_type_np[idx] = BG_ANIM_WATER
+        _bg_phase_np[idx] = angle  # Initial angle
+        _bg_anim_amp_np[idx] = radius  # Initial radius
+        _bg_anim_speed_np[idx] = 1.0  # All same speed
 
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     bg_theme_active[None] = 4  # Water theme
     print(f"Generated {idx} water particles")
 
@@ -3145,6 +3187,7 @@ def generate_jellyfish(count: int = 30, seed: int = 42):
     Generate jellyfish floating around the SIDES of the arena.
     Each jellyfish is 5-6 voxels: 1 bell + 4-5 tentacles.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -3190,18 +3233,18 @@ def generate_jellyfish(count: int = 30, seed: int = 42):
             jelly += 1
 
             # Bell (main body) - 1 voxel
-            bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
-            bg_colors[idx] = color
-            bg_size[idx] = random.uniform(0.6, 0.9)
-            bg_anim_type[idx] = BG_ANIM_JELLYFISH
-            bg_phase[idx] = jelly_id
-            bg_anim_amplitude[idx] = 0.0  # Bell
-            bg_anim_speed[idx] = base_y
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [base_x, base_y, base_z]
+            _bg_col_np[idx] = color
+            _bg_size_np[idx] = random.uniform(0.6, 0.9)
+            _bg_anim_type_np[idx] = BG_ANIM_JELLYFISH
+            _bg_phase_np[idx] = jelly_id
+            _bg_anim_amp_np[idx] = 0.0  # Bell
+            _bg_anim_speed_np[idx] = base_y
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
             # Tentacles - 4-5 voxels hanging below
@@ -3217,21 +3260,22 @@ def generate_jellyfish(count: int = 30, seed: int = 42):
                 t_z = base_z + math.sin(t_angle) * t_offset
                 t_y = base_y - 0.8 - t * 0.3  # Hang below bell
 
-                bg_positions[idx] = ti.Vector([t_x, t_y, t_z])
-                bg_colors[idx] = color * 0.7  # Slightly dimmer
-                bg_size[idx] = random.uniform(0.25, 0.4)
-                bg_anim_type[idx] = BG_ANIM_JELLYFISH
-                bg_phase[idx] = jelly_id
-                bg_anim_amplitude[idx] = float(t + 1)  # Tentacle index
-                bg_anim_speed[idx] = base_y
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_pos_np[idx] = [t_x, t_y, t_z]
+                _bg_col_np[idx] = color * 0.7  # Slightly dimmer
+                _bg_size_np[idx] = random.uniform(0.25, 0.4)
+                _bg_anim_type_np[idx] = BG_ANIM_JELLYFISH
+                _bg_phase_np[idx] = jelly_id
+                _bg_anim_amp_np[idx] = float(t + 1)  # Tentacle index
+                _bg_anim_speed_np[idx] = base_y
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     bg_theme_active[None] = 5  # Jellyfish theme
     print(f"Generated {idx} voxels for {count} jellyfish")
 
@@ -3240,6 +3284,7 @@ def generate_butterflies(count: int = 60, seed: int = 42):
     Generate butterflies floating around the sides of the arena.
     Each butterfly is 5 voxels: 1 body + 4 wings.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -3278,18 +3323,18 @@ def generate_butterflies(count: int = 60, seed: int = 42):
         move_seed = float(b) * 0.37  # Each butterfly unique, evenly spread
 
         # Body - 1 voxel (small, dark)
-        bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
-        bg_colors[idx] = color * 0.4  # Darker body
-        bg_size[idx] = 0.45
-        bg_anim_type[idx] = BG_ANIM_BUTTERFLY
-        bg_phase[idx] = butterfly_id
-        bg_anim_amplitude[idx] = 0.0  # Body
-        bg_anim_speed[idx] = move_seed
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_pos_np[idx] = [base_x, base_y, base_z]
+        _bg_col_np[idx] = color * 0.4  # Darker body
+        _bg_size_np[idx] = 0.45
+        _bg_anim_type_np[idx] = BG_ANIM_BUTTERFLY
+        _bg_phase_np[idx] = butterfly_id
+        _bg_anim_amp_np[idx] = 0.0  # Body
+        _bg_anim_speed_np[idx] = move_seed
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
         # Wings - 2 voxels each (outer big, inner small) = 8 voxels total
@@ -3313,21 +3358,22 @@ def generate_butterflies(count: int = 60, seed: int = 42):
             if idx >= MAX_BACKGROUND_VOXELS:
                 break
 
-            bg_positions[idx] = ti.Vector([base_x + wx, base_y + wy, base_z + wz])
-            bg_colors[idx] = color
-            bg_size[idx] = size
-            bg_anim_type[idx] = BG_ANIM_BUTTERFLY
-            bg_phase[idx] = butterfly_id
-            bg_anim_amplitude[idx] = part_id  # Wing type
-            bg_anim_speed[idx] = move_seed
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [base_x + wx, base_y + wy, base_z + wz]
+            _bg_col_np[idx] = color
+            _bg_size_np[idx] = size
+            _bg_anim_type_np[idx] = BG_ANIM_BUTTERFLY
+            _bg_phase_np[idx] = butterfly_id
+            _bg_anim_amp_np[idx] = part_id  # Wing type
+            _bg_anim_speed_np[idx] = move_seed
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     bg_theme_active[None] = 6  # Butterfly theme
     print(f"Generated {idx} voxels for {count} butterflies")
 
@@ -3335,6 +3381,7 @@ def generate_waves(count: int = 1600, seed: int = 42):
     """
     Generate water wave blobs in a grid pattern below arena.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -3358,33 +3405,34 @@ def generate_waves(count: int = 1600, seed: int = 42):
             z = -55 + gz * spacing + random.uniform(-0.15, 0.15)
             y = water_y_base + random.uniform(0, 0.3)
 
-            bg_positions[idx] = ti.Vector([x, y, z])
+            _bg_pos_np[idx] = [x, y, z]
 
             # Water colors - blue/cyan, varies slightly
             depth_var = random.uniform(0.8, 1.0)
-            bg_colors[idx] = ti.Vector([
+            _bg_col_np[idx] = [
                 0.1 * depth_var,
                 0.4 * depth_var,
                 0.8 * depth_var
-            ])
+            ]
 
             # Size - 20% bigger
-            bg_size[idx] = random.uniform(0.95, 1.12)
+            _bg_size_np[idx] = random.uniform(0.95, 1.12)
 
             # Animation: store x and z for wave sync
-            bg_anim_type[idx] = BG_ANIM_WAVE
-            bg_phase[idx] = x  # X position for primary wave
-            bg_anim_amplitude[idx] = z  # Z position for cross-wave
-            bg_anim_speed[idx] = 1.0
+            _bg_anim_type_np[idx] = BG_ANIM_WAVE
+            _bg_phase_np[idx] = x  # X position for primary wave
+            _bg_anim_amp_np[idx] = z  # Z position for cross-wave
+            _bg_anim_speed_np[idx] = 1.0
 
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     bg_theme_active[None] = 7  # Waves theme
     print(f"Generated {idx} water wave blobs")
 
@@ -3393,6 +3441,7 @@ def generate_tree_branches(count: int = 12, seed: int = 42):
     Generate BIG palm trees around the arena sides.
     Tall solid trunks with bold fronds at the top.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -3436,18 +3485,18 @@ def generate_tree_branches(count: int = 12, seed: int = 42):
             # Trunk barely sways - very subtle
             sway_amp = 0.02 + h * 0.003
 
-            bg_positions[idx] = ti.Vector([tree_x, y, tree_z])
-            bg_colors[idx] = trunk_color
-            bg_size[idx] = trunk_size
-            bg_anim_type[idx] = BG_ANIM_TREE
-            bg_phase[idx] = tree_phase
-            bg_anim_amplitude[idx] = sway_amp
-            bg_anim_speed[idx] = random.uniform(0.9, 1.1)
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [tree_x, y, tree_z]
+            _bg_col_np[idx] = trunk_color
+            _bg_size_np[idx] = trunk_size
+            _bg_anim_type_np[idx] = BG_ANIM_TREE
+            _bg_phase_np[idx] = tree_phase
+            _bg_anim_amp_np[idx] = sway_amp
+            _bg_anim_speed_np[idx] = random.uniform(0.9, 1.1)
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # === BOLD PALM FRONDS AT TOP ===
@@ -3477,21 +3526,22 @@ def generate_tree_branches(count: int = 12, seed: int = 42):
                 # More sway on fronds
                 sway_amp = 0.6 + seg * 0.2
 
-                bg_positions[idx] = ti.Vector([f_x, f_y, f_z])
-                bg_colors[idx] = frond_color
-                bg_size[idx] = frond_size
-                bg_anim_type[idx] = BG_ANIM_TREE
-                bg_phase[idx] = tree_phase + f * 0.15  # Slight phase offset per frond
-                bg_anim_amplitude[idx] = sway_amp
-                bg_anim_speed[idx] = random.uniform(0.8, 1.2)
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_pos_np[idx] = [f_x, f_y, f_z]
+                _bg_col_np[idx] = frond_color
+                _bg_size_np[idx] = frond_size
+                _bg_anim_type_np[idx] = BG_ANIM_TREE
+                _bg_phase_np[idx] = tree_phase + f * 0.15  # Slight phase offset per frond
+                _bg_anim_amp_np[idx] = sway_amp
+                _bg_anim_speed_np[idx] = random.uniform(0.8, 1.2)
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     bg_theme_active[None] = 10  # Tree theme
     print(f"Generated {idx} palm tree voxels ({tree_id} trees)")
 
@@ -3500,6 +3550,7 @@ def generate_stadium(seed: int = 42):
     Generate stadium seating with beetle larvae spectators.
     Each larva is 4 voxels tall - grub-like creatures standing in tiered rows.
     """
+    global _bg_count
     import random
     import math
     random.seed(seed)
@@ -3562,22 +3613,23 @@ def generate_stadium(seed: int = 42):
                     seg_size = 1.0
                     color = ti.Vector([0.45, 0.30, 0.18])
 
-                bg_positions[idx] = ti.Vector([base_x, y, base_z])
-                bg_colors[idx] = color
-                bg_size[idx] = seg_size
-                bg_anim_type[idx] = BG_ANIM_SCRUNCH
-                bg_phase[idx] = larva_phase
-                bg_anim_amplitude[idx] = float(seg)  # Segment index for scrunch wave
-                bg_anim_speed[idx] = larva_speed
-                bg_angle[idx] = angle  # Store angle for stadium wave
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_pos_np[idx] = [base_x, y, base_z]
+                _bg_col_np[idx] = color
+                _bg_size_np[idx] = seg_size
+                _bg_anim_type_np[idx] = BG_ANIM_SCRUNCH
+                _bg_phase_np[idx] = larva_phase
+                _bg_anim_amp_np[idx] = float(seg)  # Segment index for scrunch wave
+                _bg_anim_speed_np[idx] = larva_speed
+                _bg_angle_np[idx] = angle  # Store angle for stadium wave
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     stadium_excitement[None] = 0.0  # Reset excitement
     stadium_excitement_target[None] = 0.0
     bg_theme_active[None] = 11  # Stadium theme
@@ -3603,39 +3655,40 @@ def decay_stadium_excitement(dt: float):
 
 def compact_background_voxels(removed_start: int, removed_count: int):
     """Shift voxels down to fill gap left by removed theme."""
-    global theme_start_idx, theme_count
-    total = num_bg_voxels[None]
+    global theme_start_idx, theme_count, _bg_count
+    total = _bg_count
     shift_start = removed_start + removed_count
 
     # Shift all voxels after the gap down
     for i in range(shift_start, total):
         new_idx = i - removed_count
         # Copy all fields
-        bg_positions[new_idx] = bg_positions[i]
-        bg_colors[new_idx] = bg_colors[i]
-        bg_size[new_idx] = bg_size[i]
-        bg_phase[new_idx] = bg_phase[i]
-        bg_anim_type[new_idx] = bg_anim_type[i]
-        bg_anim_speed[new_idx] = bg_anim_speed[i]
-        bg_anim_amplitude[new_idx] = bg_anim_amplitude[i]
-        bg_active[new_idx] = bg_active[i]
-        bg_brightness[new_idx] = bg_brightness[i]
-        bg_offset_x[new_idx] = bg_offset_x[i]
-        bg_offset_y[new_idx] = bg_offset_y[i]
-        bg_offset_z[new_idx] = bg_offset_z[i]
-        bg_angle[new_idx] = bg_angle[i]
+        _bg_pos_np[new_idx] = _bg_pos_np[i]
+        _bg_col_np[new_idx] = _bg_col_np[i]
+        _bg_size_np[new_idx] = _bg_size_np[i]
+        _bg_phase_np[new_idx] = _bg_phase_np[i]
+        _bg_anim_type_np[new_idx] = _bg_anim_type_np[i]
+        _bg_anim_speed_np[new_idx] = _bg_anim_speed_np[i]
+        _bg_anim_amp_np[new_idx] = _bg_anim_amp_np[i]
+        _bg_active_np[new_idx] = _bg_active_np[i]
+        _bg_brightness_np[new_idx] = _bg_brightness_np[i]
+        _bg_offset_x_np[new_idx] = _bg_offset_x_np[i]
+        _bg_offset_y_np[new_idx] = _bg_offset_y_np[i]
+        _bg_offset_z_np[new_idx] = _bg_offset_z_np[i]
+        _bg_angle_np[new_idx] = _bg_angle_np[i]
 
     # Clear the old slots at the end
     for i in range(total - removed_count, total):
-        bg_active[i] = 0
-        bg_size[i] = 0.0
+        _bg_active_np[i] = 0
+        _bg_size_np[i] = 0.0
 
     # Update indices for themes that shifted
     for theme_id in list(active_themes):
         if theme_id in theme_start_idx and theme_start_idx[theme_id] > removed_start:
             theme_start_idx[theme_id] -= removed_count
 
-    num_bg_voxels[None] = total - removed_count
+    _bg_count = total - removed_count
+    bg_flush()
 
 def remove_theme(theme_id: int):
     """Remove a theme and compact the voxel arrays."""
@@ -3700,7 +3753,7 @@ def is_theme_active(theme_id: int) -> bool:
 
 def add_stars(count: int = 1200, seed: int = 42):
     """Add constellation star patterns + scattered background stars."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -3708,7 +3761,7 @@ def add_stars(count: int = 1200, seed: int = 42):
     if THEME_STARS in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
 
     # === CONSTELLATION DEFINITIONS ===
@@ -3807,19 +3860,19 @@ def add_stars(count: int = 1200, seed: int = 42):
         for vi, (wx, wy, wz) in enumerate(world_verts):
             if idx >= MAX_BACKGROUND_VOXELS - 10:
                 break
-            bg_positions[idx] = ti.Vector([wx, wy, wz])
+            _bg_pos_np[idx] = [wx, wy, wz]
             sc = star_colors[vi % len(star_colors)]
-            bg_colors[idx] = ti.Vector([sc[0], sc[1], sc[2]])
-            bg_size[idx] = random.uniform(0.5, 0.7)
-            bg_anim_type[idx] = BG_ANIM_CONSTELLATION
-            bg_phase[idx] = const_phase
-            bg_anim_amplitude[idx] = 0.0  # 0 = vertex star
-            bg_anim_speed[idx] = 1.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [sc[0], sc[1], sc[2]]
+            _bg_size_np[idx] = random.uniform(0.5, 0.7)
+            _bg_anim_type_np[idx] = BG_ANIM_CONSTELLATION
+            _bg_phase_np[idx] = const_phase
+            _bg_anim_amp_np[idx] = 0.0  # 0 = vertex star
+            _bg_anim_speed_np[idx] = 1.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # Place line dots along each edge
@@ -3837,18 +3890,18 @@ def add_stars(count: int = 1200, seed: int = 42):
                 dy = w1[1] + frac * (w2[1] - w1[1])
                 dz = w1[2] + frac * (w2[2] - w1[2])
 
-                bg_positions[idx] = ti.Vector([dx, dy, dz])
-                bg_colors[idx] = ti.Vector([0.7, 0.75, 0.9])  # Dim blue-white
-                bg_size[idx] = random.uniform(0.15, 0.25)
-                bg_anim_type[idx] = BG_ANIM_CONSTELLATION
-                bg_phase[idx] = const_phase
-                bg_anim_amplitude[idx] = frac  # Position along edge (for traveling sparkle)
-                bg_anim_speed[idx] = 1.0
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_pos_np[idx] = [dx, dy, dz]
+                _bg_col_np[idx] = [0.7, 0.75, 0.9]  # Dim blue-white
+                _bg_size_np[idx] = random.uniform(0.15, 0.25)
+                _bg_anim_type_np[idx] = BG_ANIM_CONSTELLATION
+                _bg_phase_np[idx] = const_phase
+                _bg_anim_amp_np[idx] = frac  # Position along edge (for traveling sparkle)
+                _bg_anim_speed_np[idx] = 1.0
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
     # === SCATTERED BACKGROUND STARS (dimmer, fill the sky) ===
@@ -3869,65 +3922,66 @@ def add_stars(count: int = 1200, seed: int = 42):
         if dist_xz < min_dist:
             continue
 
-        bg_positions[idx] = ti.Vector([x, y, z])
+        _bg_pos_np[idx] = [x, y, z]
         blue_tint = random.uniform(0.0, 0.25)
         brightness = random.uniform(0.4, 0.8)
-        bg_colors[idx] = ti.Vector([
+        _bg_col_np[idx] = [
             brightness * (1.0 - blue_tint * 0.5),
             brightness * (1.0 - blue_tint * 0.3),
             brightness
-        ])
+        ]
 
         if random.random() < 0.08:
-            bg_size[idx] = random.uniform(0.15, 0.25)
+            _bg_size_np[idx] = random.uniform(0.15, 0.25)
         else:
-            bg_size[idx] = random.uniform(0.05, 0.12)
+            _bg_size_np[idx] = random.uniform(0.05, 0.12)
 
-        bg_anim_type[idx] = BG_ANIM_TWINKLE
-        bg_anim_speed[idx] = random.uniform(1.5, 4.0)
-        bg_anim_amplitude[idx] = 0.0
-        bg_phase[idx] = random.uniform(0, 6.28)
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_anim_type_np[idx] = BG_ANIM_TWINKLE
+        _bg_anim_speed_np[idx] = random.uniform(1.5, 4.0)
+        _bg_anim_amp_np[idx] = 0.0
+        _bg_phase_np[idx] = random.uniform(0, 6.28)
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
         placed += 1
 
     theme_start_idx[THEME_STARS] = start_idx
     theme_count[THEME_STARS] = idx - start_idx
     active_themes.add(THEME_STARS)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} star voxels (total: {idx})")
 
 def add_comet():
     """Add a giant comet orbiting the arena."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import math
 
     if THEME_COMET in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
 
     dome_R = 4.5
     orbit_R = 112.0
 
     def add_comet_voxel(idx, trail, lateral, vertical, size, r, g, b):
-        bg_positions[idx] = ti.Vector([0.0, 40.0, 0.0])
-        bg_colors[idx] = ti.Vector([r, g, b])
-        bg_size[idx] = size
-        bg_anim_type[idx] = BG_ANIM_COMET
-        bg_phase[idx] = trail
-        bg_anim_amplitude[idx] = lateral
-        bg_anim_speed[idx] = vertical
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_pos_np[idx] = [0.0, 40.0, 0.0]
+        _bg_col_np[idx] = [r, g, b]
+        _bg_size_np[idx] = size
+        _bg_anim_type_np[idx] = BG_ANIM_COMET
+        _bg_phase_np[idx] = trail
+        _bg_anim_amp_np[idx] = lateral
+        _bg_anim_speed_np[idx] = vertical
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
 
     # === FRONT TIP: static bright core ===
     tip_trail = -(dome_R) / orbit_R
@@ -3942,18 +3996,18 @@ def add_comet():
         for k in range(voxels_per_ring):
             if idx >= MAX_BACKGROUND_VOXELS - 5: break
             theta = k * 2 * math.pi / voxels_per_ring
-            bg_positions[idx] = ti.Vector([0.0, 40.0, 0.0])
-            bg_colors[idx] = ti.Vector([1.0, 0.3, 0.05])
-            bg_size[idx] = 0.9
-            bg_anim_type[idx] = BG_ANIM_COMET
-            bg_phase[idx] = cycle_offset
-            bg_anim_amplitude[idx] = 100.0 + theta
-            bg_anim_speed[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [0.0, 40.0, 0.0]
+            _bg_col_np[idx] = [1.0, 0.3, 0.05]
+            _bg_size_np[idx] = 0.9
+            _bg_anim_type_np[idx] = BG_ANIM_COMET
+            _bg_phase_np[idx] = cycle_offset
+            _bg_anim_amp_np[idx] = 100.0 + theta
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === CORE SPINE: static center tail line ===
@@ -3972,12 +4026,13 @@ def add_comet():
     theme_start_idx[THEME_COMET] = start_idx
     theme_count[THEME_COMET] = idx - start_idx
     active_themes.add(THEME_COMET)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} comet voxels (total: {idx})")
 
 def add_grass(count: int = 625, seed: int = 42):
     """Add lush grass with ground cover, clumps, varied heights, and wildflowers."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -3985,7 +4040,7 @@ def add_grass(count: int = 625, seed: int = 42):
     if THEME_GRASS in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     grass_y_base = 17.5
     circle_radius = 85.0
@@ -4014,20 +4069,20 @@ def add_grass(count: int = 625, seed: int = 42):
             if dist > circle_radius:
                 continue
 
-            bg_positions[idx] = ti.Vector([x, grass_y_base - 0.5 + random.uniform(-0.3, 0.3), z])
+            _bg_pos_np[idx] = [x, grass_y_base - 0.5 + random.uniform(-0.3, 0.3), z]
             # Dark earthy green
             g = random.uniform(0.2, 0.35)
-            bg_colors[idx] = ti.Vector([g * 0.4, g, g * 0.25])
-            bg_size[idx] = random.uniform(2.2, 2.7)
-            bg_anim_type[idx] = BG_ANIM_NONE  # Static - no animation needed for ground cover
-            bg_anim_speed[idx] = 0.0
-            bg_anim_amplitude[idx] = 0.0
-            bg_phase[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [g * 0.4, g, g * 0.25]
+            _bg_size_np[idx] = random.uniform(2.2, 2.7)
+            _bg_anim_type_np[idx] = BG_ANIM_NONE  # Static - no animation needed for ground cover
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_phase_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === PASS 2: GRASS BLADE CLUSTERS with varied heights and flowers ===
@@ -4099,47 +4154,47 @@ def add_grass(count: int = 625, seed: int = 42):
 
                 y = y_base + h * 1.0
 
-                bg_positions[idx] = ti.Vector([x, y, z])
+                _bg_pos_np[idx] = [x, y, z]
 
                 brightness = 0.7 + h * 0.1
-                bg_colors[idx] = ti.Vector([
+                _bg_col_np[idx] = [
                     random.uniform(0.1, 0.25) * brightness,
                     green_var * brightness,
                     random.uniform(0.05, 0.15) * brightness
-                ])
+                ]
 
                 # Fatter base, tapered
                 blade_size = 1.48 - h * 0.24
                 if blade_size < 0.48:
                     blade_size = 0.48
-                bg_size[idx] = blade_size
+                _bg_size_np[idx] = blade_size
 
-                bg_anim_type[idx] = BG_ANIM_SWAY
-                bg_anim_speed[idx] = blade_speed
-                bg_anim_amplitude[idx] = 0.25 + h * 0.45
-                bg_phase[idx] = blade_phase
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_anim_type_np[idx] = BG_ANIM_SWAY
+                _bg_anim_speed_np[idx] = blade_speed
+                _bg_anim_amp_np[idx] = 0.25 + h * 0.45
+                _bg_phase_np[idx] = blade_phase
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
             # Wildflower accent on ~22.5% of blades
             if random.random() < 0.225 and idx < MAX_BACKGROUND_VOXELS:
                 flower_y = y_base + blade_height * 1.0
-                bg_positions[idx] = ti.Vector([x, flower_y, z])
-                bg_colors[idx] = flower_colors[random.randint(0, 3)]
-                bg_size[idx] = 0.45
-                bg_anim_type[idx] = BG_ANIM_FLOWER
-                bg_anim_speed[idx] = blade_speed
-                bg_anim_amplitude[idx] = 0.4 + blade_height * 0.7
-                bg_phase[idx] = blade_phase
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_pos_np[idx] = [x, flower_y, z]
+                _bg_col_np[idx] = flower_colors[random.randint(0, 3)]
+                _bg_size_np[idx] = 0.45
+                _bg_anim_type_np[idx] = BG_ANIM_FLOWER
+                _bg_anim_speed_np[idx] = blade_speed
+                _bg_anim_amp_np[idx] = 0.4 + blade_height * 0.7
+                _bg_phase_np[idx] = blade_phase
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
     # === GIANT CATERPILLAR ===
@@ -4179,29 +4234,30 @@ def add_grass(count: int = 625, seed: int = 42):
     for seg_id, size, r, g, b in parts:
         if idx >= MAX_BACKGROUND_VOXELS - 5:
             break
-        bg_positions[idx] = ti.Vector([0, 0, 0])
-        bg_colors[idx] = ti.Vector([r, g, b])
-        bg_size[idx] = size
-        bg_anim_type[idx] = BG_ANIM_CATERPILLAR
-        bg_phase[idx] = caterpillar_id
-        bg_anim_amplitude[idx] = float(seg_id)
-        bg_anim_speed[idx] = 0.08  # Slow orbit
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_pos_np[idx] = [0, 0, 0]
+        _bg_col_np[idx] = [r, g, b]
+        _bg_size_np[idx] = size
+        _bg_anim_type_np[idx] = BG_ANIM_CATERPILLAR
+        _bg_phase_np[idx] = caterpillar_id
+        _bg_anim_amp_np[idx] = float(seg_id)
+        _bg_anim_speed_np[idx] = 0.08  # Slow orbit
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
     theme_start_idx[THEME_GRASS] = start_idx
     theme_count[THEME_GRASS] = idx - start_idx
     active_themes.add(THEME_GRASS)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} grass voxels (total: {idx})")
 
 def add_lava(seed: int = 42):
     """Add lava ground with dark crust, molten flow, eruption sprays, and floating embers."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -4209,7 +4265,7 @@ def add_lava(seed: int = 42):
     if THEME_LAVA in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     lava_y_base = 17
     circle_radius = 85.0
@@ -4230,20 +4286,20 @@ def add_lava(seed: int = 42):
             if dist > circle_radius:
                 continue
 
-            bg_positions[idx] = ti.Vector([x, lava_y_base - 0.5 + random.uniform(-0.3, 0.3), z])
+            _bg_pos_np[idx] = [x, lava_y_base - 0.5 + random.uniform(-0.3, 0.3), z]
             # Dark charcoal/brown rock
             g = random.uniform(0.08, 0.2)
-            bg_colors[idx] = ti.Vector([g * 1.2, g * 0.5, g * 0.2])
-            bg_size[idx] = random.uniform(2.5, 3.0)
-            bg_anim_type[idx] = BG_ANIM_NONE
-            bg_anim_speed[idx] = 0.0
-            bg_anim_amplitude[idx] = 0.0
-            bg_phase[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [g * 1.2, g * 0.5, g * 0.2]
+            _bg_size_np[idx] = random.uniform(2.5, 3.0)
+            _bg_anim_type_np[idx] = BG_ANIM_NONE
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_phase_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === PASS 2: MOLTEN LAVA FLOW - glowing animated surface ===
@@ -4262,22 +4318,22 @@ def add_lava(seed: int = 42):
             if dist > circle_radius:
                 continue
 
-            bg_positions[idx] = ti.Vector([x, lava_y_base + random.uniform(-0.2, 0.2), z])
+            _bg_pos_np[idx] = [x, lava_y_base + random.uniform(-0.2, 0.2), z]
             # Bright red molten base color (brightness modulation creates glow)
             r = random.uniform(0.85, 1.0)
             g = random.uniform(0.08, 0.18)
             b = random.uniform(0.01, 0.05)
-            bg_colors[idx] = ti.Vector([r, g, b])
-            bg_size[idx] = random.uniform(1.0, 1.3)
-            bg_anim_type[idx] = BG_ANIM_LAVA
-            bg_anim_speed[idx] = 1.0
-            bg_anim_amplitude[idx] = z  # Store z position for cross-wave
-            bg_phase[idx] = x  # Store x position for primary wave
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [r, g, b]
+            _bg_size_np[idx] = random.uniform(1.0, 1.3)
+            _bg_anim_type_np[idx] = BG_ANIM_LAVA
+            _bg_anim_speed_np[idx] = 1.0
+            _bg_anim_amp_np[idx] = z  # Store z position for cross-wave
+            _bg_phase_np[idx] = x  # Store x position for primary wave
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === PASS 3: ERUPTION SPRAYS - gentle bubbles + occasional BOOM eruptions ===
@@ -4336,18 +4392,18 @@ def add_lava(seed: int = 42):
             rock_r = 0.15 + v * 0.12
             rock_g = 0.06 + v * 0.03
             rock_b = 0.03 + v * 0.01
-            bg_positions[idx] = ti.Vector([ep_x, v_y, ep_z])
-            bg_colors[idx] = ti.Vector([rock_r, rock_g, rock_b])
-            bg_size[idx] = v_size
-            bg_anim_type[idx] = BG_ANIM_LAVA_VOLCANO
-            bg_anim_speed[idx] = cycle_period
-            bg_anim_amplitude[idx] = float(v)  # Layer index
-            bg_phase[idx] = eruption_base_offset  # Synced with spray timing
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [ep_x, v_y, ep_z]
+            _bg_col_np[idx] = [rock_r, rock_g, rock_b]
+            _bg_size_np[idx] = v_size
+            _bg_anim_type_np[idx] = BG_ANIM_LAVA_VOLCANO
+            _bg_anim_speed_np[idx] = cycle_period
+            _bg_anim_amp_np[idx] = float(v)  # Layer index
+            _bg_phase_np[idx] = eruption_base_offset  # Synced with spray timing
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         for p in range(particles_per_eruption):
@@ -4359,22 +4415,22 @@ def add_lava(seed: int = 42):
             time_offset = eruption_base_offset + random.uniform(0, burst_window)
             launch_height = launch_height_base + random.uniform(0, launch_height_var)
 
-            bg_positions[idx] = ti.Vector([ep_x + random.uniform(-0.5, 0.5), lava_y_base + 8.0, ep_z + random.uniform(-0.5, 0.5)])
+            _bg_pos_np[idx] = [ep_x + random.uniform(-0.5, 0.5), lava_y_base + 8.0, ep_z + random.uniform(-0.5, 0.5)]
             # Fiery bright lava colors
             if is_boom:
-                bg_colors[idx] = ti.Vector([1.0, random.uniform(0.4, 0.7), random.uniform(0.05, 0.2)])
+                _bg_col_np[idx] = [1.0, random.uniform(0.4, 0.7), random.uniform(0.05, 0.2)]
             else:
-                bg_colors[idx] = ti.Vector([1.0, random.uniform(0.25, 0.5), random.uniform(0.02, 0.1)])
-            bg_size[idx] = random.uniform(voxel_size_min, voxel_size_max)
-            bg_anim_type[idx] = BG_ANIM_LAVA_SPRAY
-            bg_anim_speed[idx] = cycle_period
-            bg_anim_amplitude[idx] = launch_height
-            bg_phase[idx] = time_offset
-            bg_brightness[idx] = 0.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+                _bg_col_np[idx] = [1.0, random.uniform(0.25, 0.5), random.uniform(0.02, 0.1)]
+            _bg_size_np[idx] = random.uniform(voxel_size_min, voxel_size_max)
+            _bg_anim_type_np[idx] = BG_ANIM_LAVA_SPRAY
+            _bg_anim_speed_np[idx] = cycle_period
+            _bg_anim_amp_np[idx] = launch_height
+            _bg_phase_np[idx] = time_offset
+            _bg_brightness_np[idx] = 0.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === MOLTEN LAVA SNAIL ===
@@ -4427,29 +4483,30 @@ def add_lava(seed: int = 42):
     for part_id, size, r, g, b in snail_parts:
         if idx >= MAX_BACKGROUND_VOXELS - 5:
             break
-        bg_positions[idx] = ti.Vector([0, 0, 0])
-        bg_colors[idx] = ti.Vector([r, g, b])
-        bg_size[idx] = size
-        bg_anim_type[idx] = BG_ANIM_LAVA_SNAIL
-        bg_phase[idx] = snail_id
-        bg_anim_amplitude[idx] = float(part_id)
-        bg_anim_speed[idx] = 0.06  # Slow orbit
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_pos_np[idx] = [0, 0, 0]
+        _bg_col_np[idx] = [r, g, b]
+        _bg_size_np[idx] = size
+        _bg_anim_type_np[idx] = BG_ANIM_LAVA_SNAIL
+        _bg_phase_np[idx] = snail_id
+        _bg_anim_amp_np[idx] = float(part_id)
+        _bg_anim_speed_np[idx] = 0.06  # Slow orbit
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
     theme_start_idx[THEME_LAVA] = start_idx
     theme_count[THEME_LAVA] = idx - start_idx
     active_themes.add(THEME_LAVA)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} lava voxels (total: {idx})")
 
 def add_rain(seed: int = 42):
     """Add rain with falling drops and ground splashes."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -4457,7 +4514,7 @@ def add_rain(seed: int = 42):
     if THEME_RAIN in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     rain_y_base = 17
     circle_radius = 85.0
@@ -4480,19 +4537,19 @@ def add_rain(seed: int = 42):
 
             y = random.uniform(50, 90)
 
-            bg_positions[idx] = [x, y, z]
+            _bg_pos_np[idx] = [x, y, z]
             # Pale blue-white
             r = random.uniform(0.55, 0.70)
             g = random.uniform(0.65, 0.80)
             b = random.uniform(0.90, 1.00)
-            bg_colors[idx] = [r, g, b]
-            bg_size[idx] = random.uniform(0.03, 0.07)
-            bg_anim_type[idx] = BG_ANIM_RAIN
-            bg_phase[idx] = random.uniform(0, 100)
-            bg_anim_amplitude[idx] = random.uniform(50, 80)  # Fall distance
-            bg_anim_speed[idx] = random.uniform(55, 75)  # Fall speed (fast!)
-            bg_active[idx] = 1
-            bg_brightness[idx] = 1.0
+            _bg_col_np[idx] = [r, g, b]
+            _bg_size_np[idx] = random.uniform(0.03, 0.07)
+            _bg_anim_type_np[idx] = BG_ANIM_RAIN
+            _bg_phase_np[idx] = random.uniform(0, 100)
+            _bg_anim_amp_np[idx] = random.uniform(50, 80)  # Fall distance
+            _bg_anim_speed_np[idx] = random.uniform(55, 75)  # Fall speed (fast!)
+            _bg_active_np[idx] = 1
+            _bg_brightness_np[idx] = 1.0
             idx += 1
 
     # === PASS 2: GROUND SPLASHES (grid-based for even ground coverage) ===
@@ -4511,30 +4568,31 @@ def add_rain(seed: int = 42):
             if dist > circle_radius:
                 continue
 
-            bg_positions[idx] = [x, rain_y_base, z]
+            _bg_pos_np[idx] = [x, rain_y_base, z]
         # White-blue splash
         r = random.uniform(0.70, 0.85)
         g = random.uniform(0.80, 0.90)
         b = random.uniform(0.95, 1.00)
-        bg_colors[idx] = [r, g, b]
-        bg_size[idx] = random.uniform(0.15, 0.20)
-        bg_anim_type[idx] = BG_ANIM_RAIN_SPLASH
-        bg_phase[idx] = random.uniform(0, 10)  # Stagger timing + direction seed
-        bg_anim_amplitude[idx] = random.uniform(1.0, 2.0)  # Outward spread radius
-        bg_anim_speed[idx] = random.uniform(0.4, 0.8)  # Cycle period
-        bg_active[idx] = 1
-        bg_brightness[idx] = 0.0
+        _bg_col_np[idx] = [r, g, b]
+        _bg_size_np[idx] = random.uniform(0.15, 0.20)
+        _bg_anim_type_np[idx] = BG_ANIM_RAIN_SPLASH
+        _bg_phase_np[idx] = random.uniform(0, 10)  # Stagger timing + direction seed
+        _bg_anim_amp_np[idx] = random.uniform(1.0, 2.0)  # Outward spread radius
+        _bg_anim_speed_np[idx] = random.uniform(0.4, 0.8)  # Cycle period
+        _bg_active_np[idx] = 1
+        _bg_brightness_np[idx] = 0.0
         idx += 1
 
     theme_start_idx[THEME_RAIN] = start_idx
     theme_count[THEME_RAIN] = idx - start_idx
     active_themes.add(THEME_RAIN)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} rain voxels (total: {idx})")
 
 def add_clouds(seed: int = 42):
     """Add puffy cloud groups that drift and morph above the arena."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -4542,7 +4600,7 @@ def add_clouds(seed: int = 42):
     if THEME_CLOUDS in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
 
     num_clusters = 6
@@ -4595,19 +4653,19 @@ def add_clouds(seed: int = 42):
             center_factor = 1.0 - dist
             voxel_size = 1.05 + center_factor * 1.75  # ~1.05 at edge, ~2.8 at center
 
-            bg_positions[idx] = [cx + ox, cy, cz + oz]  # All at cy — perfectly flat
+            _bg_pos_np[idx] = [cx + ox, cy, cz + oz]  # All at cy — perfectly flat
             gray = random.uniform(0.88, 0.93)
-            bg_colors[idx] = [gray, gray, gray + random.uniform(0.0, 0.03)]
-            bg_size[idx] = voxel_size
-            bg_anim_type[idx] = BG_ANIM_CLOUD
-            bg_phase[idx] = cluster_id
-            bg_anim_amplitude[idx] = random.uniform(0, 10)
-            bg_anim_speed[idx] = random.uniform(0.6, 1.2)
-            bg_active[idx] = 1
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
+            _bg_col_np[idx] = [gray, gray, gray + random.uniform(0.0, 0.03)]
+            _bg_size_np[idx] = voxel_size
+            _bg_anim_type_np[idx] = BG_ANIM_CLOUD
+            _bg_phase_np[idx] = cluster_id
+            _bg_anim_amp_np[idx] = random.uniform(0, 10)
+            _bg_anim_speed_np[idx] = random.uniform(0.6, 1.2)
+            _bg_active_np[idx] = 1
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
             idx += 1
 
         # PASS B: Puffy dome top — voxels inside bump spheres, bigger near center
@@ -4636,29 +4694,30 @@ def add_clouds(seed: int = 42):
             voxel_size = 0.84 + center_factor * 1.96  # ~0.84 at edge, ~2.8 at center
 
             gray = random.uniform(0.92, 1.0)
-            bg_positions[idx] = [cx + ox, cy + oy, cz + oz]
-            bg_colors[idx] = [gray, gray, gray + random.uniform(0.0, 0.03)]
-            bg_size[idx] = voxel_size
-            bg_anim_type[idx] = BG_ANIM_CLOUD
-            bg_phase[idx] = cluster_id  # Shared drift per cluster
-            bg_anim_amplitude[idx] = random.uniform(0, 10)  # Individual seed
-            bg_anim_speed[idx] = random.uniform(0.6, 1.2)  # Individual pulse rate
-            bg_active[idx] = 1
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
+            _bg_pos_np[idx] = [cx + ox, cy + oy, cz + oz]
+            _bg_col_np[idx] = [gray, gray, gray + random.uniform(0.0, 0.03)]
+            _bg_size_np[idx] = voxel_size
+            _bg_anim_type_np[idx] = BG_ANIM_CLOUD
+            _bg_phase_np[idx] = cluster_id  # Shared drift per cluster
+            _bg_anim_amp_np[idx] = random.uniform(0, 10)  # Individual seed
+            _bg_anim_speed_np[idx] = random.uniform(0.6, 1.2)  # Individual pulse rate
+            _bg_active_np[idx] = 1
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
             idx += 1
 
     theme_start_idx[THEME_CLOUDS] = start_idx
     theme_count[THEME_CLOUDS] = idx - start_idx
     active_themes.add(THEME_CLOUDS)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} cloud voxels (total: {idx})")
 
 def add_pterodactyl(seed: int = 42):
     """Add pterodactyl(s) that orbit around the arena at cloud level."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -4666,7 +4725,7 @@ def add_pterodactyl(seed: int = 42):
     if THEME_PTERODACTYL in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
 
     # Pterodactyl parts:
@@ -4728,29 +4787,30 @@ def add_pterodactyl(seed: int = 42):
             if idx >= MAX_BACKGROUND_VOXELS - 10:
                 break
 
-            bg_positions[idx] = [0, cloud_y, 0]
-            bg_colors[idx] = [r, g, b]
-            bg_size[idx] = size
-            bg_anim_type[idx] = BG_ANIM_PTERODACTYL
-            bg_phase[idx] = ptero_id  # Which pterodactyl (shared orbit)
-            bg_anim_amplitude[idx] = float(part_type)  # Which body part
-            bg_anim_speed[idx] = 0.3  # Orbit speed
-            bg_active[idx] = 1
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
+            _bg_pos_np[idx] = [0, cloud_y, 0]
+            _bg_col_np[idx] = [r, g, b]
+            _bg_size_np[idx] = size
+            _bg_anim_type_np[idx] = BG_ANIM_PTERODACTYL
+            _bg_phase_np[idx] = ptero_id  # Which pterodactyl (shared orbit)
+            _bg_anim_amp_np[idx] = float(part_type)  # Which body part
+            _bg_anim_speed_np[idx] = 0.3  # Orbit speed
+            _bg_active_np[idx] = 1
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
             idx += 1
 
     theme_start_idx[THEME_PTERODACTYL] = start_idx
     theme_count[THEME_PTERODACTYL] = idx - start_idx
     active_themes.add(THEME_PTERODACTYL)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} pterodactyl voxels (total: {idx})")
 
 def add_fireflies(count: int = 2800, seed: int = 42):
     """Add fireflies to the background (appends to existing voxels)."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -4758,7 +4818,7 @@ def add_fireflies(count: int = 2800, seed: int = 42):
     if THEME_FIREFLIES in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     min_dist = 55
 
@@ -4772,33 +4832,34 @@ def add_fireflies(count: int = 2800, seed: int = 42):
         z = math.sin(angle) * dist
         y = random.uniform(15, 90)
 
-        bg_positions[idx] = ti.Vector([x, y, z])
-        bg_colors[idx] = ti.Vector([
+        _bg_pos_np[idx] = [x, y, z]
+        _bg_col_np[idx] = [
             random.uniform(0.8, 1.0),
             random.uniform(0.9, 1.0),
             random.uniform(0.1, 0.3)
-        ])
-        bg_size[idx] = random.uniform(0.05, 0.12)
-        bg_anim_type[idx] = BG_ANIM_FIREFLY
-        bg_anim_speed[idx] = random.uniform(0.4, 1.0)
-        bg_anim_amplitude[idx] = random.uniform(8.0, 20.0)
-        bg_phase[idx] = random.uniform(0, 6.28)
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        ]
+        _bg_size_np[idx] = random.uniform(0.05, 0.12)
+        _bg_anim_type_np[idx] = BG_ANIM_FIREFLY
+        _bg_anim_speed_np[idx] = random.uniform(0.4, 1.0)
+        _bg_anim_amp_np[idx] = random.uniform(8.0, 20.0)
+        _bg_phase_np[idx] = random.uniform(0, 6.28)
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
     theme_start_idx[THEME_FIREFLIES] = start_idx
     theme_count[THEME_FIREFLIES] = idx - start_idx
     active_themes.add(THEME_FIREFLIES)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} fireflies (total: {idx})")
 
 def add_water(count: int = 3000, seed: int = 42):
     """Add water to the background (appends to existing voxels)."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -4806,7 +4867,7 @@ def add_water(count: int = 3000, seed: int = 42):
     if THEME_WATER in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     water_y_base = 22
 
@@ -4829,30 +4890,31 @@ def add_water(count: int = 3000, seed: int = 42):
             z = math.sin(angle) * ring_radius
             y = water_y_base + random.uniform(-0.5, 0.5)
 
-            bg_positions[idx] = ti.Vector([x, y, z])
+            _bg_pos_np[idx] = [x, y, z]
             blue_var = random.uniform(0.4, 0.8)
-            bg_colors[idx] = ti.Vector([0.1, 0.3 + blue_var * 0.3, 0.5 + blue_var * 0.5])
-            bg_size[idx] = random.uniform(0.4, 0.7)
-            bg_anim_type[idx] = BG_ANIM_WATER
-            bg_anim_speed[idx] = random.uniform(0.8, 1.2)
-            bg_anim_amplitude[idx] = ring_phase
-            bg_phase[idx] = angle
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [0.1, 0.3 + blue_var * 0.3, 0.5 + blue_var * 0.5]
+            _bg_size_np[idx] = random.uniform(0.4, 0.7)
+            _bg_anim_type_np[idx] = BG_ANIM_WATER
+            _bg_anim_speed_np[idx] = random.uniform(0.8, 1.2)
+            _bg_anim_amp_np[idx] = ring_phase
+            _bg_phase_np[idx] = angle
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     theme_start_idx[THEME_WATER] = start_idx
     theme_count[THEME_WATER] = idx - start_idx
     active_themes.add(THEME_WATER)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} water particles (total: {idx})")
 
 def add_jellyfish(count: int = 30, seed: int = 42):
     """Add jellyfish to the background (appends to existing voxels)."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -4860,7 +4922,7 @@ def add_jellyfish(count: int = 30, seed: int = 42):
     if THEME_JELLYFISH in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     arena_radius = 65
     outer_radius = 110
@@ -4895,18 +4957,18 @@ def add_jellyfish(count: int = 30, seed: int = 42):
             jelly += 1
 
             # Bell
-            bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
-            bg_colors[idx] = color
-            bg_size[idx] = random.uniform(0.6, 0.9)
-            bg_anim_type[idx] = BG_ANIM_JELLYFISH
-            bg_phase[idx] = jelly_id
-            bg_anim_amplitude[idx] = 0.0
-            bg_anim_speed[idx] = base_y
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [base_x, base_y, base_z]
+            _bg_col_np[idx] = color
+            _bg_size_np[idx] = random.uniform(0.6, 0.9)
+            _bg_anim_type_np[idx] = BG_ANIM_JELLYFISH
+            _bg_phase_np[idx] = jelly_id
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_anim_speed_np[idx] = base_y
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
             # Tentacles
@@ -4921,29 +4983,30 @@ def add_jellyfish(count: int = 30, seed: int = 42):
                 t_z = base_z + math.sin(t_angle) * t_offset
                 t_y = base_y - 0.8 - t * 0.3
 
-                bg_positions[idx] = ti.Vector([t_x, t_y, t_z])
-                bg_colors[idx] = color * 0.7
-                bg_size[idx] = random.uniform(0.25, 0.4)
-                bg_anim_type[idx] = BG_ANIM_JELLYFISH
-                bg_phase[idx] = jelly_id
-                bg_anim_amplitude[idx] = float(t + 1)
-                bg_anim_speed[idx] = base_y
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_pos_np[idx] = [t_x, t_y, t_z]
+                _bg_col_np[idx] = color * 0.7
+                _bg_size_np[idx] = random.uniform(0.25, 0.4)
+                _bg_anim_type_np[idx] = BG_ANIM_JELLYFISH
+                _bg_phase_np[idx] = jelly_id
+                _bg_anim_amp_np[idx] = float(t + 1)
+                _bg_anim_speed_np[idx] = base_y
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
     theme_start_idx[THEME_JELLYFISH] = start_idx
     theme_count[THEME_JELLYFISH] = idx - start_idx
     active_themes.add(THEME_JELLYFISH)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} jellyfish voxels (total: {idx})")
 
 def add_butterflies(count: int = 60, seed: int = 42):
     """Add butterflies to the background (appends to existing voxels)."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -4951,7 +5014,7 @@ def add_butterflies(count: int = 60, seed: int = 42):
     if THEME_BUTTERFLIES in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     arena_radius = 75
     outer_radius = 120
@@ -4981,18 +5044,18 @@ def add_butterflies(count: int = 60, seed: int = 42):
         move_seed = float(b) * 0.37
 
         # Body
-        bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
-        bg_colors[idx] = color * 0.4
-        bg_size[idx] = 0.45
-        bg_anim_type[idx] = BG_ANIM_BUTTERFLY
-        bg_phase[idx] = butterfly_id
-        bg_anim_amplitude[idx] = 0.0
-        bg_anim_speed[idx] = move_seed
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_pos_np[idx] = [base_x, base_y, base_z]
+        _bg_col_np[idx] = color * 0.4
+        _bg_size_np[idx] = 0.45
+        _bg_anim_type_np[idx] = BG_ANIM_BUTTERFLY
+        _bg_phase_np[idx] = butterfly_id
+        _bg_anim_amp_np[idx] = 0.0
+        _bg_anim_speed_np[idx] = move_seed
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
         # Wings: 2 per side (inner + outer), 4 total
@@ -5008,29 +5071,30 @@ def add_butterflies(count: int = 60, seed: int = 42):
             if idx >= MAX_BACKGROUND_VOXELS:
                 break
 
-            bg_positions[idx] = ti.Vector([base_x, base_y, base_z])
-            bg_colors[idx] = color if wing_id <= 2 else color * 0.8
-            bg_size[idx] = w_size
-            bg_anim_type[idx] = BG_ANIM_BUTTERFLY
-            bg_phase[idx] = butterfly_id
-            bg_anim_amplitude[idx] = wing_id
-            bg_anim_speed[idx] = move_seed
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [base_x, base_y, base_z]
+            _bg_col_np[idx] = color if wing_id <= 2 else color * 0.8
+            _bg_size_np[idx] = w_size
+            _bg_anim_type_np[idx] = BG_ANIM_BUTTERFLY
+            _bg_phase_np[idx] = butterfly_id
+            _bg_anim_amp_np[idx] = wing_id
+            _bg_anim_speed_np[idx] = move_seed
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     theme_start_idx[THEME_BUTTERFLIES] = start_idx
     theme_count[THEME_BUTTERFLIES] = idx - start_idx
     active_themes.add(THEME_BUTTERFLIES)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} butterfly voxels (total: {idx})")
 
 def add_waves(count: int = 1600, seed: int = 42):
     """Add waves to the background (appends to existing voxels)."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -5038,7 +5102,7 @@ def add_waves(count: int = 1600, seed: int = 42):
     if THEME_WAVES in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     water_y_base = 17  # 5 voxels lower than grass
 
@@ -5064,30 +5128,30 @@ def add_waves(count: int = 1600, seed: int = 42):
 
             y = water_y_base + random.uniform(0, 0.3)
 
-            bg_positions[idx] = ti.Vector([x, y, z])
+            _bg_pos_np[idx] = [x, y, z]
 
             # Water colors - blue/cyan, varies slightly
             depth_var = random.uniform(0.8, 1.0)
-            bg_colors[idx] = ti.Vector([
+            _bg_col_np[idx] = [
                 0.1 * depth_var,
                 0.4 * depth_var,
                 0.8 * depth_var
-            ])
+            ]
 
             # Size - 20% bigger
-            bg_size[idx] = random.uniform(0.95, 1.12)
+            _bg_size_np[idx] = random.uniform(0.95, 1.12)
 
             # Animation: store x and z for wave sync
-            bg_anim_type[idx] = BG_ANIM_WAVE
-            bg_phase[idx] = x  # X position for primary wave
-            bg_anim_amplitude[idx] = z  # Z position for cross-wave
-            bg_anim_speed[idx] = 1.0
+            _bg_anim_type_np[idx] = BG_ANIM_WAVE
+            _bg_phase_np[idx] = x  # X position for primary wave
+            _bg_anim_amp_np[idx] = z  # Z position for cross-wave
+            _bg_anim_speed_np[idx] = 1.0
 
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === ADD SEA SERPENT/DRAGON ===
@@ -5103,93 +5167,93 @@ def add_waves(count: int = 1600, seed: int = 42):
 
         for seg in range(num_segments):
             # Base position (will be overridden by animation)
-            bg_positions[idx] = ti.Vector([0.0, water_y_base, 0.0])
+            _bg_pos_np[idx] = [0.0, water_y_base, 0.0]
 
             # Color: dark blue/teal body, menacing red head
             if seg == 0:
                 # HEAD - menacing red/dark, smaller
-                bg_colors[idx] = ti.Vector([0.8, 0.1, 0.1])
-                bg_size[idx] = 2.6
+                _bg_col_np[idx] = [0.8, 0.1, 0.1]
+                _bg_size_np[idx] = 2.6
             elif seg == 1:
                 # Neck - still red-ish
-                bg_colors[idx] = ti.Vector([0.6, 0.1, 0.15])
-                bg_size[idx] = 2.5
+                _bg_col_np[idx] = [0.6, 0.1, 0.15]
+                _bg_size_np[idx] = 2.5
             elif seg == 2:
                 # Transition to body
-                bg_colors[idx] = ti.Vector([0.3, 0.15, 0.25])
-                bg_size[idx] = 2.5
+                _bg_col_np[idx] = [0.3, 0.15, 0.25]
+                _bg_size_np[idx] = 2.5
             elif seg < 6:
                 # Upper body - darker blue
-                bg_colors[idx] = ti.Vector([0.12, 0.2, 0.4])
-                bg_size[idx] = 2.6
+                _bg_col_np[idx] = [0.12, 0.2, 0.4]
+                _bg_size_np[idx] = 2.6
             elif seg < num_segments - 4:
                 # Body segments - blue/teal, consistent size
                 t = seg / num_segments
-                bg_colors[idx] = ti.Vector([0.1, 0.25 + t * 0.15, 0.45 + t * 0.15])
-                bg_size[idx] = 2.4
+                _bg_col_np[idx] = [0.1, 0.25 + t * 0.15, 0.45 + t * 0.15]
+                _bg_size_np[idx] = 2.4
             else:
                 # Tail - tapers, lighter color
                 tail_pos = seg - (num_segments - 4)
-                bg_colors[idx] = ti.Vector([0.15, 0.4, 0.55])
-                bg_size[idx] = 2.2 - tail_pos * 0.4
+                _bg_col_np[idx] = [0.15, 0.4, 0.55]
+                _bg_size_np[idx] = 2.2 - tail_pos * 0.4
 
             # Minimum size for tail tip
-            if bg_size[idx] < 0.8:
-                bg_size[idx] = 0.8
+            if _bg_size_np[idx] < 0.8:
+                _bg_size_np[idx] = 0.8
 
-            bg_anim_type[idx] = BG_ANIM_FISH
-            bg_phase[idx] = serpent_phase
-            bg_anim_amplitude[idx] = float(seg)  # Segment index
-            bg_anim_speed[idx] = float(serpent_id)
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_anim_type_np[idx] = BG_ANIM_FISH
+            _bg_phase_np[idx] = serpent_phase
+            _bg_anim_amp_np[idx] = float(seg)  # Segment index
+            _bg_anim_speed_np[idx] = float(serpent_id)
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # === ANTENNAS - two long feelers on top of head ===
         for antenna_side in range(2):  # Left and right
             for a in range(6):  # 6 voxels per antenna for no gaps
-                bg_positions[idx] = ti.Vector([0.0, water_y_base, 0.0])
+                _bg_pos_np[idx] = [0.0, water_y_base, 0.0]
                 # Yellow/gold antennas
-                bg_colors[idx] = ti.Vector([0.9, 0.7, 0.2])
-                bg_size[idx] = 0.9 - a * 0.08  # Bigger, taper toward tip
-                if bg_size[idx] < 0.4:
-                    bg_size[idx] = 0.4
-                bg_anim_type[idx] = BG_ANIM_FISH
-                bg_phase[idx] = serpent_phase
+                _bg_col_np[idx] = [0.9, 0.7, 0.2]
+                _bg_size_np[idx] = 0.9 - a * 0.08  # Bigger, taper toward tip
+                if _bg_size_np[idx] < 0.4:
+                    _bg_size_np[idx] = 0.4
+                _bg_anim_type_np[idx] = BG_ANIM_FISH
+                _bg_phase_np[idx] = serpent_phase
                 # 100+ = left antenna, 200+ = right antenna
-                bg_anim_amplitude[idx] = float(100 + antenna_side * 100 + a)
-                bg_anim_speed[idx] = float(serpent_id)
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_anim_amp_np[idx] = float(100 + antenna_side * 100 + a)
+                _bg_anim_speed_np[idx] = float(serpent_id)
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
         # === SPLASH VOXELS - burst when head dives into water ===
         num_splash = 24
         for s in range(num_splash):
-            bg_positions[idx] = ti.Vector([0.0, water_y_base, 0.0])
+            _bg_pos_np[idx] = [0.0, water_y_base, 0.0]
             # Water splash colors - blue-white
             white_mix = random.uniform(0.3, 0.7)
-            bg_colors[idx] = ti.Vector([
+            _bg_col_np[idx] = [
                 0.4 + 0.6 * white_mix,
                 0.6 + 0.4 * white_mix,
                 0.85 + 0.15 * white_mix
-            ])
-            bg_size[idx] = random.uniform(0.5, 1.0)
-            bg_anim_type[idx] = BG_ANIM_SERPENT_SPLASH
-            bg_phase[idx] = serpent_phase
-            bg_anim_amplitude[idx] = float(s)  # Splash voxel index (burst direction)
-            bg_anim_speed[idx] = float(serpent_id)
-            bg_brightness[idx] = 0.0  # Start hidden
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            ]
+            _bg_size_np[idx] = random.uniform(0.5, 1.0)
+            _bg_anim_type_np[idx] = BG_ANIM_SERPENT_SPLASH
+            _bg_phase_np[idx] = serpent_phase
+            _bg_anim_amp_np[idx] = float(s)  # Splash voxel index (burst direction)
+            _bg_anim_speed_np[idx] = float(serpent_id)
+            _bg_brightness_np[idx] = 0.0  # Start hidden
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
 
@@ -5197,12 +5261,13 @@ def add_waves(count: int = 1600, seed: int = 42):
     theme_start_idx[THEME_WAVES] = start_idx
     theme_count[THEME_WAVES] = wave_count
     active_themes.add(THEME_WAVES)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {wave_count} wave voxels + sea serpent (total: {idx})")
 
 def add_tree_branches(count: int = 12, seed: int = 42):
     """Add palm trees to the background (appends to existing voxels)."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -5210,7 +5275,7 @@ def add_tree_branches(count: int = 12, seed: int = 42):
     if THEME_PALM_TREES in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     tree_radius = 90
     base_y = -15
@@ -5241,18 +5306,18 @@ def add_tree_branches(count: int = 12, seed: int = 42):
                 trunk_size = 0.8
             sway_amp = 0.02 + h * 0.003
 
-            bg_positions[idx] = ti.Vector([tree_x, y, tree_z])
-            bg_colors[idx] = trunk_color
-            bg_size[idx] = trunk_size
-            bg_anim_type[idx] = BG_ANIM_TREE
-            bg_phase[idx] = tree_phase
-            bg_anim_amplitude[idx] = sway_amp
-            bg_anim_speed[idx] = random.uniform(0.9, 1.1)
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [tree_x, y, tree_z]
+            _bg_col_np[idx] = trunk_color
+            _bg_size_np[idx] = trunk_size
+            _bg_anim_type_np[idx] = BG_ANIM_TREE
+            _bg_phase_np[idx] = tree_phase
+            _bg_anim_amp_np[idx] = sway_amp
+            _bg_anim_speed_np[idx] = random.uniform(0.9, 1.1)
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # Fronds
@@ -5276,29 +5341,30 @@ def add_tree_branches(count: int = 12, seed: int = 42):
                     frond_size = 0.35
                 sway_amp = 0.6 + seg * 0.2
 
-                bg_positions[idx] = ti.Vector([f_x, f_y, f_z])
-                bg_colors[idx] = frond_color
-                bg_size[idx] = frond_size
-                bg_anim_type[idx] = BG_ANIM_TREE
-                bg_phase[idx] = tree_phase + f * 0.15
-                bg_anim_amplitude[idx] = sway_amp
-                bg_anim_speed[idx] = random.uniform(0.8, 1.2)
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_pos_np[idx] = [f_x, f_y, f_z]
+                _bg_col_np[idx] = frond_color
+                _bg_size_np[idx] = frond_size
+                _bg_anim_type_np[idx] = BG_ANIM_TREE
+                _bg_phase_np[idx] = tree_phase + f * 0.15
+                _bg_anim_amp_np[idx] = sway_amp
+                _bg_anim_speed_np[idx] = random.uniform(0.8, 1.2)
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
     theme_start_idx[THEME_PALM_TREES] = start_idx
     theme_count[THEME_PALM_TREES] = idx - start_idx
     active_themes.add(THEME_PALM_TREES)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} palm tree voxels (total: {idx})")
 
 def add_swamp(seed: int = 42):
     """Add swamp biome: giant mushrooms, fog, bubbling water, spores, hanging moss."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -5306,7 +5372,7 @@ def add_swamp(seed: int = 42):
     if THEME_SWAMP in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     water_y = 17.0
 
@@ -5326,19 +5392,19 @@ def add_swamp(seed: int = 42):
             if dist > water_outer:
                 continue
 
-            bg_positions[idx] = ti.Vector([x, water_y - 0.5 + random.uniform(-0.3, 0.3), z])
+            _bg_pos_np[idx] = [x, water_y - 0.5 + random.uniform(-0.3, 0.3), z]
             g = random.uniform(0.12, 0.22)
-            bg_colors[idx] = ti.Vector([g * 0.7, g, g * 0.4])
-            bg_size[idx] = random.uniform(2.0, 2.5)
-            bg_anim_type[idx] = BG_ANIM_NONE
-            bg_phase[idx] = 0.0
-            bg_anim_amplitude[idx] = 0.0
-            bg_anim_speed[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [g * 0.7, g, g * 0.4]
+            _bg_size_np[idx] = random.uniform(2.0, 2.5)
+            _bg_anim_type_np[idx] = BG_ANIM_NONE
+            _bg_phase_np[idx] = 0.0
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     water_count = idx - start_idx
@@ -5366,19 +5432,19 @@ def add_swamp(seed: int = 42):
             if stem_size < 1.2:
                 stem_size = 1.2
 
-            bg_positions[idx] = ti.Vector([sx, y, sz])
+            _bg_pos_np[idx] = [sx, y, sz]
             tint = random.uniform(0.9, 1.0)
-            bg_colors[idx] = ti.Vector([0.65 * tint, 0.60 * tint, 0.45 * tint])
-            bg_size[idx] = stem_size
-            bg_anim_type[idx] = BG_ANIM_NONE
-            bg_phase[idx] = 0.0
-            bg_anim_amplitude[idx] = 0.0
-            bg_anim_speed[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [0.65 * tint, 0.60 * tint, 0.45 * tint]
+            _bg_size_np[idx] = stem_size
+            _bg_anim_type_np[idx] = BG_ANIM_NONE
+            _bg_phase_np[idx] = 0.0
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # Cap: dome of overlapping voxels
@@ -5401,18 +5467,18 @@ def add_swamp(seed: int = 42):
             cy = cap_y + r * math.cos(phi) * 0.4  # Flatten dome
 
             tint = random.uniform(0.85, 1.0)
-            bg_positions[idx] = ti.Vector([cx, cy, cz])
-            bg_colors[idx] = ti.Vector([cap_base[0]*tint, cap_base[1]*tint, cap_base[2]*tint])
-            bg_size[idx] = random.uniform(1.8, 3.0)
-            bg_anim_type[idx] = BG_ANIM_NONE
-            bg_phase[idx] = 0.0
-            bg_anim_amplitude[idx] = 0.0
-            bg_anim_speed[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [cx, cy, cz]
+            _bg_col_np[idx] = [cap_base[0]*tint, cap_base[1]*tint, cap_base[2]*tint]
+            _bg_size_np[idx] = random.uniform(1.8, 3.0)
+            _bg_anim_type_np[idx] = BG_ANIM_NONE
+            _bg_phase_np[idx] = 0.0
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # Hanging moss from cap edges
@@ -5424,23 +5490,23 @@ def add_swamp(seed: int = 42):
             chain_length = random.randint(3, 5)
 
             for link in range(chain_length):
-                bg_positions[idx] = ti.Vector([
+                _bg_pos_np[idx] = [
                     chain_base_x,
                     chain_base_y - link * 1.8,
                     chain_base_z
-                ])
+                ]
                 mt = random.uniform(0.8, 1.0)
-                bg_colors[idx] = ti.Vector([0.35*mt, 0.50*mt, 0.30*mt])
-                bg_size[idx] = random.uniform(0.35, 0.55)
-                bg_anim_type[idx] = BG_ANIM_SWAY
-                bg_phase[idx] = random.uniform(0, 6.28)
-                bg_anim_amplitude[idx] = 0.5 + link * 0.3
-                bg_anim_speed[idx] = random.uniform(0.5, 0.9)
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_col_np[idx] = [0.35*mt, 0.50*mt, 0.30*mt]
+                _bg_size_np[idx] = random.uniform(0.35, 0.55)
+                _bg_anim_type_np[idx] = BG_ANIM_SWAY
+                _bg_phase_np[idx] = random.uniform(0, 6.28)
+                _bg_anim_amp_np[idx] = 0.5 + link * 0.3
+                _bg_anim_speed_np[idx] = random.uniform(0.5, 0.9)
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
         # Store cap info for spores
@@ -5470,18 +5536,18 @@ def add_swamp(seed: int = 42):
         for h in range(stem_segs):
             y = water_y + h * 1.5
             tint = random.uniform(0.85, 1.0)
-            bg_positions[idx] = ti.Vector([sx, y, sz])
-            bg_colors[idx] = ti.Vector([0.55*tint, 0.50*tint, 0.38*tint])
-            bg_size[idx] = random.uniform(1.0, 1.5)
-            bg_anim_type[idx] = BG_ANIM_NONE
-            bg_phase[idx] = 0.0
-            bg_anim_amplitude[idx] = 0.0
-            bg_anim_speed[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [sx, y, sz]
+            _bg_col_np[idx] = [0.55*tint, 0.50*tint, 0.38*tint]
+            _bg_size_np[idx] = random.uniform(1.0, 1.5)
+            _bg_anim_type_np[idx] = BG_ANIM_NONE
+            _bg_phase_np[idx] = 0.0
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # Small cap (5 voxels, all glow)
@@ -5490,23 +5556,23 @@ def add_swamp(seed: int = 42):
             theta = random.uniform(0, 2 * math.pi)
             phi = random.uniform(0, math.pi * 0.4)
             r = cap_radius * random.uniform(0.5, 1.0)
-            bg_positions[idx] = ti.Vector([
+            _bg_pos_np[idx] = [
                 sx + r * math.cos(theta) * math.sin(phi),
                 cap_y + r * math.cos(phi) * 0.4,
                 sz + r * math.sin(theta) * math.sin(phi)
-            ])
+            ]
             tint = random.uniform(0.85, 1.0)
-            bg_colors[idx] = ti.Vector([cap_base[0]*tint, cap_base[1]*tint, cap_base[2]*tint])
-            bg_size[idx] = random.uniform(1.5, 2.5)
-            bg_anim_type[idx] = BG_ANIM_GLOW_PULSE
-            bg_phase[idx] = random.uniform(0, 6.28)
-            bg_anim_amplitude[idx] = random.uniform(0.3, 0.6)
-            bg_anim_speed[idx] = random.uniform(0.4, 0.8)
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [cap_base[0]*tint, cap_base[1]*tint, cap_base[2]*tint]
+            _bg_size_np[idx] = random.uniform(1.5, 2.5)
+            _bg_anim_type_np[idx] = BG_ANIM_GLOW_PULSE
+            _bg_phase_np[idx] = random.uniform(0, 6.28)
+            _bg_anim_amp_np[idx] = random.uniform(0.3, 0.6)
+            _bg_anim_speed_np[idx] = random.uniform(0.4, 0.8)
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === RISING BUBBLES ===
@@ -5519,22 +5585,22 @@ def add_swamp(seed: int = 42):
         bz = math.sin(b_angle) * b_radius
 
         for bp in range(5):
-            bg_positions[idx] = ti.Vector([
+            _bg_pos_np[idx] = [
                 bx + random.uniform(-2, 2),
                 water_y,
                 bz + random.uniform(-2, 2)
-            ])
-            bg_colors[idx] = ti.Vector([0.3, 0.55, 0.3])
-            bg_size[idx] = random.uniform(0.2, 0.5)
-            bg_anim_type[idx] = BG_ANIM_SWAMP_BUBBLE
-            bg_phase[idx] = random.uniform(0, 6.28)
-            bg_anim_amplitude[idx] = random.uniform(5.0, 12.0)
-            bg_anim_speed[idx] = random.uniform(1.5, 3.0)
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            ]
+            _bg_col_np[idx] = [0.3, 0.55, 0.3]
+            _bg_size_np[idx] = random.uniform(0.2, 0.5)
+            _bg_anim_type_np[idx] = BG_ANIM_SWAMP_BUBBLE
+            _bg_phase_np[idx] = random.uniform(0, 6.28)
+            _bg_anim_amp_np[idx] = random.uniform(5.0, 12.0)
+            _bg_anim_speed_np[idx] = random.uniform(1.5, 3.0)
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === TAR PITS (dark patches + occasional burst of tiny dark voxels) ===
@@ -5552,41 +5618,41 @@ def add_swamp(seed: int = 42):
             ox = random.gauss(0, 4.0)
             oz = random.gauss(0, 4.0)
 
-            bg_positions[idx] = ti.Vector([tar_cx + ox, tar_cy + random.uniform(-0.2, 0.2), tar_cz + oz])
+            _bg_pos_np[idx] = [tar_cx + ox, tar_cy + random.uniform(-0.2, 0.2), tar_cz + oz]
             d = random.uniform(0.05, 0.12)
-            bg_colors[idx] = ti.Vector([d, d * 0.8, d * 0.5])  # Very dark brown/black
-            bg_size[idx] = random.uniform(2.0, 3.0)
-            bg_anim_type[idx] = BG_ANIM_NONE
-            bg_phase[idx] = 0.0
-            bg_anim_amplitude[idx] = 0.0
-            bg_anim_speed[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [d, d * 0.8, d * 0.5]  # Very dark brown/black
+            _bg_size_np[idx] = random.uniform(2.0, 3.0)
+            _bg_anim_type_np[idx] = BG_ANIM_NONE
+            _bg_phase_np[idx] = 0.0
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # Tar eruption particles (dark voxels that shake and burst out)
         pool_phase = random.uniform(0, 10.0)  # Shared timing per pool
         for tb in range(25):
-            bg_positions[idx] = ti.Vector([
+            _bg_pos_np[idx] = [
                 tar_cx + random.uniform(-2, 2),
                 tar_cy,
                 tar_cz + random.uniform(-2, 2)
-            ])
+            ]
             d = random.uniform(0.03, 0.10)
-            bg_colors[idx] = ti.Vector([d, d * 0.7, d * 0.4])
-            bg_size[idx] = random.uniform(0.4, 1.0)
-            bg_anim_type[idx] = BG_ANIM_SWAMP_BUBBLE
-            bg_phase[idx] = pool_phase  # All voxels in same pool erupt together
-            bg_anim_amplitude[idx] = random.uniform(8.0, 20.0)  # Big eruptions
-            bg_anim_speed[idx] = random.uniform(0.0, 100.0)  # Unique seed per voxel
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [d, d * 0.7, d * 0.4]
+            _bg_size_np[idx] = random.uniform(0.4, 1.0)
+            _bg_anim_type_np[idx] = BG_ANIM_SWAMP_BUBBLE
+            _bg_phase_np[idx] = pool_phase  # All voxels in same pool erupt together
+            _bg_anim_amp_np[idx] = random.uniform(8.0, 20.0)  # Big eruptions
+            _bg_anim_speed_np[idx] = random.uniform(0.0, 100.0)  # Unique seed per voxel
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === GLOWING SPORES (from each big mushroom cap) ===
@@ -5600,19 +5666,19 @@ def add_swamp(seed: int = 42):
             sp_z = mz + sp_r * math.sin(sp_theta)
             sp_y = mcap_y + random.uniform(-1.0, 3.0)
 
-            bg_positions[idx] = ti.Vector([sp_x, sp_y, sp_z])
+            _bg_pos_np[idx] = [sp_x, sp_y, sp_z]
             sp_tint = random.uniform(0.7, 1.0)
-            bg_colors[idx] = ti.Vector([0.6*sp_tint, 1.0*sp_tint, 0.3*sp_tint])
-            bg_size[idx] = random.uniform(0.15, 0.30)
-            bg_anim_type[idx] = BG_ANIM_SPORE_DRIFT
-            bg_phase[idx] = random.uniform(0, 6.28)
-            bg_anim_amplitude[idx] = random.uniform(15.0, 25.0)
-            bg_anim_speed[idx] = random.uniform(0.8, 1.5)
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [0.6*sp_tint, 1.0*sp_tint, 0.3*sp_tint]
+            _bg_size_np[idx] = random.uniform(0.15, 0.30)
+            _bg_anim_type_np[idx] = BG_ANIM_SPORE_DRIFT
+            _bg_phase_np[idx] = random.uniform(0, 6.28)
+            _bg_anim_amp_np[idx] = random.uniform(15.0, 25.0)
+            _bg_anim_speed_np[idx] = random.uniform(0.8, 1.5)
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === FAT TOADS ===
@@ -5696,50 +5762,51 @@ def add_swamp(seed: int = 42):
         for part_id, size, r, g, b in toad_parts + wart_parts + tongue_parts:
             if idx >= MAX_BACKGROUND_VOXELS - 5:
                 break
-            bg_positions[idx] = ti.Vector([0, 0, 0])
-            bg_colors[idx] = ti.Vector([r, g, b])
-            bg_size[idx] = size
-            bg_anim_type[idx] = BG_ANIM_TOAD
-            bg_phase[idx] = float(toad_id)
-            bg_anim_amplitude[idx] = float(part_id)
-            bg_anim_speed[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [0, 0, 0]
+            _bg_col_np[idx] = [r, g, b]
+            _bg_size_np[idx] = size
+            _bg_anim_type_np[idx] = BG_ANIM_TOAD
+            _bg_phase_np[idx] = float(toad_id)
+            _bg_anim_amp_np[idx] = float(part_id)
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
         # Mud splash particles (16 per toad)
         for sp in range(16):
             if idx >= MAX_BACKGROUND_VOXELS - 5:
                 break
-            bg_positions[idx] = ti.Vector([0, 0, 0])
+            _bg_pos_np[idx] = [0, 0, 0]
             # Mud colors: dark brown/green swamp muck
             mud_t = random.uniform(0.7, 1.0)
-            bg_colors[idx] = ti.Vector([0.25 * mud_t, 0.20 * mud_t, 0.08 * mud_t])
-            bg_size[idx] = random.uniform(0.7, 1.4)
-            bg_anim_type[idx] = BG_ANIM_MUD_SPLASH
-            bg_phase[idx] = float(toad_id)
-            bg_anim_amplitude[idx] = float(sp)
-            bg_anim_speed[idx] = 0.0
-            bg_brightness[idx] = 0.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = -200.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_col_np[idx] = [0.25 * mud_t, 0.20 * mud_t, 0.08 * mud_t]
+            _bg_size_np[idx] = random.uniform(0.7, 1.4)
+            _bg_anim_type_np[idx] = BG_ANIM_MUD_SPLASH
+            _bg_phase_np[idx] = float(toad_id)
+            _bg_anim_amp_np[idx] = float(sp)
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_brightness_np[idx] = 0.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = -200.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     theme_start_idx[THEME_SWAMP] = start_idx
     theme_count[THEME_SWAMP] = idx - start_idx
     active_themes.add(THEME_SWAMP)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} swamp voxels (total: {idx})")
 
 
 def add_desert(seed: int = 42):
     """Add desert biome: sand ground, pyramids, cacti, dust devils, scorpions."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -5747,7 +5814,7 @@ def add_desert(seed: int = 42):
     if THEME_DESERT in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     sand_y = 17.5
     circle_radius = 85.0
@@ -5786,18 +5853,18 @@ def add_desert(seed: int = 42):
                 r = random.uniform(0.38, 0.48)
                 g = random.uniform(0.28, 0.35)
                 b = random.uniform(0.16, 0.22)
-            bg_positions[idx] = ti.Vector([x, sand_y - 0.5 + random.uniform(-0.2, 0.2), z])
-            bg_colors[idx] = ti.Vector([r, g, b])
-            bg_size[idx] = random.uniform(1.8, 2.3)
-            bg_anim_type[idx] = BG_ANIM_NONE
-            bg_anim_speed[idx] = 0.0
-            bg_anim_amplitude[idx] = 0.0
-            bg_phase[idx] = 0.0
-            bg_brightness[idx] = 1.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = 0.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [x, sand_y - 0.5 + random.uniform(-0.2, 0.2), z]
+            _bg_col_np[idx] = [r, g, b]
+            _bg_size_np[idx] = random.uniform(1.8, 2.3)
+            _bg_anim_type_np[idx] = BG_ANIM_NONE
+            _bg_anim_speed_np[idx] = 0.0
+            _bg_anim_amp_np[idx] = 0.0
+            _bg_phase_np[idx] = 0.0
+            _bg_brightness_np[idx] = 1.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
     # === PYRAMIDS (2, opposite sides) ===
@@ -5831,32 +5898,32 @@ def add_desert(seed: int = 42):
                         gr = 0.75 + glow_t * 0.20
                         gg = 0.65 + glow_t * 0.20
                         gb = 0.20 + glow_t * 0.05
-                        bg_positions[idx] = ti.Vector([x, layer_y, z])
-                        bg_colors[idx] = ti.Vector([gr, gg, gb])
-                        bg_size[idx] = vox_size
-                        bg_anim_type[idx] = BG_ANIM_GLOW_PULSE
-                        bg_anim_speed[idx] = 0.8
-                        bg_anim_amplitude[idx] = 0.5
-                        bg_phase[idx] = random.uniform(0, 6.28)
-                        bg_brightness[idx] = 3.0 + glow_t * 1.0
+                        _bg_pos_np[idx] = [x, layer_y, z]
+                        _bg_col_np[idx] = [gr, gg, gb]
+                        _bg_size_np[idx] = vox_size
+                        _bg_anim_type_np[idx] = BG_ANIM_GLOW_PULSE
+                        _bg_anim_speed_np[idx] = 0.8
+                        _bg_anim_amp_np[idx] = 0.5
+                        _bg_phase_np[idx] = random.uniform(0, 6.28)
+                        _bg_brightness_np[idx] = 3.0 + glow_t * 1.0
                     else:
                         r_v = base_r + random.uniform(-0.03, 0.03)
                         g_v = base_g + random.uniform(-0.03, 0.03)
                         b_v = base_b + random.uniform(-0.03, 0.03)
-                        bg_positions[idx] = ti.Vector([x, layer_y, z])
-                        bg_colors[idx] = ti.Vector([r_v, g_v, b_v])
-                        bg_size[idx] = vox_size
-                        bg_anim_type[idx] = BG_ANIM_NONE
-                        bg_anim_speed[idx] = 0.0
-                        bg_anim_amplitude[idx] = 0.0
-                        bg_phase[idx] = 0.0
+                        _bg_pos_np[idx] = [x, layer_y, z]
+                        _bg_col_np[idx] = [r_v, g_v, b_v]
+                        _bg_size_np[idx] = vox_size
+                        _bg_anim_type_np[idx] = BG_ANIM_NONE
+                        _bg_anim_speed_np[idx] = 0.0
+                        _bg_anim_amp_np[idx] = 0.0
+                        _bg_phase_np[idx] = 0.0
 
                     if li < len(layers) - 5:
-                        bg_brightness[idx] = 1.0
-                    bg_offset_x[idx] = 0.0
-                    bg_offset_y[idx] = 0.0
-                    bg_offset_z[idx] = 0.0
-                    bg_active[idx] = 1
+                        _bg_brightness_np[idx] = 1.0
+                    _bg_offset_x_np[idx] = 0.0
+                    _bg_offset_y_np[idx] = 0.0
+                    _bg_offset_z_np[idx] = 0.0
+                    _bg_active_np[idx] = 1
                     idx += 1
             layer_y += 1.8
 
@@ -5865,18 +5932,18 @@ def add_desert(seed: int = 42):
         nonlocal idx
         if idx >= MAX_BACKGROUND_VOXELS - 100:
             return
-        bg_positions[idx] = ti.Vector([x, y, z])
-        bg_colors[idx] = ti.Vector([r, g, b])
-        bg_size[idx] = size
-        bg_anim_type[idx] = anim
-        bg_anim_speed[idx] = spd
-        bg_anim_amplitude[idx] = amp
-        bg_phase[idx] = ph
-        bg_brightness[idx] = 1.0
-        bg_offset_x[idx] = 0.0
-        bg_offset_y[idx] = 0.0
-        bg_offset_z[idx] = 0.0
-        bg_active[idx] = 1
+        _bg_pos_np[idx] = [x, y, z]
+        _bg_col_np[idx] = [r, g, b]
+        _bg_size_np[idx] = size
+        _bg_anim_type_np[idx] = anim
+        _bg_anim_speed_np[idx] = spd
+        _bg_anim_amp_np[idx] = amp
+        _bg_phase_np[idx] = ph
+        _bg_brightness_np[idx] = 1.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = 0.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
         idx += 1
 
     # --- TALL SAGUAROS (8) ---
@@ -6024,18 +6091,18 @@ def add_desert(seed: int = 42):
             else:
                 base_col = random.uniform(0.55, 0.68)
                 rc, gc, bc = base_col, base_col * 0.68, base_col * 0.35
-            bg_positions[idx] = ti.Vector([cx_dd, 0, cz_dd])
-            bg_colors[idx] = ti.Vector([rc, gc, bc])
-            bg_size[idx] = random.uniform(0.15, 0.45)
-            bg_anim_type[idx] = BG_ANIM_DUST_DEVIL
-            bg_anim_speed[idx] = 1.0
-            bg_anim_amplitude[idx] = float(p)
-            bg_phase[idx] = float(ci_dd)
-            bg_brightness[idx] = 0.0
-            bg_offset_x[idx] = 0.0
-            bg_offset_y[idx] = -200.0
-            bg_offset_z[idx] = 0.0
-            bg_active[idx] = 1
+            _bg_pos_np[idx] = [cx_dd, 0, cz_dd]
+            _bg_col_np[idx] = [rc, gc, bc]
+            _bg_size_np[idx] = random.uniform(0.15, 0.45)
+            _bg_anim_type_np[idx] = BG_ANIM_DUST_DEVIL
+            _bg_anim_speed_np[idx] = 1.0
+            _bg_anim_amp_np[idx] = float(p)
+            _bg_phase_np[idx] = float(ci_dd)
+            _bg_brightness_np[idx] = 0.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = -200.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
             idx += 1
 
 
@@ -6043,13 +6110,14 @@ def add_desert(seed: int = 42):
     theme_start_idx[THEME_DESERT] = start_idx
     theme_count[THEME_DESERT] = idx - start_idx
     active_themes.add(THEME_DESERT)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     print(f"Added {idx - start_idx} desert voxels (total: {idx})")
 
 
 def add_stadium(seed: int = 42):
     """Add stadium with beetle larvae to the background (appends to existing voxels)."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     import random
     import math
     random.seed(seed)
@@ -6057,7 +6125,7 @@ def add_stadium(seed: int = 42):
     if THEME_STADIUM in active_themes:
         return
 
-    start_idx = num_bg_voxels[None]
+    start_idx = _bg_count
     idx = start_idx
     base_y = 28
     inner_radius = 70
@@ -6105,40 +6173,42 @@ def add_stadium(seed: int = 42):
                     seg_size = 1.0
                     color = ti.Vector([0.45, 0.30, 0.18])
 
-                bg_positions[idx] = ti.Vector([base_x, y, base_z])
-                bg_colors[idx] = color
-                bg_size[idx] = seg_size
-                bg_anim_type[idx] = BG_ANIM_SCRUNCH
-                bg_phase[idx] = larva_phase
-                bg_anim_amplitude[idx] = float(seg)
-                bg_anim_speed[idx] = larva_speed
-                bg_angle[idx] = angle
-                bg_brightness[idx] = 1.0
-                bg_offset_x[idx] = 0.0
-                bg_offset_y[idx] = 0.0
-                bg_offset_z[idx] = 0.0
-                bg_active[idx] = 1
+                _bg_pos_np[idx] = [base_x, y, base_z]
+                _bg_col_np[idx] = color
+                _bg_size_np[idx] = seg_size
+                _bg_anim_type_np[idx] = BG_ANIM_SCRUNCH
+                _bg_phase_np[idx] = larva_phase
+                _bg_anim_amp_np[idx] = float(seg)
+                _bg_anim_speed_np[idx] = larva_speed
+                _bg_angle_np[idx] = angle
+                _bg_brightness_np[idx] = 1.0
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
                 idx += 1
 
     theme_start_idx[THEME_STADIUM] = start_idx
     theme_count[THEME_STADIUM] = idx - start_idx
     active_themes.add(THEME_STADIUM)
-    num_bg_voxels[None] = idx
+    _bg_count = idx
+    bg_flush()
     stadium_excitement[None] = 0.0
     stadium_excitement_target[None] = 0.0
     print(f"Added {idx - start_idx} stadium larva voxels (total: {idx})")
 
 def clear_all_themes():
     """Clear all active themes and reset background."""
-    global active_themes, theme_start_idx, theme_count
+    global active_themes, theme_start_idx, theme_count, _bg_count
     active_themes.clear()
     theme_start_idx.clear()
     theme_count.clear()
-    num_bg_voxels[None] = 0
+    _bg_count = 0
     bg_theme_active[None] = 0
     for i in range(MAX_BACKGROUND_VOXELS):
-        bg_active[i] = 0
-        bg_size[i] = 0.0
+        _bg_active_np[i] = 0
+        _bg_size_np[i] = 0.0
+    bg_flush()
     print("Cleared all background themes")
 
 @ti.kernel
