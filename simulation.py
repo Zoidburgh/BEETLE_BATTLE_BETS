@@ -2551,12 +2551,12 @@ def animate_background(time: ti.f32):
             jump_offset_d = speed
             water_y_d = 14.0       # Lowest wave trough
             period_d = 10.0        # Full cycle
-            underwater_d = 7.0     # Hidden phase (0-7s)
-            arc_dur_d = 2.0        # Head's parabola duration
-            peak_h_d = 25.0        # Peak height above water
+            underwater_d = 6.5     # Hidden phase (0-6.5s)
+            arc_dur_d = 2.5        # Head's parabola duration
+            peak_h_d = 28.0        # Peak height above water
             orbit_r_d = 45.0
-            travel_d = 50.0        # Wide forward leap (body stretches along this)
-            seg_sp_d = 2.0         # World units between body segment centers
+            travel_d = 100.0       # Wide forward leap (body stretches along this)
+            seg_sp_d = 4.0         # World units between body segment centers
 
             cycle_d = (time + jump_offset_d) % period_d
 
@@ -2612,27 +2612,27 @@ def animate_background(time: ti.f32):
                     out_y_d = arc_y_d
                     out_z_d = cz_d + fz_d * seg_fwd_d
 
-                    # Attached-part offsets
+                    # Attached-part offsets (scaled 2x for bigger dolphin)
                     if part_d > 8.5 and part_d < 10.5:
                         # TAIL FLUKES — horizontal spread
                         fluke_s = (part_d - 9.5) * 2.0
-                        out_x_d += lx_d * fluke_s * 2.5
-                        out_z_d += lz_d * fluke_s * 2.5
+                        out_x_d += lx_d * fluke_s * 5.0
+                        out_z_d += lz_d * fluke_s * 5.0
                     elif part_d > 10.5 and part_d < 11.5:
                         # DORSAL FIN — on top of body
-                        out_y_d += 2.5
+                        out_y_d += 5.0
                     elif part_d > 11.5 and part_d < 13.5:
                         # PECTORAL FLIPPERS — spread from body
                         flip_s = (part_d - 12.5) * 2.0
-                        out_x_d += lx_d * flip_s * 3.0
-                        out_z_d += lz_d * flip_s * 3.0
-                        out_y_d -= 0.8
+                        out_x_d += lx_d * flip_s * 6.0
+                        out_z_d += lz_d * flip_s * 6.0
+                        out_y_d -= 1.6
                     elif part_d > 13.5:
                         # EYES — on head sides
                         eye_s = (part_d - 14.5) * 2.0
-                        out_x_d += lx_d * eye_s * 1.2 + fx_d * 0.8
-                        out_z_d += lz_d * eye_s * 1.2 + fz_d * 0.8
-                        out_y_d += 0.5
+                        out_x_d += lx_d * eye_s * 2.4 + fx_d * 1.6
+                        out_z_d += lz_d * eye_s * 2.4 + fz_d * 1.6
+                        out_y_d += 1.0
 
                     out_b_d = 1.0
 
@@ -2648,16 +2648,16 @@ def animate_background(time: ti.f32):
             num_sp_ds = 16.0
             jump_offset_ds = speed
             period_ds = 10.0
-            underwater_ds = 7.0
-            arc_dur_ds = 2.0
+            underwater_ds = 6.5
+            arc_dur_ds = 2.5
             orbit_r_ds = 45.0
-            travel_ds = 50.0
+            travel_ds = 100.0
             water_surf_ds = 17.0   # Wave surface Y for splash height
 
             cycle_ds = (time + jump_offset_ds) % period_ds
 
             # Splash at two moments: head exits water, head re-enters
-            exit_cycle_ds = underwater_ds + 0.1
+            exit_cycle_ds = underwater_ds + 0.15
             enter_cycle_ds = underwater_ds + arc_dur_ds
             splash_t_ds = -1.0
             splash_fwd_ds = 0.0
@@ -2665,10 +2665,10 @@ def animate_background(time: ti.f32):
             dt_exit_ds = cycle_ds - exit_cycle_ds
             dt_enter_ds = cycle_ds - enter_cycle_ds
 
-            if dt_exit_ds >= 0.0 and dt_exit_ds < 1.5:
+            if dt_exit_ds >= 0.0 and dt_exit_ds < 1.8:
                 splash_t_ds = dt_exit_ds
                 splash_fwd_ds = -travel_ds * 0.48  # Head exits at arc start
-            elif dt_enter_ds >= 0.0 and dt_enter_ds < 1.5:
+            elif dt_enter_ds >= 0.0 and dt_enter_ds < 1.8:
                 splash_t_ds = dt_enter_ds
                 splash_fwd_ds = travel_ds * 0.48   # Head enters at arc end
 
@@ -2687,8 +2687,8 @@ def animate_background(time: ti.f32):
                 bdx_ds = ti.cos(bang_ds)
                 bdz_ds = ti.sin(bang_ds)
 
-                bspd_ds = 8.0 + ti.sin(sp_idx_ds * 2.3) * 3.0
-                uspd_ds = 18.0 + ti.cos(sp_idx_ds * 1.7) * 6.0
+                bspd_ds = 12.0 + ti.sin(sp_idx_ds * 2.3) * 5.0
+                uspd_ds = 24.0 + ti.cos(sp_idx_ds * 1.7) * 8.0
                 grav_ds = 28.0
                 t_gnd_ds = uspd_ds / grav_ds
                 t_hz_ds = ti.min(splash_t_ds, t_gnd_ds)
@@ -2701,7 +2701,7 @@ def animate_background(time: ti.f32):
                     bg_offset_x[i] = spx_ds
                     bg_offset_y[i] = spy_ds
                     bg_offset_z[i] = spz_ds
-                    fade_ds = ti.max(0.0, 1.0 - splash_t_ds * 0.8)
+                    fade_ds = ti.max(0.0, 1.0 - splash_t_ds * 0.6)
                     bg_brightness[i] = fade_ds
                 else:
                     bg_offset_y[i] = -200.0
@@ -5471,49 +5471,49 @@ def add_waves(count: int = 1600, seed: int = 42):
             _bg_active_np[idx] = 1
 
             if part == 0:
-                # ROSTRUM (beak) — small pointed snout
+                # ROSTRUM (beak) — pointed snout
                 _bg_col_np[idx] = [0.55, 0.58, 0.64]
-                _bg_size_np[idx] = 0.8
+                _bg_size_np[idx] = 1.6
             elif part == 1:
                 # HEAD (melon) — rounded forehead
                 _bg_col_np[idx] = [0.48, 0.51, 0.58]
-                _bg_size_np[idx] = 1.5
+                _bg_size_np[idx] = 3.0
             elif part <= 7:
                 # BODY (2-7): sleek taper, widest at segment 3
-                body_sizes = [1.9, 2.2, 2.1, 1.8, 1.4, 1.0]
+                body_sizes = [3.8, 4.4, 4.2, 3.6, 2.8, 2.0]
                 bi = part - 2
                 _bg_size_np[idx] = body_sizes[bi]
                 t = bi / 5.0
                 _bg_col_np[idx] = [0.40 - t * 0.11, 0.43 - t * 0.11, 0.52 - t * 0.10]
             elif part == 8:
-                # TAIL STOCK — very narrow
+                # TAIL STOCK — narrow
                 _bg_col_np[idx] = [0.27, 0.30, 0.38]
-                _bg_size_np[idx] = 0.7
+                _bg_size_np[idx] = 1.4
             elif part <= 10:
                 # TAIL FLUKES (9-10) — horizontal spread
                 _bg_col_np[idx] = [0.25, 0.28, 0.36]
-                _bg_size_np[idx] = 1.5
+                _bg_size_np[idx] = 3.0
             elif part == 11:
                 # DORSAL FIN — tall, iconic
                 _bg_col_np[idx] = [0.28, 0.31, 0.39]
-                _bg_size_np[idx] = 1.8
+                _bg_size_np[idx] = 3.6
             elif part <= 13:
                 # PECTORAL FLIPPERS (12-13)
                 _bg_col_np[idx] = [0.38, 0.41, 0.48]
-                _bg_size_np[idx] = 1.0
+                _bg_size_np[idx] = 2.0
             else:
                 # EYES (14-15)
                 _bg_col_np[idx] = [0.03, 0.03, 0.05]
-                _bg_size_np[idx] = 0.5
+                _bg_size_np[idx] = 1.0
 
             idx += 1
 
-        # SPLASH PARTICLES
+        # SPLASH PARTICLES — bigger for dramatic effect
         for s in range(num_dolphin_splash):
             _bg_pos_np[idx] = [0.0, 0.0, 0.0]  # Origin — offsets are absolute
             white_mix = random.uniform(0.3, 0.7)
             _bg_col_np[idx] = [0.5 + 0.5 * white_mix, 0.65 + 0.35 * white_mix, 0.85 + 0.15 * white_mix]
-            _bg_size_np[idx] = random.uniform(0.5, 1.0)
+            _bg_size_np[idx] = random.uniform(1.0, 2.0)
             _bg_anim_type_np[idx] = BG_ANIM_FISH_SPLASH
             _bg_phase_np[idx] = float(dolph_id)
             _bg_anim_amp_np[idx] = float(s)
