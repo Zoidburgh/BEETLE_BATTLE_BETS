@@ -2571,15 +2571,15 @@ def animate_background(time: ti.f32):
                 pn_head_d = (cycle_d - underwater_d) / arc_dur_d
 
                 if part_d > 15.5:
-                    # === BLOWHOLE SPRAY (parts 16-23) ===
-                    # Brief upward mist burst at the peak of the jump
+                    # === BLOWHOLE SPRAY (parts 16-31) ===
+                    # Explosive upward mist burst at the peak of the jump
                     spray_idx_d = part_d - 16.0
                     spray_start_d = 0.38
                     spray_end_d = 0.75
                     spray_norm_d = (pn_head_d - spray_start_d) / (spray_end_d - spray_start_d)
 
                     if spray_norm_d <= 0.0 or spray_norm_d >= 1.0:
-                        bg_size[i] = 1.0  # Reset size for next cycle
+                        bg_size[i] = 1.2  # Reset size for next cycle
                     else:
                         # Head position on the arc
                         head_pn_d = pn_head_d - 1.0 * seg_sp_d / travel_d
@@ -2599,19 +2599,19 @@ def animate_background(time: ti.f32):
                         hx_d = cx_d + fx_d * head_fwd_d
                         hz_d = cz_d + fz_d * head_fwd_d
 
-                        # Spray cone — 8 particles evenly spaced in a ring
-                        sp_ang_d = spray_idx_d * (6.28318 / 8.0)
-                        sp_rise = 1.0 + ti.sin(spray_idx_d * 3.7) * 0.3  # per-particle variation
-                        sp_horiz_d = spray_norm_d * 3.5 * sp_rise
-                        sp_up_d = (3.0 + spray_norm_d * 12.0) * sp_rise
+                        # Spray cone — 16 particles, blown out fast
+                        sp_ang_d = spray_idx_d * (6.28318 / 16.0)
+                        sp_rise = 1.0 + ti.sin(spray_idx_d * 3.7) * 0.4
+                        sp_horiz_d = spray_norm_d * 8.0 * sp_rise
+                        sp_up_d = (4.0 + spray_norm_d * 22.0) * sp_rise
 
                         out_x_d = hx_d + ti.cos(sp_ang_d) * sp_horiz_d
                         out_y_d = head_arc_d + sp_up_d
                         out_z_d = hz_d + ti.sin(sp_ang_d) * sp_horiz_d
                         out_b_d = 1.0
-                        # Shrink particles instead of darkening — smooth size fade to 0
+                        # Shrink particles smoothly
                         fade_d = 1.0 - spray_norm_d
-                        bg_size[i] = 1.0 * fade_d * fade_d  # quadratic shrink
+                        bg_size[i] = 1.2 * fade_d * fade_d
 
                 else:
                     # === BODY (parts 0-15) ===
@@ -5494,7 +5494,7 @@ def add_waves(count: int = 1600, seed: int = 42):
     # === ADD JUMPING DOLPHINS (2 dolphins) ===
     # Base pos (0,0,0) — animation offsets are absolute world coordinates
     num_dolphins = 2
-    num_dolphin_parts = 24   # Body parts per dolphin (0-15 body, 16-23 blowhole spray)
+    num_dolphin_parts = 32   # Body parts per dolphin (0-15 body, 16-31 blowhole spray)
     num_dolphin_splash = 16  # Splash particles per dolphin
 
     for dolph_id in range(num_dolphins):
@@ -5552,10 +5552,10 @@ def add_waves(count: int = 1600, seed: int = 42):
                 _bg_col_np[idx] = [0.03, 0.03, 0.05]
                 _bg_size_np[idx] = 1.0
             else:
-                # BLOWHOLE SPRAY (16-23) — small misty droplets
+                # BLOWHOLE SPRAY (16-31) — misty droplets
                 white_amt = random.uniform(0.5, 0.9)
                 _bg_col_np[idx] = [0.7 + 0.3 * white_amt, 0.78 + 0.22 * white_amt, 0.88 + 0.12 * white_amt]
-                _bg_size_np[idx] = random.uniform(0.6, 1.2)
+                _bg_size_np[idx] = random.uniform(0.8, 1.2)
 
             idx += 1
 
