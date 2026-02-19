@@ -364,6 +364,9 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
         for idx in range(bg_count):
             if simulation.bg_active[idx] == 0:
                 continue
+            # Skip hidden voxels (underground at y=-200, brightness=0)
+            if simulation.bg_brightness[idx] < 0.01:
+                continue
 
             write_idx = ti.atomic_add(num_voxels[None], 1)
             if write_idx < MAX_VOXELS:

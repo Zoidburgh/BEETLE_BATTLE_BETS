@@ -70,7 +70,7 @@ BACKEND, BACKEND_REASON = choose_backend()
 CLEANUP_FREQUENCY_DEBRIS = 2 if BACKEND == 'cpu' else 30  # Every 0.5s on GPU
 CLEANUP_FREQUENCY_SPRAY = 2 if BACKEND == 'cpu' else 30
 CLEANUP_FREQUENCY_SILK = 5 if BACKEND == 'cpu' else 60
-BG_ANIM_FREQUENCY = 1 if BACKEND == 'cpu' else 2  # Background animation: every frame on CPU, every 2nd on GPU
+BG_ANIM_FREQUENCY = 1 if BACKEND == 'cpu' else 3  # Background animation: every frame on CPU, every 3rd on GPU
 
 # Check if user wants fresh kernel compilation (bypasses cache that might cause variance)
 FRESH_COMPILE = '--fresh' in sys.argv
@@ -1037,8 +1037,10 @@ def animate_background(time: ti.f32):
                 vert = ring_r * ti.sin(ring_theta)
 
                 voxel_angle = head_angle - trail_pos
-                px = orbit_radius * ti.cos(voxel_angle) + ti.cos(voxel_angle) * lat
-                pz = orbit_radius * ti.sin(voxel_angle) + ti.sin(voxel_angle) * lat
+                cos_va = ti.cos(voxel_angle)
+                sin_va = ti.sin(voxel_angle)
+                px = cos_va * (orbit_radius + lat)
+                pz = sin_va * (orbit_radius + lat)
                 py = orbit_y + vert
 
                 bg_offset_x[i] = px - bg_positions[i].x
@@ -1058,13 +1060,12 @@ def animate_background(time: ti.f32):
                 # === STATIC: front tip or core spine ===
                 trail_offset = phase
                 voxel_angle = head_angle - trail_offset
+                cos_va = ti.cos(voxel_angle)
+                sin_va = ti.sin(voxel_angle)
 
-                px = orbit_radius * ti.cos(voxel_angle)
-                pz = orbit_radius * ti.sin(voxel_angle)
+                px = cos_va * (orbit_radius + amplitude)
+                pz = sin_va * (orbit_radius + amplitude)
                 py = orbit_y + speed  # vertical offset
-
-                px += ti.cos(voxel_angle) * amplitude
-                pz += ti.sin(voxel_angle) * amplitude
 
                 bg_offset_x[i] = px - bg_positions[i].x
                 bg_offset_z[i] = pz - bg_positions[i].z
@@ -1179,6 +1180,8 @@ def animate_background(time: ti.f32):
             dir_z = ti.cos(orbit_angle_c)
             perp_x = -dir_z
             perp_z = dir_x
+            cx_c = orbit_radius_c * dir_z   # = orbit_radius_c * cos(orbit_angle_c)
+            cz_c = -orbit_radius_c * dir_x  # = orbit_radius_c * sin(orbit_angle_c)
 
             # Inchworm wave: big exaggerated humps
             inch_wave = ti.sin(time * 2.5 - seg * 0.6 + phase * 3.0)
@@ -1188,8 +1191,8 @@ def animate_background(time: ti.f32):
             # Head position (shared by antennae)
             head_fwd = seg_spacing * 0.5
             head_hump = ti.max(0.0, ti.sin(time * 2.5 + phase * 3.0)) * 4.0
-            head_px = orbit_radius_c * ti.cos(orbit_angle_c) + dir_x * head_fwd
-            head_pz = orbit_radius_c * ti.sin(orbit_angle_c) + dir_z * head_fwd
+            head_px = cx_c + dir_x * head_fwd
+            head_pz = cz_c + dir_z * head_fwd
             head_py = ground_y + head_hump
 
             if seg < 0.5:
@@ -1201,8 +1204,8 @@ def animate_background(time: ti.f32):
                 # BODY SEGMENTS
                 body_idx = seg - 1.0
                 trail = -(body_idx * seg_spacing + bunch)
-                px = orbit_radius_c * ti.cos(orbit_angle_c) + dir_x * trail
-                pz = orbit_radius_c * ti.sin(orbit_angle_c) + dir_z * trail
+                px = cx_c + dir_x * trail
+                pz = cz_c + dir_z * trail
                 py = ground_y + hump
                 bg_offset_x[i] = px
                 bg_offset_y[i] = py
@@ -1258,6 +1261,8 @@ def animate_background(time: ti.f32):
             dir_z = ti.cos(orbit_angle_s)
             perp_x = -dir_z
             perp_z = dir_x
+            cx_s = orbit_radius_s * dir_z   # = orbit_radius_s * cos(orbit_angle_s)
+            cz_s = -orbit_radius_s * dir_x  # = orbit_radius_s * sin(orbit_angle_s)
 
             # Slug crawl wave (flatter than caterpillar)
             slug_wave = ti.sin(time * 1.8 - part * 0.5 + phase * 3.0)
@@ -1268,8 +1273,8 @@ def animate_background(time: ti.f32):
                 # BODY SEGMENTS (0=head, 1-12=body, widest at middle, tapers at ends)
                 body_idx = part
                 trail = -(body_idx * 2.5 + bunch)
-                px = orbit_radius_s * ti.cos(orbit_angle_s) + dir_x * trail
-                pz = orbit_radius_s * ti.sin(orbit_angle_s) + dir_z * trail
+                px = cx_s + dir_x * trail
+                pz = cz_s + dir_z * trail
                 py = lava_ground + hump
                 bg_offset_x[i] = px
                 bg_offset_y[i] = py
@@ -1284,8 +1289,8 @@ def animate_background(time: ti.f32):
                 spiral_r = 3.0 + shell_idx * 0.6
                 # Shell center is above body segment ~5
                 shell_trail = -(5.0 * 2.5 + ti.sin(time * 1.8 - 5.0 * 0.5 + phase * 3.0) * 0.6)
-                shell_cx = orbit_radius_s * ti.cos(orbit_angle_s) + dir_x * shell_trail
-                shell_cz = orbit_radius_s * ti.sin(orbit_angle_s) + dir_z * shell_trail
+                shell_cx = cx_s + dir_x * shell_trail
+                shell_cz = cz_s + dir_z * shell_trail
                 shell_hump = ti.max(0.0, ti.sin(time * 1.8 - 5.0 * 0.5 + phase * 3.0)) * 1.5
                 shell_cy = lava_ground + shell_hump + 3.0
 
@@ -1326,8 +1331,8 @@ def animate_background(time: ti.f32):
                 # Head position (body seg 0)
                 head_bunch = ti.sin(time * 1.8 + phase * 3.0) * 0.6
                 head_hump_s = ti.max(0.0, ti.sin(time * 1.8 + phase * 3.0)) * 1.5
-                head_px = orbit_radius_s * ti.cos(orbit_angle_s) + dir_x * (-head_bunch)
-                head_pz = orbit_radius_s * ti.sin(orbit_angle_s) + dir_z * (-head_bunch)
+                head_px = cx_s + dir_x * (-head_bunch)
+                head_pz = cz_s + dir_z * (-head_bunch)
                 head_py = lava_ground + head_hump_s
 
                 fwd_e = 0.5 + chain_e * 0.8
@@ -1349,8 +1354,8 @@ def animate_background(time: ti.f32):
 
                 # Shell tail position (behind the shell)
                 shell_trail_d = -(6.0 * 2.5)
-                drip_cx = orbit_radius_s * ti.cos(orbit_angle_s) + dir_x * shell_trail_d
-                drip_cz = orbit_radius_s * ti.sin(orbit_angle_s) + dir_z * shell_trail_d
+                drip_cx = cx_s + dir_x * shell_trail_d
+                drip_cz = cz_s + dir_z * shell_trail_d
 
                 if t_drip < 5.0:
                     # Hidden
@@ -1413,6 +1418,8 @@ def animate_background(time: ti.f32):
             funnel_h = height_t * 37.5
             spin_speed = 7.0 + height_t * 4.0  # fast spin, faster at top
             spin_ang = base_ang + time * spin_speed
+            cos_spin = ti.cos(spin_ang)
+            sin_spin = ti.sin(spin_ang)
 
             # Per-particle chaos wobble
             wobble_r = 1.2 * ti.sin(time * 3.1 + p_id * 0.37) * (0.3 + height_t * 0.7)
@@ -1433,8 +1440,8 @@ def animate_background(time: ti.f32):
 
                 # Target: funnel position
                 tgt_r = funnel_r + wobble_r
-                tgt_x = cx_dd + tgt_r * ti.cos(spin_ang) + wobble_tang * ti.sin(spin_ang)
-                tgt_z = cz_dd + tgt_r * ti.sin(spin_ang) - wobble_tang * ti.cos(spin_ang)
+                tgt_x = cx_dd + tgt_r * cos_spin + wobble_tang * sin_spin
+                tgt_z = cz_dd + tgt_r * sin_spin - wobble_tang * cos_spin
                 tgt_y = sand_y_dd + funnel_h + wobble_h
 
                 # Lower particles emerge first
@@ -1453,8 +1460,8 @@ def animate_background(time: ti.f32):
             elif cycle < 12.0:
                 # ACTIVE: chaotic spinning funnel
                 act_r = funnel_r + wobble_r
-                px = cx_dd + act_r * ti.cos(spin_ang) + wobble_tang * ti.sin(spin_ang)
-                pz = cz_dd + act_r * ti.sin(spin_ang) - wobble_tang * ti.cos(spin_ang)
+                px = cx_dd + act_r * cos_spin + wobble_tang * sin_spin
+                pz = cz_dd + act_r * sin_spin - wobble_tang * cos_spin
                 py = sand_y_dd + funnel_h + wobble_h
 
                 # Extra jitter for chaos
@@ -1480,8 +1487,8 @@ def animate_background(time: ti.f32):
 
                 # Snapshot of last funnel position
                 act_r = funnel_r + wobble_r
-                last_x = cx_dd + act_r * ti.cos(spin_ang)
-                last_z = cz_dd + act_r * ti.sin(spin_ang)
+                last_x = cx_dd + act_r * cos_spin
+                last_z = cz_dd + act_r * sin_spin
                 last_y = sand_y_dd + funnel_h
 
                 # Massive accelerating push into the distance
@@ -1521,6 +1528,8 @@ def animate_background(time: ti.f32):
             dir_z_sc = ti.cos(orbit_angle_sc)
             perp_x_sc = -dir_z_sc
             perp_z_sc = dir_x_sc
+            cx_sc = orbit_radius_sc * dir_z_sc   # = orbit_radius_sc * cos(orbit_angle_sc)
+            cz_sc = -orbit_radius_sc * dir_x_sc  # = orbit_radius_sc * sin(orbit_angle_sc)
 
             # Flat crawl wave
             crawl_wave = ti.sin(time * 1.5 - part_sc * 0.4 + phase * 3.0)
@@ -1535,8 +1544,8 @@ def animate_background(time: ti.f32):
                 # HEAD + BODY (0=head, 1-6=body)
                 body_idx_sc = part_sc
                 trail_sc = -(body_idx_sc * 2.8 + bunch_sc)
-                px = orbit_radius_sc * ti.cos(orbit_angle_sc) + dir_x_sc * trail_sc
-                pz = orbit_radius_sc * ti.sin(orbit_angle_sc) + dir_z_sc * trail_sc
+                px = cx_sc + dir_x_sc * trail_sc
+                pz = cz_sc + dir_z_sc * trail_sc
                 py = sand_ground_sc + hump_sc
                 bg_offset_x[i] = px
                 bg_offset_y[i] = py
@@ -1553,8 +1562,8 @@ def animate_background(time: ti.f32):
                 # Tail anchor: behind body segment 6
                 anchor_crawl = ti.sin(time * 1.5 - 6.0 * 0.4 + phase * 3.0)
                 anchor_trail = -(6.0 * 2.8 + anchor_crawl * 0.4)
-                anchor_px = orbit_radius_sc * ti.cos(orbit_angle_sc) + dir_x_sc * anchor_trail
-                anchor_pz = orbit_radius_sc * ti.sin(orbit_angle_sc) + dir_z_sc * anchor_trail
+                anchor_px = cx_sc + dir_x_sc * anchor_trail
+                anchor_pz = cz_sc + dir_z_sc * anchor_trail
                 anchor_py = sand_ground_sc
 
                 # J-curve: backward then upward then forward lean
@@ -1597,8 +1606,8 @@ def animate_background(time: ti.f32):
                 head_crawl = ti.sin(time * 1.5 + phase * 3.0)
                 head_bunch_sc = head_crawl * 0.4
                 head_hump_sc = ti.max(0.0, head_crawl) * 0.8
-                head_px_sc = orbit_radius_sc * ti.cos(orbit_angle_sc) + dir_x_sc * (-head_bunch_sc)
-                head_pz_sc = orbit_radius_sc * ti.sin(orbit_angle_sc) + dir_z_sc * (-head_bunch_sc)
+                head_px_sc = cx_sc + dir_x_sc * (-head_bunch_sc)
+                head_pz_sc = cz_sc + dir_z_sc * (-head_bunch_sc)
                 head_py_sc = sand_ground_sc + head_hump_sc
 
                 # Pincer open/close cycle
@@ -1647,8 +1656,8 @@ def animate_background(time: ti.f32):
                 seg_trail = -(body_seg_sc * 2.8 + seg_crawl * 0.4)
                 seg_hump_sc = ti.max(0.0, seg_crawl) * 0.8
 
-                base_px_sc = orbit_radius_sc * ti.cos(orbit_angle_sc) + dir_x_sc * seg_trail
-                base_pz_sc = orbit_radius_sc * ti.sin(orbit_angle_sc) + dir_z_sc * seg_trail
+                base_px_sc = cx_sc + dir_x_sc * seg_trail
+                base_pz_sc = cz_sc + dir_z_sc * seg_trail
                 base_py_sc = sand_ground_sc + seg_hump_sc
 
                 # Alternating stride
@@ -1700,9 +1709,9 @@ def animate_background(time: ti.f32):
             perp_x_t = -dir_z_t
             perp_z_t = dir_x_t
 
-            # Center position on orbit
-            cx_t = orbit_radius_t * ti.cos(current_angle)
-            cz_t = orbit_radius_t * ti.sin(current_angle)
+            # Center position on orbit (reuse direction vectors)
+            cx_t = orbit_radius_t * dir_z_t   # = orbit_radius_t * cos(current_angle)
+            cz_t = -orbit_radius_t * dir_x_t  # = orbit_radius_t * sin(current_angle)
 
             # Jump arc height — explosive fast arc
             jump_y = 0.0
@@ -2324,9 +2333,11 @@ def animate_background(time: ti.f32):
                 # === MAIN BODY SEGMENTS ===
                 segment_spacing = 0.055
                 seg_angle = base_angle - seg_idx * segment_spacing
+                cos_sa = ti.cos(seg_angle)
+                sin_sa = ti.sin(seg_angle)
 
-                px = ti.cos(seg_angle) * swim_radius
-                pz = ti.sin(seg_angle) * swim_radius
+                px = cos_sa * swim_radius
+                pz = sin_sa * swim_radius
 
                 snake_wave = ti.sin(seg_idx * wave_freq - time * wave_speed)
                 y_offset = snake_wave * wave_height
@@ -2340,8 +2351,8 @@ def animate_background(time: ti.f32):
                     tail_intensity = (seg_idx - 14) * 0.7
                     tail_flap = ti.sin(time * 7.0 + seg_idx * 0.4) * tail_intensity
 
-                flap_x = -ti.sin(seg_angle) * tail_flap
-                flap_z = ti.cos(seg_angle) * tail_flap
+                flap_x = -sin_sa * tail_flap
+                flap_z = cos_sa * tail_flap
 
                 bg_offset_x[i] = px - bg_positions[i].x + flap_x
                 bg_offset_z[i] = pz - bg_positions[i].z + flap_z
@@ -2359,18 +2370,20 @@ def animate_background(time: ti.f32):
 
                 # Get exact head position
                 head_angle = base_angle
-                head_x = ti.cos(head_angle) * swim_radius
-                head_z = ti.sin(head_angle) * swim_radius
+                cos_ha = ti.cos(head_angle)
+                sin_ha = ti.sin(head_angle)
+                head_x = cos_ha * swim_radius
+                head_z = sin_ha * swim_radius
                 head_wave = ti.sin(0.0 * wave_freq - time * wave_speed)
                 head_y = head_wave * wave_height + 1.5
 
                 # Radial direction (inward/outward from circle center) = left/right of head
-                radial_x = ti.cos(head_angle)
-                radial_z = ti.sin(head_angle)
+                radial_x = cos_ha
+                radial_z = sin_ha
 
                 # Forward direction (tangent to circle = direction of travel)
-                forward_x = -ti.sin(head_angle)
-                forward_z = ti.cos(head_angle)
+                forward_x = -sin_ha
+                forward_z = cos_ha
 
                 # Side offset - closer together
                 side_offset = 2.0 if antenna_side == 0 else -2.0
@@ -2448,12 +2461,14 @@ def animate_background(time: ti.f32):
                 # Head position at moment of dive
                 dive_time = time - splash_t
                 head_angle = phase + dive_time * swim_speed_s
-                head_x = ti.cos(head_angle) * swim_radius_s
-                head_z = ti.sin(head_angle) * swim_radius_s
+                cos_ha = ti.cos(head_angle)
+                sin_ha = ti.sin(head_angle)
+                head_x = cos_ha * swim_radius_s
+                head_z = sin_ha * swim_radius_s
 
                 # Forward direction (tangent to swim circle = direction of travel)
-                forward_x = -ti.sin(head_angle)
-                forward_z = ti.cos(head_angle)
+                forward_x = -sin_ha
+                forward_z = cos_ha
 
                 # Offset splash forward in swim direction
                 splash_cx = head_x + forward_x * 6.0
@@ -2462,11 +2477,11 @@ def animate_background(time: ti.f32):
                 # Burst direction for this voxel (ring pattern)
                 burst_angle = splash_idx * (pi2 / num_splash)
 
-                # Local radial/tangent frame at splash position
-                radial_x = ti.cos(head_angle)
-                radial_z = ti.sin(head_angle)
-                tangent_x = -ti.sin(head_angle)
-                tangent_z = ti.cos(head_angle)
+                # Reuse cached trig for radial/tangent frame
+                radial_x = cos_ha
+                radial_z = sin_ha
+                tangent_x = -sin_ha
+                tangent_z = cos_ha
 
                 # Burst in local 2D plane
                 local_x = ti.cos(burst_angle)
