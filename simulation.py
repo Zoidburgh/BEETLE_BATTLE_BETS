@@ -2585,76 +2585,53 @@ def animate_background(time: ti.f32):
                 gravity_jf = 84.0
                 arc_y = water_min_y_jf + up_vel * jump_norm - gravity_jf * jump_norm * jump_norm
 
-                # Forward travel during jump (fish moves forward along orbit)
-                fwd_travel = jump_norm * 12.0 - 6.0  # -6 to +6
+                # Forward travel during jump
+                fwd_offset = jump_norm * 12.0 - 6.0  # -6 to +6
 
-                # Body pitch — nose up on ascent, level at peak, nose down on descent
-                pitch = (0.5 - jump_norm) * 2.0  # +1 ascending, 0 peak, -1 descending
-                pitch_up = pitch * 4.0  # Vertical offset per segment from pitch
+                # Body pitch — nose up on ascent, nose down on descent
+                # Envelope tapers pitch to 0 at start/end so whole fish enters water together
+                pitch_envelope = ti.min(jump_norm * 5.0, (1.0 - jump_norm) * 5.0)
+                pitch_envelope = ti.min(1.0, pitch_envelope)
+                pitch = (0.5 - jump_norm) * 2.0 * pitch_envelope
 
-                # Segment delay — trailing body parts lag behind
-                seg_delay = 0.0
-                seg_idx_jf = part_jf
-                if part_jf <= 11:
-                    seg_delay = part_jf * 0.015  # Body follows head
-                    seg_idx_jf = part_jf
-                elif part_jf <= 16:
-                    seg_delay = 11.0 * 0.015 + (part_jf - 11.0) * 0.01  # Tail fin
-                    seg_idx_jf = part_jf
-                elif part_jf <= 20:
-                    # Dorsal fin — attached to body segments 3-6
-                    seg_delay = (3.0 + (part_jf - 17.0)) * 0.015
-                elif part_jf <= 22:
-                    # Pectoral fins — attached to body segment 2
-                    seg_delay = 2.0 * 0.015
-                else:
-                    # Eyes — on head
-                    seg_delay = 0.0
-
-                # Delayed jump progress for this segment
-                delayed_norm = ti.max(0.0, ti.min(1.0, jump_norm - seg_delay * 3.0))
-                seg_arc_y = water_min_y_jf + up_vel * delayed_norm - gravity_jf * delayed_norm * delayed_norm
-                seg_fwd = delayed_norm * 12.0 - 6.0
-                seg_pitch = (0.5 - delayed_norm) * 2.0
-
-                # Body wave — subtle S-curve
+                # Body wave — subtle S-curve (also tapers at start/end)
                 body_wave = 0.0
                 if part_jf <= 11:
                     wave_phase = part_jf * 0.4 - time * 3.0
-                    body_wave = ti.sin(wave_phase) * 1.5 * (part_jf / 11.0)
+                    body_wave = ti.sin(wave_phase) * 1.5 * (part_jf / 11.0) * pitch_envelope
 
                 # Build position based on part type
-                px_jf = cx_jf + fwd_x * seg_fwd
-                py_jf = seg_arc_y
-                pz_jf = cz_jf + fwd_z * seg_fwd
+                px_jf = cx_jf + fwd_x * fwd_offset
+                py_jf = arc_y
+                pz_jf = cz_jf + fwd_z * fwd_offset
 
                 if part_jf <= 11:
                     # BODY SEGMENTS (0=head, 1-9=body, 10-11=peduncle)
                     trail = -part_jf * 2.2  # Space between segments
-                    px_jf = cx_jf + fwd_x * (seg_fwd + trail) + perp_x_jf * body_wave
-                    pz_jf = cz_jf + fwd_z * (seg_fwd + trail) + perp_z_jf * body_wave
-                    py_jf = seg_arc_y - part_jf * seg_pitch * 0.5
+                    px_jf = cx_jf + fwd_x * (fwd_offset + trail) + perp_x_jf * body_wave
+                    pz_jf = cz_jf + fwd_z * (fwd_offset + trail) + perp_z_jf * body_wave
+                    py_jf = arc_y - part_jf * pitch * 0.5
 
                 elif part_jf <= 16:
                     # TAIL FIN — fan behind peduncle
                     tail_i = part_jf - 12  # 0-4
                     tail_spread = (tail_i - 2.0) * 1.8  # -3.6 to +3.6
                     tail_trail = -11.0 * 2.2 - 3.0
-                    px_jf = cx_jf + fwd_x * (seg_fwd + tail_trail) + perp_x_jf * tail_spread
-                    pz_jf = cz_jf + fwd_z * (seg_fwd + tail_trail) + perp_z_jf * tail_spread
+                    px_jf = cx_jf + fwd_x * (fwd_offset + tail_trail) + perp_x_jf * tail_spread
+                    pz_jf = cz_jf + fwd_z * (fwd_offset + tail_trail) + perp_z_jf * tail_spread
                     # Tail fans out during jump
-                    fan_amount = ti.sin(delayed_norm * 3.14159) * 2.0
-                    py_jf = seg_arc_y - 11.0 * seg_pitch * 0.5 + (tail_i - 2.0) * fan_amount * 0.5
+                    fan_amount = ti.sin(jump_norm * 3.14159) * 2.0
+                    py_jf = arc_y - 11.0 * pitch * 0.5 + (tail_i - 2.0) * fan_amount * 0.5
 
                 elif part_jf <= 20:
                     # DORSAL FIN — on top of body segments 3-6
                     dorsal_seg = 3.0 + (part_jf - 17.0)
                     dorsal_trail = -dorsal_seg * 2.2
                     dorsal_wave_phase = dorsal_seg * 0.4 - time * 3.0
-                    dorsal_wave = ti.sin(dorsal_wave_phase) * 1.5 * (dorsal_seg / 11.0)
-                    px_jf = cx_jf + fwd_x * (seg_fwd + dorsal_trail) + perp_x_jf * dorsal_wave
-                    pz_jf = cz_jf + fwd_z * (seg_fwd + dorsal_trail) + perp_z_jf * dorsal_wave
-                    py_jf = seg_arc_y - dorsal_seg * seg_pitch * 0.5 + 2.5  # Above body
+                    dorsal_wave = ti.sin(dorsal_wave_phase) * 1.5 * (dorsal_seg / 11.0) * pitch_envelope
+                    px_jf = cx_jf + fwd_x * (fwd_offset + dorsal_trail) + perp_x_jf * dorsal_wave
+                    pz_jf = cz_jf + fwd_z * (fwd_offset + dorsal_trail) + perp_z_jf * dorsal_wave
+                    py_jf = arc_y - dorsal_seg * pitch * 0.5 + 2.5  # Above body
 
                 elif part_jf <= 22:
                     # PECTORAL FINS — left (21) right (22)
@@ -2662,19 +2639,19 @@ def animate_background(time: ti.f32):
                     pec_seg = 2.0  # Attached to segment 2
                     pec_trail = -pec_seg * 2.2
                     pec_wave_phase = pec_seg * 0.4 - time * 3.0
-                    pec_wave = ti.sin(pec_wave_phase) * 1.5 * (pec_seg / 11.0)
+                    pec_wave = ti.sin(pec_wave_phase) * 1.5 * (pec_seg / 11.0) * pitch_envelope
                     # Fins angle out from body
-                    flap_angle = ti.sin(delayed_norm * 3.14159) * 1.5  # Flap during jump
-                    px_jf = cx_jf + fwd_x * (seg_fwd + pec_trail) + perp_x_jf * (pec_wave + pec_side * (3.0 + flap_angle))
-                    pz_jf = cz_jf + fwd_z * (seg_fwd + pec_trail) + perp_z_jf * (pec_wave + pec_side * (3.0 + flap_angle))
-                    py_jf = seg_arc_y - pec_seg * seg_pitch * 0.5 - 1.0  # Below body
+                    flap_angle = ti.sin(jump_norm * 3.14159) * 1.5  # Flap during jump
+                    px_jf = cx_jf + fwd_x * (fwd_offset + pec_trail) + perp_x_jf * (pec_wave + pec_side * (3.0 + flap_angle))
+                    pz_jf = cz_jf + fwd_z * (fwd_offset + pec_trail) + perp_z_jf * (pec_wave + pec_side * (3.0 + flap_angle))
+                    py_jf = arc_y - pec_seg * pitch * 0.5 - 1.0  # Below body
 
                 else:
                     # EYES — left (23) right (24)
                     eye_side = -1.0 if part_jf < 24 else 1.0
-                    px_jf = cx_jf + fwd_x * (seg_fwd + 1.0) + perp_x_jf * eye_side * 1.5
-                    pz_jf = cz_jf + fwd_z * (seg_fwd + 1.0) + perp_z_jf * eye_side * 1.5
-                    py_jf = seg_arc_y + 1.0  # Top of head
+                    px_jf = cx_jf + fwd_x * (fwd_offset + 1.0) + perp_x_jf * eye_side * 1.5
+                    pz_jf = cz_jf + fwd_z * (fwd_offset + 1.0) + perp_z_jf * eye_side * 1.5
+                    py_jf = arc_y + 1.0  # Top of head
 
                 # Always visible during jump phase — let the whole body
                 # enter the water before hiding (cycle reset handles hide)
