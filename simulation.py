@@ -2547,20 +2547,20 @@ def animate_background(time: ti.f32):
             fish_id_jf = phase
             jump_offset_jf = speed
             water_min_y_jf = 14.0  # Lowest wave trough — hide below this
-            jump_period = 10.0     # Seconds per full cycle
+            jump_period = 8.0      # Seconds per full cycle
             orbit_radius_jf = 45.0
 
             # Jump cycle timing
             cycle_jf = (time + jump_offset_jf) % jump_period
 
-            if cycle_jf < 7.0:
+            if cycle_jf < 6.0:
                 # UNDERWATER — hidden, skip all math
                 bg_offset_y[i] = -200.0
                 bg_brightness[i] = 0.0
             else:
-                # JUMP PHASE (7.0 to 10.0 = 3 seconds of arc)
-                jump_t = cycle_jf - 7.0  # 0 to 3
-                jump_norm = jump_t / 3.0  # 0 to 1
+                # JUMP PHASE (6.0 to 8.0 = 2 seconds of arc)
+                jump_t = cycle_jf - 6.0  # 0 to 2
+                jump_norm = jump_t / 2.0  # 0 to 1
 
                 # Orbit position — fish advances angle each jump
                 jump_count = ti.floor((time + jump_offset_jf) / jump_period)
@@ -2578,10 +2578,11 @@ def animate_background(time: ti.f32):
                 cx_jf = orbit_radius_jf * cos_fa
                 cz_jf = orbit_radius_jf * sin_fa
 
-                # Parabolic arc: up fast, peak at middle, down
-                # Peak height ~20 above water (Y=17), so peak at Y~37
-                up_vel = 28.0
-                gravity_jf = 18.67  # Tuned so arc peaks at jump_norm=0.5
+                # Parabolic arc: starts at water, peaks at Y~35, returns to water
+                # For arc_y(0)=water and arc_y(1)=water: gravity must equal up_vel
+                # Peak at t=0.5: water + up_vel*0.25 → up_vel=84 gives peak 21 above water
+                up_vel = 84.0
+                gravity_jf = 84.0
                 arc_y = water_min_y_jf + up_vel * jump_norm - gravity_jf * jump_norm * jump_norm
 
                 # Forward travel during jump (fish moves forward along orbit)
@@ -2691,16 +2692,16 @@ def animate_background(time: ti.f32):
             sp_idx_fs = amplitude
             num_sp_fs = 16.0
             jump_offset_fs = speed
-            jump_period_fs = 10.0
+            jump_period_fs = 8.0
             orbit_radius_fs = 45.0
             water_y_fs = 17.0  # Water surface for splash height
 
             cycle_fs = (time + jump_offset_fs) % jump_period_fs
 
-            # Splash triggers at two moments: exit water (~7.15s) and re-enter (~9.85s)
+            # Splash triggers at two moments: exit water (~6.1s) and re-enter (~7.9s)
             # Pick the closest splash event
-            exit_time = 7.15
-            enter_time = 9.85
+            exit_time = 6.1
+            enter_time = 7.9
             splash_t_fs = -1.0
             splash_type = 0  # 0=exit(upward), 1=enter(downward)
 
@@ -5508,7 +5509,7 @@ def add_waves(count: int = 1600, seed: int = 42):
             break
 
         # Stagger jump timing so fish don't jump simultaneously
-        jump_offset = fish_id * 4.7  # ~5s offset between fish
+        jump_offset = fish_id * 3.7  # ~4s offset between fish (half cycle)
 
         for part in range(num_fish_parts):
             _bg_pos_np[idx] = [0.0, water_min_y, 0.0]
