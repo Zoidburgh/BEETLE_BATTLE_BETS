@@ -6086,6 +6086,120 @@ def add_desert(seed: int = 42):
             place_cactus_voxel(cx, fy, cz, 1.2, fc[0], fc[1], fc[2],
                                BG_ANIM_GLOW_PULSE, 1.0, 0.6, random.uniform(0, 6.28))
 
+    # === STAG BEETLE SPHINX ===
+    sphinx_angle = 2.5
+    sphinx_radius = 68.0
+    sphinx_cx = math.cos(sphinx_angle) * sphinx_radius
+    sphinx_cz = math.sin(sphinx_angle) * sphinx_radius
+    # Face toward arena center
+    face_angle = sphinx_angle + math.pi
+    fwd_x = math.cos(face_angle)
+    fwd_z = math.sin(face_angle)
+    side_x = -fwd_z  # perpendicular (left is negative side)
+    side_z = fwd_x
+
+    def sphinx_voxel(fwd, side, up, size, r, g, b, anim=BG_ANIM_NONE, spd=0.0, amp=0.0):
+        x = sphinx_cx + fwd_x * fwd + side_x * side
+        z = sphinx_cz + fwd_z * fwd + side_z * side
+        y = sand_y + up
+        place_cactus_voxel(x, y, z, size, r, g, b, anim, spd, amp, random.uniform(0, 6.28))
+
+    # --- BODY (3 layers, recumbent lion pose) ---
+    # Sandstone colors
+    body_r, body_g, body_b = 0.60, 0.48, 0.28
+    for layer in range(3):
+        up = 0.5 + layer * 2.0
+        # Taper: wider at front, narrower at back
+        length = 4 if layer < 2 else 3
+        width_range = [-2, 0, 2] if layer < 2 else [-1, 1]
+        for fi in range(length):
+            fwd = -6 + fi * 2.0
+            for si in width_range:
+                rv = body_r + random.uniform(-0.02, 0.02)
+                gv = body_g + random.uniform(-0.02, 0.02)
+                bv = body_b + random.uniform(-0.02, 0.02)
+                sphinx_voxel(fwd, si * 1.0, up, 2.2, rv, gv, bv)
+
+    # --- FRONT PAWS (extending forward, flat on ground) ---
+    paw_r, paw_g, paw_b = 0.58, 0.46, 0.27
+    for paw_side in [-2.5, 2.5]:
+        for paw_fwd in [2, 4, 6]:
+            sphinx_voxel(paw_fwd, paw_side, 0.3, 1.8,
+                         paw_r + random.uniform(-0.02, 0.02),
+                         paw_g + random.uniform(-0.02, 0.02),
+                         paw_b + random.uniform(-0.02, 0.02))
+
+    # --- RUMP (slightly raised at back) ---
+    for rump_side in [-1.5, 1.5]:
+        for rump_up in [3.5, 5.0]:
+            sphinx_voxel(-7, rump_side, rump_up, 2.0,
+                         paw_r + random.uniform(-0.02, 0.02),
+                         paw_g + random.uniform(-0.02, 0.02),
+                         paw_b + random.uniform(-0.02, 0.02))
+
+    # --- BEETLE HEAD (wider than body, 3 layers) ---
+    head_r, head_g, head_b = 0.55, 0.43, 0.25
+    # Layer 0: wide base
+    for si in [-3, -1.5, 0, 1.5, 3]:
+        sphinx_voxel(1, si, 5.5, 2.0,
+                     head_r + random.uniform(-0.02, 0.02),
+                     head_g + random.uniform(-0.02, 0.02),
+                     head_b + random.uniform(-0.02, 0.02))
+    # Layer 1: mid head
+    for si in [-2.5, -1, 0, 1, 2.5]:
+        sphinx_voxel(2, si, 7.0, 1.8,
+                     head_r + random.uniform(-0.02, 0.02),
+                     head_g + random.uniform(-0.02, 0.02),
+                     head_b + random.uniform(-0.02, 0.02))
+    # Layer 2: top of head (narrower)
+    for si in [-1.5, 0, 1.5]:
+        sphinx_voxel(1.5, si, 8.5, 1.8,
+                     head_r + random.uniform(-0.02, 0.02),
+                     head_g + random.uniform(-0.02, 0.02),
+                     head_b + random.uniform(-0.02, 0.02))
+
+    # --- NEMES HEADDRESS (drapes down sides of head) ---
+    nemes_r, nemes_g, nemes_b = 0.48, 0.38, 0.22
+    for nemes_side in [-3.5, 3.5]:
+        for nemes_up in [4.0, 2.5]:
+            sphinx_voxel(0.5, nemes_side, nemes_up, 1.5, nemes_r, nemes_g, nemes_b)
+
+    # --- MANDIBLES (signature stag beetle horns!) ---
+    mandible_r, mandible_g, mandible_b = 0.50, 0.40, 0.24
+    # Left mandible: sweeping J-curve forward, out, up, then back inward
+    left_mandible = [
+        (4.0, -2.5, 6.0, 1.5),    # base
+        (5.5, -3.5, 6.5, 1.4),    # sweeping out
+        (7.0, -4.5, 7.0, 1.3),    # further out and up
+        (8.5, -5.0, 7.5, 1.3),    # widest point
+        (10.0, -4.5, 8.0, 1.2),   # curving back in
+        (11.0, -3.5, 8.5, 1.2),
+        (12.0, -2.5, 9.0, 1.1),
+    ]
+    for fwd, side, up, sz in left_mandible:
+        sphinx_voxel(fwd, side, up, sz,
+                     mandible_r + random.uniform(-0.02, 0.02),
+                     mandible_g + random.uniform(-0.02, 0.02),
+                     mandible_b + random.uniform(-0.02, 0.02))
+    # Right mandible: mirror
+    for fwd, side, up, sz in left_mandible:
+        sphinx_voxel(fwd, -side, up, sz,
+                     mandible_r + random.uniform(-0.02, 0.02),
+                     mandible_g + random.uniform(-0.02, 0.02),
+                     mandible_b + random.uniform(-0.02, 0.02))
+
+    # Mandible tips (glowing gold)
+    sphinx_voxel(12.5, -1.5, 9.2, 1.0, 0.85, 0.70, 0.15,
+                 BG_ANIM_GLOW_PULSE, 0.8, 0.6)
+    sphinx_voxel(12.5, 1.5, 9.2, 1.0, 0.85, 0.70, 0.15,
+                 BG_ANIM_GLOW_PULSE, 0.8, 0.6)
+
+    # --- EYES (glowing compound eyes) ---
+    sphinx_voxel(3.0, -1.8, 8.0, 0.9, 0.85, 0.70, 0.15,
+                 BG_ANIM_GLOW_PULSE, 1.0, 0.5)
+    sphinx_voxel(3.0, 1.8, 8.0, 0.9, 0.85, 0.70, 0.15,
+                 BG_ANIM_GLOW_PULSE, 1.0, 0.5)
+
     # === DUST DEVILS (3 cyclones, 200 tiny particles each) ===
     cyclone_spots = [
         (math.cos(0.8) * 30, math.sin(0.8) * 30),
