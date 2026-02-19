@@ -6088,7 +6088,7 @@ def add_desert(seed: int = 42):
 
     # === STAG BEETLE SPHINX ===
     sphinx_angle = 2.5
-    sphinx_radius = 68.0
+    sphinx_radius = 78.0
     sphinx_cx = math.cos(sphinx_angle) * sphinx_radius
     sphinx_cz = math.sin(sphinx_angle) * sphinx_radius
     # Face toward arena center
@@ -6098,11 +6098,12 @@ def add_desert(seed: int = 42):
     side_x = -fwd_z  # perpendicular (left is negative side)
     side_z = fwd_x
 
+    S = 2.0  # Scale factor
     def sphinx_voxel(fwd, side, up, size, r, g, b, anim=BG_ANIM_NONE, spd=0.0, amp=0.0):
-        x = sphinx_cx + fwd_x * fwd + side_x * side
-        z = sphinx_cz + fwd_z * fwd + side_z * side
-        y = sand_y + up
-        place_cactus_voxel(x, y, z, size, r, g, b, anim, spd, amp, random.uniform(0, 6.28))
+        x = sphinx_cx + fwd_x * fwd * S + side_x * side * S
+        z = sphinx_cz + fwd_z * fwd * S + side_z * side * S
+        y = sand_y + up * S
+        place_cactus_voxel(x, y, z, size * S, r, g, b, anim, spd, amp, random.uniform(0, 6.28))
 
     # --- BODY (3 layers, recumbent lion pose) ---
     # Sandstone colors
