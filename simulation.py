@@ -2570,73 +2570,112 @@ def animate_background(time: ti.f32):
                 # Head's normalized arc position (can exceed 1.0 in jump window)
                 pn_head_d = (cycle_d - underwater_d) / arc_dur_d
 
-                # Map part to body segment index (distance behind head)
-                body_seg_d = 0.0
-                if part_d <= 8.0:
-                    body_seg_d = part_d        # Main body chain
-                elif part_d <= 10.0:
-                    body_seg_d = 9.0           # Flukes behind tail stock
-                elif part_d <= 11.0:
-                    body_seg_d = 4.0           # Dorsal at mid-body
-                elif part_d <= 13.0:
-                    body_seg_d = 2.0           # Flippers at front body
+                if part_d > 15.5:
+                    # === BLOWHOLE SPRAY (parts 16-23) ===
+                    # Brief upward mist burst at the peak of the jump
+                    spray_idx_d = part_d - 16.0
+                    spray_start_d = 0.40
+                    spray_end_d = 0.62
+                    spray_norm_d = (pn_head_d - spray_start_d) / (spray_end_d - spray_start_d)
+
+                    if spray_norm_d > 0.0 and spray_norm_d < 1.0:
+                        # Head position on the arc
+                        head_pn_d = pn_head_d - 1.0 * seg_sp_d / travel_d
+                        head_arc_d = water_y_d + peak_h_d * 4.0 * head_pn_d * (1.0 - head_pn_d)
+
+                        # Orbit (same calc as body)
+                        jc_d = ti.floor((time + jump_offset_d) / period_d)
+                        da_d = jc_d * 0.8 + dolphin_id_d * 3.14
+                        cos_da = ti.cos(da_d)
+                        sin_da = ti.sin(da_d)
+                        fx_d = -sin_da
+                        fz_d = cos_da
+                        cx_d = orbit_r_d * cos_da
+                        cz_d = orbit_r_d * sin_da
+
+                        head_fwd_d = (head_pn_d - 0.5) * travel_d
+                        hx_d = cx_d + fx_d * head_fwd_d
+                        hz_d = cz_d + fz_d * head_fwd_d
+
+                        # Spray cone — 8 particles evenly spaced in a ring
+                        sp_ang_d = spray_idx_d * (6.28318 / 8.0)
+                        sp_rise = 1.0 + ti.sin(spray_idx_d * 3.7) * 0.3  # per-particle variation
+                        sp_horiz_d = spray_norm_d * 3.5 * sp_rise
+                        sp_up_d = (3.0 + spray_norm_d * 12.0) * sp_rise
+
+                        out_x_d = hx_d + ti.cos(sp_ang_d) * sp_horiz_d
+                        out_y_d = head_arc_d + sp_up_d
+                        out_z_d = hz_d + ti.sin(sp_ang_d) * sp_horiz_d
+                        out_b_d = 1.0 - spray_norm_d * 0.7  # fade as they rise
+
                 else:
-                    body_seg_d = 1.0           # Eyes on head
+                    # === BODY (parts 0-15) ===
+                    # Map part to body segment index (distance behind head)
+                    body_seg_d = 0.0
+                    if part_d <= 8.0:
+                        body_seg_d = part_d        # Main body chain
+                    elif part_d <= 10.0:
+                        body_seg_d = 9.0           # Flukes behind tail stock
+                    elif part_d <= 11.0:
+                        body_seg_d = 4.0           # Dorsal at mid-body
+                    elif part_d <= 13.0:
+                        body_seg_d = 2.0           # Flippers at front body
+                    else:
+                        body_seg_d = 1.0           # Eyes on head
 
-                # This segment's position on the parabola
-                # (behind the head by body_seg * spacing / travel)
-                seg_pn_d = pn_head_d - body_seg_d * seg_sp_d / travel_d
+                    # This segment's position on the parabola
+                    seg_pn_d = pn_head_d - body_seg_d * seg_sp_d / travel_d
 
-                # Arc height — naturally negative outside [0,1] → below water
-                arc_y_d = water_y_d + peak_h_d * 4.0 * seg_pn_d * (1.0 - seg_pn_d)
+                    # Arc height — naturally negative outside [0,1] → below water
+                    arc_y_d = water_y_d + peak_h_d * 4.0 * seg_pn_d * (1.0 - seg_pn_d)
 
-                # Hide threshold at wave surface (Y=17) so spheres emerge
-                # from the water cleanly, not from below
-                if arc_y_d > water_y_d + 3.0:
-                    # Orbit — advances angle each jump
-                    jc_d = ti.floor((time + jump_offset_d) / period_d)
-                    da_d = jc_d * 0.8 + dolphin_id_d * 3.14
-                    cos_da = ti.cos(da_d)
-                    sin_da = ti.sin(da_d)
+                    # Hide threshold at wave surface (Y=17) so spheres emerge
+                    # from the water cleanly, not from below
+                    if arc_y_d > water_y_d + 3.0:
+                        # Orbit — advances angle each jump
+                        jc_d = ti.floor((time + jump_offset_d) / period_d)
+                        da_d = jc_d * 0.8 + dolphin_id_d * 3.14
+                        cos_da = ti.cos(da_d)
+                        sin_da = ti.sin(da_d)
 
-                    fx_d = -sin_da      # Forward (tangent to orbit)
-                    fz_d = cos_da
-                    lx_d = -fz_d        # Lateral (perpendicular)
-                    lz_d = fx_d
+                        fx_d = -sin_da      # Forward (tangent to orbit)
+                        fz_d = cos_da
+                        lx_d = -fz_d        # Lateral (perpendicular)
+                        lz_d = fx_d
 
-                    cx_d = orbit_r_d * cos_da
-                    cz_d = orbit_r_d * sin_da
+                        cx_d = orbit_r_d * cos_da
+                        cz_d = orbit_r_d * sin_da
 
-                    # Forward position from arc parameter
-                    seg_fwd_d = (seg_pn_d - 0.5) * travel_d
+                        # Forward position from arc parameter
+                        seg_fwd_d = (seg_pn_d - 0.5) * travel_d
 
-                    out_x_d = cx_d + fx_d * seg_fwd_d
-                    out_y_d = arc_y_d
-                    out_z_d = cz_d + fz_d * seg_fwd_d
+                        out_x_d = cx_d + fx_d * seg_fwd_d
+                        out_y_d = arc_y_d
+                        out_z_d = cz_d + fz_d * seg_fwd_d
 
-                    # Attached-part offsets (scaled 2x for bigger dolphin)
-                    if part_d > 8.5 and part_d < 10.5:
-                        # TAIL FLUKES — horizontal spread
-                        fluke_s = (part_d - 9.5) * 2.0
-                        out_x_d += lx_d * fluke_s * 5.0
-                        out_z_d += lz_d * fluke_s * 5.0
-                    elif part_d > 10.5 and part_d < 11.5:
-                        # DORSAL FIN — on top of body
-                        out_y_d += 5.0
-                    elif part_d > 11.5 and part_d < 13.5:
-                        # PECTORAL FLIPPERS — spread from body
-                        flip_s = (part_d - 12.5) * 2.0
-                        out_x_d += lx_d * flip_s * 6.0
-                        out_z_d += lz_d * flip_s * 6.0
-                        out_y_d -= 1.6
-                    elif part_d > 13.5:
-                        # EYES — on head sides
-                        eye_s = (part_d - 14.5) * 2.0
-                        out_x_d += lx_d * eye_s * 2.4 + fx_d * 1.6
-                        out_z_d += lz_d * eye_s * 2.4 + fz_d * 1.6
-                        out_y_d += 1.0
+                        # Attached-part offsets (scaled 2x for bigger dolphin)
+                        if part_d > 8.5 and part_d < 10.5:
+                            # TAIL FLUKES — horizontal spread
+                            fluke_s = (part_d - 9.5) * 2.0
+                            out_x_d += lx_d * fluke_s * 5.0
+                            out_z_d += lz_d * fluke_s * 5.0
+                        elif part_d > 10.5 and part_d < 11.5:
+                            # DORSAL FIN — on top of body
+                            out_y_d += 5.0
+                        elif part_d > 11.5 and part_d < 13.5:
+                            # PECTORAL FLIPPERS — spread from body
+                            flip_s = (part_d - 12.5) * 2.0
+                            out_x_d += lx_d * flip_s * 6.0
+                            out_z_d += lz_d * flip_s * 6.0
+                            out_y_d -= 1.6
+                        elif part_d > 13.5:
+                            # EYES — on head sides
+                            eye_s = (part_d - 14.5) * 2.0
+                            out_x_d += lx_d * eye_s * 2.4 + fx_d * 1.6
+                            out_z_d += lz_d * eye_s * 2.4 + fz_d * 1.6
+                            out_y_d += 1.0
 
-                    out_b_d = 1.0
+                        out_b_d = 1.0
 
             bg_offset_x[i] = out_x_d
             bg_offset_y[i] = out_y_d
@@ -5450,7 +5489,7 @@ def add_waves(count: int = 1600, seed: int = 42):
     # === ADD JUMPING DOLPHINS (2 dolphins) ===
     # Base pos (0,0,0) — animation offsets are absolute world coordinates
     num_dolphins = 2
-    num_dolphin_parts = 16   # Body parts per dolphin
+    num_dolphin_parts = 24   # Body parts per dolphin (0-15 body, 16-23 blowhole spray)
     num_dolphin_splash = 16  # Splash particles per dolphin
 
     for dolph_id in range(num_dolphins):
@@ -5503,10 +5542,15 @@ def add_waves(count: int = 1600, seed: int = 42):
                 # PECTORAL FLIPPERS (12-13)
                 _bg_col_np[idx] = [0.38, 0.41, 0.48]
                 _bg_size_np[idx] = 2.0
-            else:
+            elif part <= 15:
                 # EYES (14-15)
                 _bg_col_np[idx] = [0.03, 0.03, 0.05]
                 _bg_size_np[idx] = 1.0
+            else:
+                # BLOWHOLE SPRAY (16-23) — small misty droplets
+                white_amt = random.uniform(0.5, 0.9)
+                _bg_col_np[idx] = [0.7 + 0.3 * white_amt, 0.78 + 0.22 * white_amt, 0.88 + 0.12 * white_amt]
+                _bg_size_np[idx] = random.uniform(0.6, 1.2)
 
             idx += 1
 
