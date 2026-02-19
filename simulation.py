@@ -1382,138 +1382,139 @@ def animate_background(time: ti.f32):
 
         elif anim == BG_ANIM_DUST_DEVIL:
             # Desert dust devil: sand lifts from ground, chaotic funnel, blows far away
-            # amplitude = particle index (0-199), phase = cyclone ID, speed = anim speed
+            # amplitude = particle index (0-374), phase = cyclone ID
+            # Pre-computed at init: bg_positions.y = chaos1, bg_angle = chaos2
             p_id = amplitude
-            height_t = p_id / 374.0  # 0=ground, 1=top
-            base_ang = p_id * 2.39996  # golden angle
-
-            # Cyclone base position stored in bg_positions
-            base_x = bg_positions[i][0]
-            base_z = bg_positions[i][2]
             sand_y_dd = 18.0
 
-            # Per-particle chaos seeds
-            chaos1 = ti.sin(p_id * 7.13 + phase * 3.7)
-            chaos2 = ti.cos(p_id * 11.3 + phase * 5.1)
-            chaos3 = ti.sin(p_id * 4.91 + phase * 8.3)
-
-            # 22s lifecycle, staggered by phase
+            # 22s lifecycle, staggered by phase — check FIRST for early skip
             cycle = (time + phase * 7.0) % 22.0
 
-            # Drift center — wander wide with Lissajous, clamped to sand annulus
-            drift_x = base_x + 22.0 * ti.sin(time * 0.3 + phase * 2.0) + 8.0 * ti.sin(time * 0.55 + phase * 5.0)
-            drift_z = base_z + 22.0 * ti.cos(time * 0.25 + phase * 3.3) + 8.0 * ti.cos(time * 0.45 + phase * 4.1)
-            drift_dist = ti.sqrt(drift_x * drift_x + drift_z * drift_z) + 0.001
-            if drift_dist < 35.0:
-                drift_x = drift_x * 35.0 / drift_dist
-                drift_z = drift_z * 35.0 / drift_dist
-            elif drift_dist > 55.0:
-                drift_x = drift_x * 55.0 / drift_dist
-                drift_z = drift_z * 55.0 / drift_dist
-            cx_dd = drift_x
-            cz_dd = drift_z
-
-            # Funnel: narrow tip at ground, wide chaotic top
-            funnel_r = 0.3 + height_t * height_t * 7.0
-            funnel_h = height_t * 37.5
-            spin_speed = 7.0 + height_t * 4.0  # fast spin, faster at top
-            spin_ang = base_ang + time * spin_speed
-            cos_spin = ti.cos(spin_ang)
-            sin_spin = ti.sin(spin_ang)
-
-            # Per-particle chaos wobble
-            wobble_r = 1.2 * ti.sin(time * 3.1 + p_id * 0.37) * (0.3 + height_t * 0.7)
-            wobble_h = 1.0 * ti.sin(time * 2.3 + p_id * 0.53)
-            wobble_tang = 0.7 * ti.cos(time * 2.7 + p_id * 0.71)
-
-            if cycle < 3.0:
-                # EMERGE: sand lifts off the floor surface into funnel
-                emerge_t = cycle / 3.0
-                smooth_e = emerge_t * emerge_t * (3.0 - 2.0 * emerge_t)
-
-                # Start: scattered on the sand surface
-                start_r = 2.0 + (p_id % 30) * 0.15
-                start_ang_e = base_ang + chaos1 * 2.0
-                start_x = cx_dd + start_r * ti.cos(start_ang_e)
-                start_z = cz_dd + start_r * ti.sin(start_ang_e)
-                start_y = sand_y_dd
-
-                # Target: funnel position
-                tgt_r = funnel_r + wobble_r
-                tgt_x = cx_dd + tgt_r * cos_spin + wobble_tang * sin_spin
-                tgt_z = cz_dd + tgt_r * sin_spin - wobble_tang * cos_spin
-                tgt_y = sand_y_dd + funnel_h + wobble_h
-
-                # Lower particles emerge first
-                p_delay = height_t * 0.7
-                local_t = ti.max(0.0, (smooth_e - p_delay) / (1.0 - p_delay + 0.001))
-
-                px = start_x * (1.0 - local_t) + tgt_x * local_t
-                pz = start_z * (1.0 - local_t) + tgt_z * local_t
-                py = start_y * (1.0 - local_t) + tgt_y * local_t
-
-                bg_offset_x[i] = px
-                bg_offset_y[i] = py
-                bg_offset_z[i] = pz
-                bg_brightness[i] = 1.0
-
-            elif cycle < 12.0:
-                # ACTIVE: chaotic spinning funnel
-                act_r = funnel_r + wobble_r
-                px = cx_dd + act_r * cos_spin + wobble_tang * sin_spin
-                pz = cz_dd + act_r * sin_spin - wobble_tang * cos_spin
-                py = sand_y_dd + funnel_h + wobble_h
-
-                # Extra jitter for chaos
-                jit_x = 0.6 * ti.sin(time * 5.3 + p_id * 1.17)
-                jit_z = 0.6 * ti.cos(time * 4.7 + p_id * 1.31)
-                jit_y = 0.4 * ti.sin(time * 4.1 + p_id * 0.89)
-
-                bg_offset_x[i] = px + jit_x
-                bg_offset_y[i] = py + jit_y
-                bg_offset_z[i] = pz + jit_z
-                bg_brightness[i] = 1.0
-
-            elif cycle < 19.0:
-                # DISSIPATE: blow waaay far away in all directions
-                fly_t = cycle - 12.0  # 0 to 7 seconds
-
-                # Each particle gets unique gust direction
-                gust_ang_d = base_ang + chaos1 * 1.5 + chaos2 * 0.8
-                gust_dx = ti.cos(gust_ang_d)
-                gust_dz = ti.sin(gust_ang_d)
-                perp_dx = -gust_dz
-                perp_dz = gust_dx
-
-                # Snapshot of last funnel position
-                act_r = funnel_r + wobble_r
-                last_x = cx_dd + act_r * cos_spin
-                last_z = cz_dd + act_r * sin_spin
-                last_y = sand_y_dd + funnel_h
-
-                # Massive accelerating push into the distance
-                push = fly_t * fly_t * 24.0
-                lift = fly_t * 8.0
-                # Swirl around gust direction
-                swirl_r = fly_t * 4.8
-                swirl_x = swirl_r * ti.sin(time * 4.0 + p_id * 3.0)
-                swirl_z = swirl_r * ti.cos(time * 4.0 + p_id * 3.0)
-
-                px = last_x + gust_dx * push + swirl_x * perp_dx
-                pz = last_z + gust_dz * push + swirl_z * perp_dz
-                py = last_y + lift + swirl_z
-
-                bg_offset_x[i] = px
-                bg_offset_y[i] = py
-                bg_offset_z[i] = pz
-                bg_brightness[i] = 1.0
-
-            else:
-                # HIDDEN: waiting to respawn
-                bg_offset_x[i] = base_x
+            if cycle >= 19.0:
+                # HIDDEN: waiting to respawn — skip all expensive math
+                bg_offset_x[i] = bg_positions[i][0]
                 bg_offset_y[i] = -200.0
-                bg_offset_z[i] = base_z
+                bg_offset_z[i] = bg_positions[i][2]
                 bg_brightness[i] = 0.0
+            else:
+                height_t = p_id / 374.0  # 0=ground, 1=top
+                base_ang = p_id * 2.39996  # golden angle
+
+                # Cyclone base position stored in bg_positions
+                base_x = bg_positions[i][0]
+                base_z = bg_positions[i][2]
+
+                # Pre-computed chaos seeds (stored at init, no trig needed)
+                chaos1 = bg_positions[i][1]
+                chaos2 = bg_angle[i]
+
+                # Drift center — wander wide with Lissajous, clamped to sand annulus
+                drift_x = base_x + 22.0 * ti.sin(time * 0.3 + phase * 2.0) + 8.0 * ti.sin(time * 0.55 + phase * 5.0)
+                drift_z = base_z + 22.0 * ti.cos(time * 0.25 + phase * 3.3) + 8.0 * ti.cos(time * 0.45 + phase * 4.1)
+                drift_dist = ti.sqrt(drift_x * drift_x + drift_z * drift_z) + 0.001
+                if drift_dist < 35.0:
+                    drift_x = drift_x * 35.0 / drift_dist
+                    drift_z = drift_z * 35.0 / drift_dist
+                elif drift_dist > 55.0:
+                    drift_x = drift_x * 55.0 / drift_dist
+                    drift_z = drift_z * 55.0 / drift_dist
+                cx_dd = drift_x
+                cz_dd = drift_z
+
+                # Funnel: narrow tip at ground, wide chaotic top
+                funnel_r = 0.3 + height_t * height_t * 7.0
+                funnel_h = height_t * 37.5
+                spin_speed = 7.0 + height_t * 4.0  # fast spin, faster at top
+                spin_ang = base_ang + time * spin_speed
+                cos_spin = ti.cos(spin_ang)
+                sin_spin = ti.sin(spin_ang)
+
+                # Per-particle chaos wobble
+                wobble_r = 1.2 * ti.sin(time * 3.1 + p_id * 0.37) * (0.3 + height_t * 0.7)
+                wobble_h = 1.0 * ti.sin(time * 2.3 + p_id * 0.53)
+                wobble_tang = 0.7 * ti.cos(time * 2.7 + p_id * 0.71)
+
+                if cycle < 3.0:
+                    # EMERGE: sand lifts off the floor surface into funnel
+                    emerge_t = cycle / 3.0
+                    smooth_e = emerge_t * emerge_t * (3.0 - 2.0 * emerge_t)
+
+                    # Start: scattered on the sand surface
+                    start_r = 2.0 + (p_id % 30) * 0.15
+                    start_ang_e = base_ang + chaos1 * 2.0
+                    start_x = cx_dd + start_r * ti.cos(start_ang_e)
+                    start_z = cz_dd + start_r * ti.sin(start_ang_e)
+                    start_y = sand_y_dd
+
+                    # Target: funnel position
+                    tgt_r = funnel_r + wobble_r
+                    tgt_x = cx_dd + tgt_r * cos_spin + wobble_tang * sin_spin
+                    tgt_z = cz_dd + tgt_r * sin_spin - wobble_tang * cos_spin
+                    tgt_y = sand_y_dd + funnel_h + wobble_h
+
+                    # Lower particles emerge first
+                    p_delay = height_t * 0.7
+                    local_t = ti.max(0.0, (smooth_e - p_delay) / (1.0 - p_delay + 0.001))
+
+                    px = start_x * (1.0 - local_t) + tgt_x * local_t
+                    pz = start_z * (1.0 - local_t) + tgt_z * local_t
+                    py = start_y * (1.0 - local_t) + tgt_y * local_t
+
+                    bg_offset_x[i] = px
+                    bg_offset_y[i] = py
+                    bg_offset_z[i] = pz
+                    bg_brightness[i] = 1.0
+
+                elif cycle < 12.0:
+                    # ACTIVE: chaotic spinning funnel
+                    act_r = funnel_r + wobble_r
+                    px = cx_dd + act_r * cos_spin + wobble_tang * sin_spin
+                    pz = cz_dd + act_r * sin_spin - wobble_tang * cos_spin
+                    py = sand_y_dd + funnel_h + wobble_h
+
+                    # Extra jitter for chaos
+                    jit_x = 0.6 * ti.sin(time * 5.3 + p_id * 1.17)
+                    jit_z = 0.6 * ti.cos(time * 4.7 + p_id * 1.31)
+                    jit_y = 0.4 * ti.sin(time * 4.1 + p_id * 0.89)
+
+                    bg_offset_x[i] = px + jit_x
+                    bg_offset_y[i] = py + jit_y
+                    bg_offset_z[i] = pz + jit_z
+                    bg_brightness[i] = 1.0
+
+                else:
+                    # DISSIPATE: blow waaay far away in all directions
+                    fly_t = cycle - 12.0  # 0 to 7 seconds
+
+                    # Each particle gets unique gust direction
+                    gust_ang_d = base_ang + chaos1 * 1.5 + chaos2 * 0.8
+                    gust_dx = ti.cos(gust_ang_d)
+                    gust_dz = ti.sin(gust_ang_d)
+                    perp_dx = -gust_dz
+                    perp_dz = gust_dx
+
+                    # Snapshot of last funnel position
+                    act_r = funnel_r + wobble_r
+                    last_x = cx_dd + act_r * cos_spin
+                    last_z = cz_dd + act_r * sin_spin
+                    last_y = sand_y_dd + funnel_h
+
+                    # Massive accelerating push into the distance
+                    push = fly_t * fly_t * 24.0
+                    lift = fly_t * 8.0
+                    # Swirl around gust direction
+                    swirl_r = fly_t * 4.8
+                    swirl_x = swirl_r * ti.sin(time * 4.0 + p_id * 3.0)
+                    swirl_z = swirl_r * ti.cos(time * 4.0 + p_id * 3.0)
+
+                    px = last_x + gust_dx * push + swirl_x * perp_dx
+                    pz = last_z + gust_dz * push + swirl_z * perp_dz
+                    py = last_y + lift + swirl_z
+
+                    bg_offset_x[i] = px
+                    bg_offset_y[i] = py
+                    bg_offset_z[i] = pz
+                    bg_brightness[i] = 1.0
 
         elif anim == BG_ANIM_SCORPION:
             # Desert scorpion: ground orbit with crawl, tail curl, claw snaps, leg stride
@@ -6106,13 +6107,17 @@ def add_desert(seed: int = 42):
             else:
                 base_col = random.uniform(0.55, 0.68)
                 rc, gc, bc = base_col, base_col * 0.68, base_col * 0.35
-            _bg_pos_np[idx] = [cx_dd, 0, cz_dd]
+            # Pre-compute chaos seeds (constant per particle, saves 3 trig/frame)
+            chaos1_val = math.sin(p * 7.13 + ci_dd * 3.7)
+            chaos2_val = math.cos(p * 11.3 + ci_dd * 5.1)
+            _bg_pos_np[idx] = [cx_dd, chaos1_val, cz_dd]  # .y stores chaos1
             _bg_col_np[idx] = [rc, gc, bc]
             _bg_size_np[idx] = random.uniform(0.15, 0.45)
             _bg_anim_type_np[idx] = BG_ANIM_DUST_DEVIL
             _bg_anim_speed_np[idx] = 1.0
             _bg_anim_amp_np[idx] = float(p)
             _bg_phase_np[idx] = float(ci_dd)
+            _bg_angle_np[idx] = chaos2_val  # stores chaos2
             _bg_brightness_np[idx] = 0.0
             _bg_offset_x_np[idx] = 0.0
             _bg_offset_y_np[idx] = -200.0
