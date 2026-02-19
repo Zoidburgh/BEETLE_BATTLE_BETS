@@ -231,6 +231,8 @@ BG_ANIM_TOAD = 31           # Toad: hopping orbit with idle breathing + throat p
 BG_ANIM_MUD_SPLASH = 32     # Mud splash: burst on toad landing
 BG_ANIM_JUMPING_FISH = 33   # Dolphin: periodic jump arc above waves
 BG_ANIM_FISH_SPLASH = 34    # Splash burst on dolphin water entry/exit
+BG_ANIM_SQUID_TENTACLE = 35 # Giant squid tentacle chain
+BG_ANIM_SQUID_SPLASH = 36   # Splash on tentacle emerge/plunge
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -2748,6 +2750,226 @@ def animate_background(time: ti.f32):
                     bg_offset_z[i] = spz_ds
                     fade_ds = ti.max(0.0, 1.0 - splash_t_ds * 0.6)
                     bg_brightness[i] = fade_ds
+                else:
+                    bg_offset_y[i] = -200.0
+                    bg_brightness[i] = 0.0
+            else:
+                bg_offset_y[i] = -200.0
+                bg_brightness[i] = 0.0
+
+        elif anim == BG_ANIM_SQUID_TENTACLE:
+            # Giant squid tentacle: chain of 24 segments per tentacle, 3 tentacles
+            # amplitude = segment index (0-23), phase = tentacle ID (0-2), speed = cycle offset
+            seg_sq = amplitude           # 0 = base, 23 = tip
+            tent_id_sq = phase           # 0, 1, or 2
+            cycle_off_sq = speed
+            water_y_sq = 15.5            # Water surface
+            period_sq = 20.0             # Full cycle (TEST — normally 45)
+            underwater_sq = 14.0         # Hidden phase duration (TEST — normally 39)
+            event_dur_sq = 6.0           # Total event window
+            rise_dur_sq = 1.8            # Rise phase
+            writhe_dur_sq = 2.4          # Writhe phase
+            plunge_dur_sq = 1.8          # Plunge phase
+            orbit_r_sq = 68.0            # Orbital radius
+            link_len_sq = 1.8            # Distance between segment centers (keeps segments touching)
+            num_seg_sq = 12.0
+            peak_reach_sq = 32.0         # How high tentacles reach above water
+
+            cycle_sq = (time + cycle_off_sq) % period_sq
+
+            # Pre-init (Taichi requirement)
+            out_x_sq = 0.0
+            out_y_sq = -200.0
+            out_z_sq = 0.0
+            out_b_sq = 0.0
+
+            if cycle_sq >= underwater_sq:
+                event_t_sq = cycle_sq - underwater_sq
+                event_norm_sq = event_t_sq / event_dur_sq
+
+                # Timing stagger per tentacle (~0.15s between each)
+                stagger_sq = tent_id_sq * 0.15
+                local_t_sq = event_t_sq - stagger_sq
+                local_norm_sq = local_t_sq / event_dur_sq
+
+                if local_t_sq >= 0.0 and local_t_sq <= event_dur_sq:
+                    # === PHASE-DRIVEN BASE ANGLE (smoothstep crossfaded) ===
+                    xfade_sq = 0.3  # Crossfade half-width in seconds
+                    t1_sq = rise_dur_sq
+                    t2_sq = rise_dur_sq + writhe_dur_sq
+
+                    # Smoothstep blend at rise/writhe boundary
+                    raw1_sq = ti.max(0.0, ti.min(1.0, (local_t_sq - (t1_sq - xfade_sq)) / (2.0 * xfade_sq)))
+                    blend1_sq = raw1_sq * raw1_sq * (3.0 - 2.0 * raw1_sq)
+                    # Smoothstep blend at writhe/plunge boundary
+                    raw2_sq = ti.max(0.0, ti.min(1.0, (local_t_sq - (t2_sq - xfade_sq)) / (2.0 * xfade_sq)))
+                    blend2_sq = raw2_sq * raw2_sq * (3.0 - 2.0 * raw2_sq)
+
+                    w_rise_sq = 1.0 - blend1_sq
+                    w_writhe_sq = blend1_sq * (1.0 - blend2_sq)
+                    w_plunge_sq = blend2_sq
+
+                    # Clamped phase times (each phase evaluable at any moment)
+                    rise_t_sq = ti.max(0.0, ti.min(local_t_sq / rise_dur_sq, 1.0))
+                    writhe_t_sq = ti.max(0.0, ti.min((local_t_sq - rise_dur_sq) / writhe_dur_sq, 1.0))
+                    plunge_t_sq = ti.max(0.0, ti.min((local_t_sq - rise_dur_sq - writhe_dur_sq) / plunge_dur_sq, 1.0))
+
+                    # --- Rise angle ---
+                    rise_angle_sq = -0.5 - 1.0 * rise_t_sq * rise_t_sq
+
+                    # --- Writhe angle ---
+                    env_sq = ti.sin(writhe_t_sq * 3.14159)
+                    sway1_sq = 0.45 * ti.sin(writhe_t_sq * 6.28318)
+                    sway2_sq = 0.2 * env_sq * ti.sin(writhe_t_sq * 15.708 + tent_id_sq * 1.5)
+                    writhe_angle_sq = -1.5 + sway1_sq + sway2_sq
+
+                    # --- Plunge: rope-through-hole retract (shape stays, origin sinks) ---
+                    # Thrash as it sinks — two layered sways, both zero at boundaries
+                    plunge_angle_sq = -1.5 + 0.4 * ti.sin(plunge_t_sq * 9.42478) + 0.15 * ti.sin(plunge_t_sq * 15.708)
+                    plunge_sink_sq = 55.0 * (2.0 * plunge_t_sq - plunge_t_sq * plunge_t_sq)  # ease-out: fast yank, slows at end
+
+                    # Blend base angle
+                    base_angle_sq = w_rise_sq * rise_angle_sq + w_writhe_sq * writhe_angle_sq + w_plunge_sq * plunge_angle_sq
+
+                    # Blend curl strength
+                    writhe_curl_sq = 0.07 + 0.06 * ti.sin(writhe_t_sq * 6.28318) + 0.03 * ti.sin(writhe_t_sq * 12.566)
+                    plunge_curl_sq = 0.07  # same shape throughout retract
+                    curl_strength_sq = w_rise_sq * 0.07 + w_writhe_sq * writhe_curl_sq + w_plunge_sq * plunge_curl_sq
+
+                    # Blend lag
+                    rise_lag_sq = 0.02 * (1.0 - rise_t_sq * rise_t_sq)
+                    rate1_sq = 0.45 * 6.28318 / writhe_dur_sq * ti.cos(writhe_t_sq * 6.28318)
+                    writhe_lag_sq = -rate1_sq * (1.0 / 23.0) * 0.12 * env_sq
+                    plunge_lag_sq = -0.02 * plunge_t_sq * plunge_t_sq
+                    lag_per_seg_sq = w_rise_sq * rise_lag_sq + w_writhe_sq * writhe_lag_sq + w_plunge_sq * plunge_lag_sq
+
+                    # Anchor position — orbits arena like dolphins
+                    jc_sq = ti.floor((time + cycle_off_sq) / period_sq)
+                    da_sq = jc_sq * 1.2 + 2.0  # Different base angle from dolphins
+                    cos_da_sq = ti.cos(da_sq)
+                    sin_da_sq = ti.sin(da_sq)
+                    anchor_x_sq = orbit_r_sq * cos_da_sq
+                    anchor_z_sq = orbit_r_sq * sin_da_sq
+
+                    # Spread angle — tentacles fan out at 0°, 120°, 240°
+                    spread_ang_sq = tent_id_sq * (6.28318 / 3.0) + da_sq
+                    spread_dx_sq = ti.cos(spread_ang_sq)
+                    spread_dz_sq = ti.sin(spread_ang_sq)
+
+                    # Surface emergence point — spread 8 units apart from anchor
+                    base_x_sq = anchor_x_sq + spread_dx_sq * 8.0
+                    base_z_sq = anchor_z_sq + spread_dz_sq * 8.0
+
+                    # Walk chain: accumulate position segment by segment
+                    # During plunge, origin sinks below water — base disappears first
+                    chain_x_sq = base_x_sq
+                    chain_y_sq = water_y_sq - w_plunge_sq * plunge_sink_sq
+                    cum_angle_sq = base_angle_sq + spread_dx_sq * 0.3  # Outward lean
+
+                    for s in range(24):
+                        if ti.cast(s, ti.f32) <= seg_sq + 0.5:
+                            sf = ti.cast(s, ti.f32)
+                            frac_sq = sf / 23.0
+
+                            # Golden ratio curl — tips spiral tightly, base stays straight
+                            phi_weight_sq = ti.pow(frac_sq, 1.618)
+                            curl_sq = curl_strength_sq * phi_weight_sq * 3.0
+
+                            # Three-harmonic ripple — chaotic flailing
+                            ripple_sq = 0.12 * frac_sq * ti.sin(
+                                time * 3.0 + sf * 0.4 + tent_id_sq * 2.0
+                            ) + 0.06 * frac_sq * ti.sin(
+                                time * 5.5 - sf * 0.7 + tent_id_sq * 1.3
+                            ) + 0.04 * frac_sq * ti.sin(
+                                time * 8.0 + sf * 1.1 - tent_id_sq * 0.9
+                            )
+
+                            cum_angle_sq += curl_sq + lag_per_seg_sq + ripple_sq
+                            chain_x_sq += link_len_sq * ti.cos(cum_angle_sq)
+                            chain_y_sq += link_len_sq * (-ti.sin(cum_angle_sq))
+
+                    # Z offset: lean outward in spread direction
+                    chain_z_sq = base_z_sq + spread_dz_sq * (chain_x_sq - base_x_sq) * 0.3
+
+                    # Smooth fade at water surface
+                    dist_above_sq = chain_y_sq - water_y_sq
+                    if dist_above_sq > 3.0:
+                        out_x_sq = chain_x_sq
+                        out_y_sq = chain_y_sq
+                        out_z_sq = chain_z_sq
+                        out_b_sq = 1.0
+                    elif dist_above_sq > -1.0:
+                        out_x_sq = chain_x_sq
+                        out_y_sq = chain_y_sq
+                        out_z_sq = chain_z_sq
+                        out_b_sq = (dist_above_sq + 1.0) / 4.0
+                    else:
+                        out_y_sq = -200.0
+                        out_b_sq = 0.0
+
+            bg_offset_x[i] = out_x_sq
+            bg_offset_y[i] = out_y_sq
+            bg_offset_z[i] = out_z_sq
+            bg_brightness[i] = out_b_sq
+
+        elif anim == BG_ANIM_SQUID_SPLASH:
+            # Splash burst when tentacles emerge/plunge
+            # amplitude = splash index (0-15), speed = cycle offset
+            sp_idx_sq = amplitude
+            num_sp_sq = 28.0
+            cycle_off_sq2 = speed
+            period_sq2 = 20.0            # TEST — normally 45
+            underwater_sq2 = 14.0        # TEST — normally 39
+            event_dur_sq2 = 6.0
+            orbit_r_sq2 = 68.0
+            water_surf_sq2 = 17.0
+
+            cycle_sq2 = (time + cycle_off_sq2) % period_sq2
+
+            # Splash at two moments: emergence and retraction (same physics both times)
+            exit_cycle_sq2 = underwater_sq2 - 0.2    # 1.8 — emergence
+            retract_cycle_sq2 = underwater_sq2 + 4.5   # retraction (relative to event start)
+            splash_t_sq2 = -1.0
+
+            dt_exit_sq2 = cycle_sq2 - exit_cycle_sq2
+            dt_retract_sq2 = cycle_sq2 - retract_cycle_sq2
+
+            if dt_exit_sq2 >= 0.0 and dt_exit_sq2 < 1.8:
+                splash_t_sq2 = dt_exit_sq2
+            elif dt_retract_sq2 >= 0.0 and dt_retract_sq2 < 1.8:
+                splash_t_sq2 = dt_retract_sq2
+
+            if splash_t_sq2 >= 0.0:
+                # Anchor position (same as tentacle anchor)
+                jc_sq2 = ti.floor((time + cycle_off_sq2) / period_sq2)
+                da_sq2 = jc_sq2 * 1.2 + 2.0
+                cos_sq2 = ti.cos(da_sq2)
+                sin_sq2 = ti.sin(da_sq2)
+
+                scx_sq2 = orbit_r_sq2 * cos_sq2
+                scz_sq2 = orbit_r_sq2 * sin_sq2
+
+                # Radial burst — same physics as dolphin splash
+                bang_sq2 = sp_idx_sq * (6.28318 / num_sp_sq)
+                bdx_sq2 = ti.cos(bang_sq2)
+                bdz_sq2 = ti.sin(bang_sq2)
+
+                bspd_sq2 = 20.0 + ti.sin(sp_idx_sq * 2.3) * 8.0
+                uspd_sq2 = 36.0 + ti.cos(sp_idx_sq * 1.7) * 12.0
+                grav_sq2 = 36.0
+                t_gnd_sq2 = uspd_sq2 / grav_sq2
+                t_hz_sq2 = ti.min(splash_t_sq2, t_gnd_sq2)
+
+                spy_sq2 = water_surf_sq2 + uspd_sq2 * splash_t_sq2 - grav_sq2 * splash_t_sq2 * splash_t_sq2
+                spx_sq2 = scx_sq2 + bdx_sq2 * bspd_sq2 * t_hz_sq2
+                spz_sq2 = scz_sq2 + bdz_sq2 * bspd_sq2 * t_hz_sq2
+
+                if spy_sq2 >= water_surf_sq2 - 2.0:
+                    bg_offset_x[i] = spx_sq2
+                    bg_offset_y[i] = spy_sq2
+                    bg_offset_z[i] = spz_sq2
+                    fade_sq2 = ti.max(0.0, 1.0 - splash_t_sq2 * 0.4)
+                    bg_brightness[i] = fade_sq2
                 else:
                     bg_offset_y[i] = -200.0
                     bg_brightness[i] = 0.0
@@ -5575,13 +5797,73 @@ def add_waves(count: int = 1600, seed: int = 42):
             _bg_active_np[idx] = 1
             idx += 1
 
+    # === ADD GIANT SQUID TENTACLES (1 group of 3) ===
+    num_tentacles = 3
+    num_segments = 24      # Segments per tentacle (base=0, tip=23)
+    num_squid_splash = 28  # Shared splash particles for the group
+
+    # Segment sizes: taper from thick base to thin tip (24 segments)
+    seg_sizes = [
+        2.2, 2.15, 2.1, 2.05, 2.0, 1.95, 1.9, 1.8,
+        1.7, 1.6, 1.5, 1.4, 1.3, 1.25, 1.2, 1.15,
+        1.1, 1.05, 1.0, 0.95, 0.9, 0.85, 0.8, 0.75,
+    ]
+    # Colors: deep reddish-purple base → pinkish tip
+    base_col = [0.55, 0.15, 0.2]
+    tip_col = [0.75, 0.35, 0.4]
+
+    squid_cycle_offset = 1.0  # Offset so it doesn't sync with dolphins (TEST — normally 7)
+
+    for tent_id in range(num_tentacles):
+        if idx >= MAX_BACKGROUND_VOXELS - (num_segments + num_squid_splash + 10):
+            break
+
+        for seg in range(num_segments):
+            _bg_pos_np[idx] = [0.0, 0.0, 0.0]
+            _bg_anim_type_np[idx] = BG_ANIM_SQUID_TENTACLE
+            _bg_anim_amp_np[idx] = float(seg)          # segment index
+            _bg_phase_np[idx] = float(tent_id)          # tentacle ID (0,1,2)
+            _bg_anim_speed_np[idx] = squid_cycle_offset
+            _bg_brightness_np[idx] = 0.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = -200.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
+            _bg_size_np[idx] = seg_sizes[seg]
+
+            # Gradient color: base → tip
+            t = seg / 23.0
+            _bg_col_np[idx] = [
+                base_col[0] + (tip_col[0] - base_col[0]) * t,
+                base_col[1] + (tip_col[1] - base_col[1]) * t,
+                base_col[2] + (tip_col[2] - base_col[2]) * t,
+            ]
+            idx += 1
+
+    # SQUID SPLASH PARTICLES
+    for s in range(num_squid_splash):
+        _bg_pos_np[idx] = [0.0, 0.0, 0.0]
+        white_mix = random.uniform(0.3, 0.7)
+        _bg_col_np[idx] = [0.5 + 0.5 * white_mix, 0.65 + 0.35 * white_mix, 0.85 + 0.15 * white_mix]
+        _bg_size_np[idx] = random.uniform(1.0, 2.0)
+        _bg_anim_type_np[idx] = BG_ANIM_SQUID_SPLASH
+        _bg_phase_np[idx] = 0.0               # Not per-tentacle
+        _bg_anim_amp_np[idx] = float(s)
+        _bg_anim_speed_np[idx] = squid_cycle_offset
+        _bg_brightness_np[idx] = 0.0
+        _bg_offset_x_np[idx] = 0.0
+        _bg_offset_y_np[idx] = -200.0
+        _bg_offset_z_np[idx] = 0.0
+        _bg_active_np[idx] = 1
+        idx += 1
+
     wave_count = idx - start_idx
     theme_start_idx[THEME_WAVES] = start_idx
     theme_count[THEME_WAVES] = wave_count
     active_themes.add(THEME_WAVES)
     _bg_count = idx
     bg_flush()
-    print(f"Added {wave_count} wave voxels + sea serpent + dolphins (total: {idx})")
+    print(f"Added {wave_count} wave voxels + sea serpent + dolphins + squid (total: {idx})")
 
 def add_tree_branches(count: int = 12, seed: int = 42):
     """Add palm trees to the background (appends to existing voxels)."""
