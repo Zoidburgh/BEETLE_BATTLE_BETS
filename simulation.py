@@ -2585,36 +2585,33 @@ def animate_background(time: ti.f32):
                 gravity_jf = 84.0
                 arc_y = water_min_y_jf + up_vel * jump_norm - gravity_jf * jump_norm * jump_norm
 
-                # Forward travel during jump (fish moves forward along orbit)
-                fwd_travel = jump_norm * 12.0 - 6.0  # -6 to +6
+                # Forward travel during jump (fish arcs forward dramatically)
+                total_fwd = 30.0  # Total forward distance during jump
+                fwd_travel = jump_norm * total_fwd - total_fwd * 0.5  # centered
 
                 # Body pitch — nose up on ascent, level at peak, nose down on descent
                 pitch = (0.5 - jump_norm) * 2.0  # +1 ascending, 0 peak, -1 descending
-                pitch_up = pitch * 4.0  # Vertical offset per segment from pitch
 
-                # Segment delay — trailing body parts lag behind
+                # Segment delay — small so tail finishes arc before cycle ends
                 seg_delay = 0.0
-                seg_idx_jf = part_jf
                 if part_jf <= 11:
-                    seg_delay = part_jf * 0.015  # Body follows head
-                    seg_idx_jf = part_jf
+                    seg_delay = part_jf * 0.003
                 elif part_jf <= 16:
-                    seg_delay = 11.0 * 0.015 + (part_jf - 11.0) * 0.01  # Tail fin
-                    seg_idx_jf = part_jf
+                    seg_delay = 11.0 * 0.003 + (part_jf - 11.0) * 0.002
                 elif part_jf <= 20:
                     # Dorsal fin — attached to body segments 3-6
-                    seg_delay = (3.0 + (part_jf - 17.0)) * 0.015
+                    seg_delay = (3.0 + (part_jf - 17.0)) * 0.003
                 elif part_jf <= 22:
                     # Pectoral fins — attached to body segment 2
-                    seg_delay = 2.0 * 0.015
+                    seg_delay = 2.0 * 0.003
                 else:
                     # Eyes — on head
                     seg_delay = 0.0
 
                 # Delayed jump progress for this segment
-                delayed_norm = ti.max(0.0, ti.min(1.0, jump_norm - seg_delay * 3.0))
+                delayed_norm = ti.max(0.0, ti.min(1.0, jump_norm - seg_delay))
                 seg_arc_y = water_min_y_jf + up_vel * delayed_norm - gravity_jf * delayed_norm * delayed_norm
-                seg_fwd = delayed_norm * 12.0 - 6.0
+                seg_fwd = delayed_norm * total_fwd - total_fwd * 0.5
                 seg_pitch = (0.5 - delayed_norm) * 2.0
 
                 # Body wave — subtle S-curve
@@ -2630,16 +2627,16 @@ def animate_background(time: ti.f32):
 
                 if part_jf <= 11:
                     # BODY SEGMENTS (0=head, 1-9=body, 10-11=peduncle)
-                    trail = -part_jf * 2.2  # Space between segments
+                    trail = -part_jf * 2.5  # Space between segments
                     px_jf = cx_jf + fwd_x * (seg_fwd + trail) + perp_x_jf * body_wave
                     pz_jf = cz_jf + fwd_z * (seg_fwd + trail) + perp_z_jf * body_wave
-                    py_jf = seg_arc_y - part_jf * seg_pitch * 0.5
+                    py_jf = seg_arc_y - part_jf * seg_pitch * 0.4
 
                 elif part_jf <= 16:
                     # TAIL FIN — fan behind peduncle
                     tail_i = part_jf - 12  # 0-4
-                    tail_spread = (tail_i - 2.0) * 1.8  # -3.6 to +3.6
-                    tail_trail = -11.0 * 2.2 - 3.0
+                    tail_spread = (tail_i - 2.0) * 2.0  # wider fan
+                    tail_trail = -11.0 * 2.5 - 3.5
                     px_jf = cx_jf + fwd_x * (seg_fwd + tail_trail) + perp_x_jf * tail_spread
                     pz_jf = cz_jf + fwd_z * (seg_fwd + tail_trail) + perp_z_jf * tail_spread
                     # Tail fans out during jump
@@ -2649,7 +2646,7 @@ def animate_background(time: ti.f32):
                 elif part_jf <= 20:
                     # DORSAL FIN — on top of body segments 3-6
                     dorsal_seg = 3.0 + (part_jf - 17.0)
-                    dorsal_trail = -dorsal_seg * 2.2
+                    dorsal_trail = -dorsal_seg * 2.5
                     dorsal_wave_phase = dorsal_seg * 0.4 - time * 3.0
                     dorsal_wave = ti.sin(dorsal_wave_phase) * 1.5 * (dorsal_seg / 11.0)
                     px_jf = cx_jf + fwd_x * (seg_fwd + dorsal_trail) + perp_x_jf * dorsal_wave
@@ -2660,7 +2657,7 @@ def animate_background(time: ti.f32):
                     # PECTORAL FINS — left (21) right (22)
                     pec_side = -1.0 if part_jf < 22 else 1.0
                     pec_seg = 2.0  # Attached to segment 2
-                    pec_trail = -pec_seg * 2.2
+                    pec_trail = -pec_seg * 2.5
                     pec_wave_phase = pec_seg * 0.4 - time * 3.0
                     pec_wave = ti.sin(pec_wave_phase) * 1.5 * (pec_seg / 11.0)
                     # Fins angle out from body
