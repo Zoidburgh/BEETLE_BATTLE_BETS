@@ -2573,9 +2573,10 @@ def animate_background(time: ti.f32):
                 pn_head_d = (cycle_d - underwater_d) / arc_dur_d
 
                 if part_d > 15.5:
-                    # === BLOWHOLE SPRAY (parts 16-31) ===
+                    # === BLOWHOLE SPRAY (parts 16-47) ===
                     # Explosive upward mist burst at the peak of the jump
                     spray_idx_d = part_d - 16.0
+                    num_spray_d = 32.0
                     spray_start_d = 0.38
                     spray_end_d = 0.75
                     spray_norm_d = (pn_head_d - spray_start_d) / (spray_end_d - spray_start_d)
@@ -2601,11 +2602,11 @@ def animate_background(time: ti.f32):
                         hx_d = cx_d + fx_d * head_fwd_d
                         hz_d = cz_d + fz_d * head_fwd_d
 
-                        # Spray cone — 16 particles, blown out fast
-                        sp_ang_d = spray_idx_d * (6.28318 / 16.0)
+                        # Spray cone — 32 particles, blown out fast and wide
+                        sp_ang_d = spray_idx_d * (6.28318 / num_spray_d)
                         sp_rise = 1.0 + ti.sin(spray_idx_d * 3.7) * 0.4
-                        sp_horiz_d = spray_norm_d * 8.0 * sp_rise
-                        sp_up_d = (4.0 + spray_norm_d * 22.0) * sp_rise
+                        sp_horiz_d = spray_norm_d * 14.0 * sp_rise
+                        sp_up_d = (6.0 + spray_norm_d * 34.0) * sp_rise
 
                         out_x_d = hx_d + ti.cos(sp_ang_d) * sp_horiz_d
                         out_y_d = head_arc_d + sp_up_d
@@ -2703,24 +2704,43 @@ def animate_background(time: ti.f32):
 
             cycle_ds = (time + jump_offset_ds) % period_ds
 
-            # Splash at two moments: just before head exits, as head re-enters
+            # Splash at three moments: exit, head re-entry, back re-entry
             exit_cycle_ds = underwater_ds - 0.2   # Splash precedes the dolphin
-            enter_cycle_ds = underwater_ds + arc_dur_ds - 0.5  # Splash as head dives
+            enter_cycle_ds = underwater_ds + arc_dur_ds - 0.15  # Splash as head dives
+            back_delay_ds = 0.5   # Back enters water ~0.5s after head
             splash_t_ds = -1.0
             splash_fwd_ds = 0.0
+            splash_boost_ds = 1.0
 
-            dt_exit_ds = cycle_ds - exit_cycle_ds
-            dt_enter_ds = cycle_ds - enter_cycle_ds
+            splash_dur_ds = 4.0  # Match serpent: arc + long sink
 
-            if dt_exit_ds >= 0.0 and dt_exit_ds < 1.8:
-                splash_t_ds = dt_exit_ds
-                splash_fwd_ds = -travel_ds * 0.48
-            elif dt_enter_ds >= 0.0 and dt_enter_ds < 1.8:
+            # Modular time-since-event — survives cycle wrap
+            dt_exit_raw = cycle_ds - exit_cycle_ds + period_ds
+            dt_exit_ds = dt_exit_raw - ti.floor(dt_exit_raw / period_ds) * period_ds
+            dt_enter_raw = cycle_ds - enter_cycle_ds + period_ds
+            dt_enter_ds = dt_enter_raw - ti.floor(dt_enter_raw / period_ds) * period_ds
+            dt_back_raw = cycle_ds - (enter_cycle_ds + back_delay_ds) + period_ds
+            dt_back_ds = dt_back_raw - ti.floor(dt_back_raw / period_ds) * period_ds
+
+            # Enter/back checked first so they take over from fading exit
+            if sp_idx_ds < num_sp_ds * 0.5 and dt_enter_ds < splash_dur_ds:
+                # Head re-entry — first half of particles
                 splash_t_ds = dt_enter_ds
                 splash_fwd_ds = travel_ds * 0.48
+            elif sp_idx_ds >= num_sp_ds * 0.5 and dt_back_ds < splash_dur_ds:
+                # Back re-entry — second half, slightly behind head, bigger
+                splash_t_ds = dt_back_ds
+                splash_fwd_ds = travel_ds * 0.42
+                splash_boost_ds = 1.3
+            elif dt_exit_ds < splash_dur_ds:
+                # Exit splash — all particles
+                splash_t_ds = dt_exit_ds
+                splash_fwd_ds = -travel_ds * 0.48
 
             if splash_t_ds >= 0.0:
-                jc_ds = ti.floor((time + jump_offset_ds) / period_ds)
+                # Use orbit position from when splash was triggered, not current time
+                event_time_ds = time - splash_t_ds
+                jc_ds = ti.floor((event_time_ds + jump_offset_ds) / period_ds)
                 da_ds = jc_ds * 0.8 + phase * 3.14
                 cos_ds = ti.cos(da_ds)
                 sin_ds = ti.sin(da_ds)
@@ -2734,8 +2754,8 @@ def animate_background(time: ti.f32):
                 bdx_ds = ti.cos(bang_ds)
                 bdz_ds = ti.sin(bang_ds)
 
-                bspd_ds = 20.0 + ti.sin(sp_idx_ds * 2.3) * 8.0
-                uspd_ds = 40.0 + ti.cos(sp_idx_ds * 1.7) * 12.0
+                bspd_ds = (20.0 + ti.sin(sp_idx_ds * 2.3) * 8.0) * splash_boost_ds
+                uspd_ds = (40.0 + ti.cos(sp_idx_ds * 1.7) * 12.0) * splash_boost_ds
                 grav_ds = 46.0
                 t_gnd_ds = uspd_ds / grav_ds
                 t_hz_ds = ti.min(splash_t_ds, t_gnd_ds)
@@ -2744,15 +2764,32 @@ def animate_background(time: ti.f32):
                 spx_ds = scx_ds + bdx_ds * bspd_ds * t_hz_ds
                 spz_ds = scz_ds + bdz_ds * bspd_ds * t_hz_ds
 
-                if spy_ds >= water_surf_ds - 2.0:
+                # Hide particles outside water boundary (radius 85)
+                dist_from_center_ds = ti.sqrt(spx_ds * spx_ds + spz_ds * spz_ds)
+                if dist_from_center_ds > 85.0:
+                    bg_offset_y[i] = -200.0
+                    bg_brightness[i] = 0.0
+                elif spy_ds >= water_surf_ds:
+                    # Above water: full brightness
                     bg_offset_x[i] = spx_ds
                     bg_offset_y[i] = spy_ds
                     bg_offset_z[i] = spz_ds
-                    fade_ds = ti.max(0.0, 1.0 - splash_t_ds * 0.6)
-                    bg_brightness[i] = fade_ds
+                    bg_brightness[i] = 1.0
                 else:
-                    bg_offset_y[i] = -200.0
-                    bg_brightness[i] = 0.0
+                    # Below water: slow sink and fade (exact serpent values)
+                    time_below_ds = splash_t_ds - t_gnd_ds
+                    if time_below_ds < 0.0:
+                        time_below_ds = 0.0
+                    sink_y_ds = water_surf_ds - time_below_ds * 2.0
+                    if sink_y_ds > water_surf_ds - 16.0:
+                        bg_offset_x[i] = spx_ds
+                        bg_offset_y[i] = sink_y_ds
+                        bg_offset_z[i] = spz_ds
+                        sink_frac_ds = time_below_ds * 2.0 / 16.0
+                        bg_brightness[i] = ti.max(0.0, 1.0 - sink_frac_ds)
+                    else:
+                        bg_offset_y[i] = -200.0
+                        bg_brightness[i] = 0.0
             else:
                 bg_offset_y[i] = -200.0
                 bg_brightness[i] = 0.0
@@ -2926,22 +2963,28 @@ def animate_background(time: ti.f32):
 
             cycle_sq2 = (time + cycle_off_sq2) % period_sq2
 
-            # Splash at two moments: emergence and retraction (same physics both times)
-            exit_cycle_sq2 = underwater_sq2 - 0.2    # 1.8 — emergence
-            retract_cycle_sq2 = underwater_sq2 + 4.5   # retraction (relative to event start)
+            # Splash at two moments: emergence and retraction
+            exit_cycle_sq2 = underwater_sq2 - 0.2
+            retract_cycle_sq2 = underwater_sq2 + 4.5
             splash_t_sq2 = -1.0
+            splash_dur_sq2 = 4.0
 
-            dt_exit_sq2 = cycle_sq2 - exit_cycle_sq2
-            dt_retract_sq2 = cycle_sq2 - retract_cycle_sq2
+            # Modular time-since-event — survives cycle wrap
+            dt_exit_raw_sq2 = cycle_sq2 - exit_cycle_sq2 + period_sq2
+            dt_exit_sq2 = dt_exit_raw_sq2 - ti.floor(dt_exit_raw_sq2 / period_sq2) * period_sq2
+            dt_retract_raw_sq2 = cycle_sq2 - retract_cycle_sq2 + period_sq2
+            dt_retract_sq2 = dt_retract_raw_sq2 - ti.floor(dt_retract_raw_sq2 / period_sq2) * period_sq2
 
-            if dt_exit_sq2 >= 0.0 and dt_exit_sq2 < 1.8:
-                splash_t_sq2 = dt_exit_sq2
-            elif dt_retract_sq2 >= 0.0 and dt_retract_sq2 < 1.8:
+            # Retract checked first so it takes over from fading exit
+            if dt_retract_sq2 < splash_dur_sq2:
                 splash_t_sq2 = dt_retract_sq2
+            elif dt_exit_sq2 < splash_dur_sq2:
+                splash_t_sq2 = dt_exit_sq2
 
             if splash_t_sq2 >= 0.0:
-                # Anchor position (same as tentacle anchor)
-                jc_sq2 = ti.floor((time + cycle_off_sq2) / period_sq2)
+                # Anchor position locked to event time (survives cycle wrap)
+                event_time_sq2 = time - splash_t_sq2
+                jc_sq2 = ti.floor((event_time_sq2 + cycle_off_sq2) / period_sq2)
                 da_sq2 = jc_sq2 * 1.2 + 2.0
                 cos_sq2 = ti.cos(da_sq2)
                 sin_sq2 = ti.sin(da_sq2)
@@ -2978,15 +3021,32 @@ def animate_background(time: ti.f32):
                 spx_sq2 = scx_sq2 + bdx_sq2 * bspd_sq2 * t_hz_sq2
                 spz_sq2 = scz_sq2 + bdz_sq2 * bspd_sq2 * t_hz_sq2
 
-                if spy_sq2 >= water_surf_sq2 - 2.0:
+                # Hide particles outside water boundary (radius 85)
+                dist_from_center_sq2 = ti.sqrt(spx_sq2 * spx_sq2 + spz_sq2 * spz_sq2)
+                if dist_from_center_sq2 > 85.0:
+                    bg_offset_y[i] = -200.0
+                    bg_brightness[i] = 0.0
+                elif spy_sq2 >= water_surf_sq2:
+                    # Above water: full brightness
                     bg_offset_x[i] = spx_sq2
                     bg_offset_y[i] = spy_sq2
                     bg_offset_z[i] = spz_sq2
-                    fade_sq2 = ti.max(0.0, 1.0 - splash_t_sq2 * 0.4)
-                    bg_brightness[i] = fade_sq2
+                    bg_brightness[i] = 1.0
                 else:
-                    bg_offset_y[i] = -200.0
-                    bg_brightness[i] = 0.0
+                    # Below water: slow sink and fade (serpent style)
+                    time_below_sq2 = splash_t_sq2 - t_gnd_sq2
+                    if time_below_sq2 < 0.0:
+                        time_below_sq2 = 0.0
+                    sink_y_sq2 = water_surf_sq2 - time_below_sq2 * 2.0
+                    if sink_y_sq2 > water_surf_sq2 - 16.0:
+                        bg_offset_x[i] = spx_sq2
+                        bg_offset_y[i] = sink_y_sq2
+                        bg_offset_z[i] = spz_sq2
+                        sink_frac_sq2 = time_below_sq2 * 2.0 / 16.0
+                        bg_brightness[i] = ti.max(0.0, 1.0 - sink_frac_sq2)
+                    else:
+                        bg_offset_y[i] = -200.0
+                        bg_brightness[i] = 0.0
             else:
                 bg_offset_y[i] = -200.0
                 bg_brightness[i] = 0.0
@@ -5729,7 +5789,7 @@ def add_waves(count: int = 1600, seed: int = 42):
     # === ADD JUMPING DOLPHINS (2 dolphins) ===
     # Base pos (0,0,0) — animation offsets are absolute world coordinates
     num_dolphins = 2
-    num_dolphin_parts = 32   # Body parts per dolphin (0-15 body, 16-31 blowhole spray)
+    num_dolphin_parts = 48   # Body parts per dolphin (0-15 body, 16-47 blowhole spray)
     num_dolphin_splash = 24  # Splash particles per dolphin
 
     for dolph_id in range(num_dolphins):
@@ -5787,7 +5847,7 @@ def add_waves(count: int = 1600, seed: int = 42):
                 _bg_col_np[idx] = [0.03, 0.03, 0.05]
                 _bg_size_np[idx] = 1.0
             else:
-                # BLOWHOLE SPRAY (16-31) — misty droplets
+                # BLOWHOLE SPRAY (16-47) — misty droplets
                 white_amt = random.uniform(0.5, 0.9)
                 _bg_col_np[idx] = [0.7 + 0.3 * white_amt, 0.78 + 0.22 * white_amt, 0.88 + 0.12 * white_amt]
                 _bg_size_np[idx] = random.uniform(0.8, 1.2)
