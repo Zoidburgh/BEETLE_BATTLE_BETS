@@ -2553,8 +2553,8 @@ def animate_background(time: ti.f32):
             jump_offset_d = speed
             water_y_d = 14.0       # Lowest wave trough
             period_d = 30.0        # Full cycle (rare jumps)
-            underwater_d = 26.5    # Hidden phase (0-26.5s)
-            arc_dur_d = 2.5        # Head's parabola duration
+            underwater_d = 27.6    # Hidden phase (2.4s visible window for tail to finish)
+            arc_dur_d = 1.7        # Head's parabola duration (50% faster)
             peak_h_d = 28.0        # Peak height above water
             orbit_r_d = 45.0
             travel_d = 100.0       # Wide forward leap (body stretches along this)
@@ -2636,8 +2636,8 @@ def animate_background(time: ti.f32):
                     # Arc height — naturally negative outside [0,1] → below water
                     arc_y_d = water_y_d + peak_h_d * 4.0 * seg_pn_d * (1.0 - seg_pn_d)
 
-                    # Hide threshold just above wave troughs so tail sinks fully
-                    if arc_y_d > water_y_d + 1.5:
+                    # Hide when segment is below water surface
+                    if arc_y_d > water_y_d - 1.0:
                         # Orbit — advances angle each jump
                         jc_d = ti.floor((time + jump_offset_d) / period_d)
                         da_d = jc_d * 0.8 + dolphin_id_d * 3.14
@@ -2692,11 +2692,11 @@ def animate_background(time: ti.f32):
             # Splash burst when dolphin exits/enters water
             # amplitude = splash index (0-15), phase = dolphin ID, speed = jump offset
             sp_idx_ds = amplitude
-            num_sp_ds = 16.0
+            num_sp_ds = 24.0
             jump_offset_ds = speed
             period_ds = 30.0
-            underwater_ds = 26.5
-            arc_dur_ds = 2.5
+            underwater_ds = 27.6
+            arc_dur_ds = 1.7
             orbit_r_ds = 45.0
             travel_ds = 100.0
             water_surf_ds = 17.0   # Wave surface Y for splash height
@@ -2705,7 +2705,7 @@ def animate_background(time: ti.f32):
 
             # Splash at two moments: just before head exits, as head re-enters
             exit_cycle_ds = underwater_ds - 0.2   # Splash precedes the dolphin
-            enter_cycle_ds = underwater_ds + arc_dur_ds - 0.15  # Splash as head dives
+            enter_cycle_ds = underwater_ds + arc_dur_ds - 0.5  # Splash as head dives
             splash_t_ds = -1.0
             splash_fwd_ds = 0.0
 
@@ -2714,10 +2714,10 @@ def animate_background(time: ti.f32):
 
             if dt_exit_ds >= 0.0 and dt_exit_ds < 1.8:
                 splash_t_ds = dt_exit_ds
-                splash_fwd_ds = -travel_ds * 0.48  # Head exits at arc start
+                splash_fwd_ds = -travel_ds * 0.48
             elif dt_enter_ds >= 0.0 and dt_enter_ds < 1.8:
                 splash_t_ds = dt_enter_ds
-                splash_fwd_ds = travel_ds * 0.48   # Head enters at arc end
+                splash_fwd_ds = travel_ds * 0.48
 
             if splash_t_ds >= 0.0:
                 jc_ds = ti.floor((time + jump_offset_ds) / period_ds)
@@ -2734,9 +2734,9 @@ def animate_background(time: ti.f32):
                 bdx_ds = ti.cos(bang_ds)
                 bdz_ds = ti.sin(bang_ds)
 
-                bspd_ds = 12.0 + ti.sin(sp_idx_ds * 2.3) * 5.0
-                uspd_ds = 24.0 + ti.cos(sp_idx_ds * 1.7) * 8.0
-                grav_ds = 28.0
+                bspd_ds = 20.0 + ti.sin(sp_idx_ds * 2.3) * 8.0
+                uspd_ds = 40.0 + ti.cos(sp_idx_ds * 1.7) * 12.0
+                grav_ds = 46.0
                 t_gnd_ds = uspd_ds / grav_ds
                 t_hz_ds = ti.min(splash_t_ds, t_gnd_ds)
 
@@ -2946,11 +2946,25 @@ def animate_background(time: ti.f32):
                 cos_sq2 = ti.cos(da_sq2)
                 sin_sq2 = ti.sin(da_sq2)
 
-                scx_sq2 = orbit_r_sq2 * cos_sq2
-                scz_sq2 = orbit_r_sq2 * sin_sq2
+                anchor_x_sq2 = orbit_r_sq2 * cos_sq2
+                anchor_z_sq2 = orbit_r_sq2 * sin_sq2
 
-                # Radial burst — same physics as dolphin splash
-                bang_sq2 = sp_idx_sq * (6.28318 / num_sp_sq)
+                # Distribute particles across 3 tentacles (~9 each)
+                # Spread along each tentacle's LENGTH, not just at the base
+                tent_group_sq2 = ti.floor(sp_idx_sq * 3.0 / num_sp_sq)  # 0, 1, or 2
+                spread_ang_sq2 = tent_group_sq2 * (6.28318 / 3.0) + da_sq2
+
+                group_size_sq2 = ti.floor(num_sp_sq / 3.0)
+                local_idx_sq2 = sp_idx_sq - tent_group_sq2 * group_size_sq2
+                local_frac_sq2 = local_idx_sq2 / ti.max(1.0, group_size_sq2 - 1.0)
+
+                # Particles spread from base (5u) to mid-tentacle (25u) along direction
+                tent_dist_sq2 = 5.0 + local_frac_sq2 * 20.0
+                scx_sq2 = anchor_x_sq2 + ti.cos(spread_ang_sq2) * tent_dist_sq2
+                scz_sq2 = anchor_z_sq2 + ti.sin(spread_ang_sq2) * tent_dist_sq2
+
+                # Radial burst angle (full circle per group)
+                bang_sq2 = local_idx_sq2 * (6.28318 / ti.max(1.0, group_size_sq2))
                 bdx_sq2 = ti.cos(bang_sq2)
                 bdz_sq2 = ti.sin(bang_sq2)
 
@@ -5716,7 +5730,7 @@ def add_waves(count: int = 1600, seed: int = 42):
     # Base pos (0,0,0) — animation offsets are absolute world coordinates
     num_dolphins = 2
     num_dolphin_parts = 32   # Body parts per dolphin (0-15 body, 16-31 blowhole spray)
-    num_dolphin_splash = 16  # Splash particles per dolphin
+    num_dolphin_splash = 24  # Splash particles per dolphin
 
     for dolph_id in range(num_dolphins):
         if idx >= MAX_BACKGROUND_VOXELS - (num_dolphin_parts + num_dolphin_splash + 10):
