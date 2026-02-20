@@ -1086,6 +1086,13 @@ UFO_COOLDOWN_DURATION = 1.5
 UFO_CYCLE_TOTAL = 7.0
 UFO_DUST_INTERVAL = 0.02         # Particle spawn rate
 
+# Ice Patches hazard — only affects linear friction (sliding), nothing else
+ICE_CIRCLE_RADIUS = 18.0         # radius of each ice circle (reaches arena edges)
+ICE_CIRCLE_BOUNDS = 20.0         # how far circle centers wander from arena center
+ICE_CIRCLE_SPEED = 0.15          # base movement speed for Lissajous paths
+ICE_LINEAR_FRICTION = 1.0        # vs normal 0.88 — zero friction, no slowdown at all on ice
+ICE_BALL_FRICTION = 1.0         # vs normal BALL_ROLLING_FRICTION (0.99) — ball doesn't slow on ice
+
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
 
@@ -1254,7 +1261,7 @@ class Beetle:
         self.vx += fx * dt
         self.vz += fz * dt
 
-    def update_physics(self, dt):
+    def update_physics(self, dt, on_ice=False):
         """Apply friction and update position"""
         # === COLLISION COOLDOWN TIMERS ===
         # Decrement lift cooldown timer (prevents multi-frame lift application)
@@ -1302,12 +1309,14 @@ class Beetle:
 
         # === HORIZONTAL PHYSICS (existing) ===
         # Apply linear friction (skip for ball when airborne to allow proper arc)
+        # Ice only affects ground friction — airborne beetles use normal physics
         if self.horn_type == "ball":
             # Ball uses its own rolling friction only when on ground (applied in main loop)
             pass
         else:
-            self.vx *= FRICTION
-            self.vz *= FRICTION
+            linear_friction = ICE_LINEAR_FRICTION if (on_ice and self.on_ground) else FRICTION
+            self.vx *= linear_friction
+            self.vz *= linear_friction
 
         # Apply angular friction (yaw)
         # Ball uses lighter angular friction for better spin retention
@@ -1362,8 +1371,9 @@ class Beetle:
                 base_backward = physics_params.get("BACKWARD_SPEED", 5.0)
             # Silk speed multiplier adjusts max speed (spider boost on floor silk)
             # Speed boost from holding: forward up to 70%, backward up to 30%
-            forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus)
-            backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus)
+            ice_speed_mult = 2.0 if (on_ice and self.on_ground) else 1.0
+            forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus) * ice_speed_mult
+            backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus) * ice_speed_mult
             if dot_product >= 0:  # Moving forward
                 if speed > forward_max:
                     self.vx = (self.vx / speed) * forward_max
@@ -1459,6 +1469,7 @@ def reset_match():
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
     global sandstorm_mode, sandstorm_time, sandstorm_dust_timer, sandstorm_force_intensity, debris_cleanup_was_high
     global ufo_mode, ufo_time, ufo_phase, ufo_x, ufo_z, ufo_target_x, ufo_target_z, ufo_dust_timer, ufo_prev_x, ufo_prev_z
+    global ice_mode, ice_time
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1579,6 +1590,11 @@ def reset_match():
     ufo_dust_timer = 0.0
     ufo_prev_x = 0.0
     ufo_prev_z = 0.0
+
+    # Reset ice patches hazard state
+    ice_mode = False
+    ice_time = 0.0
+    simulation.clear_ice_patches()
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2463,6 +2479,10 @@ ufo_target_z = 0.0
 ufo_dust_timer = 0.0
 ufo_prev_x = 0.0
 ufo_prev_z = 0.0
+
+# Arena ice patches hazard state
+ice_mode = False
+ice_time = 0.0
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -13819,6 +13839,8 @@ clear_ufo_beam_bounded(0.0, 0.0, 30.0)  # Clean up beam voxels (arena floor clea
 spawn_ufo_telegraph(0.0, -100.0, 0.0)
 spawn_ufo_beam_impact(0.0, -100.0, 0.0)
 spawn_ufo_beam_sparks(0.0, -100.0, 0.0)
+simulation.update_ice_patches(0.0, 0.0, 0.0, 0.0, 16.0)  # Ice patches warmup
+simulation.clear_ice_patches()  # Ice patches cleanup warmup
 spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup
 spawn_arena_transition_rings(0.0, 4.0, 1)  # Arena transition rings warmup
 simulation.num_debris[None] = 0  # Clear warmup debris from transition rings
@@ -13924,8 +13946,8 @@ simulation.init_square_bridge_arena()
 simulation.init_beetle_arena()  # Restore normal arena
 
 # Warm up background system: bg_flush() from_numpy transfers + all animation branches
-# Populate one sample voxel per animation type (0-34) at offscreen positions
-for anim_type in range(35):
+# Populate one sample voxel per animation type (0-36) at offscreen positions
+for anim_type in range(37):
     simulation._bg_pos_np[anim_type] = [0.0, -200.0, 0.0]  # Offscreen
     simulation._bg_col_np[anim_type] = [0.5, 0.5, 0.5]
     simulation._bg_phase_np[anim_type] = 0.0
@@ -13939,7 +13961,7 @@ for anim_type in range(35):
     simulation._bg_offset_y_np[anim_type] = 0.0
     simulation._bg_offset_z_np[anim_type] = 0.0
     simulation._bg_angle_np[anim_type] = 0.0
-simulation._bg_count = 35
+simulation._bg_count = 37
 simulation.bg_flush()  # Warm up all 14 from_numpy() transfers
 simulation.bg_theme_active[None] = 1  # Enable so renderer PHASE 6 compiles
 simulation.animate_background(0.0)  # Now hits all animation branches
@@ -15280,11 +15302,38 @@ try:
         _t_input_end = time.perf_counter()
         _physics_timing['input_controls'] += (_t_input_end - _t_input_start) * 1000
 
+        # Ice circle detection (before physics so friction changes apply this frame)
+        blue_on_ice = False
+        red_on_ice = False
+        ball_on_ice = False
+        if ice_mode:
+            # Two circles on independent Lissajous paths
+            t = ice_time * ICE_CIRCLE_SPEED
+            ice1_x = ICE_CIRCLE_BOUNDS * math.sin(t * 1.0)
+            ice1_z = ICE_CIRCLE_BOUNDS * math.cos(t * 0.73)
+            ice2_x = ICE_CIRCLE_BOUNDS * math.sin(t * 1.3 + math.pi)
+            ice2_z = ICE_CIRCLE_BOUNDS * math.cos(t * 0.53 + math.pi)
+            r2 = ICE_CIRCLE_RADIUS * ICE_CIRCLE_RADIUS
+            for beetle, label in [(beetle_blue, 'blue'), (beetle_red, 'red')]:
+                d1 = (beetle.x - ice1_x)**2 + (beetle.z - ice1_z)**2
+                d2 = (beetle.x - ice2_x)**2 + (beetle.z - ice2_z)**2
+                if d1 < r2 or d2 < r2:
+                    if label == 'blue':
+                        blue_on_ice = True
+                    else:
+                        red_on_ice = True
+            # Ball ice detection
+            if beetle_ball.active:
+                d1 = (beetle_ball.x - ice1_x)**2 + (beetle_ball.z - ice1_z)**2
+                d2 = (beetle_ball.x - ice2_x)**2 + (beetle_ball.z - ice2_z)**2
+                if d1 < r2 or d2 < r2:
+                    ball_on_ice = True
+
         # Physics update (skip if hovering to spawn point)
         if not blue_hovering:
-            beetle_blue.update_physics(PHYSICS_TIMESTEP)
+            beetle_blue.update_physics(PHYSICS_TIMESTEP, on_ice=blue_on_ice)
         if not red_hovering:
-            beetle_red.update_physics(PHYSICS_TIMESTEP)
+            beetle_red.update_physics(PHYSICS_TIMESTEP, on_ice=red_on_ice)
 
         # Apply bowl slide physics when ball mode is active (slippery perimeter)
         if beetle_ball.active:
@@ -15312,7 +15361,7 @@ try:
                 # Apply rolling friction to ball only when on ground (allows proper arc when airborne)
                 if beetle_ball.on_ground:
                     # Silk makes ball stickier - reduce friction value (more stopping power)
-                    base_friction = physics_params["BALL_ROLLING_FRICTION"]
+                    base_friction = ICE_BALL_FRICTION if ball_on_ice else physics_params["BALL_ROLLING_FRICTION"]
                     # silk_counts fetched once per frame before physics loop (GPU sync optimization)
                     if silk_might_exist and silk_counts is not None:
                         # Each silk ON ball adds 4% friction (stickier ball)
@@ -15965,6 +16014,17 @@ try:
                         ufo_prev_x = 0.0
                         ufo_prev_z = 0.0
                         print("UFO laser hazard disabled (from host)")
+
+                # Apply ice mode state (hazard, independent of arena)
+                if opts.get('ice_mode', False) != ice_mode:
+                    ice_mode = opts.get('ice_mode', False)
+                    if ice_mode:
+                        ice_time = 0.0
+                        print("ICE PATCHES HAZARD ENABLED (from host)")
+                    else:
+                        ice_time = 0.0
+                        simulation.clear_ice_patches()
+                        print("Ice patches hazard disabled (from host)")
 
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
@@ -16953,6 +17013,16 @@ try:
                         # Green impact explosion at beetle position
                         hit_render_y = beetle.y + RENDER_Y_OFFSET
                         spawn_spray_explosion(beetle.x, hit_render_y, beetle.z, 0.2, 1.0, 0.3)
+
+        # === ARENA ICE PATCHES HAZARD ===
+        if ice_mode:
+            ice_time += PHYSICS_TIMESTEP
+            t = ice_time * ICE_CIRCLE_SPEED
+            ic1_x = ICE_CIRCLE_BOUNDS * math.sin(t * 1.0)
+            ic1_z = ICE_CIRCLE_BOUNDS * math.cos(t * 0.73)
+            ic2_x = ICE_CIRCLE_BOUNDS * math.sin(t * 1.3 + math.pi)
+            ic2_z = ICE_CIRCLE_BOUNDS * math.cos(t * 0.53 + math.pi)
+            simulation.update_ice_patches(ic1_x, ic1_z, ic2_x, ic2_z, ICE_CIRCLE_RADIUS)
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
@@ -18887,7 +18957,7 @@ try:
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -18955,7 +19025,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -18998,7 +19068,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -19041,7 +19111,7 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -19084,7 +19154,7 @@ try:
                     print("FIGURE 8 ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -19127,7 +19197,7 @@ try:
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -19170,7 +19240,7 @@ try:
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -19214,7 +19284,7 @@ try:
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             # === HAZARDS ===
             window.GUI.text("")
@@ -19239,7 +19309,7 @@ try:
                     print("Tornado hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             sandstorm_button_text = "SANDSTORM: ON" if sandstorm_mode else "SANDSTORM: OFF"
             if window.GUI.button(sandstorm_button_text):
@@ -19256,7 +19326,7 @@ try:
                     print("Sandstorm hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
             ufo_button_text = "UFO LASER: ON" if ufo_mode else "UFO LASER: OFF"
             if window.GUI.button(ufo_button_text):
@@ -19288,7 +19358,21 @@ try:
                     print("UFO laser hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+
+            ice_button_text = "ICE PATCHES: ON" if ice_mode else "ICE PATCHES: OFF"
+            if window.GUI.button(ice_button_text):
+                ice_mode = not ice_mode
+                if ice_mode:
+                    ice_time = 0.0
+                    print("ICE PATCHES HAZARD ENABLED - watch for slippery zones!")
+                else:
+                    ice_time = 0.0
+                    simulation.clear_ice_patches()
+                    print("Ice patches hazard disabled")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")

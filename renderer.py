@@ -67,9 +67,14 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     if voxel_type == 1:  # STEEL
         color = ti.math.vec3(0.6, 0.65, 0.7)
 
-    # Concrete - customizable arena floor color
+    # Concrete - customizable arena floor color (with ice overlay check)
     elif voxel_type == 2:  # CONCRETE
-        color = simulation.board_color[None]
+        gi = int(world_x + 64.0)
+        gk = int(world_z + 64.0)
+        if 0 <= gi < 128 and 0 <= gk < 128 and simulation.ice_overlay[gi, gk] == 1:
+            color = ti.math.vec3(0.65, 0.78, 0.92)  # Icy blue-white
+        else:
+            color = simulation.board_color[None]
 
     # Molten voxels are bright orange (flowing metal)
     elif voxel_type == 3:  # MOLTEN
@@ -216,7 +221,6 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
         color = ti.math.vec3(0.3, 1.0, 0.3)
     elif voxel_type == 49:  # UFO_RIM - bright purple belt
         color = ti.math.vec3(0.7, 0.15, 0.95)
-
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
     if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34 or voxel_type == 35 or voxel_type == 45 or voxel_type == 49:  # All beetle/ladybug shell/UFO hull/rim parts
         shimmer = get_shimmer_from_lut(world_x, world_z)

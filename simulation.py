@@ -368,6 +368,7 @@ UFO_DOME = 46       # UFO cockpit dome - green glass
 UFO_LIGHTS = 47     # UFO running lights - pulsing cyan
 UFO_BEAM = 48       # UFO laser beam - bright green
 UFO_RIM = 49        # UFO middle belt/rim band
+ICE_PATCH = 50      # Ice patch floor overlay (slippery hazard zone)
 
 # UFO dome flash (1.0 = normal, >1.0 = bright flash for telegraph/fire)
 ufo_dome_flash = ti.field(dtype=ti.f32, shape=())
@@ -6957,6 +6958,41 @@ def clear_bowl_perimeter():
                     if 0 <= i < n_grid and 0 <= j < n_grid and 0 <= k < n_grid:
                         if voxel_type[i, j, k] == SLIPPERY:
                             voxel_type[i, j, k] = EMPTY
+
+# Ice overlay field — marks which floor cells are iced (renderer checks this)
+# Avoids modifying voxel_type so beetle rendering can't destroy floor
+ice_overlay = ti.field(dtype=ti.i32, shape=(n_grid, n_grid))  # 2D: [x, z]
+
+@ti.kernel
+def update_ice_patches(c1x: ti.f32, c1z: ti.f32, c2x: ti.f32, c2z: ti.f32, radius: ti.f32):
+    """
+    Update ice overlay map — marks floor cells inside two moving circles.
+    Uses a separate field instead of modifying voxel_type to avoid
+    conflicts with beetle rendering (which overwrites floor voxels).
+    """
+    center_x = 64
+    center_z = 64
+    r2 = radius * radius
+
+    for i, k in ti.ndrange(n_grid, n_grid):
+        # World coords (grid center is 64,64)
+        wx = float(i - center_x)
+        wz = float(k - center_z)
+
+        # Distance to each circle center
+        d1 = (wx - c1x) * (wx - c1x) + (wz - c1z) * (wz - c1z)
+        d2 = (wx - c2x) * (wx - c2x) + (wz - c2z) * (wz - c2z)
+
+        if d1 < r2 or d2 < r2:
+            ice_overlay[i, k] = 1
+        else:
+            ice_overlay[i, k] = 0
+
+@ti.kernel
+def clear_ice_patches():
+    """Clear ice overlay."""
+    for i, k in ti.ndrange(n_grid, n_grid):
+        ice_overlay[i, k] = 0
 
 @ti.kernel
 def init_mega_fortress():
