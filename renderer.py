@@ -148,7 +148,12 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
 
     # Slippery bowl perimeter (slightly blue-tinted to indicate slippery)
     elif voxel_type == 21:  # SLIPPERY
-        color = ti.math.vec3(0.35, 0.40, 0.50)  # Blue-gray to indicate slippery ice-like surface
+        gi = int(world_x + 64.0)
+        gk = int(world_z + 64.0)
+        if 0 <= gi < 128 and 0 <= gk < 128 and simulation.ice_overlay[gi, gk] == 1:
+            color = ti.math.vec3(0.65, 0.78, 0.92)  # Icy blue-white (same as concrete ice)
+        else:
+            color = ti.math.vec3(0.35, 0.40, 0.50)  # Blue-gray to indicate slippery ice-like surface
 
     # Goal doorway walls (sandy/tan stone)
     elif voxel_type == 22:  # GOAL

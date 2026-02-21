@@ -1079,11 +1079,11 @@ UFO_BEAM_RADIUS = 6.0            # Effect radius on ground for physics falloff
 UFO_PUSH_FORCE = 6000.0          # Per-tick horizontal push (sandstorm is 200, laser is 30x stronger)
 UFO_LIFT_FORCE = 800.0           # Per-tick upward pop
 UFO_TIP_STRENGTH = 20000.0       # Per-tick tipping torque
-UFO_CRUISE_DURATION = 3.0
-UFO_TELEGRAPH_DURATION = 1.5
+UFO_CRUISE_DURATION = 1.5
+UFO_TELEGRAPH_DURATION = 1.0
 UFO_FIRE_DURATION = 1.0
-UFO_COOLDOWN_DURATION = 1.5
-UFO_CYCLE_TOTAL = 7.0
+UFO_COOLDOWN_DURATION = 0.5
+UFO_CYCLE_TOTAL = 4.0
 UFO_DUST_INTERVAL = 0.02         # Particle spawn rate
 
 # Ice Patches hazard — only affects linear friction (sliding), nothing else
@@ -13599,6 +13599,7 @@ auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to 
 # 3rd person follow camera settings
 third_person_camera = True  # Toggle for 3rd person follow cam
 THIRD_PERSON_DISTANCE = 60.0  # Distance behind beetle (horizontal)
+fixed_camera_zoom = 1.0  # Multiplier for fixed camera distance (1.0 = default position)
 # Camera always uses opposite side view (beetles in foreground, edge in background)
 camera_edge_angle = None  # Previous edge angle for smooth transitions (None = not yet initialized)
 spotlight_strength = 0.633  # Spotlight intensity (adjustable via GUI slider)
@@ -14183,8 +14184,9 @@ try:
         elif target_beetle == beetle_red:
             respawn_timer = g['red_respawn_timer']
 
-        # Use same height and pitch as overhead camera
-        target_y = physics_params["CAMERA_BASE_HEIGHT"]
+        # Height scales with distance (dampened) so camera pulls back at an angle
+        tp_zoom = THIRD_PERSON_DISTANCE / 60.0  # Ratio vs default distance
+        target_y = physics_params["CAMERA_BASE_HEIGHT"] * (tp_zoom ** 0.4)
         target_pitch = physics_params["CAMERA_PITCH"]
 
         # Death breathing: wait 1 second before moving camera to spawn position
@@ -14406,11 +14408,11 @@ try:
 
     elif game_state not in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]:
         # Camera tracking off - smoothly move to settled starting view
-        # Same position auto-follow settles to with beetles at spawn (-20,0,0) and (20,0,0)
-        # Camera on +Z side looking south, using auto-follow height/distance/pitch
+        # Zoom multiplier scales both height and horizontal distance equally,
+        # so camera moves along the line from arena center through its position
         home_x = 0.0
-        home_z = physics_params["CAMERA_DISTANCE"]  # 76.35
-        home_y = physics_params["CAMERA_BASE_HEIGHT"]  # 74.7
+        home_z = physics_params["CAMERA_DISTANCE"] * fixed_camera_zoom
+        home_y = physics_params["CAMERA_BASE_HEIGHT"] * (fixed_camera_zoom ** 0.4)
         home_pitch = physics_params["CAMERA_PITCH"]  # -30.85
         home_yaw = 180.0
 
@@ -15381,7 +15383,7 @@ try:
                     # Rolling without slipping: angular_vel = linear_vel / radius
                     # Signs are negative because positive pitch/roll rotate opposite to movement direction
                     # (front goes DOWN when rolling forward, not up)
-                    roll_blend = 0.15  # How quickly ball "grips" the ground (0.1=slippery, 0.3=grippy)
+                    roll_blend = 0.02 if ball_on_ice else 0.15  # Ice: almost no ground grip, ball slides freely
                     target_pitch_vel = -beetle_ball.vx / beetle_ball.radius  # +X movement = negative pitch (front dips down)
                     target_roll_vel = -beetle_ball.vz / beetle_ball.radius   # +Z movement = negative roll (front dips down)
 
@@ -16777,8 +16779,8 @@ try:
                         ground_spawn_y = RENDER_Y_OFFSET + cached_floor + 0.5
                 spawn_tornado_ground_dust(tornado_x, tornado_z, tornado_time, ground_spawn_y)
 
-            # Apply push/lift/tip to both beetles
-            for beetle in (beetle_blue, beetle_red):
+            # Apply push/lift/tip to both beetles and ball
+            for beetle in (beetle_blue, beetle_red, beetle_ball):
                 if beetle.active and not beetle.is_falling:
                     dx_t = beetle.x - tornado_x
                     dz_t = beetle.z - tornado_z
@@ -16788,16 +16790,18 @@ try:
                         falloff = 1.0 - dist_t / TORNADO_RADIUS
                         dir_x = dx_t / dist_t
                         dir_z = dz_t / dist_t
+                        # Ball gets 2.2x force (heavier, needs more push)
+                        force_mult = 2.2 if beetle.horn_type == "ball" else 1.0
                         # Outward push
-                        push_mag = TORNADO_PUSH_FORCE * falloff * PHYSICS_TIMESTEP
+                        push_mag = TORNADO_PUSH_FORCE * falloff * PHYSICS_TIMESTEP * force_mult
                         beetle.vx += dir_x * push_mag
                         beetle.vz += dir_z * push_mag
                         # Tangential swirl (CCW around tornado center)
-                        swirl_mag = TORNADO_SPIN_FORCE * falloff * PHYSICS_TIMESTEP
+                        swirl_mag = TORNADO_SPIN_FORCE * falloff * PHYSICS_TIMESTEP * force_mult
                         beetle.vx += -dir_z * swirl_mag
                         beetle.vz += dir_x * swirl_mag
                         # Upward lift
-                        beetle.vy += TORNADO_LIFT_FORCE * falloff * PHYSICS_TIMESTEP
+                        beetle.vy += TORNADO_LIFT_FORCE * falloff * PHYSICS_TIMESTEP * force_mult
                         # Yaw spin (rotate the beetle itself)
                         beetle.rotation += TORNADO_YAW_STRENGTH * falloff * PHYSICS_TIMESTEP
                         # Tipping torque (same local-frame pattern as downwash)
@@ -16847,19 +16851,21 @@ try:
             else:
                 sandstorm_force_intensity = max(sandstorm_intensity, sandstorm_force_intensity - PHYSICS_TIMESTEP * 1.2)
 
-            # Apply forces to both beetles (using smoothed intensity)
+            # Apply forces to both beetles and ball (using smoothed intensity)
             if sandstorm_force_intensity > 0.0:
-                for beetle in (beetle_blue, beetle_red):
+                for beetle in (beetle_blue, beetle_red, beetle_ball):
                     if beetle.active and not beetle.is_falling:
+                        # Ball gets 3x force (heavier, needs more push)
+                        force_mult = 3.0 if beetle.horn_type == "ball" else 1.0
                         # Lateral push (always active during gusts)
-                        push_x = wind_dx * SANDSTORM_FORCE * sandstorm_force_intensity * PHYSICS_TIMESTEP
-                        push_z = wind_dz * SANDSTORM_FORCE * sandstorm_force_intensity * PHYSICS_TIMESTEP
+                        push_x = wind_dx * SANDSTORM_FORCE * sandstorm_force_intensity * PHYSICS_TIMESTEP * force_mult
+                        push_z = wind_dz * SANDSTORM_FORCE * sandstorm_force_intensity * PHYSICS_TIMESTEP * force_mult
                         beetle.vx += push_x
                         beetle.vz += push_z
 
                         # Lift — kicks in above 20% intensity, so even moderate storms lift a bit
                         gust_extra = max(0.0, sandstorm_force_intensity - 0.2) / 0.8
-                        beetle.vy += SANDSTORM_LIFT * gust_extra * PHYSICS_TIMESTEP
+                        beetle.vy += SANDSTORM_LIFT * gust_extra * PHYSICS_TIMESTEP * force_mult
 
                         # Tipping torque — wind pushes beetle over in wind direction (local frame)
                         tip_mag = SANDSTORM_TIP * gust_extra * PHYSICS_TIMESTEP
@@ -17013,6 +17019,23 @@ try:
                         # Green impact explosion at beetle position
                         hit_render_y = beetle.y + RENDER_Y_OFFSET
                         spawn_spray_explosion(beetle.x, hit_render_y, beetle.z, 0.2, 1.0, 0.3)
+
+                # Ball: simple distance check (voxel collision only detects beetle types)
+                # Ball gets 3x force (heavier, needs more push)
+                if beetle_ball.active and not beetle_ball.is_falling:
+                    dx_b = beetle_ball.x - ufo_x
+                    dz_b = beetle_ball.z - ufo_z
+                    dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
+                    if dist_b < UFO_BEAM_RADIUS:
+                        if dist_b > 0.5:
+                            dir_x = dx_b / dist_b
+                            dir_z = dz_b / dist_b
+                        else:
+                            dir_x = 1.0
+                            dir_z = 0.0
+                        beetle_ball.vx += dir_x * UFO_PUSH_FORCE * 3.0 * PHYSICS_TIMESTEP
+                        beetle_ball.vz += dir_z * UFO_PUSH_FORCE * 3.0 * PHYSICS_TIMESTEP
+                        beetle_ball.vy += UFO_LIFT_FORCE * 3.0 * PHYSICS_TIMESTEP
 
         # === ARENA ICE PATCHES HAZARD ===
         if ice_mode:
@@ -18875,6 +18898,10 @@ try:
             auto_follow_enabled = False
             third_person_camera = False
             print("Camera mode: FIXED")
+
+        # Fixed camera distance slider (only show when fixed camera is active)
+        if fixed_camera:
+            fixed_camera_zoom = window.GUI.slider_float("Zoom", fixed_camera_zoom, 0.85, 1.6)
 
         # 3RD PERSON
         tp_text = "3RD PERSON: ON" if third_person_camera else "3RD PERSON: OFF"

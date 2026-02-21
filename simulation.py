@@ -2575,14 +2575,19 @@ def animate_background(time: ti.f32):
 
                 if part_d > 15.5:
                     # === BLOWHOLE SPRAY (parts 16-47) ===
-                    # Explosive upward mist burst at the peak of the jump
+                    # Continuous stream — each particle launches staggered in time,
+                    # rising upward from blowhole like a fountain column
                     spray_idx_d = part_d - 16.0
-                    num_spray_d = 32.0
-                    spray_start_d = 0.38
-                    spray_end_d = 0.75
-                    spray_norm_d = (pn_head_d - spray_start_d) / (spray_end_d - spray_start_d)
+                    num_spray_d = 82.0
 
-                    if spray_norm_d <= 0.0 or spray_norm_d >= 1.0:
+                    # Stream window: starts early, runs through most of the jump
+                    stream_start = 0.20
+                    stream_end = 0.80
+                    # Each particle gets a staggered launch time within the window
+                    particle_delay = spray_idx_d / num_spray_d * 0.4  # Spread launches over 40% of window
+                    particle_life = (pn_head_d - stream_start - particle_delay) / (stream_end - stream_start - particle_delay)
+
+                    if particle_life <= 0.0 or particle_life >= 1.0:
                         bg_size[i] = 1.2  # Reset size for next cycle
                     else:
                         # Head position on the arc
@@ -2603,19 +2608,29 @@ def animate_background(time: ti.f32):
                         hx_d = cx_d + fx_d * head_fwd_d
                         hz_d = cz_d + fz_d * head_fwd_d
 
-                        # Spray cone — 32 particles, blown out fast and wide
-                        sp_ang_d = spray_idx_d * (6.28318 / num_spray_d)
-                        sp_rise = 1.0 + ti.sin(spray_idx_d * 3.7) * 0.4
-                        sp_horiz_d = spray_norm_d * 14.0 * sp_rise
-                        sp_up_d = (6.0 + spray_norm_d * 34.0) * sp_rise
+                        # Chaotic spray — each particle gets unique direction from hash
+                        # Use spray_idx as seed for pseudo-random per-particle variation
+                        hash1 = ti.sin(spray_idx_d * 127.1 + 311.7) * 43758.5453
+                        hash1 = hash1 - ti.floor(hash1)  # 0-1 random
+                        hash2 = ti.sin(spray_idx_d * 269.5 + 183.3) * 43758.5453
+                        hash2 = hash2 - ti.floor(hash2)
+                        hash3 = ti.sin(spray_idx_d * 419.2 + 71.9) * 43758.5453
+                        hash3 = hash3 - ti.floor(hash3)
+
+                        # Random angle and spread per particle
+                        sp_ang_d = hash1 * 6.28318
+                        # Vary horizontal spread: some tight, some wide
+                        sp_horiz_d = particle_life * (3.0 + hash2 * 10.0)
+                        # Vary upward speed: main column + random variation
+                        sp_up_d = particle_life * (28.0 + hash3 * 24.0)
 
                         out_x_d = hx_d + ti.cos(sp_ang_d) * sp_horiz_d
                         out_y_d = head_arc_d + sp_up_d
                         out_z_d = hz_d + ti.sin(sp_ang_d) * sp_horiz_d
                         out_b_d = 1.0
-                        # Shrink particles smoothly
-                        fade_d = 1.0 - spray_norm_d
-                        bg_size[i] = 1.2 * fade_d * fade_d
+                        # Fade out at end of life, random size variation
+                        fade_d = 1.0 - particle_life
+                        bg_size[i] = (0.8 + hash2 * 0.5) * fade_d
 
                 else:
                     # === BODY (parts 0-15) ===
@@ -5790,7 +5805,7 @@ def add_waves(count: int = 1600, seed: int = 42):
     # === ADD JUMPING DOLPHINS (2 dolphins) ===
     # Base pos (0,0,0) — animation offsets are absolute world coordinates
     num_dolphins = 2
-    num_dolphin_parts = 48   # Body parts per dolphin (0-15 body, 16-47 blowhole spray)
+    num_dolphin_parts = 98   # Body parts per dolphin (0-15 body, 16-97 blowhole spray)
     num_dolphin_splash = 24  # Splash particles per dolphin
 
     for dolph_id in range(num_dolphins):
@@ -5848,10 +5863,10 @@ def add_waves(count: int = 1600, seed: int = 42):
                 _bg_col_np[idx] = [0.03, 0.03, 0.05]
                 _bg_size_np[idx] = 1.0
             else:
-                # BLOWHOLE SPRAY (16-47) — misty droplets
+                # BLOWHOLE SPRAY (16-97) — misty droplets
                 white_amt = random.uniform(0.5, 0.9)
                 _bg_col_np[idx] = [0.7 + 0.3 * white_amt, 0.78 + 0.22 * white_amt, 0.88 + 0.12 * white_amt]
-                _bg_size_np[idx] = random.uniform(0.8, 1.2)
+                _bg_size_np[idx] = random.uniform(0.5, 0.8)
 
             idx += 1
 
