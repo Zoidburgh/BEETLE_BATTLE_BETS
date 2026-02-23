@@ -231,6 +231,7 @@ class PerformanceMonitor:
             'voxel_clear',      # Clearing dirty voxels
             'beetle_render',    # Placing beetle voxels
             'ball_render',      # Ball rendering
+            'background',       # Background animation + extraction
             'scene_render',     # renderer.render() call
             'gui',              # GUI overlay
         ]
@@ -299,13 +300,14 @@ class PerformanceMonitor:
         """Get a compact summary string for GUI display"""
         total = self.get_avg('frame_total')
         physics = self.get_avg('physics')
+        bg = self.get_avg('background')
         render = self.get_avg('beetle_render') + self.get_avg('ball_render') + self.get_avg('scene_render')
         gui = self.get_avg('gui')
-        other = total - physics - render - gui
 
         return (f"Frame: {total:.1f}ms | "
                 f"Physics: {physics:.1f}ms | "
                 f"Render: {render:.1f}ms | "
+                f"BG: {bg:.1f}ms | "
                 f"GUI: {gui:.1f}ms")
 
     def get_detailed_breakdown(self):
@@ -1441,9 +1443,9 @@ blue_pulse_timer = 0.0  # Independent timer for blue's celebration
 red_pulse_timer = 0.0   # Independent timer for red's celebration
 blue_confetti_timer = 0.0  # Independent confetti timer for blue
 red_confetti_timer = 0.0   # Independent confetti timer for red
-VICTORY_PULSE_DURATION = 5.0  # Pulse for 5 seconds after victory
+VICTORY_PULSE_DURATION = 2.5  # Pulse for 2.5 seconds after victory
 victory_confetti_timer = 0.0  # Legacy timer (kept for compatibility)
-VICTORY_CONFETTI_DELAY = 0.6  # Wait 600ms before starting confetti
+VICTORY_CONFETTI_DELAY = 0.75  # Wait 750ms before starting confetti
 VICTORY_CONFETTI_INTERVAL = 0.15  # Spawn confetti every 0.15 seconds during victory
 VICTORY_CONFETTI_PARTICLES = 30  # Particles per spawn wave
 
@@ -13947,8 +13949,8 @@ simulation.init_square_bridge_arena()
 simulation.init_beetle_arena()  # Restore normal arena
 
 # Warm up background system: bg_flush() from_numpy transfers + all animation branches
-# Populate one sample voxel per animation type (0-36) at offscreen positions
-for anim_type in range(37):
+# Populate one sample voxel per animation type (0-37) at offscreen positions
+for anim_type in range(38):
     simulation._bg_pos_np[anim_type] = [0.0, -200.0, 0.0]  # Offscreen
     simulation._bg_col_np[anim_type] = [0.5, 0.5, 0.5]
     simulation._bg_phase_np[anim_type] = 0.0
@@ -13962,10 +13964,11 @@ for anim_type in range(37):
     simulation._bg_offset_y_np[anim_type] = 0.0
     simulation._bg_offset_z_np[anim_type] = 0.0
     simulation._bg_angle_np[anim_type] = 0.0
-simulation._bg_count = 37
+simulation._bg_count = 38
 simulation.bg_flush()  # Warm up all 14 from_numpy() transfers
 simulation.bg_theme_active[None] = 1  # Enable so renderer PHASE 6 compiles
 simulation.animate_background(0.0)  # Now hits all animation branches
+simulation.update_bg_cache()  # Warm up cache kernel
 # Quick render pass to compile renderer's bg extraction path (PHASE 6)
 renderer.num_voxels[None] = 0
 renderer.extract_all_particles(simulation.voxel_type, 128)
@@ -18535,10 +18538,13 @@ try:
     # Animate background voxels (stars, grass, etc.)
     background_time += frame_dt
     render_frame += 1
+    perf_monitor.start('background')
     if simulation.num_bg_voxels[None] > 0:
         if render_frame % simulation.BG_ANIM_FREQUENCY == 0:
             simulation.animate_background(background_time)
+            simulation.update_bg_cache()
         simulation.decay_stadium_excitement(frame_dt)
+    perf_monitor.stop('background')
 
     renderer.render(camera, canvas, scene, simulation.voxel_type, simulation.n_grid,
                     dynamic_lighting=dynamic_lighting_enabled,

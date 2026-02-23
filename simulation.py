@@ -233,6 +233,7 @@ BG_ANIM_JUMPING_FISH = 33   # Dolphin: periodic jump arc above waves
 BG_ANIM_FISH_SPLASH = 34    # Splash burst on dolphin water entry/exit
 BG_ANIM_SQUID_TENTACLE = 35 # Giant squid tentacle chain
 BG_ANIM_SQUID_SPLASH = 36   # Splash on tentacle emerge/plunge
+BG_ANIM_BIG_ERUPTION = 37   # Big volcano: dramatic eruption spray + lava bombs + crater glow
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -250,6 +251,12 @@ bg_brightness = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)             
 bg_offset_x = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                 # Current x offset
 bg_offset_y = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                 # Current y offset
 bg_offset_z = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                 # Current z offset
+
+# Background extraction cache — pre-computed renderer-ready data
+bg_cache_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
+bg_cache_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
+bg_cache_radii = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
+num_visible_bg = ti.field(dtype=ti.i32, shape=())  # Count of visible voxels in cache
 
 # Background theme state
 bg_theme_active = ti.field(dtype=ti.i32, shape=())  # 0=off, 1=stars, 2=grass, 3=fireflies, etc.
@@ -1258,7 +1265,7 @@ def animate_background(time: ti.f32):
             # amplitude = part index, phase = snail ID, speed = orbit speed
             part = amplitude
             orbit_speed_s = speed
-            orbit_radius_s = 60.0
+            orbit_radius_s = 55.0
             lava_ground = 20.5
             orbit_angle_s = time * orbit_speed_s + phase * 6.28
 
@@ -3202,10 +3209,71 @@ def animate_background(time: ti.f32):
             bulge = ti.max(0.0, pressure) * 0.4
             glow_boost = ti.max(0.0, pressure) * 0.7
 
-            bg_offset_y[i] = scrunch
+            # Tip pump + glow during eruption release
+            eruption_glow = 0.0
+            pump = 0.0
+            if layer >= 7 and normalized < 0.17:
+                release = normalized / 0.17  # 0 to 1
+                envelope = (1.0 - release)  # Strong at start, fades out
+                # Smooth pumping: 3 full oscillations during eruption
+                pump_wave = ti.sin(release * 3.0 * 2.0 * 3.14159)
+                pump = envelope * pump_wave * (layer - 6.0) * 0.8
+                # Glow synced to pump peaks
+                eruption_glow = envelope * (1.0 + 1.5 * ti.abs(pump_wave))
+                eruption_glow = eruption_glow * (layer - 6.0) * 0.4
+
+            bg_offset_y[i] = scrunch + pump
             bg_offset_x[i] = bulge * ti.sin(phase * 3.0)
             bg_offset_z[i] = bulge * ti.cos(phase * 3.0)
-            bg_brightness[i] = 1.0 + glow_boost
+            bg_brightness[i] = 1.0 + glow_boost + eruption_glow
+
+        elif anim == BG_ANIM_BIG_ERUPTION:
+            # Big volcano eruption: spray particles and lava bombs
+            # amplitude = launch height, phase = time offset, speed = cycle period
+            cycle_period = speed
+            t_cycle = (time + phase) % cycle_period
+
+            # Burst lasts 18% of cycle, rest is quiet
+            burst_duration = cycle_period * 0.18
+
+            if t_cycle < burst_duration:
+                burst_norm = t_cycle / burst_duration  # 0 to 1
+
+                # Continuous parabolic trajectory (real gravity feel):
+                # Peak at 30% of burst, returns to origin at 60%, sinks through ground after
+                arc_height = amplitude * burst_norm * (6.667 - 11.111 * burst_norm)
+
+                # Wide cone spread: fans out and drifts outward
+                cone_spread = 3.0 + amplitude * 0.12
+                drift_cone = 0.0
+                if burst_norm < 0.35:
+                    rise_ratio = burst_norm / 0.35
+                    drift_cone = rise_ratio * rise_ratio
+                else:
+                    fall_ratio = (burst_norm - 0.35) / 0.65
+                    drift_cone = 1.0 + fall_ratio * 0.6
+
+                bg_offset_y[i] = arc_height
+                spread_angle = bg_angle[i]
+                bg_offset_x[i] = drift_cone * cone_spread * ti.sin(spread_angle)
+                bg_offset_z[i] = drift_cone * cone_spread * ti.cos(spread_angle)
+
+                # Brightness: peak at arc top, fade through ground
+                bright = 0.0
+                if burst_norm < 0.3:
+                    bright = 2.0 * burst_norm / 0.3
+                elif burst_norm < 0.6:
+                    bright = 2.0 * (0.6 - burst_norm) / 0.3
+                else:
+                    fade = 1.0 - (burst_norm - 0.6) / 0.4
+                    bright = 0.4 * fade
+                bg_brightness[i] = ti.max(0.0, bright)
+            else:
+                # QUIET: invisible at origin
+                bg_offset_y[i] = 0.0
+                bg_offset_x[i] = 0.0
+                bg_offset_z[i] = 0.0
+                bg_brightness[i] = 0.0
 
         elif anim == BG_ANIM_RAIN:
             # Rain: fast straight falling drops that cycle seamlessly
@@ -3460,6 +3528,25 @@ def animate_background(time: ti.f32):
                     bg_offset_z[i] = base_oz
                     bg_brightness[i] = smooth * (1.6 + 0.3 * ti.sin(time * 1.2 + phase))
 
+@ti.kernel
+def update_bg_cache():
+    """Pre-compute renderer-ready bg data. Only call at animation frequency."""
+    num_visible_bg[None] = 0
+    for idx in range(num_bg_voxels[None]):
+        if bg_active[idx] == 0:
+            continue
+        if bg_brightness[idx] < 0.01:
+            continue
+        write_idx = ti.atomic_add(num_visible_bg[None], 1)
+        if write_idx < MAX_BACKGROUND_VOXELS:
+            pos = bg_positions[idx]
+            pos.x += bg_offset_x[idx]
+            pos.y += bg_offset_y[idx]
+            pos.z += bg_offset_z[idx]
+            bg_cache_positions[write_idx] = pos
+            bg_cache_colors[write_idx] = bg_colors[idx] * bg_brightness[idx]
+            bg_cache_radii[write_idx] = bg_size[idx]
+
 def clear_background():
     """Clear all background voxels by zeroing numpy buffers and flushing to GPU."""
     global _bg_count
@@ -3635,7 +3722,7 @@ def generate_fireflies(count: int = 2800, seed: int = 42):
         dist = random.uniform(min_dist, 110)  # Ring from min_dist outward
         x = math.cos(angle) * dist
         z = math.sin(angle) * dist
-        y = random.uniform(15, 90)
+        y = random.uniform(15, 60)
 
         _bg_pos_np[idx] = [x, y, z]
 
@@ -4266,14 +4353,14 @@ def toggle_theme(theme_id: int):
     else:
         # Add the theme
         add_functions = {
-            THEME_STARS: lambda: add_stars(1200),
+            THEME_STARS: lambda: add_stars(495),
             THEME_GRASS: lambda: add_grass(625),
-            THEME_FIREFLIES: lambda: add_fireflies(930),
+            THEME_FIREFLIES: lambda: add_fireflies(483),
             THEME_WATER: lambda: add_water(2250),
             THEME_JELLYFISH: lambda: add_jellyfish(240),
             THEME_BUTTERFLIES: lambda: add_butterflies(80),
             THEME_WAVES: lambda: add_waves(3600),
-            THEME_PALM_TREES: lambda: add_tree_branches(12),
+            THEME_PALM_TREES: lambda: add_tree_branches(6),
             THEME_STADIUM: lambda: add_stadium(),
             THEME_LAVA: lambda: add_lava(),
             THEME_RAIN: lambda: add_rain(),
@@ -4460,7 +4547,7 @@ def add_stars(count: int = 1200, seed: int = 42):
             break
 
         x = random.uniform(-150, 150)
-        y = random.uniform(-10, 130)
+        y = random.uniform(-10, 60)
         z = random.uniform(-150, 150)
 
         dist_xz = math.sqrt(x * x + z * z)
@@ -4978,6 +5065,158 @@ def add_lava(seed: int = 42):
             _bg_active_np[idx] = 1
             idx += 1
 
+    # === BIG VOLCANOS (3, evenly spaced, staggered eruptions) ===
+    big_volcano_base_angle = random.uniform(0, 2 * math.pi)
+    big_volcano_radius = 70.0  # Beyond snail orbit
+    bv_cycle = 25.0  # 25-second eruption cycle
+
+    for vi in range(3):
+        big_volcano_angle = big_volcano_base_angle + vi * (2 * math.pi / 3)
+        bv_x = math.cos(big_volcano_angle) * big_volcano_radius
+        bv_z = math.sin(big_volcano_angle) * big_volcano_radius
+        # Stagger eruption times evenly across the cycle for perf
+        bv_phase = vi * (bv_cycle / 3.0)
+
+        # --- Cone structure: 12 layers, tapering from base to crater ---
+        for layer in range(12):
+            if idx >= MAX_BACKGROUND_VOXELS - 400:
+                break
+            layer_frac = layer / 11.0  # 0 at base, 1 at top
+
+            # Taper radius: ~6.0 at base -> ~2.5 at top, with crater rim widening
+            if layer >= 10:
+                layer_radius = 3.0
+            else:
+                layer_radius = 6.0 - layer_frac * 3.5
+
+            layer_y = lava_y_base + 1.5 + layer * 2.0
+
+            # Color gradient: dark rock at base -> glowing ember at top
+            if layer >= 10:
+                rock_r, rock_g, rock_b = 0.85, 0.25, 0.05
+                brightness = 1.8
+            elif layer >= 7:
+                rock_r, rock_g, rock_b = 0.45, 0.12, 0.04
+                brightness = 1.0
+            elif layer >= 4:
+                rock_r, rock_g, rock_b = 0.25, 0.10, 0.04
+                brightness = 1.0
+            else:
+                rock_r, rock_g, rock_b = 0.12, 0.06, 0.03
+                brightness = 1.0
+
+            # Center voxel
+            _bg_pos_np[idx] = [bv_x, layer_y, bv_z]
+            _bg_col_np[idx] = [rock_r, rock_g, rock_b]
+            _bg_size_np[idx] = layer_radius
+            _bg_anim_type_np[idx] = BG_ANIM_LAVA_VOLCANO
+            _bg_anim_speed_np[idx] = bv_cycle
+            _bg_anim_amp_np[idx] = float(layer)
+            _bg_phase_np[idx] = bv_phase
+            _bg_brightness_np[idx] = brightness
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
+            idx += 1
+
+            # Surrounding voxels in cross pattern for thickness
+            offsets = [
+                (layer_radius * 0.55, 0),
+                (-layer_radius * 0.55, 0),
+                (0, layer_radius * 0.55),
+                (0, -layer_radius * 0.55),
+            ]
+            if layer < 8:
+                diag = layer_radius * 0.4
+                offsets += [(diag, diag), (-diag, diag), (diag, -diag), (-diag, -diag)]
+
+            for ox, oz in offsets:
+                if idx >= MAX_BACKGROUND_VOXELS - 400:
+                    break
+                _bg_pos_np[idx] = [bv_x + ox, layer_y, bv_z + oz]
+                _bg_col_np[idx] = [rock_r + random.uniform(-0.02, 0.02),
+                                   rock_g + random.uniform(-0.01, 0.01),
+                                   rock_b + random.uniform(-0.005, 0.005)]
+                _bg_size_np[idx] = layer_radius * random.uniform(0.6, 0.85)
+                _bg_anim_type_np[idx] = BG_ANIM_LAVA_VOLCANO
+                _bg_anim_speed_np[idx] = bv_cycle
+                _bg_anim_amp_np[idx] = float(layer)
+                _bg_phase_np[idx] = bv_phase
+                _bg_brightness_np[idx] = brightness
+                _bg_offset_x_np[idx] = 0.0
+                _bg_offset_y_np[idx] = 0.0
+                _bg_offset_z_np[idx] = 0.0
+                _bg_active_np[idx] = 1
+                idx += 1
+
+        # --- Eruption spray: 250 particles in double spiral ---
+        crater_y = lava_y_base + 1.5 + 7 * 2.0  # Inside crater, 4 layers below rim
+        spray_count = 140
+        burst_stagger = bv_cycle * 0.10
+        for p in range(spray_count):
+            if idx >= MAX_BACKGROUND_VOXELS - 100:
+                break
+            arm = p % 2
+            arm_idx = p // 2
+            t_frac = arm_idx / 70.0
+
+            spiral_angle = t_frac * 2.0 * 2.0 * math.pi + arm * math.pi
+            spiral_angle += random.uniform(-0.25, 0.25)
+
+            time_offset = bv_phase - bv_cycle * 0.15 + t_frac * burst_stagger
+            launch_height = random.uniform(40.0, 90.0)
+
+            _bg_pos_np[idx] = [bv_x + random.uniform(-0.3, 0.3),
+                               crater_y,
+                               bv_z + random.uniform(-0.3, 0.3)]
+            color_roll = random.random()
+            if color_roll < 0.33:
+                _bg_col_np[idx] = [1.0, 0.8, 0.3]
+            elif color_roll < 0.66:
+                _bg_col_np[idx] = [1.0, 0.5, 0.1]
+            else:
+                _bg_col_np[idx] = [1.0, 0.3, 0.05]
+            _bg_size_np[idx] = random.uniform(0.6, 1.0)
+            _bg_anim_type_np[idx] = BG_ANIM_BIG_ERUPTION
+            _bg_anim_speed_np[idx] = bv_cycle
+            _bg_anim_amp_np[idx] = launch_height
+            _bg_phase_np[idx] = time_offset
+            _bg_angle_np[idx] = spiral_angle
+            _bg_brightness_np[idx] = 0.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
+            idx += 1
+
+        # --- Lava bombs: 10 large rocks in double spiral ---
+        for b in range(10):
+            if idx >= MAX_BACKGROUND_VOXELS - 50:
+                break
+            arm = b % 2
+            arm_idx = b // 2
+            t_frac = arm_idx / 5.0
+            spiral_angle = t_frac * 2.0 * math.pi + arm * math.pi
+            time_offset = bv_phase - bv_cycle * 0.15 + t_frac * burst_stagger
+
+            bomb_height = random.uniform(80.0, 120.0)
+
+            _bg_pos_np[idx] = [bv_x, crater_y, bv_z]
+            _bg_col_np[idx] = [0.5, 0.15, 0.05]
+            _bg_size_np[idx] = random.uniform(0.8, 1.2)
+            _bg_anim_type_np[idx] = BG_ANIM_BIG_ERUPTION
+            _bg_anim_speed_np[idx] = bv_cycle
+            _bg_anim_amp_np[idx] = bomb_height
+            _bg_phase_np[idx] = time_offset
+            _bg_angle_np[idx] = spiral_angle
+            _bg_brightness_np[idx] = 0.0
+            _bg_offset_x_np[idx] = 0.0
+            _bg_offset_y_np[idx] = 0.0
+            _bg_offset_z_np[idx] = 0.0
+            _bg_active_np[idx] = 1
+            idx += 1
+
     # === MOLTEN LAVA SNAIL ===
     snail_id = 0.0
     snail_parts = [
@@ -5375,7 +5614,7 @@ def add_fireflies(count: int = 2800, seed: int = 42):
         dist = random.uniform(min_dist, 110)
         x = math.cos(angle) * dist
         z = math.sin(angle) * dist
-        y = random.uniform(15, 90)
+        y = random.uniform(15, 60)
 
         _bg_pos_np[idx] = [x, y, z]
         _bg_col_np[idx] = [
