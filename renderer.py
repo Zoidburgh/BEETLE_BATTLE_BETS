@@ -299,27 +299,28 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
     spray_count = simulation.num_spray[None]
     spray_check = ti.min(spray_count, MAX_SPRAY_CHECK)
 
-    for idx in range(spray_check):
-        if simulation.spray_active[idx] == 0:
-            continue
+    if spray_check > 0:
+        for idx in range(spray_check):
+            if simulation.spray_active[idx] == 0:
+                continue
 
-        write_idx = ti.atomic_add(num_voxels[None], 1)
-        if write_idx < MAX_VOXELS:
-            voxel_positions[write_idx] = simulation.spray_pos[idx]
-            base_color = simulation.spray_color[idx]
-            lifetime = simulation.spray_lifetime[idx]
+            write_idx = ti.atomic_add(num_voxels[None], 1)
+            if write_idx < MAX_VOXELS:
+                voxel_positions[write_idx] = simulation.spray_pos[idx]
+                base_color = simulation.spray_color[idx]
+                lifetime = simulation.spray_lifetime[idx]
 
-            is_venom = base_color[0] > base_color[1]
-            alpha = 1.0
-            if lifetime < 0.3:
-                alpha = lifetime / 0.3
+                is_venom = base_color[0] > base_color[1]
+                alpha = 1.0
+                if lifetime < 0.3:
+                    alpha = lifetime / 0.3
 
-            glow = 1.0
-            if is_venom:
-                glow = 1.3 + 0.4 * ti.sin(lifetime * 20.0)
+                glow = 1.0
+                if is_venom:
+                    glow = 1.3 + 0.4 * ti.sin(lifetime * 20.0)
 
-            voxel_colors[write_idx] = base_color * alpha * glow
-            voxel_radii[write_idx] = DEBRIS_RADIUS
+                voxel_colors[write_idx] = base_color * alpha * glow
+                voxel_radii[write_idx] = DEBRIS_RADIUS
 
     # ===== PHASE 4: Extract silk particles =====
     SILK_FADE_TIME = ti.static(2.0)
@@ -329,31 +330,32 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
     silk_count = simulation.num_silk[None]
     silk_check = ti.min(silk_count, MAX_SILK_CHECK)
 
-    for idx in range(silk_check):
-        if simulation.silk_active[idx] == 0:
-            continue
+    if silk_check > 0:
+        for idx in range(silk_check):
+            if simulation.silk_active[idx] == 0:
+                continue
 
-        lifetime = simulation.silk_lifetime[idx]
-        write_idx = ti.atomic_add(num_voxels[None], 1)
-        if write_idx < MAX_VOXELS:
-            voxel_positions[write_idx] = simulation.silk_pos[idx]
-            base_color = simulation.silk_color[idx]
+            lifetime = simulation.silk_lifetime[idx]
+            write_idx = ti.atomic_add(num_voxels[None], 1)
+            if write_idx < MAX_VOXELS:
+                voxel_positions[write_idx] = simulation.silk_pos[idx]
+                base_color = simulation.silk_color[idx]
 
-            alpha = 1.0
-            if lifetime < SILK_FADE_TIME:
-                t = lifetime / SILK_FADE_TIME
-                alpha = t * t
+                alpha = 1.0
+                if lifetime < SILK_FADE_TIME:
+                    t = lifetime / SILK_FADE_TIME
+                    alpha = t * t
 
-            pulse = 1.0
-            if simulation.silk_stuck[idx] >= 1:
-                pulse = 1.15 + 0.35 * ti.sin(lifetime * 12.0)
+                pulse = 1.0
+                if simulation.silk_stuck[idx] >= 1:
+                    pulse = 1.15 + 0.35 * ti.sin(lifetime * 12.0)
 
-            voxel_colors[write_idx] = base_color * alpha * pulse * SILK_EMISSIVE
+                voxel_colors[write_idx] = base_color * alpha * pulse * SILK_EMISSIVE
 
-            if lifetime < SILK_FADE_TIME:
-                voxel_radii[write_idx] = SILK_RADIUS * (0.5 + 0.5 * (lifetime / SILK_FADE_TIME))
-            else:
-                voxel_radii[write_idx] = SILK_RADIUS
+                if lifetime < SILK_FADE_TIME:
+                    voxel_radii[write_idx] = SILK_RADIUS * (0.5 + 0.5 * (lifetime / SILK_FADE_TIME))
+                else:
+                    voxel_radii[write_idx] = SILK_RADIUS
 
     # ===== PHASE 5: Extract projectiles =====
     PROJECTILE_RADIUS = ti.static(0.8)

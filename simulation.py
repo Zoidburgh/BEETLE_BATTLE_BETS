@@ -70,7 +70,7 @@ BACKEND, BACKEND_REASON = choose_backend()
 CLEANUP_FREQUENCY_DEBRIS = 2 if BACKEND == 'cpu' else 30  # Every 0.5s on GPU
 CLEANUP_FREQUENCY_SPRAY = 2 if BACKEND == 'cpu' else 30
 CLEANUP_FREQUENCY_SILK = 5 if BACKEND == 'cpu' else 60
-BG_ANIM_FREQUENCY = 1 if BACKEND == 'cpu' else 3  # Background animation: every frame on CPU, every 3rd on GPU
+BG_ANIM_FREQUENCY = 3 if BACKEND == 'cpu' else 3  # Background animation: every 3rd frame (saves kernel launch overhead)
 
 # Check if user wants fresh kernel compilation (bypasses cache that might cause variance)
 FRESH_COMPILE = '--fresh' in sys.argv
@@ -7221,26 +7221,53 @@ ice_overlay = ti.field(dtype=ti.i32, shape=(n_grid, n_grid))  # 2D: [x, z]
 def update_ice_patches(c1x: ti.f32, c1z: ti.f32, c2x: ti.f32, c2z: ti.f32, radius: ti.f32):
     """
     Update ice overlay map — marks floor cells inside two moving circles.
-    Uses a separate field instead of modifying voxel_type to avoid
-    conflicts with beetle rendering (which overwrites floor voxels).
+    Uses bounded iteration around each circle instead of full grid scan.
+    Margin of 2 covers any movement between frames (circles move <0.1/tick).
     """
-    center_x = 64
-    center_z = 64
+    center = 64
     r2 = radius * radius
+    margin = ti.cast(radius, ti.i32) + 2
 
-    for i, k in ti.ndrange(n_grid, n_grid):
-        # World coords (grid center is 64,64)
-        wx = float(i - center_x)
-        wz = float(k - center_z)
+    # Bounded box around circle 1
+    g1x = ti.cast(c1x, ti.i32) + center
+    g1z = ti.cast(c1z, ti.i32) + center
+    min1x = ti.max(0, g1x - margin)
+    max1x = ti.min(n_grid, g1x + margin + 1)
+    min1z = ti.max(0, g1z - margin)
+    max1z = ti.min(n_grid, g1z + margin + 1)
 
-        # Distance to each circle center
-        d1 = (wx - c1x) * (wx - c1x) + (wz - c1z) * (wz - c1z)
-        d2 = (wx - c2x) * (wx - c2x) + (wz - c2z) * (wz - c2z)
+    for i in range(min1x, max1x):
+        for k in range(min1z, max1z):
+            wx = float(i - center)
+            wz = float(k - center)
+            d1 = (wx - c1x) * (wx - c1x) + (wz - c1z) * (wz - c1z)
+            d2 = (wx - c2x) * (wx - c2x) + (wz - c2z) * (wz - c2z)
+            if d1 < r2 or d2 < r2:
+                ice_overlay[i, k] = 1
+            else:
+                ice_overlay[i, k] = 0
 
-        if d1 < r2 or d2 < r2:
-            ice_overlay[i, k] = 1
-        else:
-            ice_overlay[i, k] = 0
+    # Bounded box around circle 2 (skip cells already covered by box 1)
+    g2x = ti.cast(c2x, ti.i32) + center
+    g2z = ti.cast(c2z, ti.i32) + center
+    min2x = ti.max(0, g2x - margin)
+    max2x = ti.min(n_grid, g2x + margin + 1)
+    min2z = ti.max(0, g2z - margin)
+    max2z = ti.min(n_grid, g2z + margin + 1)
+
+    for i in range(min2x, max2x):
+        for k in range(min2z, max2z):
+            # Skip if already processed by circle 1's box
+            if i >= min1x and i < max1x and k >= min1z and k < max1z:
+                continue
+            wx = float(i - center)
+            wz = float(k - center)
+            d1 = (wx - c1x) * (wx - c1x) + (wz - c1z) * (wz - c1z)
+            d2 = (wx - c2x) * (wx - c2x) + (wz - c2z) * (wz - c2z)
+            if d1 < r2 or d2 < r2:
+                ice_overlay[i, k] = 1
+            else:
+                ice_overlay[i, k] = 0
 
 @ti.kernel
 def clear_ice_patches():

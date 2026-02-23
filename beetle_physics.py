@@ -1592,6 +1592,7 @@ def reset_match():
     ufo_dust_timer = 0.0
     ufo_prev_x = 0.0
     ufo_prev_z = 0.0
+    ufo_beam_needs_clear = False
 
     # Reset ice patches hazard state
     ice_mode = False
@@ -2481,6 +2482,7 @@ ufo_target_z = 0.0
 ufo_dust_timer = 0.0
 ufo_prev_x = 0.0
 ufo_prev_z = 0.0
+ufo_beam_needs_clear = False
 
 # Arena ice patches hazard state
 ice_mode = False
@@ -15479,12 +15481,12 @@ try:
             update_debris_particles(PHYSICS_TIMESTEP)
 
             # Compact when approaching MAX_DEBRIS_CHECK (5000) to keep particles renderable
-            # Hysteresis: trigger at 3500, don't re-trigger until below 2000
+            # Hysteresis: trigger at 2500, don't re-trigger until below 1500
             # Prevents thrashing the expensive serialized cleanup during sustained effects
             debris_count = simulation.num_debris[None]
-            if debris_count > 3500 or (debris_count > 2000 and debris_cleanup_was_high):
+            if debris_count > 2500 or (debris_count > 1500 and debris_cleanup_was_high):
                 cleanup_dead_debris()
-                debris_cleanup_was_high = simulation.num_debris[None] > 2500
+                debris_cleanup_was_high = simulation.num_debris[None] > 1800
             else:
                 debris_cleanup_was_high = False
         _t_debris_only = time.perf_counter()
@@ -16005,6 +16007,7 @@ try:
                         ufo_dust_timer = 0.0
                         ufo_prev_x = 0.0
                         ufo_prev_z = 0.0
+                        ufo_beam_needs_clear = False
                         print("UFO LASER HAZARD ENABLED (from host)")
                     else:
                         clear_ufo_bounded(ufo_x, UFO_ALTITUDE, ufo_z)
@@ -16018,6 +16021,7 @@ try:
                         ufo_dust_timer = 0.0
                         ufo_prev_x = 0.0
                         ufo_prev_z = 0.0
+                        ufo_beam_needs_clear = False
                         print("UFO laser hazard disabled (from host)")
 
                 # Apply ice mode state (hazard, independent of arena)
@@ -18146,20 +18150,26 @@ try:
         ufo_render_x = ufo_prev_x + (ufo_x - ufo_prev_x) * alpha
         ufo_render_z = ufo_prev_z + (ufo_z - ufo_prev_z) * alpha
 
-        # Clear previous and current positions
-        clear_ufo_bounded(ufo_prev_x, UFO_ALTITUDE, ufo_prev_z)
-        clear_ufo_bounded(ufo_x, UFO_ALTITUDE, ufo_z)
+        # Clear previous and current positions (skip if overlapping render pos)
         clear_ufo_bounded(ufo_render_x, UFO_ALTITUDE, ufo_render_z)
+        if abs(ufo_prev_x - ufo_render_x) > 2.0 or abs(ufo_prev_z - ufo_render_z) > 2.0:
+            clear_ufo_bounded(ufo_prev_x, UFO_ALTITUDE, ufo_prev_z)
+        if abs(ufo_x - ufo_render_x) > 2.0 or abs(ufo_z - ufo_render_z) > 2.0:
+            clear_ufo_bounded(ufo_x, UFO_ALTITUDE, ufo_z)
         # Place UFO at interpolated position
         place_ufo_kernel(ufo_render_x, UFO_ALTITUDE, ufo_render_z, ufo_time)
 
         # Determine cycle phase for beam rendering
         cycle_pos = ufo_time % UFO_CYCLE_TOTAL
-        # Clear beam at all positions to avoid leftovers
-        clear_ufo_beam_bounded(ufo_prev_x, ufo_prev_z, UFO_ALTITUDE)
-        clear_ufo_beam_bounded(ufo_x, ufo_z, UFO_ALTITUDE)
-        clear_ufo_beam_bounded(ufo_render_x, ufo_render_z, UFO_ALTITUDE)
-        clear_ufo_beam_bounded(ufo_target_x, ufo_target_z, UFO_ALTITUDE)
+        # Only clear beam voxels if beam was recently rendered
+        if ufo_beam_needs_clear:
+            clear_ufo_beam_bounded(ufo_render_x, ufo_render_z, UFO_ALTITUDE)
+            if abs(ufo_prev_x - ufo_render_x) > 2.0 or abs(ufo_prev_z - ufo_render_z) > 2.0:
+                clear_ufo_beam_bounded(ufo_prev_x, ufo_prev_z, UFO_ALTITUDE)
+            if abs(ufo_x - ufo_render_x) > 2.0 or abs(ufo_z - ufo_render_z) > 2.0:
+                clear_ufo_beam_bounded(ufo_x, ufo_z, UFO_ALTITUDE)
+            if abs(ufo_target_x - ufo_render_x) > 2.0 or abs(ufo_target_z - ufo_render_z) > 2.0:
+                clear_ufo_beam_bounded(ufo_target_x, ufo_target_z, UFO_ALTITUDE)
         if cycle_pos >= UFO_CRUISE_DURATION + UFO_TELEGRAPH_DURATION and \
            cycle_pos < UFO_CRUISE_DURATION + UFO_TELEGRAPH_DURATION + UFO_FIRE_DURATION:
             # Fire phase - traveling beam from UFO down to ground
@@ -18169,6 +18179,10 @@ try:
             tail_prog = max(0.0, (fire_progress - 0.6) * 2.5)  # Tail starts retracting at 60%
             spiral_phase = ufo_time * 15.0  # Fast spinning spiral
             render_ufo_beam(ufo_render_x, UFO_ALTITUDE, ufo_render_z, head_prog, tail_prog, spiral_phase)
+            ufo_beam_needs_clear = True
+        else:
+            # After fire phase ends, one final clear already happened above; stop clearing
+            ufo_beam_needs_clear = False
 
     perf_monitor.stop('beetle_render')
 
@@ -19374,6 +19388,7 @@ try:
                     ufo_dust_timer = 0.0
                     ufo_prev_x = 0.0
                     ufo_prev_z = 0.0
+                    ufo_beam_needs_clear = False
                     print("UFO LASER HAZARD ENABLED - watch the skies!")
                 else:
                     # Clear UFO voxels when disabling
@@ -19388,6 +19403,7 @@ try:
                     ufo_dust_timer = 0.0
                     ufo_prev_x = 0.0
                     ufo_prev_z = 0.0
+                    ufo_beam_needs_clear = False
                     print("UFO laser hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
