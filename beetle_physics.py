@@ -391,10 +391,10 @@ HORN_DEFAULT_PITCH_STAG = math.radians(18)  # Start at +18 degrees (raised) - fo
 HORN_DEFAULT_PITCH_HERCULES = math.radians(15)  # Start at +15 degrees (jaws slightly open) - for hercules
 HORN_DEFAULT_PITCH_SCORPION = math.radians(20)  # Start at +20 degrees (raised) - for scorpion claws
 HORN_DEFAULT_PITCH_ATLAS = math.radians(-33)  # Start at -33 degrees (angled down toward ground) - for atlas beetle
-HORN_MAX_PITCH = math.radians(40)  # +40 degrees vertical (up) - increased by 10° for stag pincers
+HORN_MAX_PITCH = math.radians(45)  # +45 degrees vertical (up) - increased 5° more for stag pincers
 HORN_MIN_PITCH = math.radians(5)  # +5 degrees vertical (down) - reduced downward by 15° total for stag pincers
 # Rhino-specific limits (shifted 5° higher to keep horn from going too low)
-HORN_MAX_PITCH_RHINO = math.radians(35)  # +35 degrees vertical (up) - 5° more than default 30°
+HORN_MAX_PITCH_RHINO = math.radians(42)  # +42 degrees vertical (up) - 7° more than previous 35°
 HORN_MIN_PITCH_RHINO = math.radians(-5)  # -5 degrees vertical (down) - 5° less downward than default -10°
 # Hercules-specific limits (±15° range from default, shifted up to prevent ground clipping)
 HORN_MAX_PITCH_HERCULES = math.radians(35)  # +35 degrees (jaws fully open)
@@ -403,14 +403,16 @@ HORN_MIN_PITCH_HERCULES = math.radians(2)   # +2 degrees (jaws fully closed)
 HORN_MAX_PITCH_ATLAS = math.radians(20)  # +20 degrees (full upward lift)
 HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward ground)
 # Scorpion-specific limits (symmetric ±17° around 20° default for equal claw range)
-HORN_MAX_PITCH_SCORPION = math.radians(42)  # +42 degrees (20 + 22)
-HORN_MIN_PITCH_SCORPION = math.radians(-2)  # -2 degrees (20 - 22)
+HORN_MAX_PITCH_SCORPION = math.radians(45)  # +45 degrees (3° more up)
+HORN_MIN_PITCH_SCORPION = math.radians(-5)  # -5 degrees (3° more down)
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
-HORN_YAW_SPEED = 1.0  # Radians per second (50% slower for less clipping)
+HORN_YAW_SPEED = 1.15  # Radians per second (15% faster for parity with pitch speed)
 # Default yaw limits (for beetles with symmetric horn movement)
 HORN_MAX_YAW = math.radians(20)  # +20 degrees horizontal
 HORN_MIN_YAW = math.radians(-20)  # -20 degrees horizontal
+HORN_MAX_YAW_HERCULES = math.radians(23)  # +23 degrees horizontal (3° wider than default)
+HORN_MIN_YAW_HERCULES = math.radians(-23)  # -23 degrees horizontal (3° wider than default)
 # Stag-specific yaw limits (shifted +15° so pincers start more open)
 HORN_DEFAULT_YAW_STAG = math.radians(15)  # Stag pincers start 15° open on each side (30° total spread)
 HORN_MAX_YAW_STAG = math.radians(35)  # +35 degrees horizontal (stag pincers can open more)
@@ -435,7 +437,7 @@ HORN_PITCH_LIMITS = [
 HORN_YAW_LIMITS = [
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 0: rhino
     (HORN_MAX_YAW_STAG, HORN_MIN_YAW_STAG), # 1: stag
-    (HORN_MAX_YAW, HORN_MIN_YAW),           # 2: hercules
+    (HORN_MAX_YAW_HERCULES, HORN_MIN_YAW_HERCULES), # 2: hercules
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 3: scorpion
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 4: atlas
     (0.0, 0.0),                             # 5: bombardier (no horn - uses firing controls)
@@ -6057,12 +6059,10 @@ def generate_atlas_pronotum_horns(prong_len=5):
         # Increased linear component from 0.5 to 0.67 for ~10° steeper angle
         dy = 5 + int(i * 0.67 + (i * i) * 0.02)
 
-        # Curved lateral spread: starts at -4, curves outward, then back inward at tips
-        # Similar to stag curve but less intense
+        # Curved lateral spread: bows outward in middle, tips ease back gently
         progress = i / float(max(horn_length - 1, 1))  # 0.0 to 1.0
-        # Outward spread peaks at middle (progress=0.5), returns toward center at tips
-        # Increased multiplier from 4.0 to 12.0 for more visible curve
-        lateral_curve = progress * (1.0 - progress) * 12.0  # Peaks at 3.0 when progress=0.5
+        # Parabolic bow peaks at middle; linear floor keeps tips from curling back
+        lateral_curve = max(progress * 2.5, progress * (1.0 - progress) * 16.0)
         dz = -4 - int(lateral_curve)
 
         # Keep 2x2 thickness throughout - NO single voxel tips
@@ -6078,10 +6078,9 @@ def generate_atlas_pronotum_horns(prong_len=5):
         # Increased linear component from 0.5 to 0.67 for ~10° steeper angle
         dy = 5 + int(i * 0.67 + (i * i) * 0.02)
 
-        # Curved lateral spread (mirrored to positive Z)
+        # Curved lateral spread (mirrored to positive Z), bows outward gently
         progress = i / float(max(horn_length - 1, 1))
-        # Increased multiplier from 4.0 to 12.0 for more visible curve
-        lateral_curve = progress * (1.0 - progress) * 12.0
+        lateral_curve = max(progress * 2.5, progress * (1.0 - progress) * 16.0)
         dz = 4 + int(lateral_curve)
 
         # Keep 2x2 thickness throughout - NO single voxel tips
