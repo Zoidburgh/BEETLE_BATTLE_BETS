@@ -17809,33 +17809,27 @@ try:
     reset_dirty_voxels()  # Reset counter for this frame's tracking
     perf_monitor.stop('voxel_clear')
 
-    # Place shadows for airborne beetles (only when at least one beetle is airborne)
+    # Shadow discs for airborne beetles (mesh-based, no voxel grid stamping)
     blue_needs_shadow = beetle_blue.active and blue_render_y > SHADOW_HEIGHT_THRESHOLD
     red_needs_shadow = beetle_red.active and red_render_y > SHADOW_HEIGHT_THRESHOLD
-    floor_y = int(RENDER_Y_OFFSET)  # Shadow replaces floor voxels (flush with surface)
 
-    # Always clear shadows if they existed last frame (prevents artifacts when beetles land)
-    if shadows_were_placed:
-        clear_shadow_layer(floor_y, 1 if beetle_ball.active else 0)
-        shadows_were_placed = False
-
-    if blue_needs_shadow or red_needs_shadow:
-        shadows_were_placed = True  # Mark that we're placing shadows this frame
-
-        if blue_needs_shadow:
-            height_factor = min((blue_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
-            radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
-            # Offset shadow 2 voxels toward the butt (opposite of facing direction)
-            shadow_x = blue_render_x - 2 * math.cos(blue_render_rotation)
-            shadow_z = blue_render_z - 2 * math.sin(blue_render_rotation)
-            place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
-        if red_needs_shadow:
-            height_factor = min((red_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
-            radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
-            # Offset shadow 2 voxels toward the butt (opposite of facing direction)
-            shadow_x = red_render_x - 2 * math.cos(red_render_rotation)
-            shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
-            place_shadow_kernel(shadow_x, shadow_z, radius_float, floor_y)
+    shadow_idx = 0
+    if blue_needs_shadow:
+        height_factor = min((blue_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
+        radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+        # Offset shadow 2 voxels toward the butt (opposite of facing direction)
+        shadow_x = blue_render_x - 2 * math.cos(blue_render_rotation)
+        shadow_z = blue_render_z - 2 * math.sin(blue_render_rotation)
+        renderer.set_shadow_params(shadow_idx, shadow_x, shadow_z, radius_float)
+        shadow_idx += 1
+    if red_needs_shadow:
+        height_factor = min((red_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
+        radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+        # Offset shadow 2 voxels toward the butt (opposite of facing direction)
+        shadow_x = red_render_x - 2 * math.cos(red_render_rotation)
+        shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
+        renderer.set_shadow_params(shadow_idx, shadow_x, shadow_z, radius_float)
+        shadow_idx += 1
 
     # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas, 5=bombardier, 6=spider
     blue_horn_type_id = HORN_TYPE_IDS.get(blue_horn_type, 0)
@@ -18272,10 +18266,13 @@ try:
                 ball_shadow_max_height = 35.0  # Slower growth than beetles (25)
                 height_factor = min((ball_bottom_y - 2.0) / (ball_shadow_max_height - 2.0), 1.0)
                 ball_shadow_radius = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
-                place_shadow_kernel(ball_render_x, ball_render_z, ball_shadow_radius, floor_y)
-                shadows_were_placed = True
+                renderer.set_shadow_params(shadow_idx, ball_render_x, ball_render_z, ball_shadow_radius)
+                shadow_idx += 1
 
     perf_monitor.stop('ball_render')
+
+    # Finalize shadow disc count for renderer
+    renderer.set_num_shadows(shadow_idx)
 
     # Render floating score digits above goal pits (always visible, not just in ball mode)
     clear_score_digits()
@@ -18571,7 +18568,8 @@ try:
                     spotlight_pos=render_spotlight_pos,
                     spotlight_strength=render_spotlight_strength,
                     base_light_brightness=render_base_brightness,
-                    front_light_strength=render_front_strength)
+                    front_light_strength=render_front_strength,
+                    floor_y=int(RENDER_Y_OFFSET))
     canvas.scene(scene)
 
     perf_monitor.stop('scene_render')
@@ -20092,11 +20090,11 @@ try:
                 rt = renderer.get_render_timing()
                 if rt:
                     f.write("\n--- Renderer Breakdown (last frame) ---\n")
-                    f.write(f"  extract_voxels: {rt.get('extract_voxels', 0):.2f}ms\n")
-                    f.write(f"  extract_debris: {rt.get('extract_debris', 0):.2f}ms\n")
+                    f.write(f"  extract_all: {rt.get('extract_all', 0):.2f}ms\n")
                     f.write(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms\n")
-                    f.write(f"  scene_particles: {rt.get('scene_particles', 0):.2f}ms\n")
+                    f.write(f"  scene_draw: {rt.get('scene_draw', 0):.2f}ms\n")
                     f.write(f"  voxel_count: {rt.get('voxel_count', 0)}\n")
+                    f.write(f"  floor_quads: {rt.get('floor_quads', 0)}\n")
                 pt = get_physics_timing()
                 if pt:
                     f.write("\n--- Physics Breakdown (last frame) ---\n")
@@ -20142,7 +20140,7 @@ try:
                     else:
                         f.write("    Game speed OK\n")
                 f.write("\n--- Notes ---\n")
-                f.write("scene_particles is the main bottleneck indicator:\n")
+                f.write("scene_draw is the main bottleneck indicator:\n")
                 f.write("  <3ms = GPU backend working well (data on GPU)\n")
                 f.write("  8-15ms = CPU->GPU transfer overhead\n")
                 f.write("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)\n")

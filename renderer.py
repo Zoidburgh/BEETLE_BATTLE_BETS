@@ -24,6 +24,45 @@ voxel_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for mixed voxel/debris sizes
 
+# Floor mesh fields (flat quads instead of spheres — cleaner visuals, fewer raycasts)
+MAX_FLOOR_QUADS = 5000
+MAX_FLOOR_VERTS = MAX_FLOOR_QUADS * 4
+
+num_floor_quads = ti.field(dtype=ti.i32, shape=())
+floor_vertices = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
+floor_normals = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
+floor_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
+
+# Pre-computed numpy index array (static quad pattern) — avoids GPU-CPU sync
+_floor_indices_np = np.zeros(MAX_FLOOR_QUADS * 6, dtype=np.int32)
+for _q in range(MAX_FLOOR_QUADS):
+    _bv, _bi = _q * 4, _q * 6
+    _floor_indices_np[_bi:_bi+6] = [_bv, _bv+1, _bv+2, _bv, _bv+2, _bv+3]
+
+# Shadow disc mesh fields (perfect circles instead of grid-based blobs)
+MAX_SHADOW_DISCS = 4  # 2 beetles + 1 ball + 1 spare
+SHADOW_DISC_SEGMENTS = 32
+SHADOW_VERTS_PER_DISC = SHADOW_DISC_SEGMENTS + 1  # center + ring
+SHADOW_TRIS_PER_DISC = SHADOW_DISC_SEGMENTS
+MAX_SHADOW_VERTS = MAX_SHADOW_DISCS * SHADOW_VERTS_PER_DISC
+MAX_SHADOW_INDICES = MAX_SHADOW_DISCS * SHADOW_TRIS_PER_DISC * 3
+
+num_shadow_discs = ti.field(dtype=ti.i32, shape=())
+shadow_disc_params = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SHADOW_DISCS)  # [x, z, radius]
+shadow_vertices = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SHADOW_VERTS)
+shadow_normals = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SHADOW_VERTS)
+shadow_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SHADOW_VERTS)
+
+# Pre-computed numpy index array for triangle fans
+_shadow_indices_np = np.zeros(MAX_SHADOW_INDICES, dtype=np.int32)
+for _d in range(MAX_SHADOW_DISCS):
+    _center = _d * SHADOW_VERTS_PER_DISC
+    for _s in range(SHADOW_DISC_SEGMENTS):
+        _ti_base = (_d * SHADOW_TRIS_PER_DISC + _s) * 3
+        _shadow_indices_np[_ti_base] = _center
+        _shadow_indices_np[_ti_base + 1] = _center + 1 + _s
+        _shadow_indices_np[_ti_base + 2] = _center + 1 + (_s + 1) % SHADOW_DISC_SEGMENTS
+
 # Particle radius constants
 VOXEL_RADIUS = 0.407  # Standard voxel size (10% bigger)
 DEBRIS_RADIUS = 0.25  # Smaller dust/debris particles
@@ -234,6 +273,75 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     return color
 
 @ti.kernel
+def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i32):
+    """Build circular disc meshes for shadows, clipped to arena floor"""
+    CONCRETE_T = ti.static(2)
+    SLIPPERY_T = ti.static(21)
+    PI2 = 3.14159265358979 * 2.0
+    floor_j = ti.cast(floor_y, ti.i32)
+
+    for d in range(num_shadow_discs[None]):
+        cx = shadow_disc_params[d][0]
+        cz = shadow_disc_params[d][1]
+        radius = shadow_disc_params[d][2]
+        base = d * SHADOW_VERTS_PER_DISC
+        top_y = floor_y + VOXEL_RADIUS + 0.06  # Offset above floor to prevent z-fight with floor quads
+        shadow_color = ti.math.vec3(0.25, 0.23, 0.21)
+        up = ti.math.vec3(0.0, 1.0, 0.0)
+        center_pos = ti.math.vec3(cx, top_y, cz)
+
+        # Check if center is on floor — if not, skip entire disc
+        ci = ti.cast(cx + n_grid / 2.0, ti.i32)
+        ck = ti.cast(cz + n_grid / 2.0, ti.i32)
+        center_on_floor = 0
+        if 0 <= ci < n_grid and 0 <= ck < n_grid:
+            cvt = voxel_field[ci, floor_j, ck]
+            if cvt == CONCRETE_T or cvt == SLIPPERY_T:
+                center_on_floor = 1
+
+        # Center vertex
+        shadow_vertices[base] = center_pos
+        shadow_normals[base] = up
+        shadow_colors[base] = shadow_color
+
+        # Ring vertices — walk inward along radius until on floor (smooth edge clipping)
+        for s in range(SHADOW_DISC_SEGMENTS):
+            angle = PI2 * s / SHADOW_DISC_SEGMENTS
+            dx = ti.cos(angle)
+            dz = ti.sin(angle)
+
+            # Start at full radius, step inward until on floor (8 steps = ~1 voxel resolution)
+            placed = 0
+            if center_on_floor:
+                for step in range(9):  # 0=full radius, 8=center
+                    frac = 1.0 - step / 8.0
+                    vx = cx + radius * frac * dx
+                    vz = cz + radius * frac * dz
+                    gi = ti.cast(vx + n_grid / 2.0, ti.i32)
+                    gk = ti.cast(vz + n_grid / 2.0, ti.i32)
+                    if 0 <= gi < n_grid and 0 <= gk < n_grid:
+                        vt = voxel_field[gi, floor_j, gk]
+                        if vt == CONCRETE_T or vt == SLIPPERY_T:
+                            shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y, vz)
+                            placed = 1
+                            break
+
+            if placed == 0:
+                shadow_vertices[base + 1 + s] = center_pos
+            shadow_normals[base + 1 + s] = up
+            shadow_colors[base + 1 + s] = shadow_color
+
+def set_shadow_params(index, x, z, radius):
+    """Set shadow disc position/radius (called from beetle_physics)"""
+    shadow_disc_params[index][0] = x
+    shadow_disc_params[index][1] = z
+    shadow_disc_params[index][2] = radius
+
+def set_num_shadows(count):
+    """Set number of active shadow discs (called from beetle_physics)"""
+    num_shadow_discs[None] = count
+
+@ti.kernel
 def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
     """MEGAKERNEL: Extract all voxels and particles into render buffer in single kernel launch.
 
@@ -247,24 +355,62 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
     EMPTY = ti.static(0)
     DEBRIS_TYPE = ti.static(4)
 
+    CONCRETE = ti.static(2)
+    SLIPPERY = ti.static(21)
+    HALF = ti.static(0.5)
+
     for i, j, k in ti.ndrange((2, 126), (1, 100), (2, 126)):
         vtype = voxel_field[i, j, k]
         if vtype != EMPTY and vtype != DEBRIS_TYPE:
-            world_pos = ti.math.vec3(
-                float(i) - n_grid / 2.0,
-                float(j),
-                float(k) - n_grid / 2.0
-            )
-            color = get_voxel_color(vtype, world_pos.x, world_pos.z)
+            world_x = float(i) - n_grid / 2.0
+            world_y = float(j)
+            world_z = float(k) - n_grid / 2.0
+            color = get_voxel_color(vtype, world_x, world_z)
 
-            idx = ti.atomic_add(num_voxels[None], 1)
-            if idx < MAX_VOXELS:
-                voxel_positions[idx] = world_pos
-                voxel_colors[idx] = color
-                if vtype == 23 or vtype == 24:  # SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
-                    voxel_radii[idx] = VOXEL_RADIUS * 0.72
+            if vtype == CONCRETE or vtype == SLIPPERY:
+                # Check if interior (all 4 cardinal neighbors are floor)
+                is_edge = 0
+                for di, dk in ti.static([(-1, 0), (1, 0), (0, -1), (0, 1)]):
+                    ntype = voxel_field[i + di, j, k + dk]
+                    if ntype != CONCRETE and ntype != SLIPPERY:
+                        is_edge = 1
+
+                if is_edge:
+                    # Edge floor → oversized sphere (smooth boundary, overlaps neighbor quads)
+                    idx = ti.atomic_add(num_voxels[None], 1)
+                    if idx < MAX_VOXELS:
+                        voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z)
+                        voxel_colors[idx] = color
+                        voxel_radii[idx] = 0.47
                 else:
-                    voxel_radii[idx] = VOXEL_RADIUS
+                    # Interior floor → flat mesh quad
+                    qi = ti.atomic_add(num_floor_quads[None], 1)
+                    if qi < MAX_FLOOR_QUADS:
+                        base = qi * 4
+                        top_y = world_y + VOXEL_RADIUS
+                        floor_vertices[base + 0] = ti.math.vec3(world_x - HALF, top_y, world_z - HALF)
+                        floor_vertices[base + 1] = ti.math.vec3(world_x + HALF, top_y, world_z - HALF)
+                        floor_vertices[base + 2] = ti.math.vec3(world_x + HALF, top_y, world_z + HALF)
+                        floor_vertices[base + 3] = ti.math.vec3(world_x - HALF, top_y, world_z + HALF)
+                        up = ti.math.vec3(0.0, 1.0, 0.0)
+                        floor_normals[base + 0] = up
+                        floor_normals[base + 1] = up
+                        floor_normals[base + 2] = up
+                        floor_normals[base + 3] = up
+                        floor_colors[base + 0] = color
+                        floor_colors[base + 1] = color
+                        floor_colors[base + 2] = color
+                        floor_colors[base + 3] = color
+            else:
+                # Non-floor voxels → particle buffer (spheres)
+                idx = ti.atomic_add(num_voxels[None], 1)
+                if idx < MAX_VOXELS:
+                    voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z)
+                    voxel_colors[idx] = color
+                    if vtype == 23 or vtype == 24:  # SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
+                        voxel_radii[idx] = VOXEL_RADIUS * 0.72
+                    else:
+                        voxel_radii[idx] = VOXEL_RADIUS
 
     # ===== PHASE 2: Extract debris particles =====
     debris_count = simulation.num_debris[None]
@@ -486,7 +632,7 @@ def setup_camera(camera, scene):
     cam.up(*up)
     scene.set_camera(cam)
 
-def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, spotlight_pos=None, spotlight_strength=0.55, base_light_brightness=1.0, front_light_strength=0.5):
+def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, spotlight_pos=None, spotlight_strength=0.55, base_light_brightness=1.0, front_light_strength=0.5, floor_y=1.0):
     """
     Render voxels using Taichi GPU renderer
 
@@ -514,6 +660,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # MEGAKERNEL: Extract all voxels and particles in single kernel launch
     # Combines 5 kernels into 1 to reduce Python→GPU launch overhead (~8-16ms savings)
     num_voxels[None] = 0  # Reset counter
+    num_floor_quads[None] = 0  # Reset floor mesh counter
     extract_all_particles(voxel_field, n_grid)
 
     _t2 = time.perf_counter()
@@ -553,8 +700,8 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
 
     _t5 = time.perf_counter()
 
-    # Render ALL particles in single batched call with per-vertex radius
-    # (voxels, debris, spray, silk, and projectiles all merged into one buffer)
+    # Render non-floor particles as spheres
+    # (beetles, steel, goals, debris, spray, silk, projectiles, etc.)
     count = num_voxels[None]
     if count > 0:
         scene.particles(
@@ -565,6 +712,22 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
             index_count=count
         )
 
+    # Render floor voxels as flat mesh quads (concrete, slippery)
+    floor_count = num_floor_quads[None]
+    if floor_count > 0:
+        scene.mesh(floor_vertices, indices=_floor_indices_np, normals=floor_normals,
+                   per_vertex_color=floor_colors, two_sided=False,
+                   vertex_count=floor_count * 4, index_count=floor_count * 6)
+
+    # Render shadow discs (perfect circles)
+    disc_count = num_shadow_discs[None]
+    if disc_count > 0:
+        build_shadow_discs(float(floor_y), voxel_field, n_grid)
+        scene.mesh(shadow_vertices, indices=_shadow_indices_np, normals=shadow_normals,
+                   per_vertex_color=shadow_colors, two_sided=False,
+                   vertex_count=disc_count * SHADOW_VERTS_PER_DISC,
+                   index_count=disc_count * SHADOW_TRIS_PER_DISC * 3)
+
     _t6 = time.perf_counter()
 
     # === STORE RENDER TIMING FOR ANALYSIS ===
@@ -573,8 +736,9 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     _render_timing = {
         'extract_all': (_t2 - _t1) * 1000,  # Megakernel: voxels + debris + spray + silk + projectiles
         'lighting_setup': (_t5 - _t2) * 1000,
-        'scene_particles': (_t6 - _t5) * 1000,  # Single batched call
+        'scene_draw': (_t6 - _t5) * 1000,  # particles + mesh
         'voxel_count': count,
+        'floor_quads': floor_count,
     }
 
     # NOTE: Don't render scene to canvas here - let caller add more elements first
