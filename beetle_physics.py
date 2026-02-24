@@ -13979,7 +13979,7 @@ simulation.animate_background(0.0)  # Now hits all animation branches
 simulation.update_bg_cache()  # Warm up cache kernel
 # Quick render pass to compile renderer's bg extraction path (PHASE 6)
 renderer.num_voxels[None] = 0
-renderer.extract_all_particles(simulation.voxel_type, 128)
+renderer.extract_all_particles(simulation.voxel_type, 128, 1)
 # Clean up — clear bg and restore state
 simulation.clear_background()  # Resets bg_theme_active to 0, zeros all buffers
 
@@ -19455,6 +19455,11 @@ try:
                 window.background_color = default_bg
                 window.board_color = default_board
                 simulation.board_color[None] = ti.Vector([0.41, 0.39, 0.37])
+
+        # Mesh floor toggle
+        mesh_text = "FLAT FLOOR: ON" if renderer.mesh_floor_enabled else "FLAT FLOOR: OFF"
+        if window.GUI.button(mesh_text):
+            renderer.mesh_floor_enabled = not renderer.mesh_floor_enabled
 
         # === BACKGROUND EFFECTS ===
         window.GUI.text("")

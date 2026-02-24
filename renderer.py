@@ -67,6 +67,9 @@ for _d in range(MAX_SHADOW_DISCS):
 VOXEL_RADIUS = 0.407  # Standard voxel size (10% bigger)
 DEBRIS_RADIUS = 0.25  # Smaller dust/debris particles
 
+# Floor rendering toggle (mesh quads vs old sphere voxels)
+mesh_floor_enabled = False
+
 # Projectiles (cannonballs) are now merged into main voxel buffer with larger radius
 # This eliminates a separate scene.particles() call, reducing CPU->GPU sync overhead
 
@@ -183,7 +186,7 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
 
     # Shadow blob beneath airborne beetles (darker than arena floor)
     elif voxel_type == 20:  # SHADOW
-        color = ti.math.vec3(0.25, 0.23, 0.21)  # ~60% of arena floor color
+        color = ti.math.vec3(0.13, 0.12, 0.11)  # ~60% of arena floor color
 
     # Slippery bowl perimeter (slightly blue-tinted to indicate slippery)
     elif voxel_type == 21:  # SLIPPERY
@@ -286,7 +289,7 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
         radius = shadow_disc_params[d][2]
         base = d * SHADOW_VERTS_PER_DISC
         top_y = floor_y + VOXEL_RADIUS + 0.06  # Offset above floor to prevent z-fight with floor quads
-        shadow_color = ti.math.vec3(0.25, 0.23, 0.21)
+        shadow_color = ti.math.vec3(0.13, 0.12, 0.11)
         up = ti.math.vec3(0.0, 1.0, 0.0)
         center_pos = ti.math.vec3(cx, top_y, cz)
 
@@ -342,7 +345,7 @@ def set_num_shadows(count):
     num_shadow_discs[None] = count
 
 @ti.kernel
-def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
+def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: ti.i32):
     """MEGAKERNEL: Extract all voxels and particles into render buffer in single kernel launch.
 
     Combines 5 separate kernels into 1 to reduce Python→GPU launch overhead.
@@ -368,39 +371,47 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32):
             color = get_voxel_color(vtype, world_x, world_z)
 
             if vtype == CONCRETE or vtype == SLIPPERY:
-                # Check if interior (all 4 cardinal neighbors are floor)
-                is_edge = 0
-                for di, dk in ti.static([(-1, 0), (1, 0), (0, -1), (0, 1)]):
-                    ntype = voxel_field[i + di, j, k + dk]
-                    if ntype != CONCRETE and ntype != SLIPPERY:
-                        is_edge = 1
+                if use_mesh_floor:
+                    # Check if interior (all 4 cardinal neighbors are floor)
+                    is_edge = 0
+                    for di, dk in ti.static([(-1, 0), (1, 0), (0, -1), (0, 1)]):
+                        ntype = voxel_field[i + di, j, k + dk]
+                        if ntype != CONCRETE and ntype != SLIPPERY:
+                            is_edge = 1
 
-                if is_edge:
-                    # Edge floor → oversized sphere (smooth boundary, overlaps neighbor quads)
+                    if is_edge:
+                        # Edge floor → sphere (smooth boundary)
+                        idx = ti.atomic_add(num_voxels[None], 1)
+                        if idx < MAX_VOXELS:
+                            voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z)
+                            voxel_colors[idx] = color
+                            voxel_radii[idx] = 0.47
+                    else:
+                        # Interior floor → flat mesh quad
+                        qi = ti.atomic_add(num_floor_quads[None], 1)
+                        if qi < MAX_FLOOR_QUADS:
+                            base = qi * 4
+                            top_y = world_y + VOXEL_RADIUS
+                            floor_vertices[base + 0] = ti.math.vec3(world_x - HALF, top_y, world_z - HALF)
+                            floor_vertices[base + 1] = ti.math.vec3(world_x + HALF, top_y, world_z - HALF)
+                            floor_vertices[base + 2] = ti.math.vec3(world_x + HALF, top_y, world_z + HALF)
+                            floor_vertices[base + 3] = ti.math.vec3(world_x - HALF, top_y, world_z + HALF)
+                            up = ti.math.vec3(0.0, 1.0, 0.0)
+                            floor_normals[base + 0] = up
+                            floor_normals[base + 1] = up
+                            floor_normals[base + 2] = up
+                            floor_normals[base + 3] = up
+                            floor_colors[base + 0] = color
+                            floor_colors[base + 1] = color
+                            floor_colors[base + 2] = color
+                            floor_colors[base + 3] = color
+                else:
+                    # Old style: all floor as spheres
                     idx = ti.atomic_add(num_voxels[None], 1)
                     if idx < MAX_VOXELS:
                         voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z)
                         voxel_colors[idx] = color
-                        voxel_radii[idx] = 0.47
-                else:
-                    # Interior floor → flat mesh quad
-                    qi = ti.atomic_add(num_floor_quads[None], 1)
-                    if qi < MAX_FLOOR_QUADS:
-                        base = qi * 4
-                        top_y = world_y + VOXEL_RADIUS
-                        floor_vertices[base + 0] = ti.math.vec3(world_x - HALF, top_y, world_z - HALF)
-                        floor_vertices[base + 1] = ti.math.vec3(world_x + HALF, top_y, world_z - HALF)
-                        floor_vertices[base + 2] = ti.math.vec3(world_x + HALF, top_y, world_z + HALF)
-                        floor_vertices[base + 3] = ti.math.vec3(world_x - HALF, top_y, world_z + HALF)
-                        up = ti.math.vec3(0.0, 1.0, 0.0)
-                        floor_normals[base + 0] = up
-                        floor_normals[base + 1] = up
-                        floor_normals[base + 2] = up
-                        floor_normals[base + 3] = up
-                        floor_colors[base + 0] = color
-                        floor_colors[base + 1] = color
-                        floor_colors[base + 2] = color
-                        floor_colors[base + 3] = color
+                        voxel_radii[idx] = VOXEL_RADIUS
             else:
                 # Non-floor voxels → particle buffer (spheres)
                 idx = ti.atomic_add(num_voxels[None], 1)
@@ -661,7 +672,8 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # Combines 5 kernels into 1 to reduce Python→GPU launch overhead (~8-16ms savings)
     num_voxels[None] = 0  # Reset counter
     num_floor_quads[None] = 0  # Reset floor mesh counter
-    extract_all_particles(voxel_field, n_grid)
+    use_mesh = 1 if mesh_floor_enabled else 0
+    extract_all_particles(voxel_field, n_grid, use_mesh)
 
     _t2 = time.perf_counter()
 
@@ -712,14 +724,16 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
             index_count=count
         )
 
-    # Render floor voxels as flat mesh quads (concrete, slippery)
-    floor_count = num_floor_quads[None]
-    if floor_count > 0:
-        scene.mesh(floor_vertices, indices=_floor_indices_np, normals=floor_normals,
-                   per_vertex_color=floor_colors, two_sided=False,
-                   vertex_count=floor_count * 4, index_count=floor_count * 6)
+    # Mesh floor quads (only when mesh floor enabled)
+    floor_count = 0
+    if mesh_floor_enabled:
+        floor_count = num_floor_quads[None]
+        if floor_count > 0:
+            scene.mesh(floor_vertices, indices=_floor_indices_np, normals=floor_normals,
+                       per_vertex_color=floor_colors, two_sided=False,
+                       vertex_count=floor_count * 4, index_count=floor_count * 6)
 
-    # Render shadow discs (perfect circles)
+    # Shadow discs (always — works on both mesh and sphere floors)
     disc_count = num_shadow_discs[None]
     if disc_count > 0:
         build_shadow_discs(float(floor_y), voxel_field, n_grid)
