@@ -14,14 +14,39 @@ os.environ['DRI_PRIME'] = '1'  # Force discrete GPU on Linux (doesn't hurt on Wi
 if sys.platform == 'win32':
     try:
         import ctypes
+        import ctypes.util
         # Get current process handle
         kernel32 = ctypes.windll.kernel32
         handle = kernel32.GetCurrentProcess()
         # Set HIGH_PRIORITY_CLASS (0x80) - above normal but below realtime
         kernel32.SetPriorityClass(handle, 0x80)
         print("[Performance] Set process priority to HIGH")
+
+        # Suppress MSVC assertion dialog on Vulkan swapchain errors (window move/resize)
+        # Without this, users see a scary "Assertion failed!" dialog if they drag the window
+        # _WRITE_ABORT_MSG=0x1, _CALL_REPORTFAULT=0x2 — disable both
+        msvcrt = ctypes.cdll.msvcrt
+        msvcrt._set_abort_behavior(0, 0x3)
+        # _CRT_ASSERT=2, _CRTDBG_MODE_ERROR=0 — suppress assert popups
+        # (only exists in debug CRT but safe to try)
+        try:
+            msvcrt._CrtSetReportMode(2, 0)
+        except (AttributeError, OSError):
+            pass  # Release CRT doesn't have this, that's fine
+        # Disable Windows Error Reporting dialog
+        kernel32.SetErrorMode(0x0003)  # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX
+        print("[Stability] Suppressed crash dialogs for Vulkan errors")
     except Exception as e:
         print(f"[Performance] Could not set process priority: {e}")
+
+# Install SIGABRT handler for graceful shutdown on Vulkan assertion failures
+import signal
+def _handle_abort(signum, frame):
+    """Handle SIGABRT from Vulkan assertion failures gracefully"""
+    print("\n[Vulkan] Rendering error detected — shutting down gracefully.")
+    print("[Vulkan] This can happen when moving/resizing the window on some GPUs.")
+    os._exit(1)  # Clean exit without the ugly dialog
+signal.signal(signal.SIGABRT, _handle_abort)
 
 import taichi as ti
 import subprocess

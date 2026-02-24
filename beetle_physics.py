@@ -14,6 +14,13 @@ import sys
 import atexit
 from collections import deque
 
+def safe_window_show(win):
+    """Wrapper for window.show() that handles Vulkan swapchain errors during window move/resize"""
+    try:
+        win.show()
+    except RuntimeError:
+        pass  # Skip frame — swapchain will recover next frame
+
 # Controller support via pygame (works alongside Taichi GGUI)
 # MUST set SDL_VIDEODRIVER before importing pygame - dummy driver for controller-only input
 os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
@@ -2966,7 +2973,7 @@ def show_loading_frame(window, canvas, scene, camera, progress: float):
         base_light_brightness=1.5  # Brighter for loading screen visibility
     )
     canvas.scene(scene)
-    window.show()
+    safe_window_show(window)
 
 
 # Title screen state
@@ -13779,7 +13786,7 @@ renderer.render(
     base_light_brightness=1.5
 )
 canvas.scene(scene)
-window.show()
+safe_window_show(window)
 ti.sync()
 
 # Clear warmup debris
@@ -13801,7 +13808,7 @@ renderer.render(
     base_light_brightness=1.5  # Brighter for loading screen visibility
 )
 canvas.scene(scene)
-window.show()
+safe_window_show(window)
 ti.sync()
 
 # Now we can show loading progress!
@@ -13860,7 +13867,7 @@ renderer.render(
     base_light_brightness=1.5
 )
 canvas.scene(scene)
-window.show()
+safe_window_show(window)
 ti.sync()
 cleanup_dead_debris()
 simulation.num_debris[None] = 0  # Clear debris after warmup render
@@ -20149,7 +20156,7 @@ try:
     perf_monitor.stop('frame_total')
     perf_monitor.end_frame(physics_iterations=physics_iterations_this_frame)
 
-    window.show()
+    safe_window_show(window)
 
 except Exception as e:
     # Save crash log to file
