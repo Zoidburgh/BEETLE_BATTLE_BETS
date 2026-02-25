@@ -315,7 +315,12 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
             if cvt == CONCRETE_T or cvt == SLIPPERY_T:
                 center_on_floor = 1
 
-        # Center vertex
+        # Edge color: gradient falloff (subtler on sphere floor)
+        edge_color = shadow_color * 0.7 + bc * 0.3
+        if use_mesh_floor:
+            edge_color = shadow_color * 0.5 + bc * 0.5
+
+        # Center vertex (darkest)
         shadow_vertices[base] = center_pos
         shadow_normals[base] = up
         shadow_colors[base] = shadow_color
@@ -345,7 +350,7 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
             if placed == 0:
                 shadow_vertices[base + 1 + s] = center_pos
             shadow_normals[base + 1 + s] = up
-            shadow_colors[base + 1 + s] = shadow_color
+            shadow_colors[base + 1 + s] = edge_color
 
 def set_shadow_params(index, x, z, radius):
     """Set shadow disc position/radius (called from beetle_physics)"""
@@ -422,7 +427,7 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                 ck = k + (1 if v == 2 or v == 3 else 0)
 
                                 # Coarse: per-region tonal shift (large patches)
-                                qh = ((ci // 3) * 48611) ^ ((ck // 3) * 95317)
+                                qh = ((ci // 4) * 48611) ^ ((ck // 4) * 95317)
                                 q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.05  # ±2.5%
 
                                 # Fine: per-corner grain
