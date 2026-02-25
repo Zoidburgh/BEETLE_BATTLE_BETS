@@ -24,8 +24,8 @@ voxel_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for mixed voxel/debris sizes
 
-# Floor mesh fields (flat quads instead of spheres — cleaner visuals, fewer raycasts)
-MAX_FLOOR_QUADS = 5000
+# Floor mesh fields (flat quads + bevel skirts — single merged mesh for one draw call)
+MAX_FLOOR_QUADS = 10000
 MAX_FLOOR_VERTS = MAX_FLOOR_QUADS * 4
 
 num_floor_quads = ti.field(dtype=ti.i32, shape=())
@@ -38,6 +38,9 @@ _floor_indices_np = np.zeros(MAX_FLOOR_QUADS * 6, dtype=np.int32)
 for _q in range(MAX_FLOOR_QUADS):
     _bv, _bi = _q * 4, _q * 6
     _floor_indices_np[_bi:_bi+6] = [_bv, _bv+1, _bv+2, _bv, _bv+2, _bv+3]
+
+SKIRT_DEPTH = 2.0
+SKIRT_SHADE = 0.55
 
 # Shadow disc mesh fields (perfect circles instead of grid-based blobs)
 MAX_SHADOW_DISCS = 4  # 2 beetles + 1 ball + 1 spare
@@ -67,8 +70,127 @@ for _d in range(MAX_SHADOW_DISCS):
 VOXEL_RADIUS = 0.407  # Standard voxel size (10% bigger)
 DEBRIS_RADIUS = 0.25  # Smaller dust/debris particles
 
+# Arena SDF shape mode for smooth border snapping
+# 0=disabled, 1=circle, 2=donut, 3=x_stage, 4=figure8, 5=yinyang, 6=hourglass, 7=square_bridge, 8=circle+bowl
+arena_shape_mode = ti.field(ti.i32, shape=())
+
+def set_arena_snap(mode):
+    arena_shape_mode[None] = mode
+    invalidate_floor_cache()
+
 # Floor rendering toggle (mesh quads vs old sphere voxels)
 mesh_floor_enabled = False
+
+# Floor mesh caching — arena floor is static, no need to rebuild every frame
+floor_cache_valid = False
+cached_floor_count = 0
+
+def invalidate_floor_cache():
+    global floor_cache_valid, cached_floor_count
+    floor_cache_valid = False
+    cached_floor_count = 0
+
+def _stone_texture_py(base_color, ci, ck):
+    """Python replica of stone_texture_color for fill quad corners"""
+    qh = ((ci // 4) * 48611) ^ ((ck // 4) * 95317)
+    q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.05
+    h = (ci * 73856093) ^ (ck * 19349663)
+    fine = ((h % 1000) / 1000.0 - 0.5) * 0.08
+    h2 = (ci * 29423) ^ (ck * 61781)
+    temp = ((h2 % 1000) / 1000.0 - 0.5) * 0.03
+    return [
+        base_color[0] * (1.0 + q_shift + fine) + temp,
+        base_color[1] * (1.0 + q_shift + fine),
+        base_color[2] * (1.0 + q_shift + fine) - temp,
+    ]
+
+@ti.kernel
+def _set_floor_count(count: ti.i32):
+    """Set floor quad counter from kernel-land (guarantees visibility to subsequent kernels)."""
+    num_floor_quads[None] = count
+
+def precompute_floor_fill(voxel_field, n_grid):
+    """Generate large fill rectangles for interior floor regions.
+
+    Scans the floor slice, finds contiguous runs of fully-interior voxels
+    per row, and writes one large quad per run into numpy arrays, then
+    bulk-copies to Taichi fields via from_numpy() for reliable transfer.
+    Returns fill quad count.
+    """
+    CONCRETE = 2
+    SLIPPERY = 21
+    half_grid = n_grid // 2
+
+    # Detect floor j-level by sampling center column
+    floor_j = 1
+    for j in range(1, 10):
+        val = int(voxel_field[half_grid, j, half_grid])
+        if val == CONCRETE or val == SLIPPERY:
+            floor_j = j
+            break
+
+    top_y = float(floor_j) + VOXEL_RADIUS
+    bc = simulation.board_color[None]
+    base_color = [float(bc[0]), float(bc[1]), float(bc[2])]
+
+    # Build fill quads into numpy arrays (bulk-write is more reliable than per-element)
+    verts = np.zeros((MAX_FLOOR_VERTS, 3), dtype=np.float32)
+    norms = np.zeros((MAX_FLOOR_VERTS, 3), dtype=np.float32)
+    cols = np.zeros((MAX_FLOOR_VERTS, 3), dtype=np.float32)
+    quad_count = 0
+
+    # Scan each row (fixed k) for contiguous interior runs
+    for k in range(2, 126):
+        run_start = -1
+        for i in range(2, 127):  # 127 to flush last run
+            is_interior = False
+            if i < 126:
+                val = int(voxel_field[i, floor_j, k])
+                if val == CONCRETE or val == SLIPPERY:
+                    is_interior = True
+                    for di, dk in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(1,1),(-1,1)]:
+                        nv = int(voxel_field[i + di, floor_j, k + dk])
+                        if nv != CONCRETE and nv != SLIPPERY:
+                            is_interior = False
+                            break
+
+            if is_interior and run_start < 0:
+                run_start = i
+            elif not is_interior and run_start >= 0:
+                # Emit fill rectangle for run [run_start, i-1]
+                if quad_count < MAX_FLOOR_QUADS:
+                    base = quad_count * 4
+                    x0 = float(run_start) - half_grid - 0.5
+                    x1 = float(i - 1) - half_grid + 0.5
+                    z0 = float(k) - half_grid - 0.5
+                    z1 = float(k) - half_grid + 0.5
+
+                    verts[base + 0] = [x0, top_y, z0]
+                    verts[base + 1] = [x1, top_y, z0]
+                    verts[base + 2] = [x1, top_y, z1]
+                    verts[base + 3] = [x0, top_y, z1]
+                    norms[base:base + 4] = [0.0, 1.0, 0.0]
+                    c0 = _stone_texture_py(base_color, run_start, k)
+                    c1 = _stone_texture_py(base_color, i, k)
+                    c2 = _stone_texture_py(base_color, i, k + 1)
+                    c3 = _stone_texture_py(base_color, run_start, k + 1)
+                    cols[base + 0] = c0
+                    cols[base + 1] = c1
+                    cols[base + 2] = c2
+                    cols[base + 3] = c3
+                    quad_count += 1
+                run_start = -1
+
+    # Bulk-write to Taichi fields via from_numpy (reliable Python→Taichi transfer)
+    floor_vertices.from_numpy(verts)
+    floor_normals.from_numpy(norms)
+    floor_colors.from_numpy(cols)
+
+    # Set counter from kernel-land so extract_all_particles sees the correct offset
+    _set_floor_count(quad_count)
+
+    print(f"[renderer] Floor fill: {quad_count} interior quads, floor_j={floor_j}, top_y={top_y:.3f}")
+    return quad_count
 
 # Projectiles (cannonballs) are now merged into main voxel buffer with larger radius
 # This eliminates a separate scene.particles() call, reducing CPU->GPU sync overhead
@@ -280,6 +402,96 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
 
     return color
 
+@ti.func
+def stone_texture_color(color: ti.math.vec3, ci: ti.i32, ck: ti.i32) -> ti.math.vec3:
+    """Two-scale stone texture with warm/cool shift for floor quads"""
+    # Coarse: per-region tonal shift (large patches)
+    qh = ((ci // 4) * 48611) ^ ((ck // 4) * 95317)
+    q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.05  # ±2.5%
+    # Fine: per-corner grain
+    h = (ci * 73856093) ^ (ck * 19349663)
+    fine = ((h % 1000) / 1000.0 - 0.5) * 0.08  # ±4%
+    # Warm/cool color temperature shift
+    h2 = (ci * 29423) ^ (ck * 61781)
+    temp = ((h2 % 1000) / 1000.0 - 0.5) * 0.03  # ±1.5%
+    warm = ti.math.vec3(temp, 0.0, -temp)
+    return color * (1.0 + q_shift + fine) + warm
+
+@ti.func
+def arena_sdf(x: ti.f32, z: ti.f32, mode: ti.i32) -> ti.f32:
+    """Signed distance function for arena shapes. Negative=inside, positive=outside."""
+    d = 999.0
+    if mode == 1:
+        # Circle: radius 32
+        d = ti.sqrt(x * x + z * z) - 32.0
+    elif mode == 2:
+        # Donut: outer r=32, inner r=13
+        dist = ti.sqrt(x * x + z * z)
+        d = ti.max(dist - 32.0, 13.0 - dist)
+    elif mode == 3:
+        # X Stage: circle r=32 intersected with cross (arm half-width=12)
+        dist = ti.sqrt(x * x + z * z)
+        d = ti.max(dist - 32.0, ti.min(ti.abs(x) - 12.0, ti.abs(z) - 12.0))
+    elif mode == 4:
+        # Figure 8: two circles r=20 at x=+/-22, plus bridge |x|<=22 |z|<=6
+        dx_l = x + 22.0
+        dist_left = ti.sqrt(dx_l * dx_l + z * z)
+        dx_r = x - 22.0
+        dist_right = ti.sqrt(dx_r * dx_r + z * z)
+        bridge = ti.max(ti.abs(x) - 22.0, ti.abs(z) - 6.0)
+        d = ti.min(ti.min(dist_left - 20.0, dist_right - 20.0), bridge)
+    elif mode == 5:
+        # Yin Yang: ring (inner=26, outer=38) + S-curve bridge
+        dist = ti.sqrt(x * x + z * z)
+        ring = ti.max(dist - 38.0, 26.0 - dist)
+        # Upper arc: center (0, 20.8), radius 20.8, half-width 5
+        # Restricted to z>=-5, x>=-5, and inside inner circle (dist<=26)
+        arc_dz_u = z - 20.8
+        arc_dist_u = ti.sqrt(x * x + arc_dz_u * arc_dz_u)
+        upper_arc = ti.max(ti.abs(arc_dist_u - 20.8) - 5.0, ti.max(-z - 5.0, ti.max(-x - 5.0, dist - 26.0)))
+        # Lower arc: center (0, -20.8), radius 20.8, half-width 5
+        # Restricted to z<=5, x<=5, and inside inner circle (dist<=26)
+        arc_dz_l = z + 20.8
+        arc_dist_l = ti.sqrt(x * x + arc_dz_l * arc_dz_l)
+        lower_arc = ti.max(ti.abs(arc_dist_l - 20.8) - 5.0, ti.max(z - 5.0, ti.max(x - 5.0, dist - 26.0)))
+        d = ti.min(ring, ti.min(upper_arc, lower_arc))
+    elif mode == 6:
+        # Hourglass: |x|<=32, |z|<=6+0.5625*|x|
+        d = ti.max(ti.abs(x) - 32.0, ti.abs(z) - 6.0 - 0.5625 * ti.abs(x))
+    elif mode == 7:
+        # Square Bridge: outer 38x25, hole 28x15, bridge |x|<=28 |z|<=5
+        outer = ti.max(ti.abs(x) - 38.0, ti.abs(z) - 25.0)
+        hole_interior = ti.min(28.0 - ti.abs(x), 15.0 - ti.abs(z))
+        ring = ti.max(outer, hole_interior)
+        bridge = ti.max(ti.abs(x) - 28.0, ti.abs(z) - 5.0)
+        d = ti.min(ring, bridge)
+    elif mode == 8:
+        # Circle with bowl perimeter (beetle ball): radius 44 (32 arena + 12 bowl)
+        d = ti.sqrt(x * x + z * z) - 44.0
+    return d
+
+@ti.func
+def sdf_snap_corner(cx: ti.f32, cz: ti.f32, mode: ti.i32) -> ti.math.vec2:
+    """Project corner onto SDF=0 boundary using one Newton step."""
+    eps = ti.static(0.1)
+    sdf_val = arena_sdf(cx, cz, mode)
+    gx = (arena_sdf(cx + eps, cz, mode) - arena_sdf(cx - eps, cz, mode)) * 5.0  # / (2*0.1)
+    gz = (arena_sdf(cx, cz + eps, mode) - arena_sdf(cx, cz - eps, mode)) * 5.0
+    g_dot = gx * gx + gz * gz
+    rx = cx
+    rz = cz
+    if g_dot > 1.0e-8:
+        step_x = sdf_val * gx / g_dot
+        step_z = sdf_val * gz / g_dot
+        # Clamp step to prevent overshoot at SDF gradient discontinuities
+        step_len = ti.sqrt(step_x * step_x + step_z * step_z)
+        if step_len > 1.5:
+            step_x *= 1.5 / step_len
+            step_z *= 1.5 / step_len
+        rx = cx - step_x
+        rz = cz - step_z
+    return ti.math.vec2(rx, rz)
+
 @ti.kernel
 def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: ti.i32):
     """Build circular disc meshes for shadows, clipped to arena floor"""
@@ -363,7 +575,7 @@ def set_num_shadows(count):
     num_shadow_discs[None] = count
 
 @ti.kernel
-def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: ti.i32):
+def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: ti.i32, skip_floor: ti.i32):
     """MEGAKERNEL: Extract all voxels and particles into render buffer in single kernel launch.
 
     Combines 5 separate kernels into 1 to reduce Python→GPU launch overhead.
@@ -389,57 +601,199 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
             color = get_voxel_color(vtype, world_x, world_z)
 
             if vtype == CONCRETE or vtype == SLIPPERY:
-                if use_mesh_floor:
-                    # Check if interior (all 4 cardinal neighbors are floor)
-                    is_edge = 0
-                    for di, dk in ti.static([(-1, 0), (1, 0), (0, -1), (0, 1)]):
-                        ntype = voxel_field[i + di, j, k + dk]
-                        if ntype != CONCRETE and ntype != SLIPPERY:
-                            is_edge = 1
+                if use_mesh_floor and skip_floor:
+                    # Floor mesh cached — skip entirely
+                    pass
+                elif use_mesh_floor:
+                    shape_mode = arena_shape_mode[None]
+                    if shape_mode > 0:
+                        # SDF snap mode — cache 4 cardinal neighbors
+                        n_mx = voxel_field[i - 1, j, k]
+                        n_px = voxel_field[i + 1, j, k]
+                        n_mz = voxel_field[i, j, k - 1]
+                        n_pz = voxel_field[i, j, k + 1]
+                        is_floor_mx = (n_mx == CONCRETE or n_mx == SLIPPERY)
+                        is_floor_px = (n_px == CONCRETE or n_px == SLIPPERY)
+                        is_floor_mz = (n_mz == CONCRETE or n_mz == SLIPPERY)
+                        is_floor_pz = (n_pz == CONCRETE or n_pz == SLIPPERY)
+                        all_cardinal = is_floor_mx and is_floor_px and is_floor_mz and is_floor_pz
 
-                    if is_edge:
-                        # Edge floor → sphere (smooth boundary)
-                        idx = ti.atomic_add(num_voxels[None], 1)
-                        if idx < MAX_VOXELS:
-                            voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z)
-                            voxel_colors[idx] = color
-                            voxel_radii[idx] = 0.47
+                        top_y = world_y + VOXEL_RADIUS
+                        up = ti.math.vec3(0.0, 1.0, 0.0)
+
+                        if all_cardinal:
+                            # Check diagonals to distinguish fully-interior vs partial
+                            n_mxmz = voxel_field[i - 1, j, k - 1]
+                            n_pxmz = voxel_field[i + 1, j, k - 1]
+                            n_pxpz = voxel_field[i + 1, j, k + 1]
+                            n_mxpz = voxel_field[i - 1, j, k + 1]
+                            all_diag = (n_mxmz == CONCRETE or n_mxmz == SLIPPERY) and \
+                                       (n_pxmz == CONCRETE or n_pxmz == SLIPPERY) and \
+                                       (n_pxpz == CONCRETE or n_pxpz == SLIPPERY) and \
+                                       (n_mxpz == CONCRETE or n_mxpz == SLIPPERY)
+                            # Interior (full or partial): emit simple flat quad
+                            qi = ti.atomic_add(num_floor_quads[None], 1)
+                            if qi < MAX_FLOOR_QUADS:
+                                base = qi * 4
+                                if all_diag:
+                                    # Fully interior: flat quad, no snap needed
+                                    for v in ti.static(range(4)):
+                                        cx = world_x + (-HALF if v == 0 or v == 3 else HALF)
+                                        cz = world_z + (-HALF if v == 0 or v == 1 else HALF)
+                                        floor_vertices[base + v] = ti.math.vec3(cx, top_y, cz)
+                                        floor_normals[base + v] = up
+                                        ci = i + (1 if v == 1 or v == 2 else 0)
+                                        ck = k + (1 if v == 2 or v == 3 else 0)
+                                        floor_colors[base + v] = stone_texture_color(color, ci, ck)
+                                else:
+                                    # Partial interior: diag-triggered snap, no bevel
+                                    for v in ti.static(range(4)):
+                                        corner_x = world_x + (-HALF if v == 0 or v == 3 else HALF)
+                                        corner_z = world_z + (-HALF if v == 0 or v == 1 else HALF)
+                                        n_diag = n_mxmz  # default (v==0)
+                                        if ti.static(v == 1):
+                                            n_diag = n_pxmz
+                                        elif ti.static(v == 2):
+                                            n_diag = n_pxpz
+                                        elif ti.static(v == 3):
+                                            n_diag = n_mxpz
+                                        if n_diag != CONCRETE and n_diag != SLIPPERY:
+                                            snapped = sdf_snap_corner(corner_x, corner_z, shape_mode)
+                                            corner_x = snapped[0]
+                                            corner_z = snapped[1]
+                                        floor_vertices[base + v] = ti.math.vec3(corner_x, top_y, corner_z)
+                                        floor_normals[base + v] = up
+                                        ci = i + (1 if v == 1 or v == 2 else 0)
+                                        ck = k + (1 if v == 2 or v == 3 else 0)
+                                        floor_colors[base + v] = stone_texture_color(color, ci, ck)
+                        else:
+                                # Edge voxel: full snap + bevel (uses cached cardinals)
+                                qi = ti.atomic_add(num_floor_quads[None], 1)
+                                if qi < MAX_FLOOR_QUADS:
+                                    base = qi * 4
+                                    n_mxmz = voxel_field[i - 1, j, k - 1]
+                                    n_pxmz = voxel_field[i + 1, j, k - 1]
+                                    n_pxpz = voxel_field[i + 1, j, k + 1]
+                                    n_mxpz = voxel_field[i - 1, j, k + 1]
+
+                                    snap_x = ti.Vector([0.0, 0.0, 0.0, 0.0])
+                                    snap_z = ti.Vector([0.0, 0.0, 0.0, 0.0])
+
+                                    for v in ti.static(range(4)):
+                                        corner_x = world_x + (-HALF if v == 0 or v == 3 else HALF)
+                                        corner_z = world_z + (-HALF if v == 0 or v == 1 else HALF)
+                                        nc = is_floor_mx  # default (v==0)
+                                        nz_v = is_floor_mz
+                                        nd = (n_mxmz == CONCRETE or n_mxmz == SLIPPERY)
+                                        if ti.static(v == 1):
+                                            nc = is_floor_px
+                                            nz_v = is_floor_mz
+                                            nd = (n_pxmz == CONCRETE or n_pxmz == SLIPPERY)
+                                        elif ti.static(v == 2):
+                                            nc = is_floor_px
+                                            nz_v = is_floor_pz
+                                            nd = (n_pxpz == CONCRETE or n_pxpz == SLIPPERY)
+                                        elif ti.static(v == 3):
+                                            nc = is_floor_mx
+                                            nz_v = is_floor_pz
+                                            nd = (n_mxpz == CONCRETE or n_mxpz == SLIPPERY)
+                                        if not nc or not nz_v or not nd:
+                                            snapped = sdf_snap_corner(corner_x, corner_z, shape_mode)
+                                            corner_x = snapped[0]
+                                            corner_z = snapped[1]
+
+                                        snap_x[v] = corner_x
+                                        snap_z[v] = corner_z
+                                        floor_vertices[base + v] = ti.math.vec3(corner_x, top_y, corner_z)
+                                        floor_normals[base + v] = up
+                                        ci = i + (1 if v == 1 or v == 2 else 0)
+                                        ck = k + (1 if v == 2 or v == 3 else 0)
+                                        floor_colors[base + v] = stone_texture_color(color, ci, ck)
+
+                                    # Bevel (skirt) quads — merged into floor mesh
+                                    dark_color = color * SKIRT_SHADE
+                                    bot_y = top_y - SKIRT_DEPTH
+                                    if not is_floor_mx:
+                                        bi = ti.atomic_add(num_floor_quads[None], 1)
+                                        if bi < MAX_FLOOR_QUADS:
+                                            bb = bi * 4
+                                            floor_vertices[bb + 0] = ti.math.vec3(snap_x[0], bot_y, snap_z[0])
+                                            floor_vertices[bb + 1] = ti.math.vec3(snap_x[3], bot_y, snap_z[3])
+                                            floor_vertices[bb + 2] = ti.math.vec3(snap_x[3], top_y, snap_z[3])
+                                            floor_vertices[bb + 3] = ti.math.vec3(snap_x[0], top_y, snap_z[0])
+                                            norm = ti.math.vec3(-1.0, 0.0, 0.0)
+                                            for bv in ti.static(range(4)):
+                                                floor_normals[bb + bv] = norm
+                                                floor_colors[bb + bv] = dark_color
+                                    if not is_floor_px:
+                                        bi = ti.atomic_add(num_floor_quads[None], 1)
+                                        if bi < MAX_FLOOR_QUADS:
+                                            bb = bi * 4
+                                            floor_vertices[bb + 0] = ti.math.vec3(snap_x[2], bot_y, snap_z[2])
+                                            floor_vertices[bb + 1] = ti.math.vec3(snap_x[1], bot_y, snap_z[1])
+                                            floor_vertices[bb + 2] = ti.math.vec3(snap_x[1], top_y, snap_z[1])
+                                            floor_vertices[bb + 3] = ti.math.vec3(snap_x[2], top_y, snap_z[2])
+                                            norm = ti.math.vec3(1.0, 0.0, 0.0)
+                                            for bv in ti.static(range(4)):
+                                                floor_normals[bb + bv] = norm
+                                                floor_colors[bb + bv] = dark_color
+                                    if not is_floor_mz:
+                                        bi = ti.atomic_add(num_floor_quads[None], 1)
+                                        if bi < MAX_FLOOR_QUADS:
+                                            bb = bi * 4
+                                            floor_vertices[bb + 0] = ti.math.vec3(snap_x[1], bot_y, snap_z[1])
+                                            floor_vertices[bb + 1] = ti.math.vec3(snap_x[0], bot_y, snap_z[0])
+                                            floor_vertices[bb + 2] = ti.math.vec3(snap_x[0], top_y, snap_z[0])
+                                            floor_vertices[bb + 3] = ti.math.vec3(snap_x[1], top_y, snap_z[1])
+                                            norm = ti.math.vec3(0.0, 0.0, -1.0)
+                                            for bv in ti.static(range(4)):
+                                                floor_normals[bb + bv] = norm
+                                                floor_colors[bb + bv] = dark_color
+                                    if not is_floor_pz:
+                                        bi = ti.atomic_add(num_floor_quads[None], 1)
+                                        if bi < MAX_FLOOR_QUADS:
+                                            bb = bi * 4
+                                            floor_vertices[bb + 0] = ti.math.vec3(snap_x[3], bot_y, snap_z[3])
+                                            floor_vertices[bb + 1] = ti.math.vec3(snap_x[2], bot_y, snap_z[2])
+                                            floor_vertices[bb + 2] = ti.math.vec3(snap_x[2], top_y, snap_z[2])
+                                            floor_vertices[bb + 3] = ti.math.vec3(snap_x[3], top_y, snap_z[3])
+                                            norm = ti.math.vec3(0.0, 0.0, 1.0)
+                                            for bv in ti.static(range(4)):
+                                                floor_normals[bb + bv] = norm
+                                                floor_colors[bb + bv] = dark_color
                     else:
-                        # Interior floor → flat mesh quad with subtle color grain
-                        qi = ti.atomic_add(num_floor_quads[None], 1)
-                        if qi < MAX_FLOOR_QUADS:
-                            base = qi * 4
-                            top_y = world_y + VOXEL_RADIUS
-                            floor_vertices[base + 0] = ti.math.vec3(world_x - HALF, top_y, world_z - HALF)
-                            floor_vertices[base + 1] = ti.math.vec3(world_x + HALF, top_y, world_z - HALF)
-                            floor_vertices[base + 2] = ti.math.vec3(world_x + HALF, top_y, world_z + HALF)
-                            floor_vertices[base + 3] = ti.math.vec3(world_x - HALF, top_y, world_z + HALF)
-                            up = ti.math.vec3(0.0, 1.0, 0.0)
-                            floor_normals[base + 0] = up
-                            floor_normals[base + 1] = up
-                            floor_normals[base + 2] = up
-                            floor_normals[base + 3] = up
-                            # Two-scale stone texture with warm/cool shift
-                            # Corner positions: v0=(i,k) v1=(i+1,k) v2=(i+1,k+1) v3=(i,k+1)
-                            # Using actual corner coords so adjacent quads share edge colors
-                            for v in ti.static(range(4)):
-                                ci = i + (1 if v == 1 or v == 2 else 0)
-                                ck = k + (1 if v == 2 or v == 3 else 0)
-
-                                # Coarse: per-region tonal shift (large patches)
-                                qh = ((ci // 4) * 48611) ^ ((ck // 4) * 95317)
-                                q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.05  # ±2.5%
-
-                                # Fine: per-corner grain
-                                h = (ci * 73856093) ^ (ck * 19349663)
-                                fine = ((h % 1000) / 1000.0 - 0.5) * 0.08  # ±4%
-
-                                # Warm/cool color temperature shift
-                                h2 = (ci * 29423) ^ (ck * 61781)
-                                temp = ((h2 % 1000) / 1000.0 - 0.5) * 0.03  # ±1.5%
-                                warm = ti.math.vec3(temp, 0.0, -temp)
-
-                                floor_colors[base + v] = color * (1.0 + q_shift + fine) + warm
+                        # Non-circle arena: original edge/interior logic
+                        is_edge = 0
+                        for di, dk in ti.static([(-1, 0), (1, 0), (0, -1), (0, 1)]):
+                            ntype = voxel_field[i + di, j, k + dk]
+                            if ntype != CONCRETE and ntype != SLIPPERY:
+                                is_edge = 1
+                        if is_edge:
+                            # Edge → sphere fallback
+                            idx = ti.atomic_add(num_voxels[None], 1)
+                            if idx < MAX_VOXELS:
+                                voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z)
+                                voxel_colors[idx] = color
+                                voxel_radii[idx] = 0.47
+                        else:
+                            # Interior → flat mesh quad
+                            qi = ti.atomic_add(num_floor_quads[None], 1)
+                            if qi < MAX_FLOOR_QUADS:
+                                base = qi * 4
+                                top_y = world_y + VOXEL_RADIUS
+                                floor_vertices[base + 0] = ti.math.vec3(world_x - HALF, top_y, world_z - HALF)
+                                floor_vertices[base + 1] = ti.math.vec3(world_x + HALF, top_y, world_z - HALF)
+                                floor_vertices[base + 2] = ti.math.vec3(world_x + HALF, top_y, world_z + HALF)
+                                floor_vertices[base + 3] = ti.math.vec3(world_x - HALF, top_y, world_z + HALF)
+                                up = ti.math.vec3(0.0, 1.0, 0.0)
+                                floor_normals[base + 0] = up
+                                floor_normals[base + 1] = up
+                                floor_normals[base + 2] = up
+                                floor_normals[base + 3] = up
+                                for v in ti.static(range(4)):
+                                    ci = i + (1 if v == 1 or v == 2 else 0)
+                                    ck = k + (1 if v == 2 or v == 3 else 0)
+                                    floor_colors[base + v] = stone_texture_color(color, ci, ck)
                 else:
                     # Old style: all floor as spheres
                     idx = ti.atomic_add(num_voxels[None], 1)
@@ -705,10 +1059,20 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
 
     # MEGAKERNEL: Extract all voxels and particles in single kernel launch
     # Combines 5 kernels into 1 to reduce Python→GPU launch overhead (~8-16ms savings)
+    global floor_cache_valid, cached_floor_count
     num_voxels[None] = 0  # Reset counter
-    num_floor_quads[None] = 0  # Reset floor mesh counter
     use_mesh = 1 if mesh_floor_enabled else 0
-    extract_all_particles(voxel_field, n_grid, use_mesh)
+    skip_floor = 0
+    if use_mesh and floor_cache_valid:
+        # Floor mesh cached — skip floor extraction, reuse cached floor fields
+        skip_floor = 1
+    else:
+        num_floor_quads[None] = 0  # Reset floor mesh counter (rebuilding)
+    extract_all_particles(voxel_field, n_grid, use_mesh, skip_floor)
+    if use_mesh and not floor_cache_valid:
+        # Cache the freshly-built floor mesh count (fill + edge + bevel quads)
+        cached_floor_count = num_floor_quads[None]
+        floor_cache_valid = True
 
     _t2 = time.perf_counter()
 
@@ -762,7 +1126,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # Mesh floor quads (only when mesh floor enabled)
     floor_count = 0
     if mesh_floor_enabled:
-        floor_count = num_floor_quads[None]
+        floor_count = cached_floor_count if floor_cache_valid else num_floor_quads[None]
         if floor_count > 0:
             scene.mesh(floor_vertices, indices=_floor_indices_np, normals=floor_normals,
                        per_vertex_color=floor_colors, two_sided=False,

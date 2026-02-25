@@ -10080,36 +10080,51 @@ def update_pending_arena_switch(dt):
 
         if mode_name == 'normal':
             simulation.init_beetle_arena()
+            renderer.set_arena_snap(1)
         elif mode_name == 'donut':
             simulation.init_donut_arena()
+            renderer.set_arena_snap(2)
         elif mode_name == 'x_stage':
             simulation.init_x_stage_arena()
+            renderer.set_arena_snap(3)
         elif mode_name == 'figure8':
             simulation.init_figure8_arena()
+            renderer.set_arena_snap(4)
         elif mode_name == 'yinyang':
             simulation.init_yinyang_arena()
+            renderer.set_arena_snap(5)
         elif mode_name == 'hourglass':
             simulation.init_hourglass_arena()
+            renderer.set_arena_snap(6)
         elif mode_name == 'square_bridge':
             simulation.init_square_bridge_arena()
+            renderer.set_arena_snap(7)
         elif mode_name == 'ball':
             simulation.init_beetle_arena()
+            renderer.set_arena_snap(8)
         elif mode_name == 'ball_off':
             # Restore appropriate arena when ball mode turns off
             if donut_mode:
                 simulation.init_donut_arena()
+                renderer.set_arena_snap(2)
             elif x_stage_mode:
                 simulation.init_x_stage_arena()
+                renderer.set_arena_snap(3)
             elif figure8_mode:
                 simulation.init_figure8_arena()
+                renderer.set_arena_snap(4)
             elif yinyang_mode:
                 simulation.init_yinyang_arena()
+                renderer.set_arena_snap(5)
             elif hourglass_mode:
                 simulation.init_hourglass_arena()
+                renderer.set_arena_snap(6)
             elif square_bridge_mode:
                 simulation.init_square_bridge_arena()
+                renderer.set_arena_snap(7)
             else:
                 simulation.init_beetle_arena()
+                renderer.set_arena_snap(1)
 
         # Re-render bowl perimeter if ball is active (arena rebuild wipes it)
         if beetle_ball.active:
@@ -13955,6 +13970,7 @@ simulation.init_figure8_arena()
 simulation.init_yinyang_arena()
 simulation.init_square_bridge_arena()
 simulation.init_beetle_arena()  # Restore normal arena
+renderer.set_arena_snap(1)
 
 # Warm up background system: bg_flush() from_numpy transfers + all animation branches
 # Populate one sample voxel per animation type (0-37) at offscreen positions
@@ -13979,7 +13995,7 @@ simulation.animate_background(0.0)  # Now hits all animation branches
 simulation.update_bg_cache()  # Warm up cache kernel
 # Quick render pass to compile renderer's bg extraction path (PHASE 6)
 renderer.num_voxels[None] = 0
-renderer.extract_all_particles(simulation.voxel_type, 128, 1)
+renderer.extract_all_particles(simulation.voxel_type, 128, 1, 0)
 # Clean up — clear bg and restore state
 simulation.clear_background()  # Resets bg_theme_active to 0, zeros all buffers
 
@@ -19460,6 +19476,7 @@ try:
         mesh_text = "FLAT FLOOR: ON" if renderer.mesh_floor_enabled else "FLAT FLOOR: OFF"
         if window.GUI.button(mesh_text):
             renderer.mesh_floor_enabled = not renderer.mesh_floor_enabled
+            renderer.invalidate_floor_cache()
 
         # === BACKGROUND EFFECTS ===
         window.GUI.text("")
