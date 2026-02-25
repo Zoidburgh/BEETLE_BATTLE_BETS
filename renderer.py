@@ -79,7 +79,7 @@ def set_arena_snap(mode):
     invalidate_floor_cache()
 
 # Floor rendering toggle (mesh quads vs old sphere voxels)
-mesh_floor_enabled = False
+mesh_floor_enabled = True
 
 # Floor mesh caching — arena floor is static, no need to rebuild every frame
 floor_cache_valid = False
