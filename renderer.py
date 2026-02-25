@@ -90,107 +90,6 @@ def invalidate_floor_cache():
     floor_cache_valid = False
     cached_floor_count = 0
 
-def _stone_texture_py(base_color, ci, ck):
-    """Python replica of stone_texture_color for fill quad corners"""
-    qh = ((ci // 4) * 48611) ^ ((ck // 4) * 95317)
-    q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.05
-    h = (ci * 73856093) ^ (ck * 19349663)
-    fine = ((h % 1000) / 1000.0 - 0.5) * 0.08
-    h2 = (ci * 29423) ^ (ck * 61781)
-    temp = ((h2 % 1000) / 1000.0 - 0.5) * 0.03
-    return [
-        base_color[0] * (1.0 + q_shift + fine) + temp,
-        base_color[1] * (1.0 + q_shift + fine),
-        base_color[2] * (1.0 + q_shift + fine) - temp,
-    ]
-
-@ti.kernel
-def _set_floor_count(count: ti.i32):
-    """Set floor quad counter from kernel-land (guarantees visibility to subsequent kernels)."""
-    num_floor_quads[None] = count
-
-def precompute_floor_fill(voxel_field, n_grid):
-    """Generate large fill rectangles for interior floor regions.
-
-    Scans the floor slice, finds contiguous runs of fully-interior voxels
-    per row, and writes one large quad per run into numpy arrays, then
-    bulk-copies to Taichi fields via from_numpy() for reliable transfer.
-    Returns fill quad count.
-    """
-    CONCRETE = 2
-    SLIPPERY = 21
-    half_grid = n_grid // 2
-
-    # Detect floor j-level by sampling center column
-    floor_j = 1
-    for j in range(1, 10):
-        val = int(voxel_field[half_grid, j, half_grid])
-        if val == CONCRETE or val == SLIPPERY:
-            floor_j = j
-            break
-
-    top_y = float(floor_j) + VOXEL_RADIUS
-    bc = simulation.board_color[None]
-    base_color = [float(bc[0]), float(bc[1]), float(bc[2])]
-
-    # Build fill quads into numpy arrays (bulk-write is more reliable than per-element)
-    verts = np.zeros((MAX_FLOOR_VERTS, 3), dtype=np.float32)
-    norms = np.zeros((MAX_FLOOR_VERTS, 3), dtype=np.float32)
-    cols = np.zeros((MAX_FLOOR_VERTS, 3), dtype=np.float32)
-    quad_count = 0
-
-    # Scan each row (fixed k) for contiguous interior runs
-    for k in range(2, 126):
-        run_start = -1
-        for i in range(2, 127):  # 127 to flush last run
-            is_interior = False
-            if i < 126:
-                val = int(voxel_field[i, floor_j, k])
-                if val == CONCRETE or val == SLIPPERY:
-                    is_interior = True
-                    for di, dk in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(1,1),(-1,1)]:
-                        nv = int(voxel_field[i + di, floor_j, k + dk])
-                        if nv != CONCRETE and nv != SLIPPERY:
-                            is_interior = False
-                            break
-
-            if is_interior and run_start < 0:
-                run_start = i
-            elif not is_interior and run_start >= 0:
-                # Emit fill rectangle for run [run_start, i-1]
-                if quad_count < MAX_FLOOR_QUADS:
-                    base = quad_count * 4
-                    x0 = float(run_start) - half_grid - 0.5
-                    x1 = float(i - 1) - half_grid + 0.5
-                    z0 = float(k) - half_grid - 0.5
-                    z1 = float(k) - half_grid + 0.5
-
-                    verts[base + 0] = [x0, top_y, z0]
-                    verts[base + 1] = [x1, top_y, z0]
-                    verts[base + 2] = [x1, top_y, z1]
-                    verts[base + 3] = [x0, top_y, z1]
-                    norms[base:base + 4] = [0.0, 1.0, 0.0]
-                    c0 = _stone_texture_py(base_color, run_start, k)
-                    c1 = _stone_texture_py(base_color, i, k)
-                    c2 = _stone_texture_py(base_color, i, k + 1)
-                    c3 = _stone_texture_py(base_color, run_start, k + 1)
-                    cols[base + 0] = c0
-                    cols[base + 1] = c1
-                    cols[base + 2] = c2
-                    cols[base + 3] = c3
-                    quad_count += 1
-                run_start = -1
-
-    # Bulk-write to Taichi fields via from_numpy (reliable Python→Taichi transfer)
-    floor_vertices.from_numpy(verts)
-    floor_normals.from_numpy(norms)
-    floor_colors.from_numpy(cols)
-
-    # Set counter from kernel-land so extract_all_particles sees the correct offset
-    _set_floor_count(quad_count)
-
-    print(f"[renderer] Floor fill: {quad_count} interior quads, floor_j={floor_j}, top_y={top_y:.3f}")
-    return quad_count
 
 # Projectiles (cannonballs) are now merged into main voxel buffer with larger radius
 # This eliminates a separate scene.particles() call, reducing CPU->GPU sync overhead
@@ -631,12 +530,12 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                        (n_pxmz == CONCRETE or n_pxmz == SLIPPERY) and \
                                        (n_pxpz == CONCRETE or n_pxpz == SLIPPERY) and \
                                        (n_mxpz == CONCRETE or n_mxpz == SLIPPERY)
-                            # Interior (full or partial): emit simple flat quad
+                            # Interior (full or partial): emit flat quad
                             qi = ti.atomic_add(num_floor_quads[None], 1)
                             if qi < MAX_FLOOR_QUADS:
                                 base = qi * 4
                                 if all_diag:
-                                    # Fully interior: flat quad, no snap needed
+                                    # Fully interior: simple flat quad, no snap
                                     for v in ti.static(range(4)):
                                         cx = world_x + (-HALF if v == 0 or v == 3 else HALF)
                                         cz = world_z + (-HALF if v == 0 or v == 1 else HALF)
