@@ -711,8 +711,10 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                         floor_colors[base + v] = stone_texture_color(color, ci, ck)
 
                                     # Bevel (skirt) quads — merged into floor mesh
+                                    # All bevels use downward normal so lighting is uniform (hides seams)
                                     dark_color = color * SKIRT_SHADE
                                     bot_y = top_y - SKIRT_DEPTH
+                                    bevel_norm = ti.math.vec3(0.0, 1.0, 0.0)
                                     if not is_floor_mx:
                                         bi = ti.atomic_add(num_floor_quads[None], 1)
                                         if bi < MAX_FLOOR_QUADS:
@@ -721,9 +723,8 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                             floor_vertices[bb + 1] = ti.math.vec3(snap_x[3], bot_y, snap_z[3])
                                             floor_vertices[bb + 2] = ti.math.vec3(snap_x[3], top_y, snap_z[3])
                                             floor_vertices[bb + 3] = ti.math.vec3(snap_x[0], top_y, snap_z[0])
-                                            norm = ti.math.vec3(-1.0, 0.0, 0.0)
                                             for bv in ti.static(range(4)):
-                                                floor_normals[bb + bv] = norm
+                                                floor_normals[bb + bv] = bevel_norm
                                                 floor_colors[bb + bv] = dark_color
                                     if not is_floor_px:
                                         bi = ti.atomic_add(num_floor_quads[None], 1)
@@ -733,9 +734,8 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                             floor_vertices[bb + 1] = ti.math.vec3(snap_x[1], bot_y, snap_z[1])
                                             floor_vertices[bb + 2] = ti.math.vec3(snap_x[1], top_y, snap_z[1])
                                             floor_vertices[bb + 3] = ti.math.vec3(snap_x[2], top_y, snap_z[2])
-                                            norm = ti.math.vec3(1.0, 0.0, 0.0)
                                             for bv in ti.static(range(4)):
-                                                floor_normals[bb + bv] = norm
+                                                floor_normals[bb + bv] = bevel_norm
                                                 floor_colors[bb + bv] = dark_color
                                     if not is_floor_mz:
                                         bi = ti.atomic_add(num_floor_quads[None], 1)
@@ -745,9 +745,8 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                             floor_vertices[bb + 1] = ti.math.vec3(snap_x[0], bot_y, snap_z[0])
                                             floor_vertices[bb + 2] = ti.math.vec3(snap_x[0], top_y, snap_z[0])
                                             floor_vertices[bb + 3] = ti.math.vec3(snap_x[1], top_y, snap_z[1])
-                                            norm = ti.math.vec3(0.0, 0.0, -1.0)
                                             for bv in ti.static(range(4)):
-                                                floor_normals[bb + bv] = norm
+                                                floor_normals[bb + bv] = bevel_norm
                                                 floor_colors[bb + bv] = dark_color
                                     if not is_floor_pz:
                                         bi = ti.atomic_add(num_floor_quads[None], 1)
@@ -757,9 +756,8 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                             floor_vertices[bb + 1] = ti.math.vec3(snap_x[2], bot_y, snap_z[2])
                                             floor_vertices[bb + 2] = ti.math.vec3(snap_x[2], top_y, snap_z[2])
                                             floor_vertices[bb + 3] = ti.math.vec3(snap_x[3], top_y, snap_z[3])
-                                            norm = ti.math.vec3(0.0, 0.0, 1.0)
                                             for bv in ti.static(range(4)):
-                                                floor_normals[bb + bv] = norm
+                                                floor_normals[bb + bv] = bevel_norm
                                                 floor_colors[bb + bv] = dark_color
                     else:
                         # Non-circle arena: original edge/interior logic
