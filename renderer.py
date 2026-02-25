@@ -400,7 +400,7 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                             voxel_colors[idx] = color
                             voxel_radii[idx] = 0.47
                     else:
-                        # Interior floor → flat mesh quad
+                        # Interior floor → flat mesh quad with subtle color grain
                         qi = ti.atomic_add(num_floor_quads[None], 1)
                         if qi < MAX_FLOOR_QUADS:
                             base = qi * 4
@@ -414,10 +414,27 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                             floor_normals[base + 1] = up
                             floor_normals[base + 2] = up
                             floor_normals[base + 3] = up
-                            floor_colors[base + 0] = color
-                            floor_colors[base + 1] = color
-                            floor_colors[base + 2] = color
-                            floor_colors[base + 3] = color
+                            # Two-scale stone texture with warm/cool shift
+                            # Corner positions: v0=(i,k) v1=(i+1,k) v2=(i+1,k+1) v3=(i,k+1)
+                            # Using actual corner coords so adjacent quads share edge colors
+                            for v in ti.static(range(4)):
+                                ci = i + (1 if v == 1 or v == 2 else 0)
+                                ck = k + (1 if v == 2 or v == 3 else 0)
+
+                                # Coarse: per-region tonal shift (large patches)
+                                qh = ((ci // 3) * 48611) ^ ((ck // 3) * 95317)
+                                q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.05  # ±2.5%
+
+                                # Fine: per-corner grain
+                                h = (ci * 73856093) ^ (ck * 19349663)
+                                fine = ((h % 1000) / 1000.0 - 0.5) * 0.08  # ±4%
+
+                                # Warm/cool color temperature shift
+                                h2 = (ci * 29423) ^ (ck * 61781)
+                                temp = ((h2 % 1000) / 1000.0 - 0.5) * 0.03  # ±1.5%
+                                warm = ti.math.vec3(temp, 0.0, -temp)
+
+                                floor_colors[base + v] = color * (1.0 + q_shift + fine) + warm
                 else:
                     # Old style: all floor as spheres
                     idx = ti.atomic_add(num_voxels[None], 1)

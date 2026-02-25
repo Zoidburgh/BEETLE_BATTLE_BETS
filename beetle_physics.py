@@ -370,8 +370,8 @@ PI_ONE_HALF = math.pi * 1.5
 # Shadow blob constants (for airborne beetles)
 SHADOW_HEIGHT_THRESHOLD = 3.0  # Only show shadow when Y > 3
 SHADOW_MAX_HEIGHT = 25.0  # Shadow max size at this height
-SHADOW_BASE_RADIUS = 1  # Base radius in voxels (close to ground)
-SHADOW_MAX_RADIUS = 8  # Max radius at max height
+SHADOW_BASE_RADIUS = 2  # Base radius in voxels (close to ground)
+SHADOW_MAX_RADIUS = 10  # Max radius at max height
 
 # Physics constants
 BEETLE_RADIUS = 16.0  # Back to original scale - lean and mean
