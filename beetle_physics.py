@@ -1607,6 +1607,8 @@ def reset_match():
     ice_mode = False
     ice_time = 0.0
     simulation.clear_ice_patches()
+    renderer.ice_params[None] = [0.0, 0.0, 0.0, 0.0, 0.0]
+    renderer.set_ice_active(False)
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -16051,10 +16053,15 @@ try:
                     ice_mode = opts.get('ice_mode', False)
                     if ice_mode:
                         ice_time = 0.0
+                        renderer.invalidate_floor_cache()
+                        renderer.set_ice_active(True)
                         print("ICE PATCHES HAZARD ENABLED (from host)")
                     else:
                         ice_time = 0.0
                         simulation.clear_ice_patches()
+                        renderer.ice_params[None] = [0.0, 0.0, 0.0, 0.0, 0.0]
+                        renderer.set_ice_active(False)
+                        renderer.invalidate_floor_cache()
                         print("Ice patches hazard disabled (from host)")
 
         # Determine if we should detect deaths locally
@@ -17075,6 +17082,7 @@ try:
             ic2_x = ICE_CIRCLE_BOUNDS * math.sin(t * 1.3 + math.pi)
             ic2_z = ICE_CIRCLE_BOUNDS * math.cos(t * 0.53 + math.pi)
             simulation.update_ice_patches(ic1_x, ic1_z, ic2_x, ic2_z, ICE_CIRCLE_RADIUS)
+            renderer.ice_params[None] = [ic1_x, ic1_z, ic2_x, ic2_z, ICE_CIRCLE_RADIUS]
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
@@ -19434,10 +19442,15 @@ try:
                 ice_mode = not ice_mode
                 if ice_mode:
                     ice_time = 0.0
+                    renderer.invalidate_floor_cache()
+                    renderer.set_ice_active(True)
                     print("ICE PATCHES HAZARD ENABLED - watch for slippery zones!")
                 else:
                     ice_time = 0.0
                     simulation.clear_ice_patches()
+                    renderer.ice_params[None] = [0.0, 0.0, 0.0, 0.0, 0.0]
+                    renderer.set_ice_active(False)
+                    renderer.invalidate_floor_cache()
                     print("Ice patches hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
@@ -19457,6 +19470,7 @@ try:
         if new_board_color != window.board_color:
             window.board_color = new_board_color
             simulation.board_color[None] = ti.Vector([new_board_color[0], new_board_color[1], new_board_color[2]])
+            renderer.invalidate_floor_cache()
 
         # Reset to defaults button (only show if colors changed)
         default_bg = (0.18, 0.40, 0.22)
@@ -19471,6 +19485,7 @@ try:
                 window.background_color = default_bg
                 window.board_color = default_board
                 simulation.board_color[None] = ti.Vector([0.41, 0.39, 0.37])
+                renderer.invalidate_floor_cache()
 
         # Mesh floor toggle
         mesh_text = "FLAT FLOOR: ON" if renderer.mesh_floor_enabled else "FLAT FLOOR: OFF"

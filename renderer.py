@@ -84,15 +84,24 @@ mesh_floor_enabled = False
 # Floor mesh caching — arena floor is static, no need to rebuild every frame
 floor_cache_valid = False
 cached_floor_count = 0
+ice_active = False  # When True, bypass floor cache so ice circles update each frame
 
 def invalidate_floor_cache():
     global floor_cache_valid, cached_floor_count
     floor_cache_valid = False
     cached_floor_count = 0
 
+def set_ice_active(active):
+    global ice_active
+    ice_active = active
+
 
 # Projectiles (cannonballs) are now merged into main voxel buffer with larger radius
 # This eliminates a separate scene.particles() call, reducing CPU->GPU sync overhead
+
+# Ice circle params for smooth distance-based blending (c1x, c1z, c2x, c2z, radius)
+# When radius > 0, ice is active and get_voxel_color uses smooth falloff instead of binary overlay
+ice_params = ti.Vector.field(5, dtype=ti.f32, shape=())
 
 # Gradient background (2 triangles forming full-screen quad)
 gradient_positions = ti.Vector.field(2, dtype=ti.f32, shape=6)
@@ -130,14 +139,17 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     if voxel_type == 1:  # STEEL
         color = ti.math.vec3(0.6, 0.65, 0.7)
 
-    # Concrete - customizable arena floor color (with ice overlay check)
+    # Concrete - customizable arena floor color (with smooth ice blending)
     elif voxel_type == 2:  # CONCRETE
-        gi = int(world_x + 64.0)
-        gk = int(world_z + 64.0)
-        if 0 <= gi < 128 and 0 <= gk < 128 and simulation.ice_overlay[gi, gk] == 1:
-            color = ti.math.vec3(0.65, 0.78, 0.92)  # Icy blue-white
-        else:
-            color = simulation.board_color[None]
+        color = simulation.board_color[None]
+        ip = ice_params[None]
+        if ip[4] > 0.0:  # radius > 0 means ice active
+            d1 = ti.sqrt((world_x - ip[0])**2 + (world_z - ip[1])**2)
+            d2 = ti.sqrt((world_x - ip[2])**2 + (world_z - ip[3])**2)
+            dist = ti.min(d1, d2)
+            blend = ti.math.clamp((ip[4] - dist) / 2.0, 0.0, 1.0)
+            ice_color = ti.math.vec3(0.45, 0.65, 0.88)
+            color = color * (1.0 - blend) + ice_color * blend
 
     # Molten voxels are bright orange (flowing metal)
     elif voxel_type == 3:  # MOLTEN
@@ -216,12 +228,15 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
 
     # Slippery bowl perimeter (slightly blue-tinted to indicate slippery)
     elif voxel_type == 21:  # SLIPPERY
-        gi = int(world_x + 64.0)
-        gk = int(world_z + 64.0)
-        if 0 <= gi < 128 and 0 <= gk < 128 and simulation.ice_overlay[gi, gk] == 1:
-            color = ti.math.vec3(0.65, 0.78, 0.92)  # Icy blue-white (same as concrete ice)
-        else:
-            color = ti.math.vec3(0.35, 0.40, 0.50)  # Blue-gray to indicate slippery ice-like surface
+        color = ti.math.vec3(0.35, 0.40, 0.50)  # Blue-gray to indicate slippery ice-like surface
+        ip = ice_params[None]
+        if ip[4] > 0.0:  # radius > 0 means ice active
+            d1 = ti.sqrt((world_x - ip[0])**2 + (world_z - ip[1])**2)
+            d2 = ti.sqrt((world_x - ip[2])**2 + (world_z - ip[3])**2)
+            dist = ti.min(d1, d2)
+            blend = ti.math.clamp((ip[4] - dist) / 2.0, 0.0, 1.0)
+            ice_color = ti.math.vec3(0.45, 0.65, 0.88)
+            color = color * (1.0 - blend) + ice_color * blend
 
     # Goal doorway walls (sandy/tan stone)
     elif voxel_type == 22:  # GOAL
@@ -960,7 +975,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     num_voxels[None] = 0  # Reset counter
     use_mesh = 1 if mesh_floor_enabled else 0
     skip_floor = 0
-    if use_mesh and floor_cache_valid:
+    if use_mesh and floor_cache_valid and not ice_active:
         # Floor mesh cached — skip floor extraction, reuse cached floor fields
         skip_floor = 1
     else:
