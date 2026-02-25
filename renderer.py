@@ -184,9 +184,14 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 19:  # STAG_HOOK_INTERIOR_RED
         color = simulation.red_body_color[None]
 
-    # Shadow blob beneath airborne beetles (darker than arena floor)
+    # Shadow blob beneath airborne beetles (contrast-adaptive)
     elif voxel_type == 20:  # SHADOW
-        color = ti.math.vec3(0.13, 0.12, 0.11)  # ~60% of arena floor color
+        bc = simulation.board_color[None]
+        lum = bc[0] * 0.299 + bc[1] * 0.587 + bc[2] * 0.114
+        if lum > 0.3:
+            color = bc * 0.05
+        else:
+            color = bc * 0.4 + ti.math.vec3(0.18, 0.18, 0.18)
 
     # Slippery bowl perimeter (slightly blue-tinted to indicate slippery)
     elif voxel_type == 21:  # SLIPPERY
@@ -276,7 +281,7 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     return color
 
 @ti.kernel
-def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i32):
+def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: ti.i32):
     """Build circular disc meshes for shadows, clipped to arena floor"""
     CONCRETE_T = ti.static(2)
     SLIPPERY_T = ti.static(21)
@@ -288,8 +293,16 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
         cz = shadow_disc_params[d][1]
         radius = shadow_disc_params[d][2]
         base = d * SHADOW_VERTS_PER_DISC
-        top_y = floor_y + VOXEL_RADIUS + 0.06  # Offset above floor to prevent z-fight with floor quads
-        shadow_color = ti.math.vec3(0.13, 0.12, 0.11)
+        # Mesh floor: slight offset above quads. Sphere floor: higher to sit above sphere tops
+        top_y = floor_y + VOXEL_RADIUS + 0.06
+        if use_mesh_floor == 0:
+            top_y = floor_y + VOXEL_RADIUS + 0.15
+        # Shadow color: subtract fixed amount from board color (constant contrast)
+        bc = simulation.board_color[None]
+        drop = ti.math.vec3(0.15, 0.15, 0.15)
+        if use_mesh_floor == 0:
+            drop = ti.math.vec3(0.29, 0.29, 0.29)
+        shadow_color = ti.max(bc - drop, 0.0)
         up = ti.math.vec3(0.0, 1.0, 0.0)
         center_pos = ti.math.vec3(cx, top_y, cz)
 
@@ -736,7 +749,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # Shadow discs (always — works on both mesh and sphere floors)
     disc_count = num_shadow_discs[None]
     if disc_count > 0:
-        build_shadow_discs(float(floor_y), voxel_field, n_grid)
+        build_shadow_discs(float(floor_y), voxel_field, n_grid, use_mesh)
         scene.mesh(shadow_vertices, indices=_shadow_indices_np, normals=shadow_normals,
                    per_vertex_color=shadow_colors, two_sided=False,
                    vertex_count=disc_count * SHADOW_VERTS_PER_DISC,
