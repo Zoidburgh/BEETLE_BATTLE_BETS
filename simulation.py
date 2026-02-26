@@ -838,23 +838,23 @@ def init_barbell_arena():
 def init_figure8_arena():
     """
     FIGURE 8 ARENA - True infinity symbol (two overlapping circle paths)
-    Two circles R=16 at x=+-16, path half-width 6
+    Two circles R=18 at x=+-18, path half-width 6
     """
     # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
     for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
         voxel_type[i, j, k] = EMPTY
 
     # Two circle paths forming infinity symbol
-    # Left circle: center grid (48, 64), Right circle: center grid (80, 64)
-    left_cx = 48
-    right_cx = 80
+    # Left circle: center grid (46, 64), Right circle: center grid (82, 64)
+    left_cx = 46
+    right_cx = 82
     center_z = 64
-    circle_r = 16.0
+    circle_r = 18.0
     half_width = 6.0
     floor_y_offset = 33
 
-    for i in range(20, 108):
-        for k in range(36, 92):
+    for i in range(16, 112):
+        for k in range(34, 94):
             dx_left = float(i - left_cx)
             dx_right = float(i - right_cx)
             dz = float(k - center_z)
@@ -869,7 +869,7 @@ def init_figure8_arena():
                 voxel_type[i, floor_y_offset, k] = CONCRETE
                 voxel_type[i, floor_y_offset + 1, k] = EMPTY
 
-    print("FIGURE 8 ARENA constructed - infinity symbol (two circle paths r=16, width=12)")
+    print("FIGURE 8 ARENA constructed - infinity symbol (two circle paths r=18, width=12)")
 
 @ti.kernel
 def init_yinyang_arena():

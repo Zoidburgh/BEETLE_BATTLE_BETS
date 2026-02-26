@@ -1878,9 +1878,9 @@ BARBELL_CIRCLE_RADIUS = 20.0
 BARBELL_BRIDGE_HALF_WIDTH = 6.0
 
 # Figure 8 arena constants (must match simulation.py)
-FIGURE8_LEFT_CENTER_X = -16.0    # World coords
-FIGURE8_RIGHT_CENTER_X = 16.0
-FIGURE8_CIRCLE_RADIUS = 16.0
+FIGURE8_LEFT_CENTER_X = -18.0    # World coords
+FIGURE8_RIGHT_CENTER_X = 18.0
+FIGURE8_CIRCLE_RADIUS = 18.0
 FIGURE8_PATH_HALF_WIDTH = 6.0
 
 # Yin-Yang arena constants (must match simulation.py)
@@ -1921,9 +1921,9 @@ def get_spawn_position(for_blue=True, is_initial=False):
     elif figure8_mode:
         # Spawn on tips (outermost points of each loop)
         if for_blue:
-            return (-32.0, 0.0, 0.0)   # Left tip of left loop, face right
+            return (-36.0, 0.0, 0.0)   # Left tip of left loop, face right
         else:
-            return (32.0, 0.0, math.pi) # Right tip of right loop, face left
+            return (36.0, 0.0, math.pi) # Right tip of right loop, face left
     elif yinyang_mode:
         # Spawn on opposite sides of the ring
         ring_spawn_radius = (YINYANG_INNER_RADIUS + YINYANG_OUTER_RADIUS) / 2  # Middle of ring
@@ -5249,9 +5249,9 @@ BARBELL_BRIDGE_HALF_WIDTH_GPU = 6.0
 
 # Figure 8 mode state for GPU kernels
 figure8_mode_active = ti.field(ti.i32, shape=())  # 1 if figure 8 mode, 0 otherwise
-FIGURE8_LEFT_CENTER_X_GPU = -16.0
-FIGURE8_RIGHT_CENTER_X_GPU = 16.0
-FIGURE8_CIRCLE_RADIUS_GPU = 16.0
+FIGURE8_LEFT_CENTER_X_GPU = -18.0
+FIGURE8_RIGHT_CENTER_X_GPU = 18.0
+FIGURE8_CIRCLE_RADIUS_GPU = 18.0
 FIGURE8_PATH_HALF_WIDTH_GPU = 6.0
 
 # Yin-Yang mode state for GPU kernels
@@ -14281,9 +14281,9 @@ try:
                     spawn_x, spawn_z, spawn_rot = BARBELL_RIGHT_CENTER_X, 0.0, math.pi
             elif figure8_mode:
                 if is_blue:
-                    spawn_x, spawn_z, spawn_rot = -32.0, 0.0, 0.0
+                    spawn_x, spawn_z, spawn_rot = -36.0, 0.0, 0.0
                 else:
-                    spawn_x, spawn_z, spawn_rot = 32.0, 0.0, math.pi
+                    spawn_x, spawn_z, spawn_rot = 36.0, 0.0, math.pi
             elif yinyang_mode:
                 ring_spawn_radius = (YINYANG_INNER_RADIUS + YINYANG_OUTER_RADIUS) / 2
                 if is_blue:

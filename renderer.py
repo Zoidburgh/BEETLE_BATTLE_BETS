@@ -383,12 +383,12 @@ def arena_sdf(x: ti.f32, z: ti.f32, mode: ti.i32) -> ti.f32:
         # Circle with bowl perimeter (beetle ball): radius 44 (32 arena + 12 bowl)
         d = ti.sqrt(x * x + z * z) - 44.0
     elif mode == 9:
-        # True figure 8: two circles r=16 at x=+-16, path half-width 6
-        dx_l = x + 16.0
+        # True figure 8: two circles r=18 at x=+-18, path half-width 6
+        dx_l = x + 18.0
         dist_left = ti.sqrt(dx_l * dx_l + z * z)
-        dx_r = x - 16.0
+        dx_r = x - 18.0
         dist_right = ti.sqrt(dx_r * dx_r + z * z)
-        d = ti.min(ti.abs(dist_left - 16.0), ti.abs(dist_right - 16.0)) - 6.0
+        d = ti.min(ti.abs(dist_left - 18.0), ti.abs(dist_right - 18.0)) - 6.0
     return d
 
 @ti.func
