@@ -9,6 +9,7 @@ os.environ['SHIM_MCCOMPAT'] = '0x800000001'  # Force discrete GPU on NVIDIA Opti
 os.environ['NV_PRIME_RENDER_OFFLOAD'] = '1'  # Linux NVIDIA offload (doesn't hurt on Windows)
 os.environ['__GLX_VENDOR_LIBRARY_NAME'] = 'nvidia'  # Linux NVIDIA preference
 os.environ['DRI_PRIME'] = '1'  # Force discrete GPU on Linux (doesn't hurt on Windows)
+os.environ['TI_ENABLE_TORCH'] = '0'  # Skip PyTorch probe during ti.init() (faster startup)
 
 # Set high process priority to reduce Windows scheduling variance
 if sys.platform == 'win32':
@@ -100,13 +101,19 @@ BG_ANIM_FREQUENCY = 3 if BACKEND == 'cpu' else 3  # Background animation: every 
 # Check if user wants fresh kernel compilation (bypasses cache that might cause variance)
 FRESH_COMPILE = '--fresh' in sys.argv
 
+_cache_opts = dict(
+    offline_cache=not FRESH_COMPILE,
+    offline_cache_cleaning_policy='never',  # Don't evict cached kernels between runs
+    offline_cache_max_size_of_files=500 * 1024 * 1024,  # 500 MB headroom
+)
+
 if BACKEND == 'cpu':
     # Pin thread count to reduce variance from Windows thread scheduling
-    ti.init(arch=ti.cpu, debug=False, offline_cache=not FRESH_COMPILE, cpu_max_num_threads=8)
+    ti.init(arch=ti.cpu, debug=False, cpu_max_num_threads=8, **_cache_opts)
 elif BACKEND == 'cuda':
-    ti.init(arch=ti.cuda, debug=False, offline_cache=not FRESH_COMPILE)
+    ti.init(arch=ti.cuda, debug=False, **_cache_opts)
 else:
-    ti.init(arch=ti.vulkan, debug=False, offline_cache=not FRESH_COMPILE)
+    ti.init(arch=ti.vulkan, debug=False, **_cache_opts)
 
 if FRESH_COMPILE:
     print("[Taichi] Fresh compile mode - cache disabled")

@@ -3250,7 +3250,14 @@ def build_floor_height_cache_kernel():
 
 def build_floor_height_cache():
     """Build/rebuild the floor height cache (call after arena init or ball mode toggle)"""
+    global floor_cache_blue, floor_cache_red, floor_cache_ball
     build_floor_height_cache_kernel()
+    # Invalidate Python-level position caches so they re-query the new Taichi cache.
+    # Without this, a stale cached -1000 (no floor) can persist after arena rebuild,
+    # causing entities to fall through the floor.
+    floor_cache_blue = (None, None, -1000.0)
+    floor_cache_red = (None, None, -1000.0)
+    floor_cache_ball = (None, None, -1000.0)
     print("Floor height cache built")
 
 def init_ball_cache(radius: float):
@@ -3397,10 +3404,10 @@ def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti
         start_y = target_y + ball_scatter_y[i]
         start_z = target_z + ball_scatter_z[i]
 
-        # Interpolate with smooth timing
-        current_x = ti.cast(start_x + (target_x - start_x) * smooth_t, ti.i32)
-        current_y = ti.cast(start_y + (target_y - start_y) * smooth_t, ti.i32)
-        current_z = ti.cast(start_z + (target_z - start_z) * smooth_t, ti.i32)
+        # Interpolate with smooth timing (round instead of truncate for smoother motion)
+        current_x = ti.cast(ti.round(start_x + (target_x - start_x) * smooth_t), ti.i32)
+        current_y = ti.cast(ti.round(start_y + (target_y - start_y) * smooth_t), ti.i32)
+        current_z = ti.cast(ti.round(start_z + (target_z - start_z) * smooth_t), ti.i32)
 
         # Bounds check and place only in empty space
         if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
@@ -13682,11 +13689,8 @@ dynamic_lighting_enabled = False  # Camera-relative lighting for cinematic effec
 show_advanced_settings = False
 show_settings_panel = False  # Hide settings panel until game starts
 
-# Initialize gradient background for forest atmosphere
-renderer.init_gradient_background()
-
-# OPTIMIZATION: Pre-compute metallic shimmer lookup table (8-12% render speedup)
-renderer.init_shimmer_lut()
+# NOTE: renderer.init_gradient_background() and renderer.init_shimmer_lut() are
+# called during the loading bar warmup (Phase 0) so the user sees progress feedback.
 
 # Initialize controller support
 init_controllers()
@@ -13881,7 +13885,9 @@ def update_loading(phase):
 # Show initial loading bar (empty)
 update_loading(0)
 
-# PHASE 1: Collision detection kernels
+# PHASE 1: Renderer LUT kernels + collision detection
+renderer.init_gradient_background()
+renderer.init_shimmer_lut()
 check_collision_kernel(0.0, 0.0, 0.0, 100.0, 100.0, 0.0, simulation.BEETLE_BLUE, simulation.BEETLE_RED)
 calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_BLUE,
                                  beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
@@ -18205,8 +18211,8 @@ try:
     # Render ball assembly animation (voxel rain effect)
     if g['ball_assembling'] and ball_cache_size[None] > 0:
         progress = min(g['ball_assembly_timer'] / BALL_ASSEMBLY_DURATION, 1.0)
-        # Assemble high above arena (y=59), ball will drop from y=30 after assembly
-        render_ball_assembly_fast(0.0, 57.0, 0.0, progress)
+        # Assemble high above arena, ball will drop from y=28 after assembly
+        render_ball_assembly_fast(0.0, 58.0, 0.0, progress)
 
     # Clear and render ladybugs using bounded clearing (much faster than full grid scan)
     # Each ladybug clears both previous and current positions to prevent leftover voxels on movement
@@ -19167,10 +19173,10 @@ try:
                     beetle_ball.prev_roll = beetle_ball.roll
                     blue_score = 0
                     red_score = 0
-                    ball_scored_this_fall = False
-                    ball_has_exploded = False
-                    ball_explosion_delay = 0.0
-                    ball_explosion_timer = 0.0
+                    g['ball_scored_this_fall'] = False
+                    g['ball_has_exploded'] = False
+                    g['ball_explosion_delay'] = 0.0
+                    g['ball_explosion_timer'] = 0.0
                     beetle_ball.active = True
                     queue_arena_switch('ball')
                 # Sync to guest
