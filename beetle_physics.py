@@ -13578,6 +13578,10 @@ window = ti.ui.Window("Beetle Physics", WINDOW_RESOLUTION, vsync=VSYNC_ENABLED, 
 canvas = window.get_canvas()
 scene = window.get_scene()
 
+# Show window immediately with solid background so user sees something during kernel compilation
+canvas.set_background_color(LOADING_BG_COLOR)
+safe_window_show(window)
+
 # Initialize slider values for beetle customization (needed before game loop)
 window.blue_horn_shaft_value = 12
 window.blue_horn_prong_value = 5
@@ -13867,6 +13871,7 @@ clear_ufo_beam_bounded(0.0, 0.0, 30.0)  # Clean up beam voxels (arena floor clea
 spawn_ufo_telegraph(0.0, -100.0, 0.0)
 spawn_ufo_beam_impact(0.0, -100.0, 0.0)
 spawn_ufo_beam_sparks(0.0, -100.0, 0.0)
+renderer.merge_interior_floor(simulation.voxel_type, 128, int(RENDER_Y_OFFSET))  # Merge floor kernel warmup
 simulation.update_ice_patches(0.0, 0.0, 0.0, 0.0, 16.0)  # Ice patches warmup
 simulation.clear_ice_patches()  # Ice patches cleanup warmup
 spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup

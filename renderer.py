@@ -321,13 +321,13 @@ def stone_texture_color(color: ti.math.vec3, ci: ti.i32, ck: ti.i32) -> ti.math.
     """Two-scale stone texture with warm/cool shift for floor quads"""
     # Coarse: per-region tonal shift (large patches)
     qh = ((ci // 4) * 48611) ^ ((ck // 4) * 95317)
-    q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.05  # ±2.5%
+    q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.025  # ±1.25%
     # Fine: per-corner grain
     h = (ci * 73856093) ^ (ck * 19349663)
-    fine = ((h % 1000) / 1000.0 - 0.5) * 0.08  # ±4%
+    fine = ((h % 1000) / 1000.0 - 0.5) * 0.04  # ±2%
     # Warm/cool color temperature shift
     h2 = (ci * 29423) ^ (ck * 61781)
-    temp = ((h2 % 1000) / 1000.0 - 0.5) * 0.03  # ±1.5%
+    temp = ((h2 % 1000) / 1000.0 - 0.5) * 0.015  # ±0.75%
     warm = ti.math.vec3(temp, 0.0, -temp)
     return color * (1.0 + q_shift + fine) + warm
 
@@ -488,6 +488,100 @@ def set_num_shadows(count):
     """Set number of active shadow discs (called from beetle_physics)"""
     num_shadow_discs[None] = count
 
+@ti.func
+def _emit_merged_quad(run_start: ti.i32, i_end: ti.i32, j: ti.i32, k: ti.i32,
+                       half_grid: ti.f32, top_y: ti.f32, up: ti.math.vec3,
+                       vt_start: ti.i32, vt_end: ti.i32):
+    """Emit a single wide quad covering cells [run_start, i_end] in row k."""
+    HALF = ti.static(0.5)
+    wx_start = float(run_start) - half_grid
+    wx_end = float(i_end) - half_grid
+    wz = float(k) - half_grid
+    qi = ti.atomic_add(num_floor_quads[None], 1)
+    if qi < MAX_FLOOR_QUADS:
+        base = qi * 4
+        floor_vertices[base + 0] = ti.math.vec3(wx_start - HALF, top_y, wz - HALF)
+        floor_vertices[base + 1] = ti.math.vec3(wx_end + HALF, top_y, wz - HALF)
+        floor_vertices[base + 2] = ti.math.vec3(wx_end + HALF, top_y, wz + HALF)
+        floor_vertices[base + 3] = ti.math.vec3(wx_start - HALF, top_y, wz + HALF)
+        floor_normals[base + 0] = up
+        floor_normals[base + 1] = up
+        floor_normals[base + 2] = up
+        floor_normals[base + 3] = up
+        c0 = get_voxel_color(vt_start, wx_start - HALF, wz - HALF)
+        c1 = get_voxel_color(vt_end, wx_end + HALF, wz - HALF)
+        c2 = get_voxel_color(vt_end, wx_end + HALF, wz + HALF)
+        c3 = get_voxel_color(vt_start, wx_start - HALF, wz + HALF)
+        floor_colors[base + 0] = stone_texture_color(c0, run_start, k)
+        floor_colors[base + 1] = stone_texture_color(c1, i_end + 1, k)
+        floor_colors[base + 2] = stone_texture_color(c2, i_end + 1, k + 1)
+        floor_colors[base + 3] = stone_texture_color(c3, run_start, k + 1)
+
+
+@ti.kernel
+def merge_interior_floor(voxel_field: ti.template(), n_grid: ti.i32, floor_j: ti.i32):
+    """Row-wise greedy merge of fully-interior floor cells into wide quads.
+
+    Reduces ~2800 interior 1x1 quads to ~80-100 row-runs.
+    """
+    CONCRETE = ti.static(2)
+    SLIPPERY = ti.static(21)
+
+    up = ti.math.vec3(0.0, 1.0, 0.0)
+    half_grid = float(n_grid) / 2.0
+
+    # Scan floor_j through floor_j+2 to cover bowl perimeter raised voxels (j=34)
+    for k in range(2, 126):
+        for j_off in range(3):
+            j = floor_j + j_off
+            top_y = float(j) + VOXEL_RADIUS
+            run_start = -1
+            for i in range(2, 126):
+                vtype = voxel_field[i, j, k]
+                is_interior = 0
+                if vtype == CONCRETE or vtype == SLIPPERY:
+                    n_mx = voxel_field[i - 1, j, k]
+                    n_px = voxel_field[i + 1, j, k]
+                    n_mz = voxel_field[i, j, k - 1]
+                    n_pz = voxel_field[i, j, k + 1]
+                    n_mxmz = voxel_field[i - 1, j, k - 1]
+                    n_pxmz = voxel_field[i + 1, j, k - 1]
+                    n_pxpz = voxel_field[i + 1, j, k + 1]
+                    n_mxpz = voxel_field[i - 1, j, k + 1]
+                    if (n_mx == CONCRETE or n_mx == SLIPPERY) and \
+                       (n_px == CONCRETE or n_px == SLIPPERY) and \
+                       (n_mz == CONCRETE or n_mz == SLIPPERY) and \
+                       (n_pz == CONCRETE or n_pz == SLIPPERY) and \
+                       (n_mxmz == CONCRETE or n_mxmz == SLIPPERY) and \
+                       (n_pxmz == CONCRETE or n_pxmz == SLIPPERY) and \
+                       (n_pxpz == CONCRETE or n_pxpz == SLIPPERY) and \
+                       (n_mxpz == CONCRETE or n_mxpz == SLIPPERY):
+                        is_interior = 1
+
+                if is_interior:
+                    if run_start < 0:
+                        run_start = i
+                    if i - run_start >= 3:  # Max 4 cells per merged quad
+                        vt0 = voxel_field[run_start, j, k]
+                        vt1 = voxel_field[i, j, k]
+                        _emit_merged_quad(run_start, i, j, k, half_grid, top_y, up, vt0, vt1)
+                        run_start = -1
+                else:
+                    if run_start >= 0:
+                        i_end = i - 1
+                        vt0 = voxel_field[run_start, j, k]
+                        vt1 = voxel_field[i_end, j, k]
+                        _emit_merged_quad(run_start, i_end, j, k, half_grid, top_y, up, vt0, vt1)
+                        run_start = -1
+
+            # End of row: flush any open run
+            if run_start >= 0:
+                i_end = 125
+                vt0 = voxel_field[run_start, j, k]
+                vt1 = voxel_field[i_end, j, k]
+                _emit_merged_quad(run_start, i_end, j, k, half_grid, top_y, up, vt0, vt1)
+
+
 @ti.kernel
 def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: ti.i32, skip_floor: ti.i32):
     """MEGAKERNEL: Extract all voxels and particles into render buffer in single kernel launch.
@@ -545,22 +639,13 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                        (n_pxmz == CONCRETE or n_pxmz == SLIPPERY) and \
                                        (n_pxpz == CONCRETE or n_pxpz == SLIPPERY) and \
                                        (n_mxpz == CONCRETE or n_mxpz == SLIPPERY)
-                            # Interior (full or partial): emit flat quad
-                            qi = ti.atomic_add(num_floor_quads[None], 1)
-                            if qi < MAX_FLOOR_QUADS:
-                                base = qi * 4
-                                if all_diag:
-                                    # Fully interior: simple flat quad, no snap
-                                    for v in ti.static(range(4)):
-                                        cx = world_x + (-HALF if v == 0 or v == 3 else HALF)
-                                        cz = world_z + (-HALF if v == 0 or v == 1 else HALF)
-                                        floor_vertices[base + v] = ti.math.vec3(cx, top_y, cz)
-                                        floor_normals[base + v] = up
-                                        ci = i + (1 if v == 1 or v == 2 else 0)
-                                        ck = k + (1 if v == 2 or v == 3 else 0)
-                                        floor_colors[base + v] = stone_texture_color(color, ci, ck)
-                                else:
-                                    # Partial interior: diag-triggered snap, no bevel
+                            if all_diag:
+                                pass  # Fully interior — merge kernel handles
+                            else:
+                                # Partial interior: diag-triggered snap, no bevel
+                                qi = ti.atomic_add(num_floor_quads[None], 1)
+                                if qi < MAX_FLOOR_QUADS:
+                                    base = qi * 4
                                     for v in ti.static(range(4)):
                                         corner_x = world_x + (-HALF if v == 0 or v == 3 else HALF)
                                         corner_z = world_z + (-HALF if v == 0 or v == 1 else HALF)
@@ -688,24 +773,33 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                 voxel_colors[idx] = color
                                 voxel_radii[idx] = 0.47
                         else:
-                            # Interior → flat mesh quad
-                            qi = ti.atomic_add(num_floor_quads[None], 1)
-                            if qi < MAX_FLOOR_QUADS:
-                                base = qi * 4
-                                top_y = world_y + VOXEL_RADIUS
-                                floor_vertices[base + 0] = ti.math.vec3(world_x - HALF, top_y, world_z - HALF)
-                                floor_vertices[base + 1] = ti.math.vec3(world_x + HALF, top_y, world_z - HALF)
-                                floor_vertices[base + 2] = ti.math.vec3(world_x + HALF, top_y, world_z + HALF)
-                                floor_vertices[base + 3] = ti.math.vec3(world_x - HALF, top_y, world_z + HALF)
-                                up = ti.math.vec3(0.0, 1.0, 0.0)
-                                floor_normals[base + 0] = up
-                                floor_normals[base + 1] = up
-                                floor_normals[base + 2] = up
-                                floor_normals[base + 3] = up
-                                for v in ti.static(range(4)):
-                                    ci = i + (1 if v == 1 or v == 2 else 0)
-                                    ck = k + (1 if v == 2 or v == 3 else 0)
-                                    floor_colors[base + v] = stone_texture_color(color, ci, ck)
+                            # Check diagonals — fully interior skipped (merge kernel handles)
+                            all_diag_nonsdf = 1
+                            for di, dk in ti.static([(-1, -1), (1, -1), (1, 1), (-1, 1)]):
+                                ntype2 = voxel_field[i + di, j, k + dk]
+                                if ntype2 != CONCRETE and ntype2 != SLIPPERY:
+                                    all_diag_nonsdf = 0
+                            if all_diag_nonsdf:
+                                pass  # Fully interior — merge kernel handles
+                            else:
+                                # Partial interior → flat mesh quad
+                                qi = ti.atomic_add(num_floor_quads[None], 1)
+                                if qi < MAX_FLOOR_QUADS:
+                                    base = qi * 4
+                                    top_y = world_y + VOXEL_RADIUS
+                                    floor_vertices[base + 0] = ti.math.vec3(world_x - HALF, top_y, world_z - HALF)
+                                    floor_vertices[base + 1] = ti.math.vec3(world_x + HALF, top_y, world_z - HALF)
+                                    floor_vertices[base + 2] = ti.math.vec3(world_x + HALF, top_y, world_z + HALF)
+                                    floor_vertices[base + 3] = ti.math.vec3(world_x - HALF, top_y, world_z + HALF)
+                                    up = ti.math.vec3(0.0, 1.0, 0.0)
+                                    floor_normals[base + 0] = up
+                                    floor_normals[base + 1] = up
+                                    floor_normals[base + 2] = up
+                                    floor_normals[base + 3] = up
+                                    for v in ti.static(range(4)):
+                                        ci = i + (1 if v == 1 or v == 2 else 0)
+                                        ck = k + (1 if v == 2 or v == 3 else 0)
+                                        floor_colors[base + v] = stone_texture_color(color, ci, ck)
                 else:
                     # Old style: all floor as spheres
                     idx = ti.atomic_add(num_voxels[None], 1)
@@ -981,8 +1075,10 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     else:
         num_floor_quads[None] = 0  # Reset floor mesh counter (rebuilding)
     extract_all_particles(voxel_field, n_grid, use_mesh, skip_floor)
+    if use_mesh and not skip_floor:
+        merge_interior_floor(voxel_field, n_grid, 33)
     if use_mesh and not floor_cache_valid:
-        # Cache the freshly-built floor mesh count (fill + edge + bevel quads)
+        # Cache the freshly-built floor mesh count (fill + edge + bevel + merged quads)
         cached_floor_count = num_floor_quads[None]
         floor_cache_valid = True
 
