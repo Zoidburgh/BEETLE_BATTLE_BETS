@@ -1474,7 +1474,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, square_bridge_mode
+    global blue_score, red_score, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, square_bridge_mode
     global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
@@ -1837,7 +1837,10 @@ donut_mode = False
 # X stage arena mode (plus shape with corners cut out)
 x_stage_mode = False
 
-# Figure 8 arena mode (two circles connected by bridge)
+# Barbell arena mode (two circles connected by bridge)
+barbell_mode = False
+
+# Figure 8 arena mode (true infinity symbol - two overlapping circle paths)
 figure8_mode = False
 
 # Yin-Yang arena mode (hollow ring with S-curved bridge)
@@ -1868,11 +1871,17 @@ DONUT_OUTER_RADIUS = 32  # Arena radius
 # X stage arena constants
 X_STAGE_ARM_HALF_WIDTH = 12.0  # Half-width of each arm (must match simulation.py)
 
+# Barbell arena constants (must match simulation.py)
+BARBELL_LEFT_CENTER_X = 42.0 - 64.0  # Offset from world center (-22)
+BARBELL_RIGHT_CENTER_X = 86.0 - 64.0  # Offset from world center (+22)
+BARBELL_CIRCLE_RADIUS = 20.0
+BARBELL_BRIDGE_HALF_WIDTH = 6.0
+
 # Figure 8 arena constants (must match simulation.py)
-FIGURE8_LEFT_CENTER_X = 42.0 - 64.0  # Offset from world center (-22)
-FIGURE8_RIGHT_CENTER_X = 86.0 - 64.0  # Offset from world center (+22)
-FIGURE8_CIRCLE_RADIUS = 20.0
-FIGURE8_BRIDGE_HALF_WIDTH = 6.0
+FIGURE8_LEFT_CENTER_X = -16.0    # World coords
+FIGURE8_RIGHT_CENTER_X = 16.0
+FIGURE8_CIRCLE_RADIUS = 16.0
+FIGURE8_PATH_HALF_WIDTH = 6.0
 
 # Yin-Yang arena constants (must match simulation.py)
 YINYANG_OUTER_RADIUS = 38.0
@@ -1903,12 +1912,18 @@ def get_spawn_position(for_blue=True, is_initial=False):
         # Face toward center (or opposite beetle)
         rotation = angle + math.pi  # Face inward
         return (x, z, rotation)
-    elif figure8_mode:
+    elif barbell_mode:
         # Spawn at center of respective circle, facing the other circle
         if for_blue:
-            return (FIGURE8_LEFT_CENTER_X, 0.0, 0.0)  # Left circle, face right
+            return (BARBELL_LEFT_CENTER_X, 0.0, 0.0)  # Left circle, face right
         else:
-            return (FIGURE8_RIGHT_CENTER_X, 0.0, math.pi)  # Right circle, face left
+            return (BARBELL_RIGHT_CENTER_X, 0.0, math.pi)  # Right circle, face left
+    elif figure8_mode:
+        # Spawn on tips (outermost points of each loop)
+        if for_blue:
+            return (-32.0, 0.0, 0.0)   # Left tip of left loop, face right
+        else:
+            return (32.0, 0.0, math.pi) # Right tip of right loop, face left
     elif yinyang_mode:
         # Spawn on opposite sides of the ring
         ring_spawn_radius = (YINYANG_INNER_RADIUS + YINYANG_OUTER_RADIUS) / 2  # Middle of ring
@@ -5225,12 +5240,19 @@ DONUT_INNER_EDGE_RADIUS = 13.0  # Inner pit radius for tipping detection
 x_stage_mode_active = ti.field(ti.i32, shape=())  # 1 if x stage mode, 0 otherwise
 X_STAGE_ARM_HALF_WIDTH_GPU = 12.0  # Half-width of each arm for edge detection
 
+# Barbell mode state for GPU kernels
+barbell_mode_active = ti.field(ti.i32, shape=())  # 1 if barbell mode, 0 otherwise
+BARBELL_LEFT_CENTER_X_GPU = 42.0 - 64.0  # -22 (world coords)
+BARBELL_RIGHT_CENTER_X_GPU = 86.0 - 64.0  # +22 (world coords)
+BARBELL_CIRCLE_RADIUS_GPU = 20.0
+BARBELL_BRIDGE_HALF_WIDTH_GPU = 6.0
+
 # Figure 8 mode state for GPU kernels
 figure8_mode_active = ti.field(ti.i32, shape=())  # 1 if figure 8 mode, 0 otherwise
-FIGURE8_LEFT_CENTER_X_GPU = 42.0 - 64.0  # -22 (world coords)
-FIGURE8_RIGHT_CENTER_X_GPU = 86.0 - 64.0  # +22 (world coords)
-FIGURE8_CIRCLE_RADIUS_GPU = 20.0
-FIGURE8_BRIDGE_HALF_WIDTH_GPU = 6.0
+FIGURE8_LEFT_CENTER_X_GPU = -16.0
+FIGURE8_RIGHT_CENTER_X_GPU = 16.0
+FIGURE8_CIRCLE_RADIUS_GPU = 16.0
+FIGURE8_PATH_HALF_WIDTH_GPU = 6.0
 
 # Yin-Yang mode state for GPU kernels
 yinyang_mode_active = ti.field(ti.i32, shape=())  # 1 if yin-yang mode, 0 otherwise
@@ -9264,22 +9286,31 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                             # In corner if within arena radius but NOT in either arm
                             if dist_from_center <= ARENA_EDGE_RADIUS and not in_ns_arm and not in_ew_arm:
                                 is_over_edge = 1
-                        # Figure 8: check if in left circle, right circle, or bridge
-                        if figure8_mode_active[None] == 1:
+                        # Barbell: check if in left circle, right circle, or bridge
+                        if barbell_mode_active[None] == 1:
                             # Distance from left and right circle centers
-                            dist_left = ti.sqrt((world_x_v - FIGURE8_LEFT_CENTER_X_GPU)**2 + (world_z_v - arena_center_z)**2)
-                            dist_right = ti.sqrt((world_x_v - FIGURE8_RIGHT_CENTER_X_GPU)**2 + (world_z_v - arena_center_z)**2)
-                            in_left = dist_left <= FIGURE8_CIRCLE_RADIUS_GPU
-                            in_right = dist_right <= FIGURE8_CIRCLE_RADIUS_GPU
+                            dist_left = ti.sqrt((world_x_v - BARBELL_LEFT_CENTER_X_GPU)**2 + (world_z_v - arena_center_z)**2)
+                            dist_right = ti.sqrt((world_x_v - BARBELL_RIGHT_CENTER_X_GPU)**2 + (world_z_v - arena_center_z)**2)
+                            in_left = dist_left <= BARBELL_CIRCLE_RADIUS_GPU
+                            in_right = dist_right <= BARBELL_CIRCLE_RADIUS_GPU
                             # Bridge: between the two circle centers, narrow strip
-                            in_bridge = (world_x_v >= FIGURE8_LEFT_CENTER_X_GPU and
-                                        world_x_v <= FIGURE8_RIGHT_CENTER_X_GPU and
-                                        ti.abs(world_z_v - arena_center_z) <= FIGURE8_BRIDGE_HALF_WIDTH_GPU)
+                            in_bridge = (world_x_v >= BARBELL_LEFT_CENTER_X_GPU and
+                                        world_x_v <= BARBELL_RIGHT_CENTER_X_GPU and
+                                        ti.abs(world_z_v - arena_center_z) <= BARBELL_BRIDGE_HALF_WIDTH_GPU)
                             # Over edge if NOT in any valid region
                             if not in_left and not in_right and not in_bridge:
                                 is_over_edge = 1
                             else:
-                                is_over_edge = 0  # Override normal arena check for figure 8
+                                is_over_edge = 0  # Override normal arena check for barbell
+                        # Figure 8: two overlapping circle paths (infinity symbol)
+                        if figure8_mode_active[None] == 1:
+                            dist_left = ti.sqrt((world_x_v - FIGURE8_LEFT_CENTER_X_GPU)**2 + (world_z_v - arena_center_z)**2)
+                            dist_right = ti.sqrt((world_x_v - FIGURE8_RIGHT_CENTER_X_GPU)**2 + (world_z_v - arena_center_z)**2)
+                            d = ti.min(ti.abs(dist_left - FIGURE8_CIRCLE_RADIUS_GPU), ti.abs(dist_right - FIGURE8_CIRCLE_RADIUS_GPU))
+                            if d > FIGURE8_PATH_HALF_WIDTH_GPU:
+                                is_over_edge = 1
+                            else:
+                                is_over_edge = 0
                         # Yin-Yang: hollow ring with S-curved bridge through middle
                         if yinyang_mode_active[None] == 1:
                             rel_x = world_x_v - arena_center_x
@@ -10068,7 +10099,7 @@ def update_arena_transition(dt):
 
 def update_pending_arena_switch(dt):
     """Update delayed arena switch - counts down timer and executes switch."""
-    global pending_arena_switch, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, square_bridge_mode
+    global pending_arena_switch, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, hourglass_mode, square_bridge_mode
 
     if pending_arena_switch is None:
         return
@@ -10089,9 +10120,12 @@ def update_pending_arena_switch(dt):
         elif mode_name == 'x_stage':
             simulation.init_x_stage_arena()
             renderer.set_arena_snap(3)
+        elif mode_name == 'barbell':
+            simulation.init_barbell_arena()
+            renderer.set_arena_snap(4)
         elif mode_name == 'figure8':
             simulation.init_figure8_arena()
-            renderer.set_arena_snap(4)
+            renderer.set_arena_snap(9)
         elif mode_name == 'yinyang':
             simulation.init_yinyang_arena()
             renderer.set_arena_snap(5)
@@ -10112,9 +10146,12 @@ def update_pending_arena_switch(dt):
             elif x_stage_mode:
                 simulation.init_x_stage_arena()
                 renderer.set_arena_snap(3)
+            elif barbell_mode:
+                simulation.init_barbell_arena()
+                renderer.set_arena_snap(4)
             elif figure8_mode:
                 simulation.init_figure8_arena()
-                renderer.set_arena_snap(4)
+                renderer.set_arena_snap(9)
             elif yinyang_mode:
                 simulation.init_yinyang_arena()
                 renderer.set_arena_snap(5)
@@ -13973,6 +14010,7 @@ explode_loading_screen()
 # These clear the voxel grid, so must happen after explode but before title setup
 simulation.init_donut_arena()
 simulation.init_x_stage_arena()
+simulation.init_barbell_arena()
 simulation.init_figure8_arena()
 simulation.init_yinyang_arena()
 simulation.init_square_bridge_arena()
@@ -14236,11 +14274,16 @@ try:
             if donut_mode:
                 # Donut is random, just go to center
                 spawn_x, spawn_z, spawn_rot = 0.0, 0.0, 0.0 if is_blue else math.pi
+            elif barbell_mode:
+                if is_blue:
+                    spawn_x, spawn_z, spawn_rot = BARBELL_LEFT_CENTER_X, 0.0, 0.0
+                else:
+                    spawn_x, spawn_z, spawn_rot = BARBELL_RIGHT_CENTER_X, 0.0, math.pi
             elif figure8_mode:
                 if is_blue:
-                    spawn_x, spawn_z, spawn_rot = FIGURE8_LEFT_CENTER_X, 0.0, 0.0
+                    spawn_x, spawn_z, spawn_rot = -32.0, 0.0, 0.0
                 else:
-                    spawn_x, spawn_z, spawn_rot = FIGURE8_RIGHT_CENTER_X, 0.0, math.pi
+                    spawn_x, spawn_z, spawn_rot = 32.0, 0.0, math.pi
             elif yinyang_mode:
                 ring_spawn_radius = (YINYANG_INNER_RADIUS + YINYANG_OUTER_RADIUS) / 2
                 if is_blue:
@@ -15935,7 +15978,7 @@ try:
                         print("DONUT ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
+                        if not opts.get('x_stage_mode', False) and not opts.get('barbell_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -15948,7 +15991,20 @@ try:
                         print("X STAGE ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('barbell_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
+                            queue_arena_switch('normal')
+                            print("Normal arena restored (from host)")
+
+                # Apply barbell mode state
+                if opts.get('barbell_mode', False) != barbell_mode:
+                    barbell_mode = opts.get('barbell_mode', False)
+                    barbell_mode_active[None] = 1 if barbell_mode else 0
+                    if barbell_mode:
+                        queue_arena_switch('barbell')
+                        print("BARBELL ARENA ENABLED (from host)")
+                    else:
+                        # Only restore normal if other modes aren't on
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -15961,7 +16017,7 @@ try:
                         print("FIGURE 8 ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('barbell_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -15974,7 +16030,7 @@ try:
                         print("YIN-YANG ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('hourglass_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('barbell_mode', False) and not opts.get('figure8_mode', False) and not opts.get('hourglass_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -15987,7 +16043,7 @@ try:
                         print("HOURGLASS ARENA ENABLED (from host)")
                     else:
                         # Only restore normal if other modes aren't on
-                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('barbell_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False):
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
@@ -16369,7 +16425,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
 
-                if donut_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode:
+                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     blue_hovering = True
                     blue_hover_timer = 0.0
@@ -16513,7 +16569,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
 
-                if donut_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode:
+                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     red_hovering = True
                     red_hover_timer = 0.0
@@ -18709,6 +18765,10 @@ try:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
                         print("[Game] X Stage mode disabled for network sync")
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
+                        print("[Game] Barbell mode disabled for network sync")
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
@@ -18832,6 +18892,10 @@ try:
                     x_stage_mode = False
                     x_stage_mode_active[None] = 0
                     print("[Game] X Stage mode disabled for network sync")
+                if barbell_mode:
+                    barbell_mode = False
+                    barbell_mode_active[None] = 0
+                    print("[Game] Barbell mode disabled for network sync")
                 if figure8_mode:
                     figure8_mode = False
                     figure8_mode_active[None] = 0
@@ -18980,8 +19044,8 @@ try:
                 current_mode = "Donut"
             elif x_stage_mode:
                 current_mode = "X Stage"
-            elif figure8_mode:
-                current_mode = "Figure 8"
+            elif barbell_mode:
+                current_mode = "Barbell"
             elif yinyang_mode:
                 current_mode = "Yin-Yang"
             elif hourglass_mode:
@@ -18997,7 +19061,7 @@ try:
             window.GUI.text("=== ARENA ===")
 
             # Determine if circle (default) mode is active
-            circle_mode = not donut_mode and not x_stage_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not square_bridge_mode and not beetle_ball.active
+            circle_mode = not donut_mode and not x_stage_mode and not barbell_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not square_bridge_mode and not beetle_ball.active
 
             # === CIRCLE MODE (default) ===
             circle_button_text = "CIRCLE: ON" if circle_mode else "CIRCLE: OFF"
@@ -19021,6 +19085,9 @@ try:
                 if x_stage_mode:
                     x_stage_mode = False
                     x_stage_mode_active[None] = 0
+                if barbell_mode:
+                    barbell_mode = False
+                    barbell_mode_active[None] = 0
                 if figure8_mode:
                     figure8_mode = False
                     figure8_mode_active[None] = 0
@@ -19037,7 +19104,7 @@ try:
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -19064,6 +19131,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
@@ -19105,7 +19175,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -19133,6 +19203,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
@@ -19148,7 +19221,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -19176,6 +19249,9 @@ try:
                     if donut_mode:
                         donut_mode = False
                         donut_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
@@ -19191,7 +19267,53 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+
+            # === BARBELL MODE ===
+            barbell_button_text = "BARBELL: ON" if barbell_mode else "BARBELL: OFF"
+            if window.GUI.button(barbell_button_text):
+                if barbell_mode:
+                    # Disabling barbell
+                    barbell_mode = False
+                    barbell_mode_active[None] = 0
+                    queue_arena_switch('normal')
+                    print("Normal arena restored")
+                else:
+                    # Enabling barbell - disable other arena modes first
+                    if beetle_ball.active:
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        beetle_ball.active = False
+                        blue_score = 0
+                        red_score = 0
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
+                    barbell_mode = True
+                    barbell_mode_active[None] = 1
+                    queue_arena_switch('barbell')
+                    print("BARBELL ARENA ENABLED - watch the bridge!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -19222,6 +19344,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
                     if yinyang_mode:
                         yinyang_mode = False
                         yinyang_mode_active[None] = 0
@@ -19231,10 +19356,10 @@ try:
                     figure8_mode = True
                     figure8_mode_active[None] = 1
                     queue_arena_switch('figure8')
-                    print("FIGURE 8 ARENA ENABLED - watch the bridge!")
+                    print("FIGURE 8 ARENA ENABLED - infinity symbol!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -19265,6 +19390,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
@@ -19277,7 +19405,7 @@ try:
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -19308,6 +19436,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
@@ -19320,7 +19451,7 @@ try:
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -19349,6 +19480,9 @@ try:
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
                     if figure8_mode:
                         figure8_mode = False
                         figure8_mode_active[None] = 0
@@ -19364,7 +19498,7 @@ try:
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             # === HAZARDS ===
             window.GUI.text("")
@@ -19389,7 +19523,7 @@ try:
                     print("Tornado hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             sandstorm_button_text = "SANDSTORM: ON" if sandstorm_mode else "SANDSTORM: OFF"
             if window.GUI.button(sandstorm_button_text):
@@ -19406,7 +19540,7 @@ try:
                     print("Sandstorm hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             ufo_button_text = "UFO LASER: ON" if ufo_mode else "UFO LASER: OFF"
             if window.GUI.button(ufo_button_text):
@@ -19440,7 +19574,7 @@ try:
                     print("UFO laser hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
             ice_button_text = "ICE PATCHES: ON" if ice_mode else "ICE PATCHES: OFF"
             if window.GUI.button(ice_button_text):
@@ -19459,7 +19593,7 @@ try:
                     print("Ice patches hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, figure8_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")

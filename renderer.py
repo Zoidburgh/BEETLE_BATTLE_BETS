@@ -71,7 +71,7 @@ VOXEL_RADIUS = 0.407  # Standard voxel size (10% bigger)
 DEBRIS_RADIUS = 0.25  # Smaller dust/debris particles
 
 # Arena SDF shape mode for smooth border snapping
-# 0=disabled, 1=circle, 2=donut, 3=x_stage, 4=figure8, 5=yinyang, 6=hourglass, 7=square_bridge, 8=circle+bowl
+# 0=disabled, 1=circle, 2=donut, 3=x_stage, 4=barbell, 5=yinyang, 6=hourglass, 7=square_bridge, 8=circle+bowl, 9=figure8
 arena_shape_mode = ti.field(ti.i32, shape=())
 
 def set_arena_snap(mode):
@@ -347,7 +347,7 @@ def arena_sdf(x: ti.f32, z: ti.f32, mode: ti.i32) -> ti.f32:
         dist = ti.sqrt(x * x + z * z)
         d = ti.max(dist - 32.0, ti.min(ti.abs(x) - 12.0, ti.abs(z) - 12.0))
     elif mode == 4:
-        # Figure 8: two circles r=20 at x=+/-22, plus bridge |x|<=22 |z|<=6
+        # Barbell: two circles r=20 at x=+/-22, plus bridge |x|<=22 |z|<=6
         dx_l = x + 22.0
         dist_left = ti.sqrt(dx_l * dx_l + z * z)
         dx_r = x - 22.0
@@ -382,6 +382,13 @@ def arena_sdf(x: ti.f32, z: ti.f32, mode: ti.i32) -> ti.f32:
     elif mode == 8:
         # Circle with bowl perimeter (beetle ball): radius 44 (32 arena + 12 bowl)
         d = ti.sqrt(x * x + z * z) - 44.0
+    elif mode == 9:
+        # True figure 8: two circles r=16 at x=+-16, path half-width 6
+        dx_l = x + 16.0
+        dist_left = ti.sqrt(dx_l * dx_l + z * z)
+        dx_r = x - 16.0
+        dist_right = ti.sqrt(dx_r * dx_r + z * z)
+        d = ti.min(ti.abs(dist_left - 16.0), ti.abs(dist_right - 16.0)) - 6.0
     return d
 
 @ti.func
