@@ -1474,7 +1474,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, square_bridge_mode
+    global blue_score, red_score, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, square_bridge_mode, squiggle_mode
     global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
@@ -1852,6 +1852,9 @@ hourglass_mode = False
 # Square Bridge arena mode (long rectangle split with bridge)
 square_bridge_mode = False
 
+# Squiggle arena mode (serpentine path with 5 segments and 4 turns)
+squiggle_mode = False
+
 # Arena transition effect
 arena_transition_active = False
 arena_transition_timer = 0.0
@@ -1895,6 +1898,13 @@ SQUARE_BRIDGE_OUTER_Z = 25.0  # Outer rectangle half-width (z-axis)
 SQUARE_BRIDGE_INNER_X = 28.0  # Inner hole half-length
 SQUARE_BRIDGE_INNER_Z = 15.0  # Inner hole half-width
 SQUARE_BRIDGE_BRIDGE_HALF = 5.0  # Bridge half-width (z direction)
+
+# Squiggle arena constants (must match simulation.py)
+SQUIGGLE_HALF_WIDTH = 5.0  # Path half-width (10 voxels wide)
+SQUIGGLE_SEG_SPACING = 21.0  # Center-to-center spacing between vertical segments (11 voxel gap)
+SQUIGGLE_SEG_HALF_LEN = 20.0  # Half-length of each vertical segment (z direction)
+SQUIGGLE_NUM_SEGS = 5  # Number of vertical segments
+SQUIGGLE_SPAWN_X = 42.0  # Spawn distance from center (on outermost segments)
 
 def get_spawn_position(for_blue=True, is_initial=False):
     """Get a valid spawn position based on current arena mode.
@@ -1945,6 +1955,12 @@ def get_spawn_position(for_blue=True, is_initial=False):
             return (-spawn_x, 0.0, 0.0)  # Left end of bridge, face right
         else:
             return (spawn_x, 0.0, math.pi)  # Right end of bridge, face left
+    elif squiggle_mode:
+        # Spawn on opposite ends of the serpentine (leftmost and rightmost segments)
+        if for_blue:
+            return (-SQUIGGLE_SPAWN_X, 0.0, 0.0)  # Left end, face right
+        else:
+            return (SQUIGGLE_SPAWN_X, 0.0, math.pi)  # Right end, face left
     else:
         # Normal arena
         if is_initial:
@@ -5280,6 +5296,13 @@ SQUARE_BRIDGE_OUTER_Z_GPU = 25.0  # Outer rectangle half-width (z-axis)
 SQUARE_BRIDGE_INNER_X_GPU = 28.0  # Inner hole half-length
 SQUARE_BRIDGE_INNER_Z_GPU = 15.0  # Inner hole half-width
 SQUARE_BRIDGE_BRIDGE_HALF_GPU = 5.0  # Bridge half-width (z direction)
+
+# Squiggle mode state for GPU kernels
+squiggle_mode_active = ti.field(ti.i32, shape=())  # 1 if squiggle mode, 0 otherwise
+SQUIGGLE_HALF_WIDTH_GPU = 5.0  # Path half-width
+SQUIGGLE_SEG_SPACING_GPU = 21.0  # Center-to-center spacing (11 voxel gap)
+SQUIGGLE_SEG_HALF_LEN_GPU = 20.0  # Half-length of vertical segments
+
 HOURGLASS_TIP_GPU = 24.0  # Half-width at the wide ends
 HOURGLASS_SLOPE_GPU = (HOURGLASS_TIP_GPU - HOURGLASS_WAIST_GPU) / HOURGLASS_LENGTH_GPU
 
@@ -9381,6 +9404,32 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                             else:
                                 is_over_edge = 1  # Over edge or in hole
 
+                        # Squiggle: serpentine with 5 vertical segments + 4 horizontal connectors
+                        if squiggle_mode_active[None] == 1:
+                            rel_x = world_x_v - arena_center_x
+                            rel_z = world_z_v - arena_center_z
+                            min_dist = ti.cast(999.0, ti.f32)
+                            # 5 vertical segments
+                            for seg_i in ti.static(range(5)):
+                                sx = -42.0 + seg_i * SQUIGGLE_SEG_SPACING_GPU
+                                dx_s = rel_x - sx
+                                cz_s = ti.max(0.0, ti.max(-SQUIGGLE_SEG_HALF_LEN_GPU - rel_z, rel_z - SQUIGGLE_SEG_HALF_LEN_GPU))
+                                seg_d = ti.sqrt(dx_s * dx_s + cz_s * cz_s)
+                                min_dist = ti.min(min_dist, seg_d)
+                            # 4 horizontal connectors
+                            for conn_i in ti.static(range(4)):
+                                cx_l = -44.0 + conn_i * SQUIGGLE_SEG_SPACING_GPU
+                                cx_r = cx_l + SQUIGGLE_SEG_SPACING_GPU
+                                conn_z = SQUIGGLE_SEG_HALF_LEN_GPU if conn_i % 2 == 0 else -SQUIGGLE_SEG_HALF_LEN_GPU
+                                dz_c = rel_z - conn_z
+                                cx_c = ti.max(0.0, ti.max(cx_l - rel_x, rel_x - cx_r))
+                                conn_d = ti.sqrt(cx_c * cx_c + dz_c * dz_c)
+                                min_dist = ti.min(min_dist, conn_d)
+                            if min_dist <= SQUIGGLE_HALF_WIDTH_GPU:
+                                is_over_edge = 0
+                            else:
+                                is_over_edge = 1
+
                         if is_over_edge:
                             over_edge_count += 1
                             lever_x = world_x_v - cog_x
@@ -10106,7 +10155,7 @@ def update_arena_transition(dt):
 
 def update_pending_arena_switch(dt):
     """Update delayed arena switch - counts down timer and executes switch."""
-    global pending_arena_switch, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, hourglass_mode, square_bridge_mode
+    global pending_arena_switch, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, hourglass_mode, square_bridge_mode, squiggle_mode
 
     if pending_arena_switch is None:
         return
@@ -10142,6 +10191,9 @@ def update_pending_arena_switch(dt):
         elif mode_name == 'square_bridge':
             simulation.init_square_bridge_arena()
             renderer.set_arena_snap(7)
+        elif mode_name == 'squiggle':
+            simulation.init_squiggle_arena()
+            renderer.set_arena_snap(10)
         elif mode_name == 'ball':
             simulation.init_beetle_arena()
             renderer.set_arena_snap(8)
@@ -10168,6 +10220,9 @@ def update_pending_arena_switch(dt):
             elif square_bridge_mode:
                 simulation.init_square_bridge_arena()
                 renderer.set_arena_snap(7)
+            elif squiggle_mode:
+                simulation.init_squiggle_arena()
+                renderer.set_arena_snap(10)
             else:
                 simulation.init_beetle_arena()
                 renderer.set_arena_snap(1)
@@ -10712,7 +10767,7 @@ def update_silk_particles(dt: ti.f32):
 
                 if has_collision == 0:
                     # Hit floor inside arena - stick!
-                    simulation.silk_pos[idx].y = RENDER_Y_OFFSET
+                    simulation.silk_pos[idx].y = RENDER_Y_OFFSET + 0.65
                     simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
                     simulation.silk_stuck[idx] = 1
                     simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK  # Extended lifetime when stuck
@@ -12452,11 +12507,11 @@ def check_spray_voxel_collision_kernel(target_color: ti.i32, skip_owner: ti.i32)
 
         # Check ±1 voxel neighborhood for beetle voxels (with early exit)
         hit = 0
-        for dx in ti.static(range(-1, 2)):
+        for dx in range(-1, 2):
             if hit == 0:  # Early exit at outer loop
-                for dy in ti.static(range(-1, 2)):
+                for dy in range(-1, 2):
                     if hit == 0:  # Early exit at middle loop
-                        for dz in ti.static(range(-1, 2)):
+                        for dz in range(-1, 2):
                             if hit == 0:  # Early exit at inner loop
                                 gx = grid_x + dx
                                 gy = grid_y + dy
@@ -13618,13 +13673,21 @@ def shortest_rotation(current, target):
     return diff
 
 # Window (resolution set via --res command line argument)
+_t_window = time.perf_counter()
+print(f"[Timing] Module-level code took {_t_window - simulation._startup_clock:.2f}s")
+
 window = ti.ui.Window("Beetle Physics", WINDOW_RESOLUTION, vsync=VSYNC_ENABLED, pos=WINDOW_POS)
 canvas = window.get_canvas()
 scene = window.get_scene()
 
-# Show window immediately with solid background so user sees something during kernel compilation
+# Show window immediately with "Compiling..." text so user sees something during kernel compilation
 canvas.set_background_color(LOADING_BG_COLOR)
+window.GUI.begin("", 0.30, 0.42, 0.45, 0.20)
+window.GUI.text("Compiling shaders...")
+window.GUI.text("First launch takes longer.")
+window.GUI.end()
 safe_window_show(window)
+print(f"[Timing] Window visible at {time.perf_counter() - simulation._startup_clock:.2f}s")
 
 # Initialize slider values for beetle customization (needed before game loop)
 window.blue_horn_shaft_value = 12
@@ -13828,18 +13891,32 @@ previous_tail_rotation = blue_previous_tail_rotation
 
 # ============== WARMUP WITH LOADING SCREEN ==============
 print("Warming up kernels...")
+_t_warmup_start = time.perf_counter()
 
 # PHASE 0: Warm up renderer first so we can show loading screen
 # Place temporary voxels to warm up explode_loading_screen with actual work
+_t0 = time.perf_counter()
 for x in range(50, 78):
     for y in range(LOADING_BAR_Y, LOADING_TEXT_Y + 8):
         for z in range(LOADING_TEXT_Z, LOADING_TEXT_Z + 2):
             simulation.voxel_type[x, y, z] = simulation.TITLE_BLUE
+print(f"[Timing] Phase 0a: Place temp voxels: {time.perf_counter() - _t0:.2f}s")
 
 # Explode them to warm up the kernel with actual particle spawning
+_t0 = time.perf_counter()
 explode_loading_screen()
+print(f"[Timing] Phase 0b: explode_loading_screen(): {time.perf_counter() - _t0:.2f}s")
 
-# Render with debris to warm up renderer debris paths
+# Warm up extract kernels individually to see compilation breakdown
+renderer.num_voxels[None] = 0
+_t0 = time.perf_counter()
+renderer.extract_voxels(simulation.voxel_type, 128, 1, 0)
+print(f"[Timing] Phase 0c-1: extract_voxels compile: {time.perf_counter() - _t0:.2f}s")
+_t0 = time.perf_counter()
+renderer.extract_particles()
+print(f"[Timing] Phase 0c-2: extract_particles compile: {time.perf_counter() - _t0:.2f}s")
+# Now do full render (kernels already compiled, should be fast)
+_t0 = time.perf_counter()
 renderer.render(
     camera, canvas, scene, simulation.voxel_type, 128,
     dynamic_lighting=False,
@@ -13847,21 +13924,28 @@ renderer.render(
     spotlight_strength=0.0,
     base_light_brightness=1.5
 )
+print(f"[Timing] Phase 0c-3: First renderer.render() (cached): {time.perf_counter() - _t0:.2f}s")
+
+_t0 = time.perf_counter()
 canvas.scene(scene)
 safe_window_show(window)
 ti.sync()
+print(f"[Timing] Phase 0d: First window.show() + sync: {time.perf_counter() - _t0:.2f}s")
 
 # Clear warmup debris
 simulation.num_debris[None] = 0
 simulation.debris_active_count[None] = 0
 
 # Render "LOADING" text into voxel grid
+_t0 = time.perf_counter()
 render_loading_screen()
+print(f"[Timing] Phase 0e: render_loading_screen(): {time.perf_counter() - _t0:.2f}s")
 
 # Set forest green background (same as game)
 canvas.set_background_color(LOADING_BG_COLOR)
 
-# Warm up the extract_all_particles kernel by rendering first frame
+# Warm up the extract_voxels + extract_particles kernels by rendering first frame
+_t0 = time.perf_counter()
 renderer.render(
     camera, canvas, scene, simulation.voxel_type, 128,
     dynamic_lighting=False,
@@ -13869,15 +13953,27 @@ renderer.render(
     spotlight_strength=0.0,
     base_light_brightness=1.5  # Brighter for loading screen visibility
 )
+print(f"[Timing] Phase 0f: Second renderer.render(): {time.perf_counter() - _t0:.2f}s")
+
+_t0 = time.perf_counter()
 canvas.scene(scene)
 safe_window_show(window)
 ti.sync()
+print(f"[Timing] Phase 0g: Second window.show() + sync: {time.perf_counter() - _t0:.2f}s")
+
+print(f"[Timing] Phase 0 TOTAL: {time.perf_counter() - _t_warmup_start:.2f}s")
 
 # Now we can show loading progress!
 TOTAL_WARMUP_PHASES = 10
 
+_t_last_phase = time.perf_counter()
 def update_loading(phase):
     """Update loading screen with current progress."""
+    global _t_last_phase
+    now = time.perf_counter()
+    if phase > 0:
+        print(f"[Timing] Warmup phase {phase} took {now - _t_last_phase:.2f}s")
+    _t_last_phase = now
     progress = phase / TOTAL_WARMUP_PHASES
     show_loading_frame(window, canvas, scene, camera, progress)
     ti.sync()
@@ -13938,28 +14034,54 @@ cleanup_dead_debris()
 simulation.num_debris[None] = 0  # Clear debris after warmup render
 update_loading(3)
 
-# PHASE 4: Edge tipping and beetle clear kernels
+# PHASE 4: Edge tipping, beetle placement, and beetle clear kernels
 calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_BLUE, 0.016, 1.0, 1.0)
 calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_RED, 0.016, 1.0, 1.0)
+# Warm up beetle placement kernels (540 lines each, compile on first game frame otherwise)
+place_animated_beetle_blue(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, 0.0, 0, 0.0, 12, 6, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+place_animated_beetle_red(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, 0.0, 0, 0.0, 12, 6, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
 clear_beetles()
 clear_beetles_bounded(0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
 update_loading(4)
 
-# PHASE 5: Shadow kernels
+# PHASE 5: Shadow, assembly, and misc render kernels
 clear_shadow_layer(int(RENDER_Y_OFFSET), 0)
 place_shadow_kernel(0.0, 0.0, 3.0, int(RENDER_Y_OFFSET))
 clear_shadow_layer(int(RENDER_Y_OFFSET), 0)
+# Warm up shadow disc mesh kernel (compiles lazily on first frame with beetles otherwise)
+renderer.num_shadow_discs[None] = 1
+renderer.shadow_disc_params[0] = [0.0, 0.0, 5.0]
+renderer.build_shadow_discs(float(RENDER_Y_OFFSET), simulation.voxel_type, 128, 1)
+renderer.num_shadow_discs[None] = 0
+# Warm up beetle assembly animation kernels (first beetle death otherwise)
+render_beetle_assembly_fast(True, 0.0, -100.0, 0.0, 0.5)
+render_beetle_assembly_fast(False, 0.0, -100.0, 0.0, 0.5)
+clear_assembly_voxels()
 spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
 update_loading(5)
 
 # PHASE 6: Spray/venom kernels
+_t6a = time.perf_counter()
 spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 50.0, 0, 1, 0.0, 0.6, 0.2, 1.0, 0.3)
+print(f"[Timing]   6a spawn_spray_burst(1): {time.perf_counter() - _t6a:.2f}s")
+_t6a = time.perf_counter()
 spawn_spray_burst(0.0, 0.0, -100.0, 1.0, 0.0, 0.0, 28.0, 0, 3, -28.0, 1.5, 1.0, 0.9, 0.1)
+print(f"[Timing]   6b spawn_spray_burst(2): {time.perf_counter() - _t6a:.2f}s")
+_t6a = time.perf_counter()
 update_spray_particles(0.016)
+print(f"[Timing]   6c update_spray_particles: {time.perf_counter() - _t6a:.2f}s")
+_t6a = time.perf_counter()
 check_spray_voxel_collision_kernel(0, 0)
+print(f"[Timing]   6d check_spray_collision(1): {time.perf_counter() - _t6a:.2f}s")
+_t6a = time.perf_counter()
 check_spray_voxel_collision_kernel(1, 1)
+print(f"[Timing]   6e check_spray_collision(2): {time.perf_counter() - _t6a:.2f}s")
+_t6a = time.perf_counter()
 cleanup_dead_spray()
+print(f"[Timing]   6f cleanup_dead_spray: {time.perf_counter() - _t6a:.2f}s")
+_t6a = time.perf_counter()
 spawn_spray_explosion(0.0, 0.0, -100.0, 0.2, 1.0, 0.3)
+print(f"[Timing]   6g spawn_spray_explosion: {time.perf_counter() - _t6a:.2f}s")
 update_loading(6)
 
 # PHASE 7: Spider silk kernels
@@ -14007,6 +14129,8 @@ simulation.num_spray[None] = 0
 simulation.num_silk[None] = 0
 simulation.num_debris[None] = 0
 update_loading(10)  # Show full bar briefly
+print(f"[Timing] Total warmup: {time.perf_counter() - _t_warmup_start:.2f}s")
+print(f"[Timing] Total startup: {time.perf_counter() - simulation._startup_clock:.2f}s")
 
 # Explode loading screen and immediately show title
 # (explosion particles will render naturally during title screen loop)
@@ -14021,7 +14145,9 @@ simulation.init_figure8_arena()
 simulation.init_yinyang_arena()
 simulation.init_square_bridge_arena()
 simulation.init_beetle_arena()  # Restore normal arena
+_t_sdf = time.perf_counter()
 renderer.set_arena_snap(1)
+print(f"[Timing]   precompute_sdf compile: {time.perf_counter() - _t_sdf:.2f}s")
 
 # Warm up background system: bg_flush() from_numpy transfers + all animation branches
 # Populate one sample voxel per animation type (0-37) at offscreen positions
@@ -14044,9 +14170,14 @@ simulation.bg_flush()  # Warm up all 14 from_numpy() transfers
 simulation.bg_theme_active[None] = 1  # Enable so renderer PHASE 6 compiles
 simulation.animate_background(0.0)  # Now hits all animation branches
 simulation.update_bg_cache()  # Warm up cache kernel
-# Quick render pass to compile renderer's bg extraction path (PHASE 6)
+# Quick render pass to compile renderer's split kernels (PHASE 6 path)
 renderer.num_voxels[None] = 0
-renderer.extract_all_particles(simulation.voxel_type, 128, 1, 0)
+_t_ev = time.perf_counter()
+renderer.extract_voxels(simulation.voxel_type, 128, 1, 0)
+print(f"[Timing]   extract_voxels compile: {time.perf_counter() - _t_ev:.2f}s")
+_t_ep = time.perf_counter()
+renderer.extract_particles()
+print(f"[Timing]   extract_particles compile: {time.perf_counter() - _t_ep:.2f}s")
 # Clean up — clear bg and restore state
 simulation.clear_background()  # Resets bg_theme_active to 0, zeros all buffers
 
@@ -14306,6 +14437,11 @@ try:
                     spawn_x, spawn_z, spawn_rot = -20.0, 0.0, 0.0
                 else:
                     spawn_x, spawn_z, spawn_rot = 20.0, 0.0, math.pi
+            elif squiggle_mode:
+                if is_blue:
+                    spawn_x, spawn_z, spawn_rot = -SQUIGGLE_SPAWN_X, 0.0, 0.0
+                else:
+                    spawn_x, spawn_z, spawn_rot = SQUIGGLE_SPAWN_X, 0.0, math.pi
             else:
                 # Normal arena - respawn at center
                 spawn_x, spawn_z, spawn_rot = 0.0, 0.0, 0.0 if is_blue else math.pi
@@ -16053,6 +16189,19 @@ try:
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
+                # Apply squiggle mode state
+                if opts.get('squiggle_mode', False) != squiggle_mode:
+                    squiggle_mode = opts.get('squiggle_mode', False)
+                    squiggle_mode_active[None] = 1 if squiggle_mode else 0
+                    if squiggle_mode:
+                        queue_arena_switch('squiggle')
+                        print("SQUIGGLE ARENA ENABLED (from host)")
+                    else:
+                        # Only restore normal if other modes aren't on
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('barbell_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False):
+                            queue_arena_switch('normal')
+                            print("Normal arena restored (from host)")
+
                 # Apply tornado mode state (hazard, independent of arena)
                 if opts.get('tornado_mode', False) != tornado_mode:
                     tornado_mode = opts.get('tornado_mode', False)
@@ -16431,7 +16580,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
 
-                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode:
+                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or squiggle_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     blue_hovering = True
                     blue_hover_timer = 0.0
@@ -16575,7 +16724,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
 
-                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode:
+                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or squiggle_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     red_hovering = True
                     red_hover_timer = 0.0
@@ -19058,6 +19207,8 @@ try:
                 current_mode = "Hourglass"
             elif square_bridge_mode:
                 current_mode = "Square Bridge"
+            elif squiggle_mode:
+                current_mode = "Squiggle"
             window.GUI.text("")
             window.GUI.text("=== ARENA ===")
             window.GUI.text(f"Arena: {current_mode} (host controls)")
@@ -19067,7 +19218,7 @@ try:
             window.GUI.text("=== ARENA ===")
 
             # Determine if circle (default) mode is active
-            circle_mode = not donut_mode and not x_stage_mode and not barbell_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not square_bridge_mode and not beetle_ball.active
+            circle_mode = not donut_mode and not x_stage_mode and not barbell_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not square_bridge_mode and not squiggle_mode and not beetle_ball.active
 
             # === CIRCLE MODE (default) ===
             circle_button_text = "CIRCLE: ON" if circle_mode else "CIRCLE: OFF"
@@ -19106,11 +19257,14 @@ try:
                 if square_bridge_mode:
                     square_bridge_mode = False
                     square_bridge_mode_active[None] = 0
+                if squiggle_mode:
+                    squiggle_mode = False
+                    squiggle_mode_active[None] = 0
                 queue_arena_switch('normal')
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -19181,7 +19335,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -19221,13 +19375,16 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if squiggle_mode:
+                        squiggle_mode = False
+                        squiggle_mode_active[None] = 0
                     donut_mode = True
                     donut_mode_active[None] = 1
                     queue_arena_switch('donut')
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -19267,13 +19424,16 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if squiggle_mode:
+                        squiggle_mode = False
+                        squiggle_mode_active[None] = 0
                     x_stage_mode = True
                     x_stage_mode_active[None] = 1
                     queue_arena_switch('x_stage')
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === BARBELL MODE ===
             barbell_button_text = "BARBELL: ON" if barbell_mode else "BARBELL: OFF"
@@ -19313,13 +19473,16 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if squiggle_mode:
+                        squiggle_mode = False
+                        squiggle_mode_active[None] = 0
                     barbell_mode = True
                     barbell_mode_active[None] = 1
                     queue_arena_switch('barbell')
                     print("BARBELL ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -19359,13 +19522,16 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if squiggle_mode:
+                        squiggle_mode = False
+                        squiggle_mode_active[None] = 0
                     figure8_mode = True
                     figure8_mode_active[None] = 1
                     queue_arena_switch('figure8')
                     print("FIGURE 8 ARENA ENABLED - infinity symbol!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -19405,13 +19571,16 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if squiggle_mode:
+                        squiggle_mode = False
+                        squiggle_mode_active[None] = 0
                     yinyang_mode = True
                     yinyang_mode_active[None] = 1
                     queue_arena_switch('yinyang')
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -19451,13 +19620,16 @@ try:
                     if yinyang_mode:
                         yinyang_mode = False
                         yinyang_mode_active[None] = 0
+                    if squiggle_mode:
+                        squiggle_mode = False
+                        squiggle_mode_active[None] = 0
                     hourglass_mode = True
                     hourglass_mode_active[None] = 1
                     queue_arena_switch('hourglass')
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -19498,13 +19670,66 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if squiggle_mode:
+                        squiggle_mode = False
+                        squiggle_mode_active[None] = 0
                     square_bridge_mode = True
                     square_bridge_mode_active[None] = 1
                     queue_arena_switch('square_bridge')
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
+
+            # === SQUIGGLE MODE ===
+            squiggle_button_text = "SQUIGGLE: ON" if squiggle_mode else "SQUIGGLE: OFF"
+            if window.GUI.button(squiggle_button_text):
+                if squiggle_mode:
+                    # Disabling squiggle
+                    squiggle_mode = False
+                    squiggle_mode_active[None] = 0
+                    queue_arena_switch('normal')
+                    print("Normal arena restored")
+                else:
+                    # Enabling squiggle - disable other arena modes first
+                    if beetle_ball.active:
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        beetle_ball.active = False
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
+                    if square_bridge_mode:
+                        square_bridge_mode = False
+                        square_bridge_mode_active[None] = 0
+                    squiggle_mode = True
+                    squiggle_mode_active[None] = 1
+                    queue_arena_switch('squiggle')
+                    print("SQUIGGLE ARENA ENABLED - navigate the serpentine!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             # === HAZARDS ===
             window.GUI.text("")
@@ -19529,7 +19754,7 @@ try:
                     print("Tornado hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             sandstorm_button_text = "SANDSTORM: ON" if sandstorm_mode else "SANDSTORM: OFF"
             if window.GUI.button(sandstorm_button_text):
@@ -19546,7 +19771,7 @@ try:
                     print("Sandstorm hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             ufo_button_text = "UFO LASER: ON" if ufo_mode else "UFO LASER: OFF"
             if window.GUI.button(ufo_button_text):
@@ -19580,7 +19805,7 @@ try:
                     print("UFO laser hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
             ice_button_text = "ICE PATCHES: ON" if ice_mode else "ICE PATCHES: OFF"
             if window.GUI.button(ice_button_text):
@@ -19599,7 +19824,7 @@ try:
                     print("Ice patches hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")

@@ -33,6 +33,18 @@ floor_vertices = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
 floor_normals = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
 floor_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
 
+# Floor texture contrast (runtime-tunable — changing these won't trigger kernel recompilation)
+stone_coarse_strength = ti.field(dtype=ti.f32, shape=())   # ±coarse patch variation
+stone_fine_strength = ti.field(dtype=ti.f32, shape=())     # ±fine grain variation
+stone_temp_strength = ti.field(dtype=ti.f32, shape=())     # ±warm/cool shift
+stone_coarse_strength[None] = 0.035
+stone_fine_strength[None] = 0.055
+stone_temp_strength[None] = 0.02
+
+# Silk emissive brightness (runtime-tunable)
+silk_emissive = ti.field(dtype=ti.f32, shape=())
+silk_emissive[None] = 2.8
+
 # Pre-computed numpy index array (static quad pattern) — avoids GPU-CPU sync
 _floor_indices_np = np.zeros(MAX_FLOOR_QUADS * 6, dtype=np.int32)
 for _q in range(MAX_FLOOR_QUADS):
@@ -74,8 +86,15 @@ DEBRIS_RADIUS = 0.25  # Smaller dust/debris particles
 # 0=disabled, 1=circle, 2=donut, 3=x_stage, 4=barbell, 5=yinyang, 6=hourglass, 7=square_bridge, 8=circle+bowl, 9=figure8
 arena_shape_mode = ti.field(ti.i32, shape=())
 
+# Precomputed SDF cache at half-voxel resolution (257x257 covers grid 0..128 corners)
+# Index (ci, ck) maps to world coords: wx = ci * 0.5 - 64.0, wz = ck * 0.5 - 64.0
+# Voxel (i, k) corner v0 maps to ci=2*i-1, ck=2*k-1 etc.
+sdf_cache = ti.field(dtype=ti.f32, shape=(257, 257))
+
 def set_arena_snap(mode):
     arena_shape_mode[None] = mode
+    if mode > 0:
+        precompute_sdf(mode)
     invalidate_floor_cache()
 
 # Floor rendering toggle (mesh quads vs old sphere voxels)
@@ -317,17 +336,51 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     return color
 
 @ti.func
+def get_floor_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.math.vec3:
+    """Simplified color for floor-only types (CONCRETE=2, SLIPPERY=21).
+    Avoids inlining the full 45-branch get_voxel_color into merge kernels."""
+    color = simulation.board_color[None]
+    if voxel_type == 21:  # SLIPPERY
+        color = ti.math.vec3(0.35, 0.40, 0.50)
+    ip = ice_params[None]
+    if ip[4] > 0.0:
+        d1 = ti.sqrt((world_x - ip[0])**2 + (world_z - ip[1])**2)
+        d2 = ti.sqrt((world_x - ip[2])**2 + (world_z - ip[3])**2)
+        dist = ti.min(d1, d2)
+        blend = ti.math.clamp((ip[4] - dist) / 2.0, 0.0, 1.0)
+        ice_color = ti.math.vec3(0.45, 0.65, 0.88)
+        color = color * (1.0 - blend) + ice_color * blend
+    return color
+
+@ti.func
+def _region_hash(ri: ti.i32, rk: ti.i32) -> ti.f32:
+    """Hash a region coordinate to a -0.5..+0.5 value."""
+    h = (ri * 48611) ^ (rk * 95317)
+    return (h % 1000) / 1000.0 - 0.5
+
+@ti.func
 def stone_texture_color(color: ti.math.vec3, ci: ti.i32, ck: ti.i32) -> ti.math.vec3:
-    """Two-scale stone texture with warm/cool shift for floor quads"""
-    # Coarse: per-region tonal shift (large patches)
-    qh = ((ci // 4) * 48611) ^ ((ck // 4) * 95317)
-    q_shift = ((qh % 1000) / 1000.0 - 0.5) * 0.025  # ±1.25%
+    """Two-scale stone texture with smooth blending for floor quads"""
+    # Coarse: smoothly blended region tonal shift (no hard edges)
+    REGION = ti.static(4)
+    ri = ci // REGION
+    rk = ck // REGION
+    # Fractional position within region cell (0..1)
+    fi = float(ci % REGION) / float(REGION)
+    fk = float(ck % REGION) / float(REGION)
+    # Bilinear interpolation of 4 neighboring region hashes
+    h00 = _region_hash(ri, rk)
+    h10 = _region_hash(ri + 1, rk)
+    h01 = _region_hash(ri, rk + 1)
+    h11 = _region_hash(ri + 1, rk + 1)
+    q_shift = (h00 * (1.0 - fi) * (1.0 - fk) + h10 * fi * (1.0 - fk) +
+               h01 * (1.0 - fi) * fk + h11 * fi * fk) * stone_coarse_strength[None]
     # Fine: per-corner grain
     h = (ci * 73856093) ^ (ck * 19349663)
-    fine = ((h % 1000) / 1000.0 - 0.5) * 0.04  # ±2%
+    fine = ((h % 1000) / 1000.0 - 0.5) * stone_fine_strength[None]
     # Warm/cool color temperature shift
     h2 = (ci * 29423) ^ (ck * 61781)
-    temp = ((h2 % 1000) / 1000.0 - 0.5) * 0.015  # ±0.75%
+    temp = ((h2 % 1000) / 1000.0 - 0.5) * stone_temp_strength[None]
     warm = ti.math.vec3(temp, 0.0, -temp)
     return color * (1.0 + q_shift + fine) + warm
 
@@ -389,18 +442,49 @@ def arena_sdf(x: ti.f32, z: ti.f32, mode: ti.i32) -> ti.f32:
         dx_r = x - 18.0
         dist_right = ti.sqrt(dx_r * dx_r + z * z)
         d = ti.min(ti.abs(dist_left - 18.0), ti.abs(dist_right - 18.0)) - 6.0
+    elif mode == 10:
+        # Squiggle: serpentine with 5 vertical segments + 4 horizontal connectors
+        hw = ti.static(5.0)  # path half-width
+        min_d = ti.cast(999.0, ti.f32)
+        # 5 vertical segments at x = -42, -21, 0, +21, +42; z from -20 to +20
+        for seg_i in ti.static(range(5)):
+            sx = -42.0 + seg_i * 21.0
+            dx_s = x - sx
+            cz_s = ti.max(0.0, ti.max(-20.0 - z, z - 20.0))
+            seg_d = ti.sqrt(dx_s * dx_s + cz_s * cz_s)
+            min_d = ti.min(min_d, seg_d)
+        # 4 horizontal connectors
+        for conn_i in ti.static(range(4)):
+            cx_l = -42.0 + conn_i * 21.0
+            cx_r = cx_l + 21.0
+            conn_z = 20.0 if conn_i % 2 == 0 else -20.0
+            dz_c = z - conn_z
+            cx_c = ti.max(0.0, ti.max(cx_l - x, x - cx_r))
+            conn_d = ti.sqrt(cx_c * cx_c + dz_c * dz_c)
+            min_d = ti.min(min_d, conn_d)
+        d = min_d - hw
     return d
 
+@ti.kernel
+def precompute_sdf(mode: ti.i32):
+    """Fill sdf_cache at half-voxel resolution. Called once when arena changes."""
+    for ci, ck in ti.ndrange(257, 257):
+        wx = ci * 0.5 - 64.0
+        wz = ck * 0.5 - 64.0
+        sdf_cache[ci, ck] = arena_sdf(wx, wz, mode)
+
 @ti.func
-def sdf_snap_corner(cx: ti.f32, cz: ti.f32, mode: ti.i32) -> ti.math.vec2:
-    """Project corner onto SDF=0 boundary using one Newton step."""
-    eps = ti.static(0.1)
-    sdf_val = arena_sdf(cx, cz, mode)
-    gx = (arena_sdf(cx + eps, cz, mode) - arena_sdf(cx - eps, cz, mode)) * 5.0  # / (2*0.1)
-    gz = (arena_sdf(cx, cz + eps, mode) - arena_sdf(cx, cz - eps, mode)) * 5.0
+def sdf_snap_corner_cached(ci: ti.i32, ck: ti.i32) -> ti.math.vec2:
+    """Project corner onto SDF=0 boundary using cached SDF + Newton step."""
+    wx = ci * 0.5 - 64.0
+    wz = ck * 0.5 - 64.0
+    sdf_val = sdf_cache[ci, ck]
+    # Gradient from cached finite differences (spacing = 0.5 world units)
+    gx = (sdf_cache[ci + 1, ck] - sdf_cache[ci - 1, ck])  # / (2*0.5) = /1.0
+    gz = (sdf_cache[ci, ck + 1] - sdf_cache[ci, ck - 1])
     g_dot = gx * gx + gz * gz
-    rx = cx
-    rz = cz
+    rx = wx
+    rz = wz
     if g_dot > 1.0e-8:
         step_x = sdf_val * gx / g_dot
         step_z = sdf_val * gz / g_dot
@@ -409,8 +493,8 @@ def sdf_snap_corner(cx: ti.f32, cz: ti.f32, mode: ti.i32) -> ti.math.vec2:
         if step_len > 1.5:
             step_x *= 1.5 / step_len
             step_z *= 1.5 / step_len
-        rx = cx - step_x
-        rz = cz - step_z
+        rx = wx - step_x
+        rz = wz - step_z
     return ti.math.vec2(rx, rz)
 
 @ti.kernel
@@ -515,10 +599,10 @@ def _emit_merged_quad(run_start: ti.i32, i_end: ti.i32, j: ti.i32, k: ti.i32,
         floor_normals[base + 1] = up
         floor_normals[base + 2] = up
         floor_normals[base + 3] = up
-        c0 = get_voxel_color(vt_start, wx_start - HALF, wz - HALF)
-        c1 = get_voxel_color(vt_end, wx_end + HALF, wz - HALF)
-        c2 = get_voxel_color(vt_end, wx_end + HALF, wz + HALF)
-        c3 = get_voxel_color(vt_start, wx_start - HALF, wz + HALF)
+        c0 = get_floor_color(vt_start, wx_start - HALF, wz - HALF)
+        c1 = get_floor_color(vt_end, wx_end + HALF, wz - HALF)
+        c2 = get_floor_color(vt_end, wx_end + HALF, wz + HALF)
+        c3 = get_floor_color(vt_start, wx_start - HALF, wz + HALF)
         floor_colors[base + 0] = stone_texture_color(c0, run_start, k)
         floor_colors[base + 1] = stone_texture_color(c1, i_end + 1, k)
         floor_colors[base + 2] = stone_texture_color(c2, i_end + 1, k + 1)
@@ -590,14 +674,8 @@ def merge_interior_floor(voxel_field: ti.template(), n_grid: ti.i32, floor_j: ti
 
 
 @ti.kernel
-def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: ti.i32, skip_floor: ti.i32):
-    """MEGAKERNEL: Extract all voxels and particles into render buffer in single kernel launch.
-
-    Combines 5 separate kernels into 1 to reduce Python→GPU launch overhead.
-    Each kernel launch costs ~2-4ms on integrated GPUs, so this saves ~8-16ms per frame.
-
-    Extracts: arena voxels, debris, spray, silk, projectiles
-    """
+def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: ti.i32, skip_floor: ti.i32):
+    """Extract arena/beetle voxels into render buffer (split from megakernel for faster compilation)."""
     # ===== PHASE 1: Extract arena/beetle voxels =====
     # Static bounding box optimization: only scan active arena region
     EMPTY = ti.static(0)
@@ -664,7 +742,9 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                         elif ti.static(v == 3):
                                             n_diag = n_mxpz
                                         if n_diag != CONCRETE and n_diag != SLIPPERY:
-                                            snapped = sdf_snap_corner(corner_x, corner_z, shape_mode)
+                                            corner_ci = 2 * i + (-1 if v == 0 or v == 3 else 1)
+                                            corner_ck = 2 * k + (-1 if v == 0 or v == 1 else 1)
+                                            snapped = sdf_snap_corner_cached(corner_ci, corner_ck)
                                             corner_x = snapped[0]
                                             corner_z = snapped[1]
                                         floor_vertices[base + v] = ti.math.vec3(corner_x, top_y, corner_z)
@@ -704,7 +784,9 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                                             nz_v = is_floor_pz
                                             nd = (n_mxpz == CONCRETE or n_mxpz == SLIPPERY)
                                         if not nc or not nz_v or not nd:
-                                            snapped = sdf_snap_corner(corner_x, corner_z, shape_mode)
+                                            corner_ci = 2 * i + (-1 if v == 0 or v == 3 else 1)
+                                            corner_ck = 2 * k + (-1 if v == 0 or v == 1 else 1)
+                                            snapped = sdf_snap_corner_cached(corner_ci, corner_ck)
                                             corner_x = snapped[0]
                                             corner_z = snapped[1]
 
@@ -825,6 +907,9 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                     else:
                         voxel_radii[idx] = VOXEL_RADIUS
 
+@ti.kernel
+def extract_particles():
+    """Extract debris, spray, silk, projectiles, background into render buffer."""
     # ===== PHASE 2: Extract debris particles =====
     debris_count = simulation.num_debris[None]
     debris_check = ti.min(debris_count, MAX_DEBRIS_CHECK)
@@ -883,7 +968,7 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
 
     # ===== PHASE 4: Extract silk particles =====
     SILK_FADE_TIME = ti.static(2.0)
-    SILK_EMISSIVE = ti.static(1.7)
+    SILK_EMISSIVE_VAL = silk_emissive[None]
     SILK_RADIUS = ti.static(DEBRIS_RADIUS * 1.44)
 
     silk_count = simulation.num_silk[None]
@@ -900,19 +985,15 @@ def extract_all_particles(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_f
                 voxel_positions[write_idx] = simulation.silk_pos[idx]
                 base_color = simulation.silk_color[idx]
 
-                alpha = 1.0
-                if lifetime < SILK_FADE_TIME:
-                    t = lifetime / SILK_FADE_TIME
-                    alpha = t * t
-
                 pulse = 1.0
                 if simulation.silk_stuck[idx] >= 1:
-                    pulse = 1.15 + 0.35 * ti.sin(lifetime * 12.0)
+                    pulse = 1.0 + 0.08 * ti.sin(lifetime * 12.0)
 
-                voxel_colors[write_idx] = base_color * alpha * pulse * SILK_EMISSIVE
+                voxel_colors[write_idx] = base_color * pulse * SILK_EMISSIVE_VAL
 
                 if lifetime < SILK_FADE_TIME:
-                    voxel_radii[write_idx] = SILK_RADIUS * (0.5 + 0.5 * (lifetime / SILK_FADE_TIME))
+                    t = lifetime / SILK_FADE_TIME
+                    voxel_radii[write_idx] = SILK_RADIUS * t
                 else:
                     voxel_radii[write_idx] = SILK_RADIUS
 
@@ -1070,8 +1151,8 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # Background color now comes from ambient light + scene clearing
     _t1 = time.perf_counter()
 
-    # MEGAKERNEL: Extract all voxels and particles in single kernel launch
-    # Combines 5 kernels into 1 to reduce Python→GPU launch overhead (~8-16ms savings)
+    # Extract voxels (arena/beetles) and particles (debris/spray/silk/projectiles/bg)
+    # Split into 2 kernels for faster compilation (~60s each vs ~120s monolithic)
     global floor_cache_valid, cached_floor_count
     num_voxels[None] = 0  # Reset counter
     use_mesh = 1 if mesh_floor_enabled else 0
@@ -1081,9 +1162,12 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         skip_floor = 1
     else:
         num_floor_quads[None] = 0  # Reset floor mesh counter (rebuilding)
-    extract_all_particles(voxel_field, n_grid, use_mesh, skip_floor)
+    extract_voxels(voxel_field, n_grid, use_mesh, skip_floor)
+    extract_particles()
+    _t_merge0 = time.perf_counter()
     if use_mesh and not skip_floor:
         merge_interior_floor(voxel_field, n_grid, 33)
+    _t_merge1 = time.perf_counter()
     if use_mesh and not floor_cache_valid:
         # Cache the freshly-built floor mesh count (fill + edge + bevel + merged quads)
         cached_floor_count = num_floor_quads[None]
@@ -1129,6 +1213,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     # Render non-floor particles as spheres
     # (beetles, steel, goals, debris, spray, silk, projectiles, etc.)
     count = num_voxels[None]
+    _t_particles0 = time.perf_counter()
     if count > 0:
         scene.particles(
             voxel_positions,
@@ -1137,24 +1222,32 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
             per_vertex_radius=voxel_radii,  # Mixed sizes: 0.37 voxels, 0.25 debris/spray/silk, 0.8 projectiles
             index_count=count
         )
+    _t_particles1 = time.perf_counter()
 
     # Mesh floor quads (only when mesh floor enabled)
     floor_count = 0
+    _t_mesh0 = time.perf_counter()
     if mesh_floor_enabled:
         floor_count = cached_floor_count if floor_cache_valid else num_floor_quads[None]
         if floor_count > 0:
             scene.mesh(floor_vertices, indices=_floor_indices_np, normals=floor_normals,
                        per_vertex_color=floor_colors, two_sided=False,
                        vertex_count=floor_count * 4, index_count=floor_count * 6)
+    _t_mesh1 = time.perf_counter()
 
     # Shadow discs (always — works on both mesh and sphere floors)
     disc_count = num_shadow_discs[None]
+    _t_shadow0 = time.perf_counter()
     if disc_count > 0:
         build_shadow_discs(float(floor_y), voxel_field, n_grid, use_mesh)
         scene.mesh(shadow_vertices, indices=_shadow_indices_np, normals=shadow_normals,
                    per_vertex_color=shadow_colors, two_sided=False,
                    vertex_count=disc_count * SHADOW_VERTS_PER_DISC,
                    index_count=disc_count * SHADOW_TRIS_PER_DISC * 3)
+    _t_shadow1 = time.perf_counter()
+
+    if (_t_merge1 - _t_merge0) > 1.0 or (_t_particles1 - _t_particles0) > 1.0 or (_t_mesh1 - _t_mesh0) > 1.0 or (_t_shadow1 - _t_shadow0) > 1.0:
+        print(f"[Timing] render() breakdown: merge={(_t_merge1 - _t_merge0):.2f}s particles={(_t_particles1 - _t_particles0):.2f}s mesh={(_t_mesh1 - _t_mesh0):.2f}s shadow={(_t_shadow1 - _t_shadow0):.2f}s")
 
     _t6 = time.perf_counter()
 

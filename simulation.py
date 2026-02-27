@@ -1,5 +1,8 @@
 import os
 import sys
+import time as _time
+
+_startup_clock = _time.perf_counter()
 
 # Force GPU selection to prefer discrete NVIDIA over integrated AMD/Intel
 # This helps prevent the wild FPS variance on laptops with switchable graphics
@@ -51,6 +54,7 @@ signal.signal(signal.SIGABRT, _handle_abort)
 
 import taichi as ti
 import subprocess
+import threading
 
 # Backend selection: Vulkan (GPU) vs CPU
 # - Vulkan: Best for discrete GPUs (NVIDIA/AMD) - no CPU→GPU transfer overhead
@@ -107,6 +111,7 @@ _cache_opts = dict(
     offline_cache_max_size_of_files=500 * 1024 * 1024,  # 500 MB headroom
 )
 
+_t_init = _time.perf_counter()
 if BACKEND == 'cpu':
     # Pin thread count to reduce variance from Windows thread scheduling
     ti.init(arch=ti.cpu, debug=False, cpu_max_num_threads=8, **_cache_opts)
@@ -114,6 +119,7 @@ elif BACKEND == 'cuda':
     ti.init(arch=ti.cuda, debug=False, **_cache_opts)
 else:
     ti.init(arch=ti.vulkan, debug=False, **_cache_opts)
+print(f"[Timing] ti.init() took {_time.perf_counter() - _t_init:.2f}s")
 
 if FRESH_COMPILE:
     print("[Taichi] Fresh compile mode - cache disabled")
@@ -141,7 +147,8 @@ def print_gpu_info():
     except Exception as e:
         print(f"[GPU Info] Could not detect GPU: {e}")
 
-print_gpu_info()
+# Run GPU detection in background thread — PowerShell can take 2-5s to spawn
+threading.Thread(target=print_gpu_info, daemon=True).start()
 
 # 128x128x128 grid - optimal power-of-2 size for beetle battle (GPU cache friendly)
 n_grid = 128
@@ -1027,6 +1034,71 @@ def init_square_bridge_arena():
                 voxel_type[i, floor_y_offset + 1, k] = EMPTY
 
     print(f"SQUARE BRIDGE ARENA constructed - rectangular ring with long bridge")
+
+@ti.kernel
+def init_squiggle_arena():
+    """
+    SQUIGGLE ARENA - Serpentine/snake path with 5 parallel vertical segments
+    connected by 4 horizontal turns. Beetles spawn on opposite ends.
+    Gaps between segments are tight enough for horn combat through gaps.
+    """
+    # Clear floor layers only (Y=30-40 covers floor at 33, bowl perimeter up to ~36)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    center_x = 64
+    center_z = 64
+    half_width = 5.0  # Path is 10 voxels wide
+    floor_y_offset = 33
+
+    # 5 vertical segment centers at x offsets: -42, -21, 0, +21, +42
+    # Grid coords: 22, 43, 64, 85, 106
+    # Each segment runs from z = -20 to +20 (grid 44 to 84)
+    # 4 horizontal connectors alternate top/bottom:
+    #   seg0->seg1 at z=+20 (top), seg1->seg2 at z=-20 (bot),
+    #   seg2->seg3 at z=+20 (top), seg3->seg4 at z=-20 (bot)
+
+    for i in range(center_x - 50, center_x + 50):
+        for k in range(center_z - 27, center_z + 27):
+            dx = float(i - center_x)
+            dz = float(k - center_z)
+
+            # Compute min distance to all 9 line segments
+            min_dist = 999.0
+
+            # 5 vertical segments: x = -34, -17, 0, +17, +34; z from -20 to +20
+            for seg_idx in ti.static(range(5)):
+                sx = -42.0 + seg_idx * 21.0
+                # Distance to vertical segment at (sx, z:-20..+20)
+                d_x = dx - sx
+                d_z_below = -20.0 - dz  # how far below segment start
+                d_z_above = dz - 20.0   # how far above segment end
+                clamped_z = ti.max(0.0, ti.max(d_z_below, d_z_above))
+                dist = ti.sqrt(d_x * d_x + clamped_z * clamped_z)
+                min_dist = ti.min(min_dist, dist)
+
+            # 4 horizontal connectors
+            # Connector 0: seg0(-42) to seg1(-21) at z=+20
+            # Connector 1: seg1(-21) to seg2(0) at z=-20
+            # Connector 2: seg2(0) to seg3(+21) at z=+20
+            # Connector 3: seg3(+21) to seg4(+42) at z=-20
+            for conn_idx in ti.static(range(4)):
+                cx_left = -42.0 + conn_idx * 21.0
+                cx_right = cx_left + 21.0
+                cz = 20.0 if conn_idx % 2 == 0 else -20.0
+                # Distance to horizontal segment
+                d_z2 = dz - cz
+                d_x_left = cx_left - dx
+                d_x_right = dx - cx_right
+                clamped_x = ti.max(0.0, ti.max(d_x_left, d_x_right))
+                dist2 = ti.sqrt(clamped_x * clamped_x + d_z2 * d_z2)
+                min_dist = ti.min(min_dist, dist2)
+
+            if min_dist <= half_width:
+                voxel_type[i, floor_y_offset, k] = CONCRETE
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY
+
+    print(f"SQUIGGLE ARENA constructed - serpentine path with 5 segments")
 
 # ============================================================
 # BACKGROUND VOXEL ANIMATION SYSTEM
