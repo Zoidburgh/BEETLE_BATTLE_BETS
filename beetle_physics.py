@@ -1488,7 +1488,7 @@ blue_pulse_timer = 0.0  # Independent timer for blue's celebration
 red_pulse_timer = 0.0   # Independent timer for red's celebration
 blue_confetti_timer = 0.0  # Independent confetti timer for blue
 red_confetti_timer = 0.0   # Independent confetti timer for red
-VICTORY_PULSE_DURATION = 2.5  # Pulse for 2.5 seconds after victory
+VICTORY_PULSE_DURATION = 3.0  # Pulse for 3.0 seconds after victory
 victory_confetti_timer = 0.0  # Legacy timer (kept for compatibility)
 VICTORY_CONFETTI_DELAY = 0.75  # Wait 750ms before starting confetti
 VICTORY_CONFETTI_INTERVAL = 0.15  # Spawn confetti every 0.15 seconds during victory
@@ -13797,7 +13797,7 @@ THIRD_PERSON_DISTANCE = 60.0  # Distance behind beetle (horizontal)
 fixed_camera_zoom = 1.0  # Multiplier for fixed camera distance (1.0 = default position)
 # Camera always uses opposite side view (beetles in foreground, edge in background)
 camera_edge_angle = None  # Previous edge angle for smooth transitions (None = not yet initialized)
-spotlight_strength = 0.633  # Spotlight intensity (adjustable via GUI slider)
+spotlight_strength = 0.443  # Spotlight intensity (adjustable via GUI slider)
 spotlight_height = 36.0  # Spotlight height above beetles (lower = smaller/focused, higher = bigger/softer)
 base_light_brightness = 1.313  # Brightness multiplier for all non-spotlight lights (adjustable via GUI slider)
 front_light_strength = 0.35  # Front camera light intensity (adjustable via GUI slider)
@@ -15897,12 +15897,14 @@ try:
                 window.blue_body_length_value,
                 window.blue_back_body_height_value
             )
-            # Venom drips forward and falls (aim_y = -28 for steep downward drip)
-            spawn_spray_burst(tip_x, tip_y, tip_z,
-                              venom_burst_dir_blue[0], venom_burst_dir_blue[1],
-                              0.0,  # No angle offset
-                              VENOM_SPEED, 0, particles_this_frame, -28.0, 1.5,
-                              1.0, 0.9, 0.1)  # Bright yellow
+            # Venom fans out in a wide spray — each particle gets a random angle offset
+            for _vi in range(particles_this_frame):
+                fan_angle = (random.random() - 0.5) * 1.2  # ±35° fan spread
+                spawn_spray_burst(tip_x, tip_y, tip_z,
+                                  venom_burst_dir_blue[0], venom_burst_dir_blue[1],
+                                  fan_angle,
+                                  VENOM_SPEED, 0, 1, -28.0, 1.5,
+                                  1.0, 0.9, 0.1)  # Bright yellow
             venom_burst_remaining_blue -= particles_this_frame
             spray_might_exist = True  # CPU optimization flag
 
@@ -15914,12 +15916,14 @@ try:
                 window.red_body_length_value,
                 window.red_back_body_height_value
             )
-            # Venom drips forward and falls (aim_y = -28 for steep downward drip)
-            spawn_spray_burst(tip_x, tip_y, tip_z,
-                              venom_burst_dir_red[0], venom_burst_dir_red[1],
-                              0.0,  # No angle offset
-                              VENOM_SPEED, 1, particles_this_frame, -28.0, 1.5,
-                              1.0, 0.9, 0.1)  # Bright yellow
+            # Venom fans out in a wide spray — each particle gets a random angle offset
+            for _vi in range(particles_this_frame):
+                fan_angle = (random.random() - 0.5) * 1.2  # ±35° fan spread
+                spawn_spray_burst(tip_x, tip_y, tip_z,
+                                  venom_burst_dir_red[0], venom_burst_dir_red[1],
+                                  fan_angle,
+                                  VENOM_SPEED, 1, 1, -28.0, 1.5,
+                                  1.0, 0.9, 0.1)  # Bright yellow
             venom_burst_remaining_red -= particles_this_frame
             spray_might_exist = True  # CPU optimization flag
 
@@ -18008,8 +18012,8 @@ try:
         blue_pulse_timer += frame_dt
         # Fade out intensity over duration (1.0 at start, 0.0 at end)
         blue_fade = 1.0 - (blue_pulse_timer / VICTORY_PULSE_DURATION)
-        # Pulsing brightness: oscillates between 1.0 and 1.6, fading to 1.0 over time
-        blue_pulse = 1.0 + 0.6 * blue_fade * math.sin(blue_pulse_timer * 10.0)
+        # Pulsing brightness: oscillates between 1.0 and 1.9, fading to 1.0 over time
+        blue_pulse = 1.0 + 0.9 * blue_fade * math.sin(blue_pulse_timer * 14.0)
 
         # Blue confetti - independent timer
         if blue_pulse_timer >= VICTORY_CONFETTI_DELAY:
@@ -18046,8 +18050,8 @@ try:
         red_pulse_timer += frame_dt
         # Fade out intensity over duration (1.0 at start, 0.0 at end)
         red_fade = 1.0 - (red_pulse_timer / VICTORY_PULSE_DURATION)
-        # Pulsing brightness: oscillates between 1.0 and 1.6, fading to 1.0 over time
-        red_pulse = 1.0 + 0.6 * red_fade * math.sin(red_pulse_timer * 10.0)
+        # Pulsing brightness: oscillates between 1.0 and 1.9, fading to 1.0 over time
+        red_pulse = 1.0 + 0.9 * red_fade * math.sin(red_pulse_timer * 14.0)
 
         # Red confetti - independent timer
         if red_pulse_timer >= VICTORY_CONFETTI_DELAY:
