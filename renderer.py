@@ -114,6 +114,12 @@ def set_ice_active(active):
     global ice_active
     ice_active = active
 
+# Moving hole hazard state
+hole_active = False
+
+def set_hole_active(active):
+    global hole_active
+    hole_active = active
 
 # Projectiles (cannonballs) are now merged into main voxel buffer with larger radius
 # This eliminates a separate scene.particles() call, reducing CPU->GPU sync overhead
@@ -121,6 +127,9 @@ def set_ice_active(active):
 # Ice circle params for smooth distance-based blending (c1x, c1z, c2x, c2z, radius)
 # When radius > 0, ice is active and get_voxel_color uses smooth falloff instead of binary overlay
 ice_params = ti.Vector.field(5, dtype=ti.f32, shape=())
+
+# Moving hole params (cx, cz, radius) — floor voxels inside this circle are skipped
+hole_params = ti.Vector.field(3, dtype=ti.f32, shape=())
 
 # Gradient background (2 triangles forming full-screen quad)
 gradient_positions = ti.Vector.field(2, dtype=ti.f32, shape=6)
@@ -648,6 +657,16 @@ def merge_interior_floor(voxel_field: ti.template(), n_grid: ti.i32, floor_j: ti
                        (n_pxpz == CONCRETE or n_pxpz == SLIPPERY) and \
                        (n_mxpz == CONCRETE or n_mxpz == SLIPPERY):
                         is_interior = 1
+                    # Skip interior voxels inside the moving hole
+                    if is_interior == 1:
+                        hp = hole_params[None]
+                        if hp[2] > 0.0:
+                            wx = float(i) - half_grid
+                            wz = float(k) - half_grid
+                            hdx = wx - hp[0]
+                            hdz = wz - hp[1]
+                            if hdx * hdx + hdz * hdz < hp[2] * hp[2]:
+                                is_interior = 0
 
                 if is_interior:
                     if run_start < 0:
@@ -694,7 +713,17 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
             color = get_voxel_color(vtype, world_x, world_z)
 
             if vtype == CONCRETE or vtype == SLIPPERY:
-                if use_mesh_floor and skip_floor:
+                # Check if floor voxel is inside the moving hole
+                hp = hole_params[None]
+                in_hole = 0
+                if hp[2] > 0.0:
+                    hdx = world_x - hp[0]
+                    hdz = world_z - hp[1]
+                    if hdx * hdx + hdz * hdz < hp[2] * hp[2]:
+                        in_hole = 1
+                if in_hole:
+                    pass  # Skip - floor voxel is inside the hole
+                elif use_mesh_floor and skip_floor:
                     # Floor mesh cached — skip entirely
                     pass
                 elif use_mesh_floor:
@@ -1157,7 +1186,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     num_voxels[None] = 0  # Reset counter
     use_mesh = 1 if mesh_floor_enabled else 0
     skip_floor = 0
-    if use_mesh and floor_cache_valid and not ice_active:
+    if use_mesh and floor_cache_valid and not ice_active and not hole_active:
         # Floor mesh cached — skip floor extraction, reuse cached floor fields
         skip_floor = 1
     else:
