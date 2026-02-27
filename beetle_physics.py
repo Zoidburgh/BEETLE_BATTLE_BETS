@@ -1141,7 +1141,8 @@ ICE_LINEAR_FRICTION = 1.0        # vs normal 0.88 — zero friction, no slowdown
 ICE_BALL_FRICTION = 1.0         # vs normal BALL_ROLLING_FRICTION (0.99) — ball doesn't slow on ice
 
 # Moving Hole hazard — circular gap that wanders the arena on a Lissajous path
-HOLE_RADIUS = 5.0               # radius of the hole in floor voxels
+HOLE_RADIUS = 5.0               # visual/tipping radius of the hole in floor voxels
+HOLE_FLOOR_DROP_RADIUS = 2.0    # inner radius where floor_y actually drops (beetle must be well inside)
 HOLE_WANDER_RANGE = 18.0        # how far hole center wanders from arena center
 HOLE_SPEED = 0.18               # base movement speed for Lissajous path
 
@@ -17473,11 +17474,11 @@ try:
             else:
                 floor_y_blue = check_floor_collision(beetle_blue.x, beetle_blue.z)
                 floor_cache_blue = (beetle_blue.x, beetle_blue.z, floor_y_blue)
-            # Moving hole override: if beetle center is over hole, no floor
+            # Moving hole override: only drop floor when beetle center is well inside hole
             if hole_mode and not beetle_ball.active:
                 hdx = beetle_blue.x - hole_x
                 hdz = beetle_blue.z - hole_z
-                if hdx * hdx + hdz * hdz < HOLE_RADIUS * HOLE_RADIUS:
+                if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_blue = -1000.0
             if floor_y_blue > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
                 # Calculate lowest point of beetle geometry after rotation
@@ -17518,11 +17519,11 @@ try:
             else:
                 floor_y_red = check_floor_collision(beetle_red.x, beetle_red.z)
                 floor_cache_red = (beetle_red.x, beetle_red.z, floor_y_red)
-            # Moving hole override: if beetle center is over hole, no floor
+            # Moving hole override: only drop floor when beetle center is well inside hole
             if hole_mode and not beetle_ball.active:
                 hdx = beetle_red.x - hole_x
                 hdz = beetle_red.z - hole_z
-                if hdx * hdx + hdz * hdz < HOLE_RADIUS * HOLE_RADIUS:
+                if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_red = -1000.0
             if floor_y_red > -100.0:  # Floor detected under beetle
                 lowest_point_red = calculate_beetle_lowest_point(
