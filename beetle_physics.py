@@ -3,16 +3,63 @@ Beetle combat with rotation and pushing physics
 TGHF for blue beetle, IKJL for red beetle
 """
 
-import taichi as ti
-import simulation
-import renderer
+import os
+import sys
 import time
 import math
 import random
-import os
-import sys
 import atexit
 from collections import deque
+
+# ============================================================================
+# SPLASH SCREEN — show immediately before heavy Taichi imports (~4s)
+# Uses pygame with real display driver, then closes before Taichi window opens
+# ============================================================================
+_splash_active = False
+try:
+    import pygame
+    pygame.display.init()
+    pygame.font.init()
+    _di = pygame.display.Info()
+    _sw, _sh = 480, 140
+    os.environ['SDL_VIDEO_WINDOW_POS'] = f'{(_di.current_w - _sw) // 2},{(_di.current_h - _sh) // 2}'
+    _splash = pygame.display.set_mode((_sw, _sh), pygame.NOFRAME)
+    _splash.fill((20, 35, 25))  # Dark forest green
+    _ft = pygame.font.Font(None, 48)
+    _fs = pygame.font.Font(None, 28)
+    _t1 = _ft.render("BEETLE BATTLE BROS", True, (220, 220, 200))
+    _t2 = _fs.render("Loading...", True, (140, 140, 130))
+    _splash.blit(_t1, (_sw // 2 - _t1.get_width() // 2, 35))
+    _splash.blit(_t2, (_sw // 2 - _t2.get_width() // 2, 95))
+    pygame.display.flip()
+    _splash_active = True
+except Exception:
+    pass  # Splash failed (headless, missing pygame, etc.) — continue without it
+
+# Heavy imports (ti.init, field allocation — this is the ~4s the splash covers)
+import taichi as ti
+import simulation
+import renderer
+
+# Close splash screen before Taichi window opens
+if _splash_active:
+    try:
+        pygame.display.quit()
+        pygame.font.quit()
+    except Exception:
+        pass
+    _splash_active = False
+
+# Set dummy video driver so future pygame.init() (controller support) won't create a window
+os.environ['SDL_VIDEODRIVER'] = 'dummy'
+
+# Controller support via pygame (works alongside Taichi GGUI)
+try:
+    import pygame._sdl2.controller as sdl_controller
+    CONTROLLER_SUPPORT = True
+except ImportError:
+    CONTROLLER_SUPPORT = False
+    print("[Controller] pygame._sdl2.controller not available - controller support disabled")
 
 def safe_window_show(win):
     """Wrapper for window.show() that handles Vulkan swapchain errors during window move/resize"""
@@ -20,17 +67,6 @@ def safe_window_show(win):
         win.show()
     except RuntimeError:
         pass  # Skip frame — swapchain will recover next frame
-
-# Controller support via pygame (works alongside Taichi GGUI)
-# MUST set SDL_VIDEODRIVER before importing pygame - dummy driver for controller-only input
-os.environ.setdefault('SDL_VIDEODRIVER', 'dummy')
-import pygame
-try:
-    import pygame._sdl2.controller as sdl_controller
-    CONTROLLER_SUPPORT = True
-except ImportError:
-    CONTROLLER_SUPPORT = False
-    print("[Controller] pygame._sdl2.controller not available - controller support disabled")
 
 # ============================================================================
 # FAST CLIPBOARD COPY (Windows only - using clip.exe)
@@ -2269,7 +2305,8 @@ def get_scorpion_venom_direction(beetle):
     return dir_x, dir_z
 
 def process_spray_collisions(target_beetle, target_color, skip_owner):
-    """Run GPU kernel to check spray-voxel collisions, then process hits. Returns list of (idx, hit_x, hit_y, hit_z)."""
+    """Run GPU kernel to check spray-voxel collisions, then process hits.
+    Returns list of (idx, hit_x, hit_y, hit_z, vel_x, vel_y, vel_z, color_r, color_g, color_b)."""
     # Run GPU collision detection kernel
     check_spray_voxel_collision_kernel(target_color, skip_owner)
 
@@ -2280,26 +2317,39 @@ def process_spray_collisions(target_beetle, target_color, skip_owner):
     if num_spray == 0:
         return []
 
-    # Single GPU->CPU transfer for all data
+    # Check hit flags first (cheap — just integers)
     spray_hit_np = simulation.spray_hit.to_numpy()[:num_spray]
-    spray_hit_pos_np = simulation.spray_hit_pos.to_numpy()[:num_spray]
 
-    hits = []
+    # Find which indices hit
+    hit_indices = []
     for idx in range(num_spray):
         if spray_hit_np[idx] == 1:
-            pos = spray_hit_pos_np[idx]
-            hits.append((idx, pos[0], pos[1], pos[2]))
+            hit_indices.append(idx)
+
+    if not hit_indices:
+        return []
+
+    # Only batch-read pos/vel/color when there are actual hits
+    spray_hit_pos_np = simulation.spray_hit_pos.to_numpy()[:num_spray]
+    spray_vel_np = simulation.spray_vel.to_numpy()[:num_spray]
+    spray_color_np = simulation.spray_color.to_numpy()[:num_spray]
+
+    hits = []
+    for idx in hit_indices:
+        pos = spray_hit_pos_np[idx]
+        vel = spray_vel_np[idx]
+        color = spray_color_np[idx]
+        hits.append((idx, float(pos[0]), float(pos[1]), float(pos[2]),
+                     float(vel[0]), float(vel[1]), float(vel[2]),
+                     float(color[0]), float(color[1]), float(color[2])))
     return hits
 
-def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
-    """Push beetle back and spawn explosion when spray hits. Uses hit position for torque/flip physics."""
-    spray_vx = simulation.spray_vel[spray_idx][0]
-    spray_vy = simulation.spray_vel[spray_idx][1]
-    spray_vz = simulation.spray_vel[spray_idx][2]
-    spray_color = simulation.spray_color[spray_idx]
+def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z, spray_vx, spray_vy, spray_vz, color_r, color_g, color_b):
+    """Push beetle back and spawn explosion when spray hits. Uses hit position for torque/flip physics.
+    All data passed as Python floats — no Taichi field reads (avoids 200ms first-access penalty)."""
 
     # Detect venom (yellow: R > G) vs bombardier spray (green: G > R)
-    is_venom = spray_color[0] > spray_color[1]
+    is_venom = color_r > color_g
 
     # Calculate push direction (spray velocity direction)
     speed = math.sqrt(spray_vx*spray_vx + spray_vz*spray_vz)
@@ -2375,7 +2425,7 @@ def apply_spray_impact(target_beetle, spray_idx, hit_x, hit_y, hit_z):
         target_beetle.roll_velocity += roll_torque / target_beetle.roll_inertia
 
     # Spawn mini explosion at hit position with spray's color
-    spawn_spray_explosion(hit_x, hit_y, hit_z, spray_color[0], spray_color[1], spray_color[2])
+    spawn_spray_explosion(hit_x, hit_y, hit_z, color_r, color_g, color_b)
 
     # Kill the spray particle
     simulation.spray_lifetime[spray_idx] = 0
@@ -2452,7 +2502,7 @@ def check_spray_ball_collision():
         beetle_ball.roll_velocity += push_y * spin_strength     # Roll from y-push
 
         # Spawn explosion and kill spray (use spray's color)
-        spawn_spray_explosion(pos[0], pos[1], pos[2], color[0], color[1], color[2])
+        spawn_spray_explosion(float(pos[0]), float(pos[1]), float(pos[2]), float(color[0]), float(color[1]), float(color[2]))
         simulation.spray_lifetime[idx] = 0
 
 # Goal celebration state (scored-on beetle explodes, then winner confetti/flash)
@@ -9938,21 +9988,22 @@ def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, ti
             spread = (ti.random() - 0.5) * 90.0  # Wide perpendicular spread
             spawn_x = -wind_dx * spawn_dist + perp_x * spread
             spawn_z = -wind_dz * spawn_dist + perp_z * spread
-            # Spawn above arena surface — enough to not sink through during short flight
-            spawn_y = floor_y + 2.0 + ti.random() * 6.0
+            # Spawn above arena surface — most low, some higher for visual depth
+            r = ti.random()
+            spawn_y = floor_y + 2.0 + r * 6.0 + r * r * 8.0
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, spawn_y, spawn_z)
             # Speed scales hard with intensity: visible breeze → ripping blast
             spd = (80.0 + intensity * 270.0) + ti.random() * 40.0  # 80-390 units/s
-            # Chaotic direction: ±15% lateral wobble
-            dir_spread = (ti.random() - 0.5) * 0.3
+            # Tight lateral wobble so wind direction reads clearly
+            dir_spread = (ti.random() - 0.5) * 0.12
             vx = (wind_dx + perp_x * dir_spread) * spd
             vz = (wind_dz + perp_z * dir_spread) * spd
             # Upward kick to fight gravity — scale with spawn distance (far ones fly longer)
             vy = 3.0 + spawn_dist * 0.06 + ti.random() * 3.0
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
             # Sandy color from palette + small variation (fewer RNG calls than branching)
-            color_idx = ti.cast(ti.random() * 6.0, ti.i32) % 6
-            # Palette: bright sand, golden, dusty brown, dark earth, deep brown, warm ochre
+            color_idx = ti.cast(ti.random() * 9.0, ti.i32) % 9
+            # Palette: bright sand, golden, dusty brown, dark earth, deep brown, warm ochre + darker tones
             cr = 0.0
             cg = 0.0
             cb = 0.0
@@ -9966,15 +10017,21 @@ def spawn_sandstorm_dust(wind_dx: ti.f32, wind_dz: ti.f32, intensity: ti.f32, ti
                 cr, cg, cb = 0.55, 0.42, 0.22
             elif color_idx == 4:
                 cr, cg, cb = 0.45, 0.34, 0.17
-            else:
+            elif color_idx == 5:
                 cr, cg, cb = 0.85, 0.70, 0.23
+            elif color_idx == 6:
+                cr, cg, cb = 0.35, 0.26, 0.13
+            elif color_idx == 7:
+                cr, cg, cb = 0.28, 0.21, 0.11
+            else:
+                cr, cg, cb = 0.40, 0.30, 0.18
             # Tiny variation so particles aren't uniform
             cr += (ti.random() - 0.5) * 0.10
             cg += (ti.random() - 0.5) * 0.08
             cb += (ti.random() - 0.5) * 0.06
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
             # Sand grain size
-            simulation.debris_radius[idx] = 0.168
+            simulation.debris_radius[idx] = 0.10
             # Lifetime scales with spawn distance — far particles live longer to make the trip,
             # close ones die fast so screen clears quickly when gust ends.
             # spawn_dist/spd = travel time to arena. Add margin to cross arena + blow out the other side.
@@ -14001,6 +14058,10 @@ spawn_downwash_landing_burst(0.0, -100.0)
 spawn_tornado_dust(0.0, -100.0, 0.0)
 spawn_tornado_ground_dust(0.0, -100.0, 0.0, -1.0)
 spawn_sandstorm_dust(1.0, 0.0, 1.0, 0.0, 1)
+spawn_leg_dust_staggered(0.0, -100.0, 0.0, 1.0, 0.0, 10.0, 0.45, 0.40, 0.35, 0.0, 0.0, 1.0, 1, 1.0)
+spawn_spin_dust_puff(0.0, -100.0, 0.0, 1.0, 0.0, 0.45, 0.40, 0.35, 1.0, 1)
+check_floor_collision(0.0, 0.0)
+calculate_beetle_lowest_point(0.0, 0.0, 0.0, 0.0, 0.0)
 clear_ufo_bounded(0.0, -100.0, 0.0)
 place_ufo_kernel(0.0, -100.0, 0.0, 0.0)
 clear_ufo_beam_bounded(0.0, 0.0, 30.0)
@@ -14081,6 +14142,9 @@ cleanup_dead_spray()
 print(f"[Timing]   6f cleanup_dead_spray: {time.perf_counter() - _t6a:.2f}s")
 _t6a = time.perf_counter()
 spawn_spray_explosion(0.0, 0.0, -100.0, 0.2, 1.0, 0.3)
+# Also warm with numpy float32 args — Taichi recompiles for different arg types
+import numpy as _np32
+spawn_spray_explosion(_np32.float32(0.0), _np32.float32(0.0), _np32.float32(-100.0), _np32.float32(0.2), _np32.float32(1.0), _np32.float32(0.3))
 print(f"[Timing]   6g spawn_spray_explosion: {time.perf_counter() - _t6a:.2f}s")
 update_loading(6)
 
@@ -14103,6 +14167,7 @@ clear_referee_beam_voxels()
 render_referee_beam(0.0, -100.0, 0.0, 0.0, -100.0, 0.0, 0.5, 0.0, 0.0, simulation.SCORE_DIGIT_BLUE)
 render_score_digit(0, 0.0, -100.0, 0.0, simulation.SCORE_DIGIT_BLUE, 1.0, 1.0, 0.0, 0.0, 7)  # Score digit warmup
 clear_score_digits()  # Clear score digits warmup
+spawn_score_burst(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 0, 1)
 clear_ladybug_bounded(0.0, -100.0, 0.0)
 place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 update_beetle_stuck_silk_positions(
@@ -15872,14 +15937,14 @@ try:
                 # Check if blue's spray hits red (target=RED=1, skip red's own spray=1)
                 if beetle_red.active:
                     hits = process_spray_collisions(beetle_red, 1, 1)  # target RED, skip owner 1
-                    for hit_idx, hit_x, hit_y, hit_z in hits:
-                        apply_spray_impact(beetle_red, hit_idx, hit_x, hit_y, hit_z)
+                    for hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb in hits:
+                        apply_spray_impact(beetle_red, hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb)
 
                 # Check if red's spray hits blue (target=BLUE=0, skip blue's own spray=0)
                 if beetle_blue.active:
                     hits = process_spray_collisions(beetle_blue, 0, 0)  # target BLUE, skip owner 0
-                    for hit_idx, hit_x, hit_y, hit_z in hits:
-                        apply_spray_impact(beetle_blue, hit_idx, hit_x, hit_y, hit_z)
+                    for hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb in hits:
+                        apply_spray_impact(beetle_blue, hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb)
 
                 # Check if any spray hits the ball
                 check_spray_ball_collision()

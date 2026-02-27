@@ -100,7 +100,7 @@ BACKEND, BACKEND_REASON = choose_backend()
 CLEANUP_FREQUENCY_DEBRIS = 2 if BACKEND == 'cpu' else 30  # Every 0.5s on GPU
 CLEANUP_FREQUENCY_SPRAY = 2 if BACKEND == 'cpu' else 30
 CLEANUP_FREQUENCY_SILK = 5 if BACKEND == 'cpu' else 60
-BG_ANIM_FREQUENCY = 3 if BACKEND == 'cpu' else 3  # Background animation: every 3rd frame (saves kernel launch overhead)
+BG_ANIM_FREQUENCY = 1
 
 # Check if user wants fresh kernel compilation (bypasses cache that might cause variance)
 FRESH_COMPILE = '--fresh' in sys.argv
