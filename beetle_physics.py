@@ -1141,8 +1141,8 @@ ICE_LINEAR_FRICTION = 1.0        # vs normal 0.88 — zero friction, no slowdown
 ICE_BALL_FRICTION = 1.0         # vs normal BALL_ROLLING_FRICTION (0.99) — ball doesn't slow on ice
 
 # Moving Hole hazard — circular gap that wanders the arena on a Lissajous path
-HOLE_RADIUS = 5.0               # visual/tipping radius of the hole in floor voxels
-HOLE_FLOOR_DROP_RADIUS = 2.0    # inner radius where floor_y actually drops (beetle must be well inside)
+HOLE_RADIUS = 10.0              # visual/tipping radius of the hole in floor voxels
+HOLE_FLOOR_DROP_RADIUS = 4.0    # inner radius where floor_y actually drops (beetle must be well inside)
 HOLE_WANDER_RANGE = 18.0        # how far hole center wanders from arena center
 HOLE_SPEED = 0.18               # base movement speed for Lissajous path
 
