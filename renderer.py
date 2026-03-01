@@ -657,16 +657,20 @@ def merge_interior_floor(voxel_field: ti.template(), n_grid: ti.i32, floor_j: ti
                        (n_pxpz == CONCRETE or n_pxpz == SLIPPERY) and \
                        (n_mxpz == CONCRETE or n_mxpz == SLIPPERY):
                         is_interior = 1
-                    # Skip interior voxels inside the moving hole
+                    # Skip interior voxels that have ANY corner inside the hole
                     if is_interior == 1:
                         hp = hole_params[None]
                         if hp[2] > 0.0:
                             wx = float(i) - half_grid
                             wz = float(k) - half_grid
-                            hdx = wx - hp[0]
-                            hdz = wz - hp[1]
-                            if hdx * hdx + hdz * hdz < hp[2] * hp[2]:
-                                is_interior = 0
+                            r2m = hp[2] * hp[2]
+                            for dci, dck in ti.static([(-1, -1), (1, -1), (1, 1), (-1, 1)]):
+                                cx_m = wx + dci * 0.5
+                                cz_m = wz + dck * 0.5
+                                cdx = cx_m - hp[0]
+                                cdz = cz_m - hp[1]
+                                if cdx * cdx + cdz * cdz < r2m:
+                                    is_interior = 0
 
                 if is_interior:
                     if run_start < 0:
@@ -735,51 +739,48 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                 c2_in = 0
                 c3_in = 0
                 if hr_h > 0.0:
-                    hdx = world_x - hx_h
-                    hdz = world_z - hz_h
-                    if hdx * hdx + hdz * hdz < r2_h:
-                        in_hole = 1
-                    if in_hole == 0:
-                        # Check if any corner is inside the hole circle
-                        d0x = c0x - hx_h
-                        d0z = c0z - hz_h
-                        d1x = c1x - hx_h
-                        d1z = c1z - hz_h
-                        d2x = c2x - hx_h
-                        d2z = c2z - hz_h
-                        d3x = c3x - hx_h
-                        d3z = c3z - hz_h
-                        if d0x * d0x + d0z * d0z < r2_h:
-                            c0_in = 1
-                        if d1x * d1x + d1z * d1z < r2_h:
-                            c1_in = 1
-                        if d2x * d2x + d2z * d2z < r2_h:
-                            c2_in = 1
-                        if d3x * d3x + d3z * d3z < r2_h:
-                            c3_in = 1
-                        if c0_in + c1_in + c2_in + c3_in > 0:
-                            is_hole_edge = 1
-                            # Snap inside corners to the circle boundary
-                            if c0_in == 1:
-                                dd = ti.sqrt(d0x * d0x + d0z * d0z)
-                                if dd > 0.01:
-                                    c0x = hx_h + d0x / dd * hr_h
-                                    c0z = hz_h + d0z / dd * hr_h
-                            if c1_in == 1:
-                                dd = ti.sqrt(d1x * d1x + d1z * d1z)
-                                if dd > 0.01:
-                                    c1x = hx_h + d1x / dd * hr_h
-                                    c1z = hz_h + d1z / dd * hr_h
-                            if c2_in == 1:
-                                dd = ti.sqrt(d2x * d2x + d2z * d2z)
-                                if dd > 0.01:
-                                    c2x = hx_h + d2x / dd * hr_h
-                                    c2z = hz_h + d2z / dd * hr_h
-                            if c3_in == 1:
-                                dd = ti.sqrt(d3x * d3x + d3z * d3z)
-                                if dd > 0.01:
-                                    c3x = hx_h + d3x / dd * hr_h
-                                    c3z = hz_h + d3z / dd * hr_h
+                    # Corner-based hole detection (smooth boundary)
+                    d0x = c0x - hx_h
+                    d0z = c0z - hz_h
+                    d1x = c1x - hx_h
+                    d1z = c1z - hz_h
+                    d2x = c2x - hx_h
+                    d2z = c2z - hz_h
+                    d3x = c3x - hx_h
+                    d3z = c3z - hz_h
+                    if d0x * d0x + d0z * d0z < r2_h:
+                        c0_in = 1
+                    if d1x * d1x + d1z * d1z < r2_h:
+                        c1_in = 1
+                    if d2x * d2x + d2z * d2z < r2_h:
+                        c2_in = 1
+                    if d3x * d3x + d3z * d3z < r2_h:
+                        c3_in = 1
+                    corners_in = c0_in + c1_in + c2_in + c3_in
+                    if corners_in == 4:
+                        in_hole = 1  # All corners inside — fully hidden
+                    elif corners_in > 0:
+                        is_hole_edge = 1  # Partial — snap inside corners
+                        if c0_in == 1:
+                            dd = ti.sqrt(d0x * d0x + d0z * d0z)
+                            if dd > 0.01:
+                                c0x = hx_h + d0x / dd * hr_h
+                                c0z = hz_h + d0z / dd * hr_h
+                        if c1_in == 1:
+                            dd = ti.sqrt(d1x * d1x + d1z * d1z)
+                            if dd > 0.01:
+                                c1x = hx_h + d1x / dd * hr_h
+                                c1z = hz_h + d1z / dd * hr_h
+                        if c2_in == 1:
+                            dd = ti.sqrt(d2x * d2x + d2z * d2z)
+                            if dd > 0.01:
+                                c2x = hx_h + d2x / dd * hr_h
+                                c2z = hz_h + d2z / dd * hr_h
+                        if c3_in == 1:
+                            dd = ti.sqrt(d3x * d3x + d3z * d3z)
+                            if dd > 0.01:
+                                c3x = hx_h + d3x / dd * hr_h
+                                c3z = hz_h + d3z / dd * hr_h
                 if in_hole:
                     pass  # Skip - floor voxel is inside the hole
                 elif is_hole_edge and use_mesh_floor:
