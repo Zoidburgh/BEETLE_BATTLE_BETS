@@ -533,6 +533,8 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
         center_pos = ti.math.vec3(cx, top_y, cz)
 
         # Check if center is on floor — if not, skip entire disc
+        # Also skip if center is inside the moving hole
+        hp_s = hole_params[None]
         ci = ti.cast(cx + n_grid / 2.0, ti.i32)
         ck = ti.cast(cz + n_grid / 2.0, ti.i32)
         center_on_floor = 0
@@ -540,6 +542,11 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
             cvt = voxel_field[ci, floor_j, ck]
             if cvt == CONCRETE_T or cvt == SLIPPERY_T:
                 center_on_floor = 1
+        if hp_s[2] > 0.0:
+            sdx = cx - hp_s[0]
+            sdz = cz - hp_s[1]
+            if sdx * sdx + sdz * sdz < hp_s[2] * hp_s[2]:
+                center_on_floor = 0
 
         # Edge color: gradient falloff (subtler on sphere floor)
         edge_color = shadow_color * 0.7 + bc * 0.3
@@ -569,9 +576,17 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
                     if 0 <= gi < n_grid and 0 <= gk < n_grid:
                         vt = voxel_field[gi, floor_j, gk]
                         if vt == CONCRETE_T or vt == SLIPPERY_T:
-                            shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y, vz)
-                            placed = 1
-                            break
+                            # Also check this point isn't inside the hole
+                            in_hole_s = 0
+                            if hp_s[2] > 0.0:
+                                shx = vx - hp_s[0]
+                                shz = vz - hp_s[1]
+                                if shx * shx + shz * shz < hp_s[2] * hp_s[2]:
+                                    in_hole_s = 1
+                            if in_hole_s == 0:
+                                shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y, vz)
+                                placed = 1
+                                break
 
             if placed == 0:
                 shadow_vertices[base + 1 + s] = center_pos
