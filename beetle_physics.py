@@ -12210,30 +12210,28 @@ def generate_board_break_pattern():
 
 @ti.kernel
 def spawn_board_break_telegraph(spot_x: ti.f32, spot_z: ti.f32, phase: ti.f32):
-    """Spawn pulsing warning particles at a board break edge spot — flashing red"""
+    """Spawn a single tight warning particle at a board break edge spot — flashing red"""
     floor_y = RENDER_Y_OFFSET + 0.5
     pulse = 0.5 + 0.5 * ti.sin(phase * 6.0)
-    # Fast flash between orange-red and bright red (square wave feel)
     flash = 0.5 + 0.5 * ti.sin(phase * 14.0)
-    for i in range(3):
-        idx = ti.atomic_add(simulation.num_debris[None], 1)
-        if idx < simulation.MAX_DEBRIS:
-            simulation.debris_active[idx] = 1
-            ti.atomic_add(simulation.debris_active_count[None], 1)
-            px = spot_x + (ti.random() - 0.5) * 1.5
-            pz = spot_z + (ti.random() - 0.5) * 1.5
-            spawn_y = floor_y + ti.random() * 0.5
-            simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
-            vx = (ti.random() - 0.5) * 0.8
-            vz = (ti.random() - 0.5) * 0.8
-            vy = 1.0 + ti.random() * 2.0
-            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-            # Flashing red: alternates between orange-red and bright crimson
-            cr = 0.85 + flash * 0.15
-            cg = 0.08 + (1.0 - flash) * 0.22 + pulse * 0.1
-            cb = 0.02 + ti.random() * 0.03
-            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
-            simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.15
+    idx = ti.atomic_add(simulation.num_debris[None], 1)
+    if idx < simulation.MAX_DEBRIS:
+        simulation.debris_active[idx] = 1
+        ti.atomic_add(simulation.debris_active_count[None], 1)
+        # Tight scatter — stay close to the edge cell
+        px = spot_x + (ti.random() - 0.5) * 0.6
+        pz = spot_z + (ti.random() - 0.5) * 0.6
+        spawn_y = floor_y + ti.random() * 0.3
+        simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
+        vx = (ti.random() - 0.5) * 0.5
+        vz = (ti.random() - 0.5) * 0.5
+        vy = 0.8 + ti.random() * 1.5
+        simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+        cr = 0.85 + flash * 0.15
+        cg = 0.08 + (1.0 - flash) * 0.22 + pulse * 0.1
+        cb = 0.02 + ti.random() * 0.03
+        simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+        simulation.debris_lifetime[idx] = 0.12 + ti.random() * 0.12
 
 
 @ti.kernel
@@ -18411,12 +18409,12 @@ try:
                 if board_break_dust_timer >= BOARD_BREAK_PARTICLE_INTERVAL and board_break_edge_spots:
                     board_break_dust_timer = 0.0
                     n_edge = len(board_break_edge_spots)
-                    num_to_spawn = min(8, n_edge)
-                    # Stride through edge spots with golden-ratio-like spacing
+                    # 1 particle per spot, many spots per tick → clean outline
+                    num_to_spawn = min(20, n_edge)
                     stride = max(1, n_edge // num_to_spawn)
                     for s in range(num_to_spawn):
-                        idx = (board_break_edge_idx + s * stride) % n_edge
-                        gi, gk = board_break_edge_spots[idx]
+                        ei = (board_break_edge_idx + s * stride) % n_edge
+                        gi, gk = board_break_edge_spots[ei]
                         wx = float(gi) - 64.0
                         wz = float(gk) - 64.0
                         spawn_board_break_telegraph(float(wx), float(wz), float(board_break_time))
