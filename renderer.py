@@ -121,6 +121,13 @@ def set_hole_active(active):
     global hole_active
     hole_active = active
 
+# Board break hazard state
+board_break_active = False
+
+def set_board_break_active(active):
+    global board_break_active
+    board_break_active = active
+
 # Projectiles (cannonballs) are now merged into main voxel buffer with larger radius
 # This eliminates a separate scene.particles() call, reducing CPU->GPU sync overhead
 
@@ -130,6 +137,15 @@ ice_params = ti.Vector.field(5, dtype=ti.f32, shape=())
 
 # Moving hole params (cx, cz, radius) — floor voxels inside this circle are skipped
 hole_params = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+# Board break hazard mask — 1 = broken cell, 0 = solid
+board_break_mask = ti.field(ti.i32, shape=(128, 128))
+board_break_mask_active = ti.field(ti.i32, shape=())  # 1 during gap phase
+
+@ti.kernel
+def clear_board_break_mask():
+    for i, k in board_break_mask:
+        board_break_mask[i, k] = 0
 
 # Gradient background (2 triangles forming full-screen quad)
 gradient_positions = ti.Vector.field(2, dtype=ti.f32, shape=6)
@@ -547,6 +563,10 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
             sdz = cz - hp_s[1]
             if sdx * sdx + sdz * sdz < hp_s[2] * hp_s[2]:
                 center_on_floor = 0
+        if board_break_mask_active[None] == 1:
+            if 0 <= ci < 128 and 0 <= ck < 128:
+                if board_break_mask[ci, ck] == 1:
+                    center_on_floor = 0
 
         # Edge color: gradient falloff (subtler on sphere floor)
         edge_color = shadow_color * 0.7 + bc * 0.3
@@ -576,13 +596,17 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
                     if 0 <= gi < n_grid and 0 <= gk < n_grid:
                         vt = voxel_field[gi, floor_j, gk]
                         if vt == CONCRETE_T or vt == SLIPPERY_T:
-                            # Also check this point isn't inside the hole
+                            # Also check this point isn't inside the hole or board break
                             in_hole_s = 0
                             if hp_s[2] > 0.0:
                                 shx = vx - hp_s[0]
                                 shz = vz - hp_s[1]
                                 if shx * shx + shz * shz < hp_s[2] * hp_s[2]:
                                     in_hole_s = 1
+                            if in_hole_s == 0 and board_break_mask_active[None] == 1:
+                                if 0 <= gi < 128 and 0 <= gk < 128:
+                                    if board_break_mask[gi, gk] == 1:
+                                        in_hole_s = 1
                             if in_hole_s == 0:
                                 shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y, vz)
                                 placed = 1
@@ -686,6 +710,13 @@ def merge_interior_floor(voxel_field: ti.template(), n_grid: ti.i32, floor_j: ti
                                 cdz = cz_m - hp[1]
                                 if cdx * cdx + cdz * cdz < r2m:
                                     is_interior = 0
+                    # Skip interior voxels near board break broken cells
+                    if is_interior == 1 and board_break_mask_active[None] == 1:
+                        if board_break_mask[i, k] == 1:
+                            is_interior = 0
+                        elif board_break_mask[i - 1, k] == 1 or board_break_mask[i + 1, k] == 1 or \
+                             board_break_mask[i, k - 1] == 1 or board_break_mask[i, k + 1] == 1:
+                            is_interior = 0
 
                 if is_interior:
                     if run_start < 0:
@@ -796,8 +827,25 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                             if dd > 0.01:
                                 c3x = hx_h + d3x / dd * hr_h
                                 c3z = hz_h + d3z / dd * hr_h
+                # Board break mask check (grid-based broken floor)
+                is_bb_edge = 0
+                bb_mx = 0
+                bb_px = 0
+                bb_mz = 0
+                bb_pz = 0
+                if board_break_mask_active[None] == 1:
+                    if board_break_mask[i, k] == 1:
+                        in_hole = 1
+                        is_hole_edge = 0
+                    elif in_hole == 0 and is_hole_edge == 0:
+                        if board_break_mask[i - 1, k] == 1: bb_mx = 1
+                        if board_break_mask[i + 1, k] == 1: bb_px = 1
+                        if board_break_mask[i, k - 1] == 1: bb_mz = 1
+                        if board_break_mask[i, k + 1] == 1: bb_pz = 1
+                        if bb_mx + bb_px + bb_mz + bb_pz > 0:
+                            is_bb_edge = 1
                 if in_hole:
-                    pass  # Skip - floor voxel is inside the hole
+                    pass  # Skip - floor voxel is inside the hole/break
                 elif is_hole_edge and use_mesh_floor:
                     # Emit snapped floor quad with round hole edge
                     top_y_h = world_y + VOXEL_RADIUS
@@ -874,6 +922,70 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                             for bv in ti.static(range(4)):
                                 floor_normals[bb + bv] = bev_n
                                 floor_colors[bb + bv] = dark_h
+                elif is_bb_edge and use_mesh_floor:
+                    # Board break edge — emit top face quad + bevel on exposed sides
+                    top_y_bb = world_y + VOXEL_RADIUS
+                    up_bb = ti.math.vec3(0.0, 1.0, 0.0)
+                    qi_bb = ti.atomic_add(num_floor_quads[None], 1)
+                    if qi_bb < MAX_FLOOR_QUADS:
+                        base_bb = qi_bb * 4
+                        floor_vertices[base_bb + 0] = ti.math.vec3(c0x, top_y_bb, c0z)
+                        floor_vertices[base_bb + 1] = ti.math.vec3(c1x, top_y_bb, c1z)
+                        floor_vertices[base_bb + 2] = ti.math.vec3(c2x, top_y_bb, c2z)
+                        floor_vertices[base_bb + 3] = ti.math.vec3(c3x, top_y_bb, c3z)
+                        for v_bb in ti.static(range(4)):
+                            floor_normals[base_bb + v_bb] = up_bb
+                            ci_bb = i + (1 if v_bb == 1 or v_bb == 2 else 0)
+                            ck_bb = k + (1 if v_bb == 2 or v_bb == 3 else 0)
+                            floor_colors[base_bb + v_bb] = stone_texture_color(color, ci_bb, ck_bb)
+                    # Bevel quads on sides facing broken cells
+                    dark_bb = color * SKIRT_SHADE
+                    bot_y_bb = top_y_bb - SKIRT_DEPTH
+                    bev_n_bb = ti.math.vec3(0.0, 1.0, 0.0)
+                    if bb_mx == 1:
+                        bqi = ti.atomic_add(num_floor_quads[None], 1)
+                        if bqi < MAX_FLOOR_QUADS:
+                            bbase = bqi * 4
+                            floor_vertices[bbase + 0] = ti.math.vec3(c0x, bot_y_bb, c0z)
+                            floor_vertices[bbase + 1] = ti.math.vec3(c3x, bot_y_bb, c3z)
+                            floor_vertices[bbase + 2] = ti.math.vec3(c3x, top_y_bb, c3z)
+                            floor_vertices[bbase + 3] = ti.math.vec3(c0x, top_y_bb, c0z)
+                            for bv_bb in ti.static(range(4)):
+                                floor_normals[bbase + bv_bb] = bev_n_bb
+                                floor_colors[bbase + bv_bb] = dark_bb
+                    if bb_px == 1:
+                        bqi = ti.atomic_add(num_floor_quads[None], 1)
+                        if bqi < MAX_FLOOR_QUADS:
+                            bbase = bqi * 4
+                            floor_vertices[bbase + 0] = ti.math.vec3(c2x, bot_y_bb, c2z)
+                            floor_vertices[bbase + 1] = ti.math.vec3(c1x, bot_y_bb, c1z)
+                            floor_vertices[bbase + 2] = ti.math.vec3(c1x, top_y_bb, c1z)
+                            floor_vertices[bbase + 3] = ti.math.vec3(c2x, top_y_bb, c2z)
+                            for bv_bb in ti.static(range(4)):
+                                floor_normals[bbase + bv_bb] = bev_n_bb
+                                floor_colors[bbase + bv_bb] = dark_bb
+                    if bb_mz == 1:
+                        bqi = ti.atomic_add(num_floor_quads[None], 1)
+                        if bqi < MAX_FLOOR_QUADS:
+                            bbase = bqi * 4
+                            floor_vertices[bbase + 0] = ti.math.vec3(c1x, bot_y_bb, c1z)
+                            floor_vertices[bbase + 1] = ti.math.vec3(c0x, bot_y_bb, c0z)
+                            floor_vertices[bbase + 2] = ti.math.vec3(c0x, top_y_bb, c0z)
+                            floor_vertices[bbase + 3] = ti.math.vec3(c1x, top_y_bb, c1z)
+                            for bv_bb in ti.static(range(4)):
+                                floor_normals[bbase + bv_bb] = bev_n_bb
+                                floor_colors[bbase + bv_bb] = dark_bb
+                    if bb_pz == 1:
+                        bqi = ti.atomic_add(num_floor_quads[None], 1)
+                        if bqi < MAX_FLOOR_QUADS:
+                            bbase = bqi * 4
+                            floor_vertices[bbase + 0] = ti.math.vec3(c3x, bot_y_bb, c3z)
+                            floor_vertices[bbase + 1] = ti.math.vec3(c2x, bot_y_bb, c2z)
+                            floor_vertices[bbase + 2] = ti.math.vec3(c2x, top_y_bb, c2z)
+                            floor_vertices[bbase + 3] = ti.math.vec3(c3x, top_y_bb, c3z)
+                            for bv_bb in ti.static(range(4)):
+                                floor_normals[bbase + bv_bb] = bev_n_bb
+                                floor_colors[bbase + bv_bb] = dark_bb
                 elif use_mesh_floor and skip_floor:
                     # Floor mesh cached — skip entirely
                     pass
@@ -1337,7 +1449,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     num_voxels[None] = 0  # Reset counter
     use_mesh = 1 if mesh_floor_enabled else 0
     skip_floor = 0
-    if use_mesh and floor_cache_valid and not ice_active and not hole_active:
+    if use_mesh and floor_cache_valid and not ice_active and not hole_active and not board_break_active:
         # Floor mesh cached — skip floor extraction, reuse cached floor fields
         skip_floor = 1
     else:

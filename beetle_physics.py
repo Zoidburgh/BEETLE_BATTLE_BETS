@@ -1177,6 +1177,21 @@ COMET_SHOVE_TIP = 8000.0           # Per-frame tipping during shove
 COMET_PARTICLE_INTERVAL = 0.02     # Spawn rate for telegraph/trail particles
 COMET_WANDER_RANGE = 16.0          # How far strip center can wander
 
+# Board Break hazard — telegraph, break, gap, respawn, cooldown cycle
+BOARD_BREAK_TELEGRAPH_DURATION = 3.0
+BOARD_BREAK_ANIM_DURATION = 0.15
+BOARD_BREAK_GAP_DURATION = 2.0
+BOARD_BREAK_RESPAWN_DURATION = 0.15
+BOARD_BREAK_COOLDOWN_DURATION = 5.0
+BOARD_BREAK_CYCLE_TOTAL = 10.3
+BOARD_BREAK_CYCLE_JITTER = 1.5
+BOARD_BREAK_PARTICLE_INTERVAL = 0.02
+BOARD_BREAK_STRIP_WIDTH = 14.0     # Width of strip pattern in voxels
+BOARD_BREAK_CROSS_ARM = 8.0        # Half-width of cross arms
+BOARD_BREAK_WEDGE_ANGLE = 55.0     # Degrees per wedge slice
+BOARD_BREAK_RING_INNER = 12.0      # Inner radius of ring cutout
+BOARD_BREAK_RING_OUTER = 24.0      # Outer radius of ring cutout
+
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
 
@@ -1556,6 +1571,7 @@ def reset_match():
     global ice_mode, ice_time
     global hole_mode, hole_time, hole_x, hole_z
     global comet_mode, comet_time, comet_cycle_count, comet_strip_angle, comet_strip_cx, comet_strip_cz, comet_impacts, comet_dust_timer, comet_spawned_indices, comet_landing_spots, comet_spawn_order, comet_spawn_times, comet_horiz_vels, comet_shove_effects, comet_current_cycle_len
+    global board_break_mode, board_break_time, board_break_cycle_count, board_break_dust_timer, board_break_current_cycle_len, board_break_pattern_spots, board_break_edge_spots, board_break_active
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1712,6 +1728,20 @@ def reset_match():
     comet_horiz_vels = []
     comet_shove_effects = []
     comet_current_cycle_len = COMET_CYCLE_TOTAL
+
+    # Reset board break hazard state
+    board_break_mode = False
+    board_break_time = 0.0
+    board_break_cycle_count = 0
+    board_break_dust_timer = 0.0
+    board_break_current_cycle_len = BOARD_BREAK_CYCLE_TOTAL
+    board_break_pattern_spots = []
+    board_break_edge_spots = []
+    board_break_active = False
+    renderer.board_break_mask_active[None] = 0
+    renderer.set_board_break_active(False)
+    renderer.clear_board_break_mask()
+    renderer.invalidate_floor_cache()
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2678,6 +2708,16 @@ comet_spawn_times = []             # Jittered normalized spawn times (0.0-1.0) p
 comet_horiz_vels = []              # Per-spot [(vx, vz)] horizontal velocity from angled approach
 comet_shove_effects = []           # Active sustained pushes: [beetle, dir_x, dir_z, time_left, force, tip]
 comet_current_cycle_len = COMET_CYCLE_TOTAL  # Per-cycle duration (jittered each wave)
+
+# Board break hazard state
+board_break_mode = False
+board_break_time = 0.0
+board_break_cycle_count = 0
+board_break_dust_timer = 0.0
+board_break_current_cycle_len = BOARD_BREAK_CYCLE_TOTAL
+board_break_pattern_spots = []    # [(grid_i, grid_k), ...] voxels to cut
+board_break_edge_spots = []       # edge voxels for destruction animation
+board_break_active = False        # True during gap phase (floor missing)
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -12090,6 +12130,119 @@ def apply_comet_knockback(impact_x, impact_z, radius, force_mult=1.0):
             beetle_ball.vz += dir_z * COMET_PUSH_FORCE * 3.0 * falloff * force_mult
             beetle_ball.vy += COMET_LIFT_FORCE * 3.0 * falloff * force_mult
 
+# ============== BOARD BREAK HAZARD FUNCTIONS ==============
+
+def generate_board_break_pattern():
+    """Generate a random board break cutout pattern. Returns (pattern_spots, edge_spots, mask_np)."""
+    import numpy as np
+
+    pattern = random.choice(['strip', 'cross', 'wedges', 'ring'])
+    center = 64.0
+    floor_j = int(RENDER_Y_OFFSET)
+
+    # Get floor mask (which cells are floor voxels)
+    voxel_np = simulation.voxel_type.to_numpy()
+    floor_slice = voxel_np[:, floor_j, :]
+    is_floor = np.logical_or(floor_slice == 2, floor_slice == 21)  # CONCRETE or SLIPPERY
+
+    # Create grid coordinate arrays
+    gi_arr = np.arange(128)
+    gk_arr = np.arange(128)
+    GI, GK = np.meshgrid(gi_arr, gk_arr, indexing='ij')
+    DI = GI - center
+    DK = GK - center
+
+    broken = np.zeros((128, 128), dtype=bool)
+
+    if pattern == 'strip':
+        angle = random.uniform(0, math.pi)
+        dist = np.abs(DI * math.sin(angle) - DK * math.cos(angle))
+        broken = dist < BOARD_BREAK_STRIP_WIDTH / 2.0
+
+    elif pattern == 'cross':
+        angle = random.uniform(0, math.pi / 2)
+        dist1 = np.abs(DI * math.sin(angle) - DK * math.cos(angle))
+        dist2 = np.abs(DI * math.cos(angle) + DK * math.sin(angle))
+        broken = np.logical_or(dist1 < BOARD_BREAK_CROSS_ARM / 2.0,
+                               dist2 < BOARD_BREAK_CROSS_ARM / 2.0)
+
+    elif pattern == 'wedges':
+        base_angle = random.uniform(0, math.pi)
+        half_wedge = math.radians(BOARD_BREAK_WEDGE_ANGLE / 2.0)
+        cell_angles = np.arctan2(DK, DI)
+        diff1 = np.abs(((cell_angles - base_angle + math.pi) % (2 * math.pi)) - math.pi)
+        diff2 = np.abs(((cell_angles - (base_angle + math.pi) + math.pi) % (2 * math.pi)) - math.pi)
+        broken = np.logical_or(diff1 < half_wedge, diff2 < half_wedge)
+
+    elif pattern == 'ring':
+        dist = np.sqrt(DI * DI + DK * DK)
+        broken = np.logical_and(dist > BOARD_BREAK_RING_INNER, dist < BOARD_BREAK_RING_OUTER)
+
+    # Intersect with actual floor voxels
+    mask = np.logical_and(broken, is_floor).astype(np.int32)
+
+    # Collect pattern spots
+    pattern_spots = list(zip(*np.where(mask == 1)))
+
+    # Edge spots: broken cells with at least one non-broken neighbor
+    padded = np.pad(mask, 1, mode='constant', constant_values=0)
+    has_solid_neighbor = (
+        (padded[:-2, 1:-1] == 0) | (padded[2:, 1:-1] == 0) |
+        (padded[1:-1, :-2] == 0) | (padded[1:-1, 2:] == 0)
+    )
+    edge_mask = np.logical_and(mask == 1, has_solid_neighbor)
+    edge_spots = list(zip(*np.where(edge_mask)))
+
+    return pattern_spots, edge_spots, mask
+
+
+@ti.kernel
+def spawn_board_break_telegraph(spot_x: ti.f32, spot_z: ti.f32, phase: ti.f32):
+    """Spawn pulsing warning particles at a board break edge spot"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    pulse = 0.5 + 0.5 * ti.sin(phase * 6.0)
+    for i in range(3):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            px = spot_x + (ti.random() - 0.5) * 1.5
+            pz = spot_z + (ti.random() - 0.5) * 1.5
+            spawn_y = floor_y + ti.random() * 0.5
+            simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
+            vx = (ti.random() - 0.5) * 0.8
+            vz = (ti.random() - 0.5) * 0.8
+            vy = 1.0 + ti.random() * 2.0
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            cr = 0.9 + pulse * 0.1
+            cg = 0.25 + pulse * 0.25
+            cb = 0.05 + ti.random() * 0.05
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.15
+
+
+@ti.kernel
+def spawn_board_break_debris(spot_x: ti.f32, spot_z: ti.f32, upward: ti.f32):
+    """Spawn stone debris burst at a board break edge — upward=1 for respawn, -1 for break"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    for i in range(5):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            px = spot_x + (ti.random() - 0.5) * 1.0
+            pz = spot_z + (ti.random() - 0.5) * 1.0
+            simulation.debris_pos[idx] = ti.math.vec3(px, floor_y, pz)
+            vx = (ti.random() - 0.5) * 8.0
+            vz = (ti.random() - 0.5) * 8.0
+            vy = upward * (3.0 + ti.random() * 6.0)
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Stone-colored debris
+            grey = 0.35 + ti.random() * 0.15
+            simulation.debris_material[idx] = ti.math.vec3(grey, grey * 0.95, grey * 0.9)
+            simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
+
+
 @ti.kernel
 def clear_ladybug_voxels():
     """Clear all ladybug voxels from the grid (full scan - used for cleanup on disable)"""
@@ -14491,6 +14644,10 @@ spawn_comet_body(0.0, -100.0, 0.0, 0.0, 0.0, 0.0)
 spawn_comet_trail(0.0, -100.0, 0.0)
 spawn_comet_impact(0.0, -100.0, 0.0)
 check_comet_collision(0.0, -100.0, 0.0)
+# Board break hazard warmup (debris-based kernels)
+spawn_board_break_telegraph(0.0, -100.0, 0.0)
+spawn_board_break_debris(0.0, -100.0, 1.0)
+renderer.clear_board_break_mask()
 spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup
 spawn_arena_transition_rings(0.0, 4.0, 1)  # Arena transition rings warmup
 simulation.num_debris[None] = 0  # Clear warmup debris from transition rings
@@ -16837,6 +16994,30 @@ try:
                         comet_dust_timer = 0.0
                         print("Comet rain hazard disabled (from host)")
 
+                # Apply board break mode state (hazard, independent of arena)
+                if opts.get('board_break_mode', False) != board_break_mode:
+                    board_break_mode = opts.get('board_break_mode', False)
+                    if board_break_mode:
+                        board_break_time = 0.0
+                        board_break_cycle_count = 0
+                        board_break_pattern_spots.clear()
+                        board_break_edge_spots.clear()
+                        board_break_dust_timer = 0.0
+                        renderer.invalidate_floor_cache()
+                        print("BOARD BREAK HAZARD ENABLED (from host)")
+                    else:
+                        board_break_time = 0.0
+                        board_break_cycle_count = 0
+                        board_break_pattern_spots.clear()
+                        board_break_edge_spots.clear()
+                        board_break_dust_timer = 0.0
+                        board_break_active = False
+                        renderer.board_break_mask_active[None] = 0
+                        renderer.set_board_break_active(False)
+                        renderer.clear_board_break_mask()
+                        renderer.invalidate_floor_cache()
+                        print("Board break hazard disabled (from host)")
+
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
         # Local mode: always detect locally
@@ -18184,6 +18365,78 @@ try:
                     shove[3] -= PHYSICS_TIMESTEP
                 comet_shove_effects = [s for s in comet_shove_effects if s[3] > 0]
 
+        # === BOARD BREAK HAZARD ===
+        if board_break_mode:
+            board_break_time += PHYSICS_TIMESTEP
+            if board_break_time >= board_break_current_cycle_len:
+                board_break_time -= board_break_current_cycle_len
+                board_break_current_cycle_len = BOARD_BREAK_CYCLE_TOTAL + random.uniform(-BOARD_BREAK_CYCLE_JITTER, BOARD_BREAK_CYCLE_JITTER)
+                board_break_cycle_count += 1
+            cycle_bb = board_break_time
+
+            t_telegraph_end = BOARD_BREAK_TELEGRAPH_DURATION
+            t_break_end = t_telegraph_end + BOARD_BREAK_ANIM_DURATION
+            t_gap_end = t_break_end + BOARD_BREAK_GAP_DURATION
+            t_respawn_end = t_gap_end + BOARD_BREAK_RESPAWN_DURATION
+
+            if cycle_bb < t_telegraph_end:
+                # --- TELEGRAPH PHASE ---
+                if cycle_bb < PHYSICS_TIMESTEP * 2:
+                    # First frame: generate new pattern
+                    board_break_pattern_spots, board_break_edge_spots, mask_np = generate_board_break_pattern()
+                    # Pre-load mask to GPU (inactive until break phase)
+                    renderer.board_break_mask.from_numpy(mask_np)
+                    board_break_active = False
+                    renderer.board_break_mask_active[None] = 0
+                    board_break_dust_timer = 0.0
+
+                # Spawn telegraph particles at edge spots
+                board_break_dust_timer += PHYSICS_TIMESTEP
+                if board_break_dust_timer >= BOARD_BREAK_PARTICLE_INTERVAL and board_break_edge_spots:
+                    board_break_dust_timer = 0.0
+                    # Spawn at a few random edge spots each tick
+                    num_to_spawn = min(8, len(board_break_edge_spots))
+                    for _ in range(num_to_spawn):
+                        gi, gk = random.choice(board_break_edge_spots)
+                        wx = float(gi) - 64.0
+                        wz = float(gk) - 64.0
+                        spawn_board_break_telegraph(float(wx), float(wz), float(board_break_time))
+
+            elif cycle_bb < t_break_end:
+                # --- BREAK PHASE --- quick destruction burst
+                if not board_break_active:
+                    board_break_active = True
+                    renderer.board_break_mask_active[None] = 1
+                    renderer.set_board_break_active(True)
+                    renderer.invalidate_floor_cache()
+                    # Burst debris from edge spots
+                    num_burst = min(40, len(board_break_edge_spots))
+                    burst_spots = random.sample(board_break_edge_spots, num_burst) if len(board_break_edge_spots) > num_burst else board_break_edge_spots
+                    for gi, gk in burst_spots:
+                        wx = float(gi) - 64.0
+                        wz = float(gk) - 64.0
+                        spawn_board_break_debris(float(wx), float(wz), -1.0)
+
+            elif cycle_bb < t_gap_end:
+                # --- GAP PHASE --- floor is missing, beetles fall through
+                pass  # Mask stays active, floor drop handled below
+
+            elif cycle_bb < t_respawn_end:
+                # --- RESPAWN PHASE --- clear mask, burst upward particles
+                if board_break_active:
+                    board_break_active = False
+                    renderer.board_break_mask_active[None] = 0
+                    renderer.set_board_break_active(False)
+                    renderer.invalidate_floor_cache()
+                    # Upward debris burst
+                    num_burst = min(40, len(board_break_edge_spots))
+                    burst_spots = random.sample(board_break_edge_spots, num_burst) if len(board_break_edge_spots) > num_burst else board_break_edge_spots
+                    for gi, gk in burst_spots:
+                        wx = float(gi) - 64.0
+                        wz = float(gk) - 64.0
+                        spawn_board_break_debris(float(wx), float(wz), 1.0)
+            # else: COOLDOWN — nothing happens
+
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
         # CPU OPTIMIZATION: Cache floor heights to skip kernel calls if entity hasn't moved much
@@ -18209,6 +18462,13 @@ try:
                 hdz = beetle_blue.z - hole_z
                 if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_blue = -1000.0
+            # Board break override: drop floor when beetle center is over a broken cell
+            if board_break_active and floor_y_blue > -100.0:
+                bb_gi = int(beetle_blue.x + 64.0)
+                bb_gk = int(beetle_blue.z + 64.0)
+                if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
+                    if renderer.board_break_mask[bb_gi, bb_gk] == 1:
+                        floor_y_blue = -1000.0
             if floor_y_blue > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
                 # Calculate lowest point of beetle geometry after rotation
                 lowest_point_blue = calculate_beetle_lowest_point(
@@ -18254,6 +18514,13 @@ try:
                 hdz = beetle_red.z - hole_z
                 if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_red = -1000.0
+            # Board break override: drop floor when beetle center is over a broken cell
+            if board_break_active and floor_y_red > -100.0:
+                bb_gi = int(beetle_red.x + 64.0)
+                bb_gk = int(beetle_red.z + 64.0)
+                if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
+                    if renderer.board_break_mask[bb_gi, bb_gk] == 1:
+                        floor_y_red = -1000.0
             if floor_y_red > -100.0:  # Floor detected under beetle
                 lowest_point_red = calculate_beetle_lowest_point(
                     beetle_red.y, beetle_red.rotation, beetle_red.pitch,
@@ -20165,7 +20432,7 @@ try:
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -20239,7 +20506,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -20291,7 +20558,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -20343,7 +20610,7 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === BARBELL MODE ===
             barbell_button_text = "BARBELL: ON" if barbell_mode else "BARBELL: OFF"
@@ -20395,7 +20662,7 @@ try:
                     print("BARBELL ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -20447,7 +20714,7 @@ try:
                     print("FIGURE 8 ARENA ENABLED - infinity symbol!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -20499,7 +20766,7 @@ try:
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -20551,7 +20818,7 @@ try:
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -20604,7 +20871,7 @@ try:
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === SQUARE MODE ===
             square_button_text = "SQUARE: ON" if square_mode else "SQUARE: OFF"
@@ -20657,7 +20924,7 @@ try:
                     print("SQUARE ARENA ENABLED - flat platform!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === SQUIGGLE MODE ===
             squiggle_button_text = "SQUIGGLE: ON" if squiggle_mode else "SQUIGGLE: OFF"
@@ -20710,7 +20977,7 @@ try:
                     print("SQUIGGLE ARENA ENABLED - navigate the serpentine!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             # === HAZARDS ===
             window.GUI.text("")
@@ -20735,7 +21002,7 @@ try:
                     print("Tornado hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             sandstorm_button_text = "SANDSTORM: ON" if sandstorm_mode else "SANDSTORM: OFF"
             if window.GUI.button(sandstorm_button_text):
@@ -20752,7 +21019,7 @@ try:
                     print("Sandstorm hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             ufo_button_text = "UFO LASER: ON" if ufo_mode else "UFO LASER: OFF"
             if window.GUI.button(ufo_button_text):
@@ -20786,7 +21053,7 @@ try:
                     print("UFO laser hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             ice_button_text = "ICE PATCHES: ON" if ice_mode else "ICE PATCHES: OFF"
             if window.GUI.button(ice_button_text):
@@ -20805,7 +21072,7 @@ try:
                     print("Ice patches hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             hole_button_text = "MOVING HOLE: ON" if hole_mode else "MOVING HOLE: OFF"
             if window.GUI.button(hole_button_text):
@@ -20830,7 +21097,7 @@ try:
                     print("Moving hole hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
             comet_button_text = "COMET RAIN: ON" if comet_mode else "COMET RAIN: OFF"
             if window.GUI.button(comet_button_text):
@@ -20860,7 +21127,33 @@ try:
                     print("Comet rain hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
+
+            board_break_button_text = "BOARD BREAK: ON" if board_break_mode else "BOARD BREAK: OFF"
+            if window.GUI.button(board_break_button_text):
+                board_break_mode = not board_break_mode
+                if board_break_mode:
+                    board_break_time = 0.0
+                    board_break_cycle_count = 0
+                    board_break_pattern_spots.clear()
+                    board_break_edge_spots.clear()
+                    board_break_dust_timer = 0.0
+                    print("BOARD BREAK HAZARD ENABLED - watch the floor!")
+                else:
+                    board_break_time = 0.0
+                    board_break_cycle_count = 0
+                    board_break_pattern_spots.clear()
+                    board_break_edge_spots.clear()
+                    board_break_dust_timer = 0.0
+                    board_break_active = False
+                    renderer.board_break_mask_active[None] = 0
+                    renderer.set_board_break_active(False)
+                    renderer.clear_board_break_mask()
+                    renderer.invalidate_floor_cache()
+                    print("Board break hazard disabled")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")
