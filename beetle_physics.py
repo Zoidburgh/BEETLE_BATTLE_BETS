@@ -12138,7 +12138,7 @@ def generate_board_break_pattern():
     """Generate a random board break cutout pattern. Returns (pattern_spots, edge_spots, mask_np)."""
     import numpy as np
 
-    pattern = random.choice(['strip', 'cross', 'wedges', 'ring'])
+    pattern = random.choice(['strip', 'cross', 'wedges', 'ring', 'circles'])
     center = 64.0
     floor_j = int(RENDER_Y_OFFSET)
 
@@ -12179,6 +12179,16 @@ def generate_board_break_pattern():
     elif pattern == 'ring':
         dist = np.sqrt(DI * DI + DK * DK)
         broken = np.logical_and(dist > BOARD_BREAK_RING_INNER, dist < BOARD_BREAK_RING_OUTER)
+
+    elif pattern == 'circles':
+        # Two random circles, same radius as the hole hazard
+        r = HOLE_RADIUS
+        wander = 18.0  # how far from center the circles can be placed
+        for _ in range(2):
+            cx = center + random.uniform(-wander, wander)
+            ck = center + random.uniform(-wander, wander)
+            d = np.sqrt((GI - cx) ** 2 + (GK - ck) ** 2)
+            broken = np.logical_or(broken, d < r)
 
     # Intersect with actual floor voxels
     mask = np.logical_and(broken, is_floor).astype(np.int32)
