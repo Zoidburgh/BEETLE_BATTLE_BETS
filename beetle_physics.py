@@ -12193,28 +12193,6 @@ def generate_board_break_pattern():
     # Intersect with actual floor voxels
     mask = np.logical_and(broken, is_floor).astype(np.int32)
 
-    # Saw-tooth edge: erode the cutout in alternating bands so solid teeth
-    # protrude into the gap.  Each pass peels one layer of edge cells in
-    # "tooth" bands back to solid, giving teeth that are saw_depth voxels deep.
-    saw_width = 3   # voxel width of each tooth / gap
-    saw_depth = 2   # how many voxels the teeth extend into the gap
-    saw_angle = random.uniform(0, math.pi)  # random diagonal per cycle
-    saw_cos = math.cos(saw_angle)
-    saw_sin = math.sin(saw_angle)
-    # Pre-compute band index for every cell (rotated diagonal stripes)
-    band_val = (DI * saw_cos + DK * saw_sin).astype(np.int32)
-    tooth_band = (band_val // saw_width) % 2 == 0
-
-    for _depth in range(saw_depth):
-        padded_s = np.pad(mask, 1, mode='constant', constant_values=0)
-        cur_edge = (
-            (padded_s[:-2, 1:-1] == 0) | (padded_s[2:, 1:-1] == 0) |
-            (padded_s[1:-1, :-2] == 0) | (padded_s[1:-1, 2:] == 0)
-        )
-        # Only flip edge cells that are broken AND in a tooth band
-        flip = np.logical_and(np.logical_and(mask == 1, cur_edge), tooth_band)
-        mask[flip] = 0
-
     # Collect pattern spots
     pattern_spots = list(zip(*np.where(mask == 1)))
 
@@ -12254,6 +12232,41 @@ def spawn_board_break_telegraph(spot_x: ti.f32, spot_z: ti.f32, phase: ti.f32):
         cb = 0.02 + ti.random() * 0.03
         simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
         simulation.debris_lifetime[idx] = 0.12 + ti.random() * 0.12
+
+
+@ti.kernel
+def spawn_board_break_saw(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti.f32, phase: ti.f32):
+    """Spawn a sawblade burst — fan of bright particles perpendicular to edge, traveling along perimeter"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    spin = phase * 20.0  # fast spin for sawblade feel
+    for i in range(6):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            # Arrange particles in a short line perpendicular to the edge (into the gap)
+            t = (float(i) / 5.0 - 0.5) * 3.0  # spread along blade width
+            # Perpendicular to travel direction (rotate 90 deg)
+            perp_x = -dir_z
+            perp_z = dir_x
+            px = spot_x + perp_x * t + (ti.random() - 0.5) * 0.4
+            pz = spot_z + perp_z * t + (ti.random() - 0.5) * 0.4
+            spawn_y = floor_y + 0.1 + ti.random() * 0.4
+            simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
+            # Velocity: slight upward + outward from center of blade
+            vy = 1.5 + ti.random() * 2.0
+            out_str = 2.0 + ti.random() * 2.0
+            # Spin around the blade center
+            angle = spin + float(i) * 1.047  # ~60 deg apart
+            vx = ti.cos(angle) * out_str
+            vz = ti.sin(angle) * out_str
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Bright yellow-white sparks
+            cr = 1.0
+            cg = 0.8 + ti.random() * 0.2
+            cb = 0.3 + ti.random() * 0.4
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.1 + ti.random() * 0.1
 
 
 @ti.kernel
@@ -14681,6 +14694,7 @@ spawn_comet_impact(0.0, -100.0, 0.0)
 check_comet_collision(0.0, -100.0, 0.0)
 # Board break hazard warmup (debris-based kernels)
 spawn_board_break_telegraph(0.0, -100.0, 0.0)
+spawn_board_break_saw(0.0, -100.0, 1.0, 0.0, 0.0)
 spawn_board_break_debris(0.0, -100.0, 1.0)
 renderer.clear_board_break_mask()
 spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup
@@ -18441,6 +18455,29 @@ try:
                         wz = float(gk) - 64.0
                         spawn_board_break_telegraph(float(wx), float(wz), float(board_break_time))
                     board_break_edge_idx = (board_break_edge_idx + 1) % n_edge
+
+                    # Sawblade cursors — bright sparky blades traveling along the perimeter
+                    n_saws = 5
+                    saw_speed = n_edge / BOARD_BREAK_TELEGRAPH_DURATION  # one full loop per telegraph
+                    for si in range(n_saws):
+                        saw_pos = int((board_break_time * saw_speed + si * n_edge / n_saws) % n_edge)
+                        gi_s, gk_s = board_break_edge_spots[saw_pos]
+                        # Get travel direction from neighboring edge spots
+                        next_pos = (saw_pos + 2) % n_edge
+                        prev_pos = (saw_pos - 2) % n_edge
+                        gi_n, gk_n = board_break_edge_spots[next_pos]
+                        gi_p, gk_p = board_break_edge_spots[prev_pos]
+                        dx = float(gi_n - gi_p)
+                        dz = float(gk_n - gk_p)
+                        d_len = math.sqrt(dx * dx + dz * dz)
+                        if d_len > 0.1:
+                            dx /= d_len
+                            dz /= d_len
+                        else:
+                            dx, dz = 1.0, 0.0
+                        wx_s = float(gi_s) - 64.0
+                        wz_s = float(gk_s) - 64.0
+                        spawn_board_break_saw(float(wx_s), float(wz_s), float(dx), float(dz), float(board_break_time))
 
             elif cycle_bb < t_break_end:
                 # --- BREAK PHASE --- quick destruction burst
