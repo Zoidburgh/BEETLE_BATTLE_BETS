@@ -1126,6 +1126,9 @@ UFO_BEAM_RADIUS = 6.0            # Effect radius on ground for physics falloff
 UFO_PUSH_FORCE = 6000.0          # Per-tick horizontal push (sandstorm is 200, laser is 30x stronger)
 UFO_LIFT_FORCE = 800.0           # Per-tick upward pop
 UFO_TIP_STRENGTH = 20000.0       # Per-tick tipping torque
+UFO_SHOVE_DURATION = 0.7         # Sustained push after beam contact
+UFO_SHOVE_FORCE = 2000.0         # Per-frame push during shove
+UFO_SHOVE_TIP = 25000.0          # Per-frame tipping during shove
 UFO_CRUISE_DURATION = 1.5
 UFO_TELEGRAPH_DURATION = 1.0
 UFO_FIRE_DURATION = 1.0
@@ -1145,6 +1148,33 @@ HOLE_RADIUS = 11.0              # visual/tipping radius of the hole in floor vox
 HOLE_FLOOR_DROP_RADIUS = 4.0    # inner radius where floor_y actually drops (beetle must be well inside)
 HOLE_WANDER_RANGE = 18.0        # how far hole center wanders from arena center
 HOLE_SPEED = 0.18               # base movement speed for Lissajous path
+
+# Comet Rain hazard — comets rain down on a rotating strip
+COMET_STRIP_LENGTH = 90.0
+COMET_STRIP_WIDTH = 16.0
+COMET_TELEGRAPH_DURATION = 1.5
+COMET_RAIN_DURATION = 1.5
+COMET_COOLDOWN_DURATION = 4.0
+COMET_CYCLE_TOTAL = 7.0
+COMET_COUNT = 5                    # Comets per rain phase
+COMET_SPOT_RADIUS = 5.0            # Telegraph circle radius per landing spot
+COMET_STAGGER_RANGE = 4.0          # Random lateral offset from strip centerline
+COMET_TIMING_JITTER = 0.3          # Max random delay added to each comet's spawn time
+COMET_SPAWN_HEIGHT = 60.0          # Y above floor
+COMET_FALL_SPEED = 40.0            # Downward velocity
+COMET_ANGLE_MIN_DEG = 5.0          # Min angle from vertical per comet
+COMET_ANGLE_MAX_DEG = 20.0         # Max angle from vertical per comet
+COMET_IMPACT_RADIUS = 8.0          # Floor explosion knockback radius
+COMET_HIT_RADIUS = 8.0             # XZ radius for ball hit during fall (beetles use voxel collision)
+COMET_PUSH_FORCE = 3000.0          # Sideways blast impulse (one-shot, no PHYSICS_TIMESTEP)
+COMET_LIFT_FORCE = 60.0            # Small upward pop (mostly sideways)
+COMET_TIP_STRENGTH = 10000.0       # Tipping torque impulse — sends you tumbling
+COMET_DIRECT_HIT_MULT = 1.5        # Multiplier for direct beetle hits vs floor splash
+COMET_SHOVE_DURATION = 0.4         # Seconds of sustained push after impact
+COMET_SHOVE_FORCE = 600.0          # Per-frame push force during shove (like sandstorm style)
+COMET_SHOVE_TIP = 8000.0           # Per-frame tipping during shove
+COMET_PARTICLE_INTERVAL = 0.02     # Spawn rate for telegraph/trail particles
+COMET_WANDER_RANGE = 16.0          # How far strip center can wander
 
 # Rendering offset - allows beetles to be visible while falling below arena
 RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128 grid, center at 64)
@@ -1524,6 +1554,7 @@ def reset_match():
     global ufo_mode, ufo_time, ufo_phase, ufo_x, ufo_z, ufo_target_x, ufo_target_z, ufo_dust_timer, ufo_prev_x, ufo_prev_z
     global ice_mode, ice_time
     global hole_mode, hole_time, hole_x, hole_z
+    global comet_mode, comet_time, comet_cycle_count, comet_strip_angle, comet_strip_cx, comet_strip_cz, comet_impacts, comet_dust_timer, comet_spawned_indices, comet_landing_spots, comet_spawn_order, comet_spawn_times, comet_horiz_vels, comet_shove_effects
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1663,6 +1694,22 @@ def reset_match():
     hole_center_z[None] = 0.0
     renderer.hole_params[None] = [0.0, 0.0, 0.0]
     renderer.set_hole_active(False)
+
+    # Reset comet rain hazard state
+    comet_mode = False
+    comet_time = 0.0
+    comet_cycle_count = 0
+    comet_strip_angle = 0.0
+    comet_strip_cx = 0.0
+    comet_strip_cz = 0.0
+    comet_impacts = []
+    comet_dust_timer = 0.0
+    comet_spawned_indices = []
+    comet_landing_spots = []
+    comet_spawn_order = []
+    comet_spawn_times = []
+    comet_horiz_vels = []
+    comet_shove_effects = []
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2603,6 +2650,22 @@ hole_mode = False
 hole_time = 0.0
 hole_x = 0.0
 hole_z = 0.0
+
+# Comet rain hazard state
+comet_mode = False
+comet_time = 0.0
+comet_cycle_count = 0
+comet_strip_angle = 0.0
+comet_strip_cx = 0.0
+comet_strip_cz = 0.0
+comet_impacts = []
+comet_dust_timer = 0.0
+comet_spawned_indices = []
+comet_landing_spots = []           # Pre-computed [(world_x, world_z), ...] for each comet
+comet_spawn_order = []             # Randomized indices into landing_spots
+comet_spawn_times = []             # Jittered normalized spawn times (0.0-1.0) per comet
+comet_horiz_vels = []              # Per-spot [(vx, vz)] horizontal velocity from angled approach
+comet_shove_effects = []           # Active sustained pushes: [beetle, dir_x, dir_z, time_left, force, tip]
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -11601,8 +11664,9 @@ ufo_beam_hit_blue = ti.field(ti.i32, shape=())
 ufo_beam_hit_red = ti.field(ti.i32, shape=())
 
 @ti.kernel
-def check_ufo_beam_collision(target_x: ti.f32, target_z: ti.f32, ufo_y: ti.f32):
+def check_ufo_beam_collision(target_x: ti.f32, target_z: ti.f32, beam_bottom_y: ti.f32):
     """Check beam voxels against beetle body parts (3x3x3 neighborhood).
+    beam_bottom_y = how far above floor the beam head has descended (0 = floor level).
     Sets ufo_beam_hit_blue/red = 1 if any beetle body part found near beam."""
     ufo_beam_hit_blue[None] = 0
     ufo_beam_hit_red[None] = 0
@@ -11610,9 +11674,9 @@ def check_ufo_beam_collision(target_x: ti.f32, target_z: ti.f32, ufo_y: ti.f32):
     cx = int(target_x + simulation.n_grid / 2.0)
     cz = int(target_z + simulation.n_grid / 2.0)
     base_y = int(RENDER_Y_OFFSET)
-    beam_height = int(ufo_y)
-    # Check along the beam column
-    for dy in range(ti.min(beam_height, 20)):  # Only check lower portion where beetles are
+    start_y = int(beam_bottom_y)  # Beam exists from this height upward
+    # Check from beam head up to 20 voxels (beetle height range)
+    for dy in range(start_y, ti.min(start_y + 20, 40)):
         gy = base_y + dy
         if 0 <= gy < simulation.n_grid:
             for dx in range(-beam_radius, beam_radius + 1):
@@ -11641,6 +11705,53 @@ def check_ufo_beam_collision(target_x: ti.f32, target_z: ti.f32, ufo_y: ti.f32):
                                            vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
                                            vtype == simulation.VENOM_TIP_RED:
                                             ufo_beam_hit_red[None] = 1
+
+# Comet collision result fields (hit flags + exact hit position like spray system)
+comet_hit_blue = ti.field(ti.i32, shape=())
+comet_hit_red = ti.field(ti.i32, shape=())
+comet_hit_pos_blue = ti.Vector.field(3, dtype=ti.f32, shape=())
+comet_hit_pos_red = ti.Vector.field(3, dtype=ti.f32, shape=())
+
+@ti.kernel
+def check_comet_collision(comet_x: ti.f32, comet_z: ti.f32, comet_render_y: ti.f32):
+    """Check voxels around comet position for beetle body parts (voxel-perfect like bombardier).
+    Records the exact hit voxel position for accurate explosion + lever-arm torque."""
+    comet_hit_blue[None] = 0
+    comet_hit_red[None] = 0
+    check_radius = 3
+    n_half = simulation.n_grid / 2.0
+    cx = int(comet_x + n_half)
+    cz = int(comet_z + n_half)
+    cy = int(comet_render_y)
+    for dx in range(-check_radius, check_radius + 1):
+        for dy in range(-check_radius, check_radius + 1):
+            for dz in range(-check_radius, check_radius + 1):
+                gx = cx + dx
+                gy = cy + dy
+                gz = cz + dz
+                if 0 <= gx < simulation.n_grid and 0 <= gy < simulation.n_grid and 0 <= gz < simulation.n_grid:
+                    vtype = simulation.voxel_type[gx, gy, gz]
+                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
+                       vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
+                       vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE or \
+                       vtype == simulation.VENOM_TIP_BLUE:
+                        if comet_hit_blue[None] == 0:
+                            # Record exact hit position (grid → world coords)
+                            comet_hit_pos_blue[None] = ti.math.vec3(
+                                float(gx) - n_half,
+                                float(gy),
+                                float(gz) - n_half)
+                        comet_hit_blue[None] = 1
+                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
+                       vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
+                       vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
+                       vtype == simulation.VENOM_TIP_RED:
+                        if comet_hit_red[None] == 0:
+                            comet_hit_pos_red[None] = ti.math.vec3(
+                                float(gx) - n_half,
+                                float(gy),
+                                float(gz) - n_half)
+                        comet_hit_red[None] = 1
 
 @ti.kernel
 def spawn_ufo_telegraph(target_x: ti.f32, target_z: ti.f32, phase: ti.f32):
@@ -11721,6 +11832,232 @@ def spawn_ufo_beam_sparks(target_x: ti.f32, target_z: ti.f32, time_val: ti.f32):
             cb = 0.3 + ti.random() * 0.4
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
             simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.2
+
+@ti.kernel
+def spawn_comet_telegraph(spot_x: ti.f32, spot_z: ti.f32, radius: ti.f32, phase: ti.f32):
+    """Spawn pulsing orange/red circle particles at a single comet landing spot"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    pulse = 0.5 + 0.5 * ti.sin(phase * 8.0)
+    for i in range(10):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            # Distribute around circle
+            angle = float(i) / 10.0 * 6.2832 + phase * 5.0
+            r = radius * (0.8 + 0.4 * ti.random())
+            px = spot_x + ti.cos(angle) * r
+            pz = spot_z + ti.sin(angle) * r
+            spawn_y = floor_y + ti.random() * 0.8
+            simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
+            vx = (ti.random() - 0.5) * 1.5
+            vz = (ti.random() - 0.5) * 1.5
+            vy = 1.5 + ti.random() * 2.5
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            cr = 0.9 + pulse * 0.1
+            cg = 0.3 + pulse * 0.3
+            cb = 0.05 + ti.random() * 0.05
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.15
+
+@ti.kernel
+def spawn_comet_body(x: ti.f32, y: ti.f32, z: ti.f32,
+                     vx_in: ti.f32, vy_in: ti.f32, vz_in: ti.f32):
+    """Spawn bright particle cluster for comet head — elongated oval along velocity"""
+    # Normalize velocity to get travel direction
+    spd = ti.sqrt(vx_in * vx_in + vy_in * vy_in + vz_in * vz_in)
+    dx = 0.0
+    dy = -1.0
+    dz = 0.0
+    if spd > 0.1:
+        dx = vx_in / spd
+        dy = vy_in / spd
+        dz = vz_in / spd
+    # Build perpendicular axes (Gram-Schmidt from an arbitrary up hint)
+    # Pick a hint that isn't parallel to travel dir
+    hx = 1.0
+    hy = 0.0
+    hz = 0.0
+    dot_h = dx * hx + dy * hy + dz * hz
+    if ti.abs(dot_h) > 0.9:
+        hx = 0.0
+        hy = 0.0
+        hz = 1.0
+        dot_h = dx * hx + dy * hy + dz * hz
+    # Perp axis 1: hint - projection onto travel dir
+    p1x = hx - dot_h * dx
+    p1y = hy - dot_h * dy
+    p1z = hz - dot_h * dz
+    p1_len = ti.sqrt(p1x * p1x + p1y * p1y + p1z * p1z)
+    p1x /= p1_len
+    p1y /= p1_len
+    p1z /= p1_len
+    # Perp axis 2: cross product of travel dir and perp1
+    p2x = dy * p1z - dz * p1y
+    p2y = dz * p1x - dx * p1z
+    p2z = dx * p1y - dy * p1x
+    for i in range(16):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            # Ellipsoid distribution: random point in unit sphere, scaled to oval
+            theta = ti.random() * 6.2832
+            phi = ti.acos(1.0 - 2.0 * ti.random())
+            r = ti.pow(ti.random(), 1.0 / 3.0)  # cube root for uniform volume
+            sx = r * ti.sin(phi) * ti.cos(theta)
+            sy = r * ti.sin(phi) * ti.sin(theta)
+            sz = r * ti.cos(phi)
+            along = sx * 3.5     # half-length 3.5 along velocity
+            across1 = sy * 1.25  # half-width 1.25
+            across2 = sz * 1.25  # half-depth 1.25
+            px = x + dx * along + p1x * across1 + p2x * across2
+            py = y + dy * along + p1y * across1 + p2y * across2
+            pz = z + dz * along + p1z * across1 + p2z * across2
+            simulation.debris_pos[idx] = ti.math.vec3(px, py, pz)
+            simulation.debris_vel[idx] = ti.math.vec3(
+                vx_in + (ti.random() - 0.5) * 3.0,
+                vy_in + (ti.random() - 0.5) * 3.0,
+                vz_in + (ti.random() - 0.5) * 3.0)
+            cr = 1.0
+            cg = 0.7 + ti.random() * 0.3
+            cb = 0.3 + ti.random() * 0.7
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.25 + ti.random() * 0.1
+
+@ti.kernel
+def spawn_comet_trail(x: ti.f32, y: ti.f32, z: ti.f32):
+    """Spawn ember trail particles behind falling comet"""
+    for i in range(10):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            simulation.debris_pos[idx] = ti.math.vec3(
+                x + (ti.random() - 0.5) * 2.0,
+                y + (ti.random() - 0.5) * 2.0,
+                z + (ti.random() - 0.5) * 2.0)
+            simulation.debris_vel[idx] = ti.math.vec3(
+                (ti.random() - 0.5) * 6.0,
+                3.0 + ti.random() * 6.0,
+                (ti.random() - 0.5) * 6.0)
+            cr = 0.9
+            cg = 0.2 + ti.random() * 0.4
+            cb = 0.05
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.3
+
+@ti.kernel
+def spawn_comet_impact(x: ti.f32, y: ti.f32, z: ti.f32):
+    """Massive explosion on comet impact — big ring + fast sparks + upward column"""
+    floor_y = y
+    # Expanding ring burst — 30 particles, wider radius, faster
+    ring_radius = 8.0
+    for i in range(30):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            angle = float(i) / 30.0 * 6.2832
+            r = ring_radius * (0.6 + 0.6 * ti.random())
+            simulation.debris_pos[idx] = ti.math.vec3(
+                x + ti.cos(angle) * r * 0.3,
+                floor_y + ti.random() * 1.5,
+                z + ti.sin(angle) * r * 0.3)
+            out_speed = 8.0 + ti.random() * 6.0
+            simulation.debris_vel[idx] = ti.math.vec3(
+                ti.cos(angle) * out_speed + (ti.random() - 0.5) * 4.0,
+                4.0 + ti.random() * 8.0,
+                ti.sin(angle) * out_speed + (ti.random() - 0.5) * 4.0)
+            cr = 1.0
+            cg = 0.4 + ti.random() * 0.5
+            cb = 0.05 + ti.random() * 0.1
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.4
+    # High-speed sparks — 20 fast particles shooting out
+    for i in range(20):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            angle = ti.random() * 6.2832
+            speed = 15.0 + ti.random() * 30.0
+            simulation.debris_pos[idx] = ti.math.vec3(
+                x + (ti.random() - 0.5) * 2.0,
+                floor_y + ti.random() * 1.0,
+                z + (ti.random() - 0.5) * 2.0)
+            simulation.debris_vel[idx] = ti.math.vec3(
+                ti.cos(angle) * speed,
+                10.0 + ti.random() * 20.0,
+                ti.sin(angle) * speed)
+            cr = 1.0
+            cg = 0.8 + ti.random() * 0.2
+            cb = 0.3 + ti.random() * 0.5
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.2 + ti.random() * 0.2
+    # Upward fireball column — 15 particles shooting straight up
+    for i in range(15):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            simulation.debris_pos[idx] = ti.math.vec3(
+                x + (ti.random() - 0.5) * 3.0,
+                floor_y + ti.random() * 2.0,
+                z + (ti.random() - 0.5) * 3.0)
+            simulation.debris_vel[idx] = ti.math.vec3(
+                (ti.random() - 0.5) * 8.0,
+                20.0 + ti.random() * 25.0,
+                (ti.random() - 0.5) * 8.0)
+            cr = 1.0
+            cg = 0.3 + ti.random() * 0.4
+            cb = 0.02 + ti.random() * 0.08
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
+
+def apply_comet_knockback(impact_x, impact_z, radius, force_mult=1.0):
+    """Apply radial knockback from a comet impact — one-shot impulse (no PHYSICS_TIMESTEP)"""
+    for beetle in [beetle_blue, beetle_red]:
+        if beetle.active and not beetle.is_falling:
+            dx = beetle.x - impact_x
+            dz = beetle.z - impact_z
+            dist = math.sqrt(dx * dx + dz * dz)
+            if dist < radius:
+                falloff = 1.0 - (dist / radius)
+                if dist > 0.5:
+                    dir_x, dir_z = dx / dist, dz / dist
+                else:
+                    dir_x = math.cos(beetle.rotation)
+                    dir_z = math.sin(beetle.rotation)
+                beetle.vx += dir_x * COMET_PUSH_FORCE * falloff * force_mult
+                beetle.vz += dir_z * COMET_PUSH_FORCE * falloff * force_mult
+                beetle.vy += COMET_LIFT_FORCE * falloff * force_mult
+                # Tipping torque
+                tip_mag = COMET_TIP_STRENGTH * falloff * force_mult
+                cos_r = math.cos(beetle.rotation)
+                sin_r = math.sin(beetle.rotation)
+                local_x = dir_x * cos_r + dir_z * sin_r
+                local_z = -dir_x * sin_r + dir_z * cos_r
+                beetle.roll_velocity += local_x * tip_mag / max(beetle.roll_inertia, 0.1)
+                beetle.pitch_velocity += local_z * tip_mag / max(beetle.pitch_inertia, 0.1)
+                # Sustained shove from floor explosion
+                comet_shove_effects.append([beetle, dir_x, dir_z, COMET_SHOVE_DURATION, COMET_SHOVE_FORCE * falloff * force_mult, COMET_SHOVE_TIP * falloff * force_mult])
+                # Visual explosion at beetle
+                spawn_spray_explosion(beetle.x, beetle.y + RENDER_Y_OFFSET, beetle.z, 1.0, 0.5, 0.1)
+    # Ball knockback (3x force like UFO)
+    if beetle_ball.active and not beetle_ball.is_falling:
+        dx = beetle_ball.x - impact_x
+        dz = beetle_ball.z - impact_z
+        dist = math.sqrt(dx * dx + dz * dz)
+        if dist < radius:
+            falloff = 1.0 - (dist / radius)
+            if dist > 0.5:
+                dir_x, dir_z = dx / dist, dz / dist
+            else:
+                dir_x, dir_z = 1.0, 0.0
+            beetle_ball.vx += dir_x * COMET_PUSH_FORCE * 3.0 * falloff * force_mult
+            beetle_ball.vz += dir_z * COMET_PUSH_FORCE * 3.0 * falloff * force_mult
+            beetle_ball.vy += COMET_LIFT_FORCE * 3.0 * falloff * force_mult
 
 @ti.kernel
 def clear_ladybug_voxels():
@@ -14117,6 +14454,12 @@ hole_center_z[None] = -100.0
 hole_hazard_active[None] = 0
 hole_center_x[None] = 0.0
 hole_center_z[None] = 0.0
+# Comet rain hazard warmup (debris-based kernels)
+spawn_comet_telegraph(0.0, -100.0, float(COMET_SPOT_RADIUS), 0.0)
+spawn_comet_body(0.0, -100.0, 0.0, 0.0, 0.0, 0.0)
+spawn_comet_trail(0.0, -100.0, 0.0)
+spawn_comet_impact(0.0, -100.0, 0.0)
+check_comet_collision(0.0, -100.0, 0.0)
 spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup
 spawn_arena_transition_rings(0.0, 4.0, 1)  # Arena transition rings warmup
 simulation.num_debris[None] = 0  # Clear warmup debris from transition rings
@@ -16414,6 +16757,33 @@ try:
                         renderer.invalidate_floor_cache()
                         print("Moving hole hazard disabled (from host)")
 
+                # Apply comet rain mode state (hazard, independent of arena)
+                if opts.get('comet_mode', False) != comet_mode:
+                    comet_mode = opts.get('comet_mode', False)
+                    if comet_mode:
+                        comet_time = 0.0
+                        comet_cycle_count = 0
+                        comet_impacts.clear()
+                        comet_spawned_indices.clear()
+                        comet_landing_spots.clear()
+                        comet_spawn_order.clear()
+                        comet_spawn_times.clear()
+                        comet_horiz_vels.clear()
+                        comet_shove_effects.clear()
+                        print("COMET RAIN HAZARD ENABLED (from host)")
+                    else:
+                        comet_time = 0.0
+                        comet_cycle_count = 0
+                        comet_impacts.clear()
+                        comet_spawned_indices.clear()
+                        comet_landing_spots.clear()
+                        comet_spawn_order.clear()
+                        comet_spawn_times.clear()
+                        comet_horiz_vels.clear()
+                        comet_shove_effects.clear()
+                        comet_dust_timer = 0.0
+                        print("Comet rain hazard disabled (from host)")
+
         # Determine if we should detect deaths locally
         # Network mode: only host detects, then sends to guest
         # Local mode: always detect locally
@@ -17363,10 +17733,14 @@ try:
             else:
                 ufo_dust_timer = 0.0
 
-            # Fire phase: beam collision + knockback (only while beam is visually present)
+            # Fire phase: beam collision + knockback (hitbox follows visual beam head down)
             if current_phase == 2 and phase_progress < 0.6:
-                # Check beam collision against beetles (beam is at UFO position)
-                check_ufo_beam_collision(ufo_x, ufo_z, UFO_ALTITUDE)
+                # Beam head Y matches visual: races down from UFO_ALTITUDE to floor
+                # head_prog = min(1.0, phase_progress * 2.5) — reaches floor at 40%
+                head_prog = min(1.0, phase_progress * 2.5)
+                beam_head_y = UFO_ALTITUDE * (1.0 - head_prog)  # Y above floor the beam has reached
+                # Only check voxels from beam head down to floor (not above beam head)
+                check_ufo_beam_collision(ufo_x, ufo_z, beam_head_y)
 
                 hit_blue = ufo_beam_hit_blue[None]
                 hit_red = ufo_beam_hit_red[None]
@@ -17406,22 +17780,53 @@ try:
                         hit_render_y = beetle.y + RENDER_Y_OFFSET
                         spawn_spray_explosion(beetle.x, hit_render_y, beetle.z, 0.2, 1.0, 0.3)
 
-                # Ball: simple distance check (voxel collision only detects beetle types)
-                # Ball gets 3x force (heavier, needs more push)
-                if beetle_ball.active and not beetle_ball.is_falling:
-                    dx_b = beetle_ball.x - ufo_x
-                    dz_b = beetle_ball.z - ufo_z
-                    dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
-                    if dist_b < UFO_BEAM_RADIUS:
-                        if dist_b > 0.5:
-                            dir_x = dx_b / dist_b
-                            dir_z = dz_b / dist_b
+                        # Sustained shove — refresh or create so beetle keeps sliding after beam passes
+                        existing_shove = None
+                        for s in comet_shove_effects:
+                            if s[0] is beetle:
+                                existing_shove = s
+                                break
+                        if existing_shove:
+                            # Refresh direction and timer
+                            existing_shove[1] = dir_x
+                            existing_shove[2] = dir_z
+                            existing_shove[3] = UFO_SHOVE_DURATION
                         else:
-                            dir_x = 1.0
-                            dir_z = 0.0
-                        beetle_ball.vx += dir_x * UFO_PUSH_FORCE * 3.0 * PHYSICS_TIMESTEP
-                        beetle_ball.vz += dir_z * UFO_PUSH_FORCE * 3.0 * PHYSICS_TIMESTEP
-                        beetle_ball.vy += UFO_LIFT_FORCE * 3.0 * PHYSICS_TIMESTEP
+                            comet_shove_effects.append([beetle, dir_x, dir_z, UFO_SHOVE_DURATION, UFO_SHOVE_FORCE, UFO_SHOVE_TIP])
+
+                # Ball: distance check accounting for ball radius (voxel collision only detects beetle types)
+                # Only hit if beam has descended to ball height
+                if beetle_ball.active and not beetle_ball.is_falling:
+                    ball_top_y = beetle_ball.y + beetle_ball.radius  # Height above floor of ball top
+                    if beam_head_y <= ball_top_y:
+                        dx_b = beetle_ball.x - ufo_x
+                        dz_b = beetle_ball.z - ufo_z
+                        dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
+                        if dist_b < UFO_BEAM_RADIUS + beetle_ball.radius:
+                            if dist_b > 0.5:
+                                dir_x = dx_b / dist_b
+                                dir_z = dz_b / dist_b
+                            else:
+                                dir_x = 1.0
+                                dir_z = 0.0
+                            beetle_ball.vx += dir_x * UFO_PUSH_FORCE * 3.0 * PHYSICS_TIMESTEP
+                            beetle_ball.vz += dir_z * UFO_PUSH_FORCE * 3.0 * PHYSICS_TIMESTEP
+                            beetle_ball.vy += UFO_LIFT_FORCE * 3.0 * PHYSICS_TIMESTEP
+                            # Green impact explosion at ball
+                            ball_render_y = beetle_ball.y + RENDER_Y_OFFSET
+                            spawn_spray_explosion(beetle_ball.x, ball_render_y, beetle_ball.z, 0.2, 1.0, 0.3)
+                            # Sustained shove for ball too
+                            existing_shove = None
+                            for s in comet_shove_effects:
+                                if s[0] is beetle_ball:
+                                    existing_shove = s
+                                    break
+                            if existing_shove:
+                                existing_shove[1] = dir_x
+                                existing_shove[2] = dir_z
+                                existing_shove[3] = UFO_SHOVE_DURATION
+                            else:
+                                comet_shove_effects.append([beetle_ball, dir_x, dir_z, UFO_SHOVE_DURATION, UFO_SHOVE_FORCE * 3.0, UFO_SHOVE_TIP])
 
         # === ARENA ICE PATCHES HAZARD ===
         if ice_mode:
@@ -17454,6 +17859,244 @@ try:
                 hole_center_z[None] = 0.0
                 renderer.hole_params[None] = [0.0, 0.0, 0.0]
                 renderer.set_hole_active(False)
+
+        # === COMET RAIN HAZARD ===
+        if comet_mode:
+            comet_time += PHYSICS_TIMESTEP
+            cycle_pos = comet_time % COMET_CYCLE_TOTAL
+
+            if cycle_pos < COMET_TELEGRAPH_DURATION:
+                # --- TELEGRAPH PHASE ---
+                # On first frame of new cycle, pick new strip position + rotation
+                if cycle_pos < PHYSICS_TIMESTEP * 2:
+                    comet_cycle_count += 1
+                    golden = 1.6180339887
+                    comet_strip_angle = (comet_cycle_count * golden) * 6.2832
+                    wander_angle = comet_cycle_count * golden * 2.3
+                    wander_r = COMET_WANDER_RANGE * 0.4 * (0.5 + 0.5 * math.sin(wander_angle))
+                    comet_strip_cx = math.cos(wander_angle) * wander_r
+                    comet_strip_cz = math.sin(wander_angle) * wander_r
+                    comet_impacts.clear()
+                    comet_spawned_indices.clear()
+                    # Pre-compute landing spots with random lateral stagger + approach angles
+                    comet_landing_spots.clear()
+                    comet_horiz_vels.clear()
+                    cos_a = math.cos(comet_strip_angle)
+                    sin_a = math.sin(comet_strip_angle)
+                    fall_time = COMET_SPAWN_HEIGHT / COMET_FALL_SPEED
+                    for i in range(COMET_COUNT):
+                        t_along = (i + 0.5) / COMET_COUNT - 0.5
+                        local_x = t_along * COMET_STRIP_LENGTH
+                        local_z = (random.random() - 0.5) * COMET_STAGGER_RANGE * 2.0
+                        world_x = comet_strip_cx + local_x * cos_a - local_z * sin_a
+                        world_z = comet_strip_cz + local_x * sin_a + local_z * cos_a
+                        comet_landing_spots.append((world_x, world_z))
+                        # Random approach direction at 5-20° from vertical
+                        approach_angle = random.uniform(0, 6.2832)
+                        tilt_deg = random.uniform(COMET_ANGLE_MIN_DEG, COMET_ANGLE_MAX_DEG)
+                        horiz_speed = COMET_FALL_SPEED * math.tan(math.radians(tilt_deg))
+                        hvx = math.cos(approach_angle) * horiz_speed
+                        hvz = math.sin(approach_angle) * horiz_speed
+                        comet_horiz_vels.append((hvx, hvz))
+                    # Randomize spawn order and jitter timing
+                    comet_spawn_order = list(range(COMET_COUNT))
+                    random.shuffle(comet_spawn_order)
+                    comet_spawn_times = []
+                    for i in range(COMET_COUNT):
+                        base_time = i / COMET_COUNT
+                        jitter = random.uniform(-COMET_TIMING_JITTER, COMET_TIMING_JITTER)
+                        comet_spawn_times.append(max(0.0, min(0.95, base_time + jitter)))
+                    comet_spawn_times.sort()
+
+                # Spawn warning particles — one circle per landing spot
+                comet_dust_timer += PHYSICS_TIMESTEP
+                if comet_dust_timer >= COMET_PARTICLE_INTERVAL:
+                    comet_dust_timer -= COMET_PARTICLE_INTERVAL
+                    for spot in comet_landing_spots:
+                        spawn_comet_telegraph(float(spot[0]), float(spot[1]),
+                                              float(COMET_SPOT_RADIUS), float(comet_time))
+
+            elif cycle_pos < COMET_TELEGRAPH_DURATION + COMET_RAIN_DURATION:
+                # --- RAIN PHASE (spawn comets in random order with jittered timing) ---
+                rain_progress = (cycle_pos - COMET_TELEGRAPH_DURATION) / COMET_RAIN_DURATION
+
+                for i in range(COMET_COUNT):
+                    if rain_progress >= comet_spawn_times[i] and i not in comet_spawned_indices:
+                        comet_spawned_indices.append(i)
+                        spot_idx = comet_spawn_order[i]
+                        land_x, land_z = comet_landing_spots[spot_idx]
+                        hvx, hvz = comet_horiz_vels[spot_idx]
+                        floor_y = RENDER_Y_OFFSET + 0.5
+                        spawn_y = floor_y + COMET_SPAWN_HEIGHT
+                        fall_time = COMET_SPAWN_HEIGHT / COMET_FALL_SPEED
+                        # Offset spawn so comet arrives at landing spot
+                        spawn_x = land_x - hvx * fall_time
+                        spawn_z = land_z - hvz * fall_time
+                        spawn_comet_body(float(spawn_x), float(spawn_y), float(spawn_z),
+                                         float(hvx), float(-COMET_FALL_SPEED), float(hvz))
+                        # Track current position + velocities: [cur_x, cur_z, time_left, hit, vx, vz]
+                        comet_impacts.append([spawn_x, spawn_z, fall_time, False, hvx, hvz])
+
+            # Update falling comets — runs during rain AND cooldown so comets
+            # spawned late in the rain phase still reach the floor and explode
+            if comet_impacts:
+                comet_dust_timer += PHYSICS_TIMESTEP
+                for impact in comet_impacts:
+                    if impact[3]:
+                        continue  # Already impacted
+                    impact[2] -= PHYSICS_TIMESTEP
+                    # Drift comet horizontally
+                    hvx, hvz = impact[4], impact[5]
+                    impact[0] += hvx * PHYSICS_TIMESTEP
+                    impact[1] += hvz * PHYSICS_TIMESTEP
+                    current_y = (RENDER_Y_OFFSET + 0.5) + impact[2] * COMET_FALL_SPEED
+                    cx, cz = impact[0], impact[1]
+
+                    # Check direct beetle hit — voxel-perfect collision (like UFO beam)
+                    hit_beetle = False
+                    if impact[2] > 0:
+                        check_comet_collision(float(cx), float(cz), float(current_y))
+                        got_blue = comet_hit_blue[None]
+                        got_red = comet_hit_red[None]
+                        if got_blue or got_red:
+                            hit_beetle = True
+                            impact[3] = True
+                            # Read exact hit positions from GPU
+                            hit_pos_blue = comet_hit_pos_blue[None] if got_blue else None
+                            hit_pos_red = comet_hit_pos_red[None] if got_red else None
+                            # Apply force using exact hit point (like bombardier spray)
+                            for beetle, was_hit, hit_pos in [
+                                (beetle_blue, got_blue, hit_pos_blue),
+                                (beetle_red, got_red, hit_pos_red)]:
+                                if was_hit and beetle.active and not beetle.is_falling:
+                                    hx, hy, hz = float(hit_pos[0]), float(hit_pos[1]), float(hit_pos[2])
+                                    # Big explosion at exact hit voxel
+                                    spawn_comet_impact(hx, hy, hz)
+                                    spawn_spray_explosion(hx, hy, hz, 1.0, 0.6, 0.1)
+                                    spawn_spray_explosion(hx, hy + 2.0, hz, 1.0, 0.4, 0.05)
+                                    # Push direction: comet's incoming horizontal direction
+                                    hspd = math.sqrt(hvx * hvx + hvz * hvz)
+                                    if hspd > 0.1:
+                                        dir_x, dir_z = hvx / hspd, hvz / hspd
+                                    else:
+                                        # Nearly vertical — use random direction
+                                        rand_a = random.uniform(0, 6.2832)
+                                        dir_x, dir_z = math.cos(rand_a), math.sin(rand_a)
+                                    mult = COMET_DIRECT_HIT_MULT
+                                    beetle.vx += dir_x * COMET_PUSH_FORCE * mult
+                                    beetle.vz += dir_z * COMET_PUSH_FORCE * mult
+                                    beetle.vy += COMET_LIFT_FORCE * mult
+                                    # Vertical lever-arm torque — comet hits from above so
+                                    # the HEIGHT above beetle center is what creates the tip.
+                                    # Push is horizontal, lever is vertical = strong cross-product torque.
+                                    lever_y = max(hy - (RENDER_Y_OFFSET + beetle.y), 1.0)
+                                    tip_mag = COMET_TIP_STRENGTH * mult * lever_y
+                                    # Convert push direction to beetle's local frame for pitch/roll
+                                    cos_r = math.cos(beetle.rotation)
+                                    sin_r = math.sin(beetle.rotation)
+                                    local_push_x = dir_x * cos_r + dir_z * sin_r
+                                    local_push_z = -dir_x * sin_r + dir_z * cos_r
+                                    beetle.roll_velocity += local_push_x * tip_mag / max(beetle.roll_inertia, 0.1)
+                                    beetle.pitch_velocity += local_push_z * tip_mag / max(beetle.pitch_inertia, 0.1)
+                                    # Yaw spin
+                                    beetle.angular_velocity += (dir_x * 0.5 - dir_z * 0.5) * tip_mag * 0.01 / max(beetle.moment_of_inertia, 0.1)
+                                    # Sustained shove — keeps pushing like sandstorm for a short time
+                                    comet_shove_effects.append([beetle, dir_x, dir_z, COMET_SHOVE_DURATION, COMET_SHOVE_FORCE * mult, COMET_SHOVE_TIP * mult])
+                        # Ball: distance check (no beetle voxel types on ball)
+                        if not hit_beetle and beetle_ball.active and not beetle_ball.is_falling:
+                            ball_render_y = beetle_ball.y + RENDER_Y_OFFSET
+                            if current_y <= ball_render_y + beetle_ball.radius and current_y >= ball_render_y - 1.0:
+                                dx = beetle_ball.x - cx
+                                dz = beetle_ball.z - cz
+                                if dx * dx + dz * dz < (COMET_HIT_RADIUS + beetle_ball.radius) ** 2:
+                                    hit_beetle = True
+                                    impact[3] = True
+                                    spawn_comet_impact(float(cx), float(current_y), float(cz))
+                                    dist = math.sqrt(dx * dx + dz * dz)
+                                    if dist > 0.5:
+                                        dir_x, dir_z = dx / dist, dz / dist
+                                    else:
+                                        dir_x, dir_z = 1.0, 0.0
+                                    beetle_ball.vx += dir_x * COMET_PUSH_FORCE * 3.0 * COMET_DIRECT_HIT_MULT
+                                    beetle_ball.vz += dir_z * COMET_PUSH_FORCE * 3.0 * COMET_DIRECT_HIT_MULT
+                                    beetle_ball.vy += COMET_LIFT_FORCE * 3.0 * COMET_DIRECT_HIT_MULT
+
+                    if hit_beetle:
+                        pass  # Already handled above
+                    elif impact[2] > 0:
+                        # Still falling — spawn trail at current height
+                        # Skip visuals if over any hole and near floor (avoid fake explosion look)
+                        over_hole = False
+                        if current_y < RENDER_Y_OFFSET + 5.0:
+                            # Check moving hole hazard
+                            if hole_mode and not beetle_ball.active:
+                                hdx = cx - hole_x
+                                hdz = cz - hole_z
+                                if hdx * hdx + hdz * hdz < HOLE_RADIUS * HOLE_RADIUS:
+                                    over_hole = True
+                            # Check arena shape holes (yin/yang, etc.) via floor cache
+                            if not over_hole:
+                                gx = int(cx + 64.0)
+                                gz = int(cz + 64.0)
+                                if 0 <= gx < 128 and 0 <= gz < 128:
+                                    if floor_height_cache[gx, gz] < -500.0:
+                                        over_hole = True
+                        if not over_hole and comet_dust_timer >= COMET_PARTICLE_INTERVAL:
+                            spawn_comet_trail(float(cx), float(current_y), float(cz))
+                            spawn_comet_body(float(cx), float(current_y), float(cz),
+                                             float(hvx), float(-COMET_FALL_SPEED), float(hvz))
+                    else:
+                        # Reached floor level — check if in any hole first
+                        in_hole = False
+                        # Moving hole hazard
+                        if hole_mode and not beetle_ball.active:
+                            hdx = cx - hole_x
+                            hdz = cz - hole_z
+                            if hdx * hdx + hdz * hdz < HOLE_RADIUS * HOLE_RADIUS:
+                                in_hole = True
+                        # Arena shape holes (yin/yang, etc.)
+                        if not in_hole:
+                            gx = int(cx + 64.0)
+                            gz = int(cz + 64.0)
+                            if 0 <= gx < 128 and 0 <= gz < 128:
+                                if floor_height_cache[gx, gz] < -500.0:
+                                    in_hole = True
+                        if in_hole:
+                            # Keep falling through the hole, spawn trail as it goes down
+                            if comet_dust_timer >= COMET_PARTICLE_INTERVAL:
+                                spawn_comet_trail(float(cx), float(current_y), float(cz))
+                                spawn_comet_body(float(cx), float(current_y), float(cz),
+                                                 float(hvx), float(-COMET_FALL_SPEED), float(hvz))
+                            # Kill it once it's far enough below floor
+                            if current_y < RENDER_Y_OFFSET - 20.0:
+                                impact[3] = True
+                        else:
+                            impact[3] = True
+                            spawn_comet_impact(float(cx), float(RENDER_Y_OFFSET + 0.5), float(cz))
+                            apply_comet_knockback(cx, cz, COMET_IMPACT_RADIUS)
+
+                if comet_dust_timer >= COMET_PARTICLE_INTERVAL:
+                    comet_dust_timer -= COMET_PARTICLE_INTERVAL
+
+            # Apply sustained shove effects (like sandstorm — per-frame force that overpowers friction)
+            if comet_shove_effects:
+                for shove in comet_shove_effects:
+                    beetle, dir_x, dir_z, time_left, force, tip = shove
+                    if beetle.active and not beetle.is_falling and time_left > 0:
+                        # Decay force linearly over duration
+                        decay = time_left / COMET_SHOVE_DURATION
+                        beetle.vx += dir_x * force * decay * PHYSICS_TIMESTEP
+                        beetle.vz += dir_z * force * decay * PHYSICS_TIMESTEP
+                        # Tipping torque in beetle's local frame
+                        cos_r = math.cos(beetle.rotation)
+                        sin_r = math.sin(beetle.rotation)
+                        local_x = dir_x * cos_r + dir_z * sin_r
+                        local_z = -dir_x * sin_r + dir_z * cos_r
+                        tip_frame = tip * decay * PHYSICS_TIMESTEP
+                        beetle.roll_velocity += local_x * tip_frame / max(beetle.roll_inertia, 0.1)
+                        beetle.pitch_velocity += local_z * tip_frame / max(beetle.pitch_inertia, 0.1)
+                    shove[3] -= PHYSICS_TIMESTEP
+                comet_shove_effects = [s for s in comet_shove_effects if s[3] > 0]
 
         # Floor collision - prevent penetration by pushing beetles upward
         # Don't check floor collision if beetle is falling or hovering
@@ -19431,7 +20074,7 @@ try:
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -19502,7 +20145,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -19551,7 +20194,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -19600,7 +20243,7 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === BARBELL MODE ===
             barbell_button_text = "BARBELL: ON" if barbell_mode else "BARBELL: OFF"
@@ -19649,7 +20292,7 @@ try:
                     print("BARBELL ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -19698,7 +20341,7 @@ try:
                     print("FIGURE 8 ARENA ENABLED - infinity symbol!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -19747,7 +20390,7 @@ try:
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -19796,7 +20439,7 @@ try:
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -19846,7 +20489,7 @@ try:
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === SQUIGGLE MODE ===
             squiggle_button_text = "SQUIGGLE: ON" if squiggle_mode else "SQUIGGLE: OFF"
@@ -19896,7 +20539,7 @@ try:
                     print("SQUIGGLE ARENA ENABLED - navigate the serpentine!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             # === HAZARDS ===
             window.GUI.text("")
@@ -19921,7 +20564,7 @@ try:
                     print("Tornado hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             sandstorm_button_text = "SANDSTORM: ON" if sandstorm_mode else "SANDSTORM: OFF"
             if window.GUI.button(sandstorm_button_text):
@@ -19938,7 +20581,7 @@ try:
                     print("Sandstorm hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             ufo_button_text = "UFO LASER: ON" if ufo_mode else "UFO LASER: OFF"
             if window.GUI.button(ufo_button_text):
@@ -19972,7 +20615,7 @@ try:
                     print("UFO laser hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             ice_button_text = "ICE PATCHES: ON" if ice_mode else "ICE PATCHES: OFF"
             if window.GUI.button(ice_button_text):
@@ -19991,7 +20634,7 @@ try:
                     print("Ice patches hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
             hole_button_text = "MOVING HOLE: ON" if hole_mode else "MOVING HOLE: OFF"
             if window.GUI.button(hole_button_text):
@@ -20016,7 +20659,37 @@ try:
                     print("Moving hole hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+
+            comet_button_text = "COMET RAIN: ON" if comet_mode else "COMET RAIN: OFF"
+            if window.GUI.button(comet_button_text):
+                comet_mode = not comet_mode
+                if comet_mode:
+                    comet_time = 0.0
+                    comet_cycle_count = 0
+                    comet_impacts.clear()
+                    comet_spawned_indices.clear()
+                    comet_landing_spots.clear()
+                    comet_spawn_order.clear()
+                    comet_spawn_times.clear()
+                    comet_horiz_vels.clear()
+                    comet_shove_effects.clear()
+                    print("COMET RAIN HAZARD ENABLED - watch the skies!")
+                else:
+                    comet_time = 0.0
+                    comet_cycle_count = 0
+                    comet_impacts.clear()
+                    comet_spawned_indices.clear()
+                    comet_landing_spots.clear()
+                    comet_spawn_order.clear()
+                    comet_spawn_times.clear()
+                    comet_horiz_vels.clear()
+                    comet_shove_effects.clear()
+                    comet_dust_timer = 0.0
+                    print("Comet rain hazard disabled")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")
