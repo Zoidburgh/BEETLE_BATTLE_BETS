@@ -1571,7 +1571,7 @@ def reset_match():
     global ice_mode, ice_time
     global hole_mode, hole_time, hole_x, hole_z
     global comet_mode, comet_time, comet_cycle_count, comet_strip_angle, comet_strip_cx, comet_strip_cz, comet_impacts, comet_dust_timer, comet_spawned_indices, comet_landing_spots, comet_spawn_order, comet_spawn_times, comet_horiz_vels, comet_shove_effects, comet_current_cycle_len
-    global board_break_mode, board_break_time, board_break_cycle_count, board_break_dust_timer, board_break_current_cycle_len, board_break_pattern_spots, board_break_edge_spots, board_break_active, board_break_edge_idx
+    global board_break_mode, board_break_time, board_break_cycle_count, board_break_dust_timer, board_break_current_cycle_len, board_break_pattern_spots, board_break_edge_spots, board_break_active, board_break_edge_idx, board_break_saws_exploded
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1739,6 +1739,7 @@ def reset_match():
     board_break_edge_spots = []
     board_break_active = False
     board_break_edge_idx = 0
+    board_break_saws_exploded = False
     renderer.board_break_mask_active[None] = 0
     renderer.set_board_break_active(False)
     renderer.clear_board_break_mask()
@@ -2720,6 +2721,7 @@ board_break_pattern_spots = []    # [(grid_i, grid_k), ...] voxels to cut
 board_break_edge_spots = []       # edge voxels for destruction animation
 board_break_active = False        # True during gap phase (floor missing)
 board_break_edge_idx = 0          # cycling index for even perimeter distribution
+board_break_saws_exploded = False  # True once saws have exploded before break
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -9646,6 +9648,12 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                             if h_dx * h_dx + h_dz * h_dz < HOLE_RADIUS * HOLE_RADIUS:
                                 is_over_edge = 1
 
+                        # Board break: beetle voxel over a broken cell → over edge
+                        if renderer.board_break_mask_active[None] == 1 and is_over_edge == 0:
+                            if 0 <= i < 128 and 0 <= k < 128:
+                                if renderer.board_break_mask[i, k] == 1:
+                                    is_over_edge = 1
+
                         if is_over_edge:
                             over_edge_count += 1
                             lever_x = world_x_v - cog_x
@@ -12138,7 +12146,7 @@ def generate_board_break_pattern():
     """Generate a random board break cutout pattern. Returns (pattern_spots, edge_spots, mask_np)."""
     import numpy as np
 
-    pattern = random.choice(['strip', 'cross', 'wedges', 'ring', 'circles'])
+    pattern = random.choice(['strip', 'cross', 'wedges', 'ring', 'circles', 'smiley'])
     center = 64.0
     floor_j = int(RENDER_Y_OFFSET)
 
@@ -12190,6 +12198,28 @@ def generate_board_break_pattern():
             d = np.sqrt((GI - cx) ** 2 + (GK - ck) ** 2)
             broken = np.logical_or(broken, d < r)
 
+    elif pattern == 'smiley':
+        # Smiley face: two big circle eyes + wide crescent mouth — fills most of the arena
+        eye_r = 10.0
+        eye_spread = 15.0  # horizontal distance from center to each eye
+        eye_up = 12.0      # how far above center the eyes sit
+        # Left eye
+        d_left = np.sqrt((DI + eye_spread) ** 2 + (DK + eye_up) ** 2)
+        broken = np.logical_or(broken, d_left < eye_r)
+        # Right eye
+        d_right = np.sqrt((DI - eye_spread) ** 2 + (DK + eye_up) ** 2)
+        broken = np.logical_or(broken, d_right < eye_r)
+        # Mouth: arc bottom + flat top connecting the corners
+        mouth_cy = -4.0
+        mouth_outer = 26.0
+        d_mouth = np.sqrt(DI ** 2 + (DK - mouth_cy) ** 2)
+        # Everything inside the arc AND below the straight line across the top
+        mouth_top_z = 8.0  # straight line connecting the mouth corners
+        inside_arc = d_mouth < mouth_outer
+        below_line = DK > mouth_top_z
+        mouth_mask = np.logical_and(inside_arc, below_line)
+        broken = np.logical_or(broken, mouth_mask)
+
     # Intersect with actual floor voxels
     mask = np.logical_and(broken, is_floor).astype(np.int32)
 
@@ -12203,7 +12233,33 @@ def generate_board_break_pattern():
         (padded[1:-1, :-2] == 0) | (padded[1:-1, 2:] == 0)
     )
     edge_mask = np.logical_and(mask == 1, has_solid_neighbor)
-    edge_spots = list(zip(*np.where(edge_mask)))
+    edge_spots_raw = list(zip(*np.where(edge_mask)))
+
+    # Sort edge spots into perimeter order using nearest-neighbor chain
+    # so sawblade cursors travel smoothly along the cut line
+    edge_set = set(edge_spots_raw)
+    remaining = set(edge_spots_raw)
+    edge_spots = []
+    while remaining:
+        # Start a new chain from an arbitrary remaining spot
+        start = next(iter(remaining))
+        chain = [start]
+        remaining.remove(start)
+        while True:
+            ci, ck = chain[-1]
+            # Find nearest unvisited neighbor (8-connectivity first, then wider)
+            best = None
+            best_dist = 999999.0
+            for ni, nk in remaining:
+                d = abs(ni - ci) + abs(nk - ck)  # Manhattan for speed
+                if d < best_dist:
+                    best_dist = d
+                    best = (ni, nk)
+            if best is None or best_dist > 3:  # gap too large = new component
+                break
+            chain.append(best)
+            remaining.remove(best)
+        edge_spots.extend(chain)
 
     return pattern_spots, edge_spots, mask
 
@@ -12236,37 +12292,93 @@ def spawn_board_break_telegraph(spot_x: ti.f32, spot_z: ti.f32, phase: ti.f32):
 
 @ti.kernel
 def spawn_board_break_saw(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti.f32, phase: ti.f32):
-    """Spawn a sawblade burst — fan of bright particles perpendicular to edge, traveling along perimeter"""
+    """Spawn a sawblade — semicircular arc poking up through floor, disc aligned with cut line"""
     floor_y = RENDER_Y_OFFSET + 0.5
-    spin = phase * 20.0  # fast spin for sawblade feel
-    for i in range(6):
+    blade_radius = 1.575
+    num_arc = 14
+    num_sparks = 4
+    spin = phase * 8.0  # slower spin so red/black stripes are visible
+
+    # Blade disc is in the (dir, Y) plane — tips touch floor along the cut line
+    # dir_x/dir_z = travel direction along perimeter = lateral spread of blade
+    # Perpendicular to travel (points into/out of cutout) used for spark spray
+    perp_x = -dir_z
+    perp_z = dir_x
+
+    # --- Filled semicircular blade disc (spinning pinwheel) ---
+    # Dense fill: 8 rings, more particles per ring = ~120 particles per saw
+    n_rings = 8
+    for ring in range(n_rings):
+        ring_frac = (float(ring) + 1.0) / float(n_rings)
+        r = blade_radius * ring_frac
+        n_pts = 3 + ring * 2  # 3,5,7,9,11,13,15,17 = 80 total
+        for i in range(n_pts):
+            idx = ti.atomic_add(simulation.num_debris[None], 1)
+            if idx < simulation.MAX_DEBRIS:
+                simulation.debris_active[idx] = 1
+                ti.atomic_add(simulation.debris_active_count[None], 1)
+                frac = float(i) / float(ti.max(n_pts - 1, 1))
+                angle = frac * 3.14159
+                lateral = ti.cos(angle) * r
+                height = ti.sin(angle) * r
+                px = spot_x + dir_x * lateral
+                pz = spot_z + dir_z * lateral
+                py = floor_y + height
+                simulation.debris_pos[idx] = ti.math.vec3(px, py, pz)
+                simulation.debris_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
+                # Solid bright red blade
+                simulation.debris_material[idx] = ti.math.vec3(0.95, 0.05, 0.02)
+                simulation.debris_lifetime[idx] = 0.45  # above 0.4 fade threshold so color renders full
+
+    # --- Contact sparks where blade tips meet the floor ---
+    for i in range(num_sparks):
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1
             ti.atomic_add(simulation.debris_active_count[None], 1)
-            # Arrange particles in a short line perpendicular to the edge (into the gap)
-            t = (float(i) / 5.0 - 0.5) * 3.0  # spread along blade width
-            # Perpendicular to travel direction (rotate 90 deg)
-            perp_x = -dir_z
-            perp_z = dir_x
-            px = spot_x + perp_x * t + (ti.random() - 0.5) * 0.4
-            pz = spot_z + perp_z * t + (ti.random() - 0.5) * 0.4
-            spawn_y = floor_y + 0.1 + ti.random() * 0.4
-            simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
-            # Velocity: slight upward + outward from center of blade
-            vy = 1.5 + ti.random() * 2.0
-            out_str = 2.0 + ti.random() * 2.0
-            # Spin around the blade center
-            angle = spin + float(i) * 1.047  # ~60 deg apart
-            vx = ti.cos(angle) * out_str
-            vz = ti.sin(angle) * out_str
+            # Sparks at the two tip points (ahead/behind along cut line at floor level)
+            side = 1.0 if i < num_sparks / 2 else -1.0
+            px = spot_x + dir_x * blade_radius * side + (ti.random() - 0.5) * 0.5
+            pz = spot_z + dir_z * blade_radius * side + (ti.random() - 0.5) * 0.5
+            py = floor_y + ti.random() * 0.3
+            simulation.debris_pos[idx] = ti.math.vec3(px, py, pz)
+            # Sparks spray outward (perpendicular to cut) + upward
+            spark_str = 2.0 + ti.random() * 3.0
+            perp_side = 1.0 if ti.random() > 0.5 else -1.0
+            vx = perp_x * perp_side * spark_str + (ti.random() - 0.5) * 1.5
+            vz = perp_z * perp_side * spark_str + (ti.random() - 0.5) * 1.5
+            vy = 1.5 + ti.random() * 3.0
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-            # Bright yellow-white sparks
+            # Bright orange-yellow sparks
             cr = 1.0
-            cg = 0.8 + ti.random() * 0.2
-            cb = 0.3 + ti.random() * 0.4
+            cg = 0.7 + ti.random() * 0.3
+            cb = 0.1 + ti.random() * 0.2
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
-            simulation.debris_lifetime[idx] = 0.1 + ti.random() * 0.1
+            simulation.debris_lifetime[idx] = 0.12 + ti.random() * 0.15
+
+
+@ti.kernel
+def spawn_board_break_vibrate(spot_x: ti.f32, spot_z: ti.f32):
+    """Spawn a small stone-colored particle vibrating on the floor surface"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    idx = ti.atomic_add(simulation.num_debris[None], 1)
+    if idx < simulation.MAX_DEBRIS:
+        simulation.debris_active[idx] = 1
+        ti.atomic_add(simulation.debris_active_count[None], 1)
+        px = spot_x + (ti.random() - 0.5) * 0.6
+        pz = spot_z + (ti.random() - 0.5) * 0.6
+        py = floor_y + ti.random() * 0.4
+        simulation.debris_pos[idx] = ti.math.vec3(px, py, pz)
+        # Tiny jitter velocity — vibrating in place
+        vx = (ti.random() - 0.5) * 1.5
+        vz = (ti.random() - 0.5) * 1.5
+        vy = 0.5 + ti.random() * 1.5
+        simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+        # Stone color matching respawn debris
+        grey = 0.35 + ti.random() * 0.15
+        simulation.debris_material[idx] = ti.math.vec3(grey, grey * 0.95, grey * 0.9)
+        simulation.debris_radius[idx] = 0.1 + ti.random() * 0.05
+        simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.1
 
 
 @ti.kernel
@@ -12289,6 +12401,32 @@ def spawn_board_break_debris(spot_x: ti.f32, spot_z: ti.f32, upward: ti.f32):
             grey = 0.35 + ti.random() * 0.15
             simulation.debris_material[idx] = ti.math.vec3(grey, grey * 0.95, grey * 0.9)
             simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
+
+
+@ti.kernel
+def spawn_board_break_saw_explode(spot_x: ti.f32, spot_z: ti.f32):
+    """Explode a sawblade into a burst of red/orange shrapnel"""
+    floor_y = RENDER_Y_OFFSET + 0.5
+    for i in range(20):
+        idx = ti.atomic_add(simulation.num_debris[None], 1)
+        if idx < simulation.MAX_DEBRIS:
+            simulation.debris_active[idx] = 1
+            ti.atomic_add(simulation.debris_active_count[None], 1)
+            px = spot_x + (ti.random() - 0.5) * 2.0
+            pz = spot_z + (ti.random() - 0.5) * 2.0
+            py = floor_y + ti.random() * 2.0
+            simulation.debris_pos[idx] = ti.math.vec3(px, py, pz)
+            vx = (ti.random() - 0.5) * 12.0
+            vz = (ti.random() - 0.5) * 12.0
+            vy = 3.0 + ti.random() * 8.0
+            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+            # Red/orange shrapnel
+            cr = 0.8 + ti.random() * 0.2
+            cg = 0.1 + ti.random() * 0.3
+            cb = ti.random() * 0.05
+            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+            simulation.debris_radius[idx] = 0.12 + ti.random() * 0.06
+            simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.4
 
 
 @ti.kernel
@@ -14694,7 +14832,9 @@ spawn_comet_impact(0.0, -100.0, 0.0)
 check_comet_collision(0.0, -100.0, 0.0)
 # Board break hazard warmup (debris-based kernels)
 spawn_board_break_telegraph(0.0, -100.0, 0.0)
+spawn_board_break_vibrate(0.0, -100.0)
 spawn_board_break_saw(0.0, -100.0, 1.0, 0.0, 0.0)
+spawn_board_break_saw_explode(0.0, -100.0)
 spawn_board_break_debris(0.0, -100.0, 1.0)
 renderer.clear_board_break_mask()
 spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup
@@ -18415,7 +18555,7 @@ try:
                 comet_shove_effects = [s for s in comet_shove_effects if s[3] > 0]
 
         # === BOARD BREAK HAZARD ===
-        if board_break_mode:
+        if board_break_mode and not beetle_ball.active:
             board_break_time += PHYSICS_TIMESTEP
             if board_break_time >= board_break_current_cycle_len:
                 board_break_time -= board_break_current_cycle_len
@@ -18436,9 +18576,20 @@ try:
                     # Pre-load mask to GPU (inactive until break phase)
                     renderer.board_break_mask.from_numpy(mask_np)
                     board_break_active = False
+                    board_break_saws_exploded = False
                     renderer.board_break_mask_active[None] = 0
                     board_break_dust_timer = 0.0
                     board_break_edge_idx = 0
+
+                # Vibrating stone particles on the interior of the cutout area
+                if board_break_pattern_spots:
+                    n_vibrate = min(15, len(board_break_pattern_spots))
+                    for _ in range(n_vibrate):
+                        vi = random.randint(0, len(board_break_pattern_spots) - 1)
+                        gi_v, gk_v = board_break_pattern_spots[vi]
+                        wx_v = float(gi_v) - 64.0
+                        wz_v = float(gk_v) - 64.0
+                        spawn_board_break_vibrate(float(wx_v), float(wz_v))
 
                 # Spawn telegraph particles at edge spots — stride evenly around perimeter
                 board_break_dust_timer += PHYSICS_TIMESTEP
@@ -18456,28 +18607,41 @@ try:
                         spawn_board_break_telegraph(float(wx), float(wz), float(board_break_time))
                     board_break_edge_idx = (board_break_edge_idx + 1) % n_edge
 
-                    # Sawblade cursors — bright sparky blades traveling along the perimeter
+                    # Sawblade cursors — stop 0.5s before end so particles die before break
+                    if cycle_bb < t_telegraph_end - 0.5:
+                        n_saws = 5
+                        saw_speed = n_edge / (BOARD_BREAK_TELEGRAPH_DURATION * 2.0)
+                        saw_window = min(5, n_edge // 4)
+                        for si in range(n_saws):
+                            saw_pos = int((board_break_time * saw_speed + si * n_edge / n_saws) % n_edge)
+                            gi_s, gk_s = board_break_edge_spots[saw_pos]
+                            next_pos = (saw_pos + saw_window) % n_edge
+                            prev_pos = (saw_pos - saw_window) % n_edge
+                            gi_n, gk_n = board_break_edge_spots[next_pos]
+                            gi_p, gk_p = board_break_edge_spots[prev_pos]
+                            dx = float(gi_n - gi_p)
+                            dz = float(gk_n - gk_p)
+                            d_len = math.sqrt(dx * dx + dz * dz)
+                            if d_len < 2.0:
+                                continue
+                            dx /= d_len
+                            dz /= d_len
+                            wx_s = float(gi_s) - 64.0
+                            wz_s = float(gk_s) - 64.0
+                            spawn_board_break_saw(float(wx_s), float(wz_s), float(dx), float(dz), float(board_break_time))
+
+                # Explode saws 0.5s before telegraph ends (same moment saws stop)
+                if not board_break_saws_exploded and cycle_bb >= t_telegraph_end - 0.5 and board_break_edge_spots:
+                    board_break_saws_exploded = True
+                    n_edge = len(board_break_edge_spots)
                     n_saws = 5
-                    saw_speed = n_edge / BOARD_BREAK_TELEGRAPH_DURATION  # one full loop per telegraph
+                    saw_speed = n_edge / (BOARD_BREAK_TELEGRAPH_DURATION * 2.0)
                     for si in range(n_saws):
                         saw_pos = int((board_break_time * saw_speed + si * n_edge / n_saws) % n_edge)
                         gi_s, gk_s = board_break_edge_spots[saw_pos]
-                        # Get travel direction from neighboring edge spots
-                        next_pos = (saw_pos + 2) % n_edge
-                        prev_pos = (saw_pos - 2) % n_edge
-                        gi_n, gk_n = board_break_edge_spots[next_pos]
-                        gi_p, gk_p = board_break_edge_spots[prev_pos]
-                        dx = float(gi_n - gi_p)
-                        dz = float(gk_n - gk_p)
-                        d_len = math.sqrt(dx * dx + dz * dz)
-                        if d_len > 0.1:
-                            dx /= d_len
-                            dz /= d_len
-                        else:
-                            dx, dz = 1.0, 0.0
                         wx_s = float(gi_s) - 64.0
                         wz_s = float(gk_s) - 64.0
-                        spawn_board_break_saw(float(wx_s), float(wz_s), float(dx), float(dz), float(board_break_time))
+                        spawn_board_break_saw_explode(float(wx_s), float(wz_s))
 
             elif cycle_bb < t_break_end:
                 # --- BREAK PHASE --- quick destruction burst
@@ -18540,7 +18704,7 @@ try:
                 if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_blue = -1000.0
             # Board break override: drop floor when beetle center is over a broken cell
-            if board_break_active and floor_y_blue > -100.0:
+            if board_break_active and not beetle_ball.active and floor_y_blue > -100.0:
                 bb_gi = int(beetle_blue.x + 64.0)
                 bb_gk = int(beetle_blue.z + 64.0)
                 if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
@@ -18592,7 +18756,7 @@ try:
                 if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_red = -1000.0
             # Board break override: drop floor when beetle center is over a broken cell
-            if board_break_active and floor_y_red > -100.0:
+            if board_break_active and not beetle_ball.active and floor_y_red > -100.0:
                 bb_gi = int(beetle_red.x + 64.0)
                 bb_gk = int(beetle_red.z + 64.0)
                 if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
