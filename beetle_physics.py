@@ -1180,10 +1180,10 @@ COMET_WANDER_RANGE = 16.0          # How far strip center can wander
 # Board Break hazard — telegraph, break, gap, respawn, cooldown cycle
 BOARD_BREAK_TELEGRAPH_DURATION = 3.0
 BOARD_BREAK_ANIM_DURATION = 0.15
-BOARD_BREAK_GAP_DURATION = 2.0
+BOARD_BREAK_GAP_DURATION = 2.5
 BOARD_BREAK_RESPAWN_DURATION = 0.15
 BOARD_BREAK_COOLDOWN_DURATION = 5.0
-BOARD_BREAK_CYCLE_TOTAL = 10.3
+BOARD_BREAK_CYCLE_TOTAL = 10.8
 BOARD_BREAK_CYCLE_JITTER = 1.5
 BOARD_BREAK_PARTICLE_INTERVAL = 0.02
 BOARD_BREAK_STRIP_WIDTH = 14.0     # Width of strip pattern in voxels
@@ -1571,7 +1571,7 @@ def reset_match():
     global ice_mode, ice_time
     global hole_mode, hole_time, hole_x, hole_z
     global comet_mode, comet_time, comet_cycle_count, comet_strip_angle, comet_strip_cx, comet_strip_cz, comet_impacts, comet_dust_timer, comet_spawned_indices, comet_landing_spots, comet_spawn_order, comet_spawn_times, comet_horiz_vels, comet_shove_effects, comet_current_cycle_len
-    global board_break_mode, board_break_time, board_break_cycle_count, board_break_dust_timer, board_break_current_cycle_len, board_break_pattern_spots, board_break_edge_spots, board_break_active
+    global board_break_mode, board_break_time, board_break_cycle_count, board_break_dust_timer, board_break_current_cycle_len, board_break_pattern_spots, board_break_edge_spots, board_break_active, board_break_edge_idx
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1738,6 +1738,7 @@ def reset_match():
     board_break_pattern_spots = []
     board_break_edge_spots = []
     board_break_active = False
+    board_break_edge_idx = 0
     renderer.board_break_mask_active[None] = 0
     renderer.set_board_break_active(False)
     renderer.clear_board_break_mask()
@@ -2718,6 +2719,7 @@ board_break_current_cycle_len = BOARD_BREAK_CYCLE_TOTAL
 board_break_pattern_spots = []    # [(grid_i, grid_k), ...] voxels to cut
 board_break_edge_spots = []       # edge voxels for destruction animation
 board_break_active = False        # True during gap phase (floor missing)
+board_break_edge_idx = 0          # cycling index for even perimeter distribution
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -12198,9 +12200,11 @@ def generate_board_break_pattern():
 
 @ti.kernel
 def spawn_board_break_telegraph(spot_x: ti.f32, spot_z: ti.f32, phase: ti.f32):
-    """Spawn pulsing warning particles at a board break edge spot"""
+    """Spawn pulsing warning particles at a board break edge spot — flashing red"""
     floor_y = RENDER_Y_OFFSET + 0.5
     pulse = 0.5 + 0.5 * ti.sin(phase * 6.0)
+    # Fast flash between orange-red and bright red (square wave feel)
+    flash = 0.5 + 0.5 * ti.sin(phase * 14.0)
     for i in range(3):
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
@@ -12214,9 +12218,10 @@ def spawn_board_break_telegraph(spot_x: ti.f32, spot_z: ti.f32, phase: ti.f32):
             vz = (ti.random() - 0.5) * 0.8
             vy = 1.0 + ti.random() * 2.0
             simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-            cr = 0.9 + pulse * 0.1
-            cg = 0.25 + pulse * 0.25
-            cb = 0.05 + ti.random() * 0.05
+            # Flashing red: alternates between orange-red and bright crimson
+            cr = 0.85 + flash * 0.15
+            cg = 0.08 + (1.0 - flash) * 0.22 + pulse * 0.1
+            cb = 0.02 + ti.random() * 0.03
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
             simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.15
 
@@ -18389,18 +18394,23 @@ try:
                     board_break_active = False
                     renderer.board_break_mask_active[None] = 0
                     board_break_dust_timer = 0.0
+                    board_break_edge_idx = 0
 
-                # Spawn telegraph particles at edge spots
+                # Spawn telegraph particles at edge spots — stride evenly around perimeter
                 board_break_dust_timer += PHYSICS_TIMESTEP
                 if board_break_dust_timer >= BOARD_BREAK_PARTICLE_INTERVAL and board_break_edge_spots:
                     board_break_dust_timer = 0.0
-                    # Spawn at a few random edge spots each tick
-                    num_to_spawn = min(8, len(board_break_edge_spots))
-                    for _ in range(num_to_spawn):
-                        gi, gk = random.choice(board_break_edge_spots)
+                    n_edge = len(board_break_edge_spots)
+                    num_to_spawn = min(8, n_edge)
+                    # Stride through edge spots with golden-ratio-like spacing
+                    stride = max(1, n_edge // num_to_spawn)
+                    for s in range(num_to_spawn):
+                        idx = (board_break_edge_idx + s * stride) % n_edge
+                        gi, gk = board_break_edge_spots[idx]
                         wx = float(gi) - 64.0
                         wz = float(gk) - 64.0
                         spawn_board_break_telegraph(float(wx), float(wz), float(board_break_time))
+                    board_break_edge_idx = (board_break_edge_idx + 1) % n_edge
 
             elif cycle_bb < t_break_end:
                 # --- BREAK PHASE --- quick destruction burst
