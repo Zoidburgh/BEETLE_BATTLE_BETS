@@ -1154,8 +1154,9 @@ COMET_STRIP_LENGTH = 90.0
 COMET_STRIP_WIDTH = 16.0
 COMET_TELEGRAPH_DURATION = 1.5
 COMET_RAIN_DURATION = 1.5
-COMET_COOLDOWN_DURATION = 4.0
-COMET_CYCLE_TOTAL = 7.0
+COMET_COOLDOWN_DURATION = 6.0
+COMET_CYCLE_TOTAL = 9.0            # Base cycle (telegraph + rain + cooldown)
+COMET_CYCLE_JITTER = 2.0           # +/- random variation per cycle
 COMET_COUNT = 5                    # Comets per rain phase
 COMET_SPOT_RADIUS = 5.0            # Telegraph circle radius per landing spot
 COMET_STAGGER_RANGE = 4.0          # Random lateral offset from strip centerline
@@ -1546,7 +1547,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, square_bridge_mode, squiggle_mode
+    global blue_score, red_score, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, square_bridge_mode, square_mode, squiggle_mode
     global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
@@ -1554,7 +1555,7 @@ def reset_match():
     global ufo_mode, ufo_time, ufo_phase, ufo_x, ufo_z, ufo_target_x, ufo_target_z, ufo_dust_timer, ufo_prev_x, ufo_prev_z
     global ice_mode, ice_time
     global hole_mode, hole_time, hole_x, hole_z
-    global comet_mode, comet_time, comet_cycle_count, comet_strip_angle, comet_strip_cx, comet_strip_cz, comet_impacts, comet_dust_timer, comet_spawned_indices, comet_landing_spots, comet_spawn_order, comet_spawn_times, comet_horiz_vels, comet_shove_effects
+    global comet_mode, comet_time, comet_cycle_count, comet_strip_angle, comet_strip_cx, comet_strip_cz, comet_impacts, comet_dust_timer, comet_spawned_indices, comet_landing_spots, comet_spawn_order, comet_spawn_times, comet_horiz_vels, comet_shove_effects, comet_current_cycle_len
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1710,6 +1711,7 @@ def reset_match():
     comet_spawn_times = []
     comet_horiz_vels = []
     comet_shove_effects = []
+    comet_current_cycle_len = COMET_CYCLE_TOTAL
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -1953,6 +1955,9 @@ hourglass_mode = False
 # Square Bridge arena mode (long rectangle split with bridge)
 square_bridge_mode = False
 
+# Square arena mode (solid 64x64 flat platform)
+square_mode = False
+
 # Squiggle arena mode (serpentine path with 5 segments and 4 turns)
 squiggle_mode = False
 
@@ -2056,6 +2061,12 @@ def get_spawn_position(for_blue=True, is_initial=False):
             return (-spawn_x, 0.0, 0.0)  # Left end of bridge, face right
         else:
             return (spawn_x, 0.0, math.pi)  # Right end of bridge, face left
+    elif square_mode:
+        # Spawn at center of the square platform, facing each other
+        if for_blue:
+            return (0.0, 0.0, 0.0)  # Center, face right
+        else:
+            return (0.0, 0.0, math.pi)  # Center, face left
     elif squiggle_mode:
         # Spawn on opposite ends of the serpentine (leftmost and rightmost segments)
         if for_blue:
@@ -2666,6 +2677,7 @@ comet_spawn_order = []             # Randomized indices into landing_spots
 comet_spawn_times = []             # Jittered normalized spawn times (0.0-1.0) per comet
 comet_horiz_vels = []              # Per-spot [(vx, vz)] horizontal velocity from angled approach
 comet_shove_effects = []           # Active sustained pushes: [beetle, dir_x, dir_z, time_left, force, tip]
+comet_current_cycle_len = COMET_CYCLE_TOTAL  # Per-cycle duration (jittered each wave)
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -5433,6 +5445,10 @@ SQUARE_BRIDGE_OUTER_Z_GPU = 25.0  # Outer rectangle half-width (z-axis)
 SQUARE_BRIDGE_INNER_X_GPU = 28.0  # Inner hole half-length
 SQUARE_BRIDGE_INNER_Z_GPU = 15.0  # Inner hole half-width
 SQUARE_BRIDGE_BRIDGE_HALF_GPU = 5.0  # Bridge half-width (z direction)
+
+# Square mode state for GPU kernels
+square_mode_active = ti.field(ti.i32, shape=())  # 1 if square mode, 0 otherwise
+SQUARE_HALF_SIZE_GPU = 32.0  # Half-size of the square platform
 
 # Squiggle mode state for GPU kernels
 squiggle_mode_active = ti.field(ti.i32, shape=())  # 1 if squiggle mode, 0 otherwise
@@ -9546,6 +9562,15 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                             else:
                                 is_over_edge = 1  # Over edge or in hole
 
+                        # Square: solid 64x64 flat platform
+                        if square_mode_active[None] == 1:
+                            rel_x = world_x_v - arena_center_x
+                            rel_z = world_z_v - arena_center_z
+                            if ti.abs(rel_x) <= SQUARE_HALF_SIZE_GPU and ti.abs(rel_z) <= SQUARE_HALF_SIZE_GPU:
+                                is_over_edge = 0  # On solid ground
+                            else:
+                                is_over_edge = 1  # Over edge
+
                         # Squiggle: serpentine with 5 vertical segments + 4 horizontal connectors
                         if squiggle_mode_active[None] == 1:
                             rel_x = world_x_v - arena_center_x
@@ -10311,7 +10336,7 @@ def update_arena_transition(dt):
 
 def update_pending_arena_switch(dt):
     """Update delayed arena switch - counts down timer and executes switch."""
-    global pending_arena_switch, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, hourglass_mode, square_bridge_mode, squiggle_mode
+    global pending_arena_switch, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, hourglass_mode, square_bridge_mode, square_mode, squiggle_mode
 
     if pending_arena_switch is None:
         return
@@ -10347,6 +10372,9 @@ def update_pending_arena_switch(dt):
         elif mode_name == 'square_bridge':
             simulation.init_square_bridge_arena()
             renderer.set_arena_snap(7)
+        elif mode_name == 'square':
+            simulation.init_square_arena()
+            renderer.set_arena_snap(11)
         elif mode_name == 'squiggle':
             simulation.init_squiggle_arena()
             renderer.set_arena_snap(10)
@@ -10376,6 +10404,9 @@ def update_pending_arena_switch(dt):
             elif square_bridge_mode:
                 simulation.init_square_bridge_arena()
                 renderer.set_arena_snap(7)
+            elif square_mode:
+                simulation.init_square_arena()
+                renderer.set_arena_snap(11)
             elif squiggle_mode:
                 simulation.init_squiggle_arena()
                 renderer.set_arena_snap(10)
@@ -14595,6 +14626,7 @@ simulation.init_barbell_arena()
 simulation.init_figure8_arena()
 simulation.init_yinyang_arena()
 simulation.init_square_bridge_arena()
+simulation.init_square_arena()
 simulation.init_beetle_arena()  # Restore normal arena
 _t_sdf = time.perf_counter()
 renderer.set_arena_snap(1)
@@ -14926,8 +14958,16 @@ try:
             target_x = target_beetle.x - math.sin(angle) * THIRD_PERSON_DISTANCE
             target_z = target_beetle.z + math.cos(angle) * THIRD_PERSON_DISTANCE
 
+            # Reduce camera lerp when beetle is being shoved by comet (smooths jitter)
+            comet_shove_damping = False
+            if comet_shove_effects:
+                for shove in comet_shove_effects:
+                    if shove[0] is target_beetle and shove[3] > 0:
+                        comet_shove_damping = True
+                        break
+
             # Smooth camera movement - responsive position tracking
-            pos_lerp = 0.45 * frame_dt * 60.0
+            pos_lerp = (0.15 if comet_shove_damping else 0.45) * frame_dt * 60.0
             pos_lerp = min(1.0, pos_lerp)
 
             camera.pos_x += (target_x - camera.pos_x) * pos_lerp
@@ -14936,7 +14976,7 @@ try:
             camera.pitch += (target_pitch - camera.pitch) * pos_lerp
 
             # Faster yaw tracking so camera stays behind beetle during turns
-            yaw_lerp = 0.55 * frame_dt * 60.0
+            yaw_lerp = (0.2 if comet_shove_damping else 0.55) * frame_dt * 60.0
             yaw_lerp = min(1.0, yaw_lerp)
             dx = target_beetle.x - camera.pos_x
             dz = target_beetle.z - camera.pos_z
@@ -16657,6 +16697,19 @@ try:
                             queue_arena_switch('normal')
                             print("Normal arena restored (from host)")
 
+                # Apply square mode state
+                if opts.get('square_mode', False) != square_mode:
+                    square_mode = opts.get('square_mode', False)
+                    square_mode_active[None] = 1 if square_mode else 0
+                    if square_mode:
+                        queue_arena_switch('square')
+                        print("SQUARE ARENA ENABLED (from host)")
+                    else:
+                        # Only restore normal if other modes aren't on
+                        if not opts.get('donut_mode', False) and not opts.get('x_stage_mode', False) and not opts.get('barbell_mode', False) and not opts.get('figure8_mode', False) and not opts.get('yinyang_mode', False) and not opts.get('hourglass_mode', False) and not opts.get('squiggle_mode', False):
+                            queue_arena_switch('normal')
+                            print("Normal arena restored (from host)")
+
                 # Apply tornado mode state (hazard, independent of arena)
                 if opts.get('tornado_mode', False) != tornado_mode:
                     tornado_mode = opts.get('tornado_mode', False)
@@ -17084,7 +17137,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
 
-                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or squiggle_mode:
+                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     blue_hovering = True
                     blue_hover_timer = 0.0
@@ -17228,7 +17281,7 @@ try:
                 # Get spawn position
                 spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
 
-                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or squiggle_mode:
+                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode:
                     # Start hover phase - beetle flies from center to spawn point
                     red_hovering = True
                     red_hover_timer = 0.0
@@ -17863,7 +17916,11 @@ try:
         # === COMET RAIN HAZARD ===
         if comet_mode:
             comet_time += PHYSICS_TIMESTEP
-            cycle_pos = comet_time % COMET_CYCLE_TOTAL
+            # Wrap cycle with per-cycle jittered length
+            if comet_time >= comet_current_cycle_len:
+                comet_time -= comet_current_cycle_len
+                comet_current_cycle_len = COMET_CYCLE_TOTAL + random.uniform(-COMET_CYCLE_JITTER, COMET_CYCLE_JITTER)
+            cycle_pos = comet_time
 
             if cycle_pos < COMET_TELEGRAPH_DURATION:
                 # --- TELEGRAPH PHASE ---
@@ -17878,16 +17935,45 @@ try:
                     comet_strip_cz = math.sin(wander_angle) * wander_r
                     comet_impacts.clear()
                     comet_spawned_indices.clear()
-                    # Pre-compute landing spots with random lateral stagger + approach angles
+                    # Pre-compute landing spots with pattern variety + approach angles
                     comet_landing_spots.clear()
                     comet_horiz_vels.clear()
                     cos_a = math.cos(comet_strip_angle)
                     sin_a = math.sin(comet_strip_angle)
                     fall_time = COMET_SPAWN_HEIGHT / COMET_FALL_SPEED
+                    # Pick a random spawn pattern each cycle
+                    pattern = random.randint(0, 2)
                     for i in range(COMET_COUNT):
-                        t_along = (i + 0.5) / COMET_COUNT - 0.5
-                        local_x = t_along * COMET_STRIP_LENGTH
-                        local_z = (random.random() - 0.5) * COMET_STAGGER_RANGE * 2.0
+                        if pattern == 0:
+                            # LINE — comets along a rotated strip (original)
+                            t_along = (i + 0.5) / COMET_COUNT - 0.5
+                            local_x = t_along * COMET_STRIP_LENGTH
+                            local_z = (random.random() - 0.5) * COMET_STAGGER_RANGE * 2.0
+                        elif pattern == 1:
+                            # CIRCLE — ring of comets
+                            ring_radius = 26.0 + random.uniform(-3.0, 3.0)
+                            angle_i = (i / COMET_COUNT) * 6.2832 + random.uniform(-0.15, 0.15)
+                            local_x = math.cos(angle_i) * ring_radius
+                            local_z = math.sin(angle_i) * ring_radius
+                        else:
+                            # CLUSTER — tight group around center, with minimum spacing
+                            min_spacing_sq = (COMET_SPOT_RADIUS * 2.0) ** 2
+                            for _attempt in range(20):
+                                cluster_r = random.uniform(2.0, 14.0)
+                                cluster_a = random.uniform(0, 6.2832)
+                                local_x = math.cos(cluster_a) * cluster_r
+                                local_z = math.sin(cluster_a) * cluster_r
+                                cand_wx = comet_strip_cx + local_x * cos_a - local_z * sin_a
+                                cand_wz = comet_strip_cz + local_x * sin_a + local_z * cos_a
+                                too_close = False
+                                for prev_spot in comet_landing_spots:
+                                    dx = cand_wx - prev_spot[0]
+                                    dz = cand_wz - prev_spot[1]
+                                    if dx * dx + dz * dz < min_spacing_sq:
+                                        too_close = True
+                                        break
+                                if not too_close:
+                                    break
                         world_x = comet_strip_cx + local_x * cos_a - local_z * sin_a
                         world_z = comet_strip_cz + local_x * sin_a + local_z * cos_a
                         comet_landing_spots.append((world_x, world_z))
@@ -20017,6 +20103,8 @@ try:
                 current_mode = "Hourglass"
             elif square_bridge_mode:
                 current_mode = "Square Bridge"
+            elif square_mode:
+                current_mode = "Square"
             elif squiggle_mode:
                 current_mode = "Squiggle"
             window.GUI.text("")
@@ -20028,7 +20116,7 @@ try:
             window.GUI.text("=== ARENA ===")
 
             # Determine if circle (default) mode is active
-            circle_mode = not donut_mode and not x_stage_mode and not barbell_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not square_bridge_mode and not squiggle_mode and not beetle_ball.active
+            circle_mode = not donut_mode and not x_stage_mode and not barbell_mode and not figure8_mode and not yinyang_mode and not hourglass_mode and not square_bridge_mode and not square_mode and not squiggle_mode and not beetle_ball.active
 
             # === CIRCLE MODE (default) ===
             circle_button_text = "CIRCLE: ON" if circle_mode else "CIRCLE: OFF"
@@ -20067,6 +20155,9 @@ try:
                 if square_bridge_mode:
                     square_bridge_mode = False
                     square_bridge_mode_active[None] = 0
+                if square_mode:
+                    square_mode = False
+                    square_mode_active[None] = 0
                 if squiggle_mode:
                     squiggle_mode = False
                     squiggle_mode_active[None] = 0
@@ -20074,7 +20165,7 @@ try:
                 print("CIRCLE ARENA - classic ring!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === BALL MODE ===
             ball_button_text = "BEETLE BALL: ON" if beetle_ball.active else "BEETLE BALL: OFF"
@@ -20113,6 +20204,9 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     # Initialize ball
                     if not ball_cache_initialized:
                         init_ball_cache(beetle_ball.radius)
@@ -20145,7 +20239,7 @@ try:
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === DONUT MODE ===
             donut_button_text = "DONUT: ON" if donut_mode else "DONUT: OFF"
@@ -20185,6 +20279,9 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     if squiggle_mode:
                         squiggle_mode = False
                         squiggle_mode_active[None] = 0
@@ -20194,7 +20291,7 @@ try:
                     print("DONUT ARENA ENABLED - watch the center pit!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === X STAGE MODE ===
             x_stage_button_text = "X STAGE: ON" if x_stage_mode else "X STAGE: OFF"
@@ -20234,6 +20331,9 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     if squiggle_mode:
                         squiggle_mode = False
                         squiggle_mode_active[None] = 0
@@ -20243,7 +20343,7 @@ try:
                     print("X STAGE ARENA ENABLED - watch the corners!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === BARBELL MODE ===
             barbell_button_text = "BARBELL: ON" if barbell_mode else "BARBELL: OFF"
@@ -20283,6 +20383,9 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     if squiggle_mode:
                         squiggle_mode = False
                         squiggle_mode_active[None] = 0
@@ -20292,7 +20395,7 @@ try:
                     print("BARBELL ARENA ENABLED - watch the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === FIGURE 8 MODE ===
             figure8_button_text = "FIGURE 8: ON" if figure8_mode else "FIGURE 8: OFF"
@@ -20332,6 +20435,9 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     if squiggle_mode:
                         squiggle_mode = False
                         squiggle_mode_active[None] = 0
@@ -20341,7 +20447,7 @@ try:
                     print("FIGURE 8 ARENA ENABLED - infinity symbol!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === YIN-YANG MODE ===
             yinyang_button_text = "YIN-YANG: ON" if yinyang_mode else "YIN-YANG: OFF"
@@ -20381,6 +20487,9 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     if squiggle_mode:
                         squiggle_mode = False
                         squiggle_mode_active[None] = 0
@@ -20390,7 +20499,7 @@ try:
                     print("YIN-YANG ARENA ENABLED - mind the curves!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === HOURGLASS MODE ===
             hourglass_button_text = "HOURGLASS: ON" if hourglass_mode else "HOURGLASS: OFF"
@@ -20430,6 +20539,9 @@ try:
                     if yinyang_mode:
                         yinyang_mode = False
                         yinyang_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     if squiggle_mode:
                         squiggle_mode = False
                         squiggle_mode_active[None] = 0
@@ -20439,7 +20551,7 @@ try:
                     print("HOURGLASS ARENA ENABLED - fight at the waist!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === SQUARE BRIDGE MODE ===
             square_bridge_button_text = "SQUARE BRIDGE: ON" if square_bridge_mode else "SQUARE BRIDGE: OFF"
@@ -20480,6 +20592,9 @@ try:
                     if hourglass_mode:
                         hourglass_mode = False
                         hourglass_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     if squiggle_mode:
                         squiggle_mode = False
                         squiggle_mode_active[None] = 0
@@ -20489,7 +20604,60 @@ try:
                     print("SQUARE BRIDGE ARENA ENABLED - fight for the bridge!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
+
+            # === SQUARE MODE ===
+            square_button_text = "SQUARE: ON" if square_mode else "SQUARE: OFF"
+            if window.GUI.button(square_button_text):
+                if square_mode:
+                    # Disabling square
+                    square_mode = False
+                    square_mode_active[None] = 0
+                    queue_arena_switch('normal')
+                    print("Normal arena restored")
+                else:
+                    # Enabling square - disable other arena modes first
+                    if beetle_ball.active:
+                        if ball_last_rendered[None] == 1:
+                            num_voxels = ball_cache_size[None]
+                            if num_voxels > 0:
+                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                            ball_last_rendered[None] = 0
+                        else:
+                            clear_ball()
+                        simulation.clear_bowl_perimeter()
+                        beetle_ball.active = False
+                    if donut_mode:
+                        donut_mode = False
+                        donut_mode_active[None] = 0
+                    if x_stage_mode:
+                        x_stage_mode = False
+                        x_stage_mode_active[None] = 0
+                    if barbell_mode:
+                        barbell_mode = False
+                        barbell_mode_active[None] = 0
+                    if figure8_mode:
+                        figure8_mode = False
+                        figure8_mode_active[None] = 0
+                    if yinyang_mode:
+                        yinyang_mode = False
+                        yinyang_mode_active[None] = 0
+                    if hourglass_mode:
+                        hourglass_mode = False
+                        hourglass_mode_active[None] = 0
+                    if square_bridge_mode:
+                        square_bridge_mode = False
+                        square_bridge_mode_active[None] = 0
+                    if squiggle_mode:
+                        squiggle_mode = False
+                        squiggle_mode_active[None] = 0
+                    square_mode = True
+                    square_mode_active[None] = 1
+                    queue_arena_switch('square')
+                    print("SQUARE ARENA ENABLED - flat platform!")
+                # Sync to guest
+                if network_manager and network_manager.is_host:
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === SQUIGGLE MODE ===
             squiggle_button_text = "SQUIGGLE: ON" if squiggle_mode else "SQUIGGLE: OFF"
@@ -20533,13 +20701,16 @@ try:
                     if square_bridge_mode:
                         square_bridge_mode = False
                         square_bridge_mode_active[None] = 0
+                    if square_mode:
+                        square_mode = False
+                        square_mode_active[None] = 0
                     squiggle_mode = True
                     squiggle_mode_active[None] = 1
                     queue_arena_switch('squiggle')
                     print("SQUIGGLE ARENA ENABLED - navigate the serpentine!")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             # === HAZARDS ===
             window.GUI.text("")
@@ -20564,7 +20735,7 @@ try:
                     print("Tornado hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             sandstorm_button_text = "SANDSTORM: ON" if sandstorm_mode else "SANDSTORM: OFF"
             if window.GUI.button(sandstorm_button_text):
@@ -20581,7 +20752,7 @@ try:
                     print("Sandstorm hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             ufo_button_text = "UFO LASER: ON" if ufo_mode else "UFO LASER: OFF"
             if window.GUI.button(ufo_button_text):
@@ -20615,7 +20786,7 @@ try:
                     print("UFO laser hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             ice_button_text = "ICE PATCHES: ON" if ice_mode else "ICE PATCHES: OFF"
             if window.GUI.button(ice_button_text):
@@ -20634,7 +20805,7 @@ try:
                     print("Ice patches hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             hole_button_text = "MOVING HOLE: ON" if hole_mode else "MOVING HOLE: OFF"
             if window.GUI.button(hole_button_text):
@@ -20659,7 +20830,7 @@ try:
                     print("Moving hole hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
             comet_button_text = "COMET RAIN: ON" if comet_mode else "COMET RAIN: OFF"
             if window.GUI.button(comet_button_text):
@@ -20689,7 +20860,7 @@ try:
                     print("Comet rain hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
-                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode)
+                    network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode)
 
         # === ARENA COLORS (personal settings, not networked) ===
         window.GUI.text("")

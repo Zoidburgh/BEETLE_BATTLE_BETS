@@ -1036,6 +1036,28 @@ def init_square_bridge_arena():
     print(f"SQUARE BRIDGE ARENA constructed - rectangular ring with long bridge")
 
 @ti.kernel
+def init_square_arena():
+    """
+    SQUARE ARENA - Solid flat 64x64 square platform
+    Simple open platform with no holes or obstacles
+    """
+    # Clear floor layers only (Y=30-40 covers floor at 33)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    center_x = 64
+    center_z = 64
+    half_size = 32
+    floor_y_offset = 33
+
+    for i in range(center_x - half_size, center_x + half_size + 1):
+        for k in range(center_z - half_size, center_z + half_size + 1):
+            voxel_type[i, floor_y_offset, k] = CONCRETE
+            voxel_type[i, floor_y_offset + 1, k] = EMPTY
+
+    print(f"SQUARE ARENA constructed - 64x64 flat platform")
+
+@ti.kernel
 def init_squiggle_arena():
     """
     SQUIGGLE ARENA - Serpentine/snake path with 5 parallel vertical segments
