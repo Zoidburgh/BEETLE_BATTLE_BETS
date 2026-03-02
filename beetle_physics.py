@@ -12193,6 +12193,28 @@ def generate_board_break_pattern():
     # Intersect with actual floor voxels
     mask = np.logical_and(broken, is_floor).astype(np.int32)
 
+    # Saw-tooth edge: erode the cutout in alternating bands so solid teeth
+    # protrude into the gap.  Each pass peels one layer of edge cells in
+    # "tooth" bands back to solid, giving teeth that are saw_depth voxels deep.
+    saw_width = 3   # voxel width of each tooth / gap
+    saw_depth = 2   # how many voxels the teeth extend into the gap
+    saw_angle = random.uniform(0, math.pi)  # random diagonal per cycle
+    saw_cos = math.cos(saw_angle)
+    saw_sin = math.sin(saw_angle)
+    # Pre-compute band index for every cell (rotated diagonal stripes)
+    band_val = (DI * saw_cos + DK * saw_sin).astype(np.int32)
+    tooth_band = (band_val // saw_width) % 2 == 0
+
+    for _depth in range(saw_depth):
+        padded_s = np.pad(mask, 1, mode='constant', constant_values=0)
+        cur_edge = (
+            (padded_s[:-2, 1:-1] == 0) | (padded_s[2:, 1:-1] == 0) |
+            (padded_s[1:-1, :-2] == 0) | (padded_s[1:-1, 2:] == 0)
+        )
+        # Only flip edge cells that are broken AND in a tooth band
+        flip = np.logical_and(np.logical_and(mask == 1, cur_edge), tooth_band)
+        mask[flip] = 0
+
     # Collect pattern spots
     pattern_spots = list(zip(*np.where(mask == 1)))
 
