@@ -1192,11 +1192,10 @@ BOARD_BREAK_WEDGE_ANGLE = 55.0     # Degrees per wedge slice
 BOARD_BREAK_RING_INNER = 12.0      # Inner radius of ring cutout
 BOARD_BREAK_RING_OUTER = 24.0      # Outer radius of ring cutout
 
-# Conveyor Belt hazard — telegraph, active push, cooldown cycle
-CONVEYOR_TELEGRAPH_DURATION = 2.5
+# Conveyor Belt hazard — active push, cooldown cycle (no telegraph)
 CONVEYOR_ACTIVE_DURATION = 6.0
 CONVEYOR_COOLDOWN_DURATION = 4.0
-CONVEYOR_CYCLE_TOTAL = 12.5
+CONVEYOR_CYCLE_TOTAL = 10.0
 CONVEYOR_CYCLE_JITTER = 1.5
 CONVEYOR_FORCE = 100.0              # push strength (sandstorm=200, tornado=100)
 CONVEYOR_BALL_FORCE_MULT = 2.5      # ball gets pushed more
@@ -12663,37 +12662,6 @@ def generate_conveyor_pattern():
 
 
 @ti.kernel
-def spawn_conveyor_arrow(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti.f32, phase: ti.f32):
-    """Spawn a fast-moving streak particle that visibly flows in the push direction — blue/cyan"""
-    floor_y = RENDER_Y_OFFSET + 0.5
-    pulse = 0.5 + 0.5 * ti.sin(phase * 5.0)
-    idx = ti.atomic_add(simulation.num_debris[None], 1)
-    if idx < simulation.MAX_DEBRIS:
-        simulation.debris_active[idx] = 1
-        ti.atomic_add(simulation.debris_active_count[None], 1)
-        # Slight perpendicular scatter so streaks form lanes, not a single line
-        perp_x = -dir_z
-        perp_z = dir_x
-        perp_off = (ti.random() - 0.5) * 0.6
-        px = spot_x + perp_x * perp_off
-        pz = spot_z + perp_z * perp_off
-        spawn_y = floor_y + ti.random() * 0.15
-        simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
-        # Strong directional velocity — creates visible streaks
-        spd = 6.0 + ti.random() * 4.0 + pulse * 3.0
-        vx = dir_x * spd
-        vz = dir_z * spd
-        vy = 0.1 + ti.random() * 0.2
-        simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-        # Bright blue/cyan — pulsing intensity
-        cr = 0.05 + ti.random() * 0.08
-        cg = 0.45 + pulse * 0.35 + ti.random() * 0.1
-        cb = 0.75 + pulse * 0.2 + ti.random() * 0.05
-        simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
-        simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.3
-
-
-@ti.kernel
 def spawn_conveyor_dust(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti.f32):
     """Spawn a fast floor-sliding particle that clearly shows push direction"""
     floor_y = RENDER_Y_OFFSET + 0.3
@@ -15129,8 +15097,7 @@ spawn_board_break_saw(0.0, -100.0, 1.0, 0.0, 0.0)
 spawn_board_break_saw_explode(0.0, -100.0)
 spawn_board_break_debris(0.0, -100.0, 1.0)
 renderer.clear_board_break_mask()
-# Conveyor belt hazard warmup (debris-based kernels)
-spawn_conveyor_arrow(0.0, -100.0, 1.0, 0.0, 0.0)
+# Conveyor belt hazard warmup
 spawn_conveyor_dust(0.0, -100.0, 1.0, 0.0)
 spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup
 spawn_arena_transition_rings(0.0, 4.0, 1)  # Arena transition rings warmup
@@ -19007,33 +18974,13 @@ try:
                 conveyor_cycle_count += 1
             cycle_cv = conveyor_time
 
-            t_telegraph_end = CONVEYOR_TELEGRAPH_DURATION
-            t_active_end = t_telegraph_end + CONVEYOR_ACTIVE_DURATION
+            t_active_end = CONVEYOR_ACTIVE_DURATION
 
-            if cycle_cv < t_telegraph_end:
-                # --- TELEGRAPH PHASE ---
-                if cycle_cv < PHYSICS_TIMESTEP * 2:
-                    # First frame: generate new pattern + stream lines
-                    conveyor_dir_np_x, conveyor_dir_np_z, conveyor_pattern_name, conveyor_stream_lines = generate_conveyor_pattern()
-                    conveyor_active = False
-                    conveyor_dust_timer = 0.0
-                    conveyor_stream_idx = 0
-
-                # Spawn streak particles along pre-computed stream lines
-                conveyor_dust_timer += PHYSICS_TIMESTEP
-                if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_stream_lines:
-                    conveyor_dust_timer = 0.0
-                    # Walk through stream lines sequentially — 3 lines per tick, all points on each
-                    for _ in range(3):
-                        if conveyor_stream_lines:
-                            line = conveyor_stream_lines[conveyor_stream_idx % len(conveyor_stream_lines)]
-                            conveyor_stream_idx = (conveyor_stream_idx + 1) % len(conveyor_stream_lines)
-                            for wx, wz, dx, dz in line:
-                                spawn_conveyor_arrow(float(wx), float(wz), float(dx), float(dz), float(cycle_cv))
-
-            elif cycle_cv < t_active_end:
+            if cycle_cv < t_active_end:
                 # --- ACTIVE PHASE --- belts running, push beetles
                 if not conveyor_active:
+                    # First frame: generate new pattern + stream lines
+                    conveyor_dir_np_x, conveyor_dir_np_z, conveyor_pattern_name, conveyor_stream_lines = generate_conveyor_pattern()
                     conveyor_active = True
                     conveyor_dust_timer = 0.0
                     conveyor_stream_idx = 0
@@ -19051,16 +18998,14 @@ try:
                                 beetle.vx += dx * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
                                 beetle.vz += dz * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
 
-                # Spawn dust along stream lines — organized flow
+                # Spawn dust along stream lines — 1 line per tick
                 conveyor_dust_timer += PHYSICS_TIMESTEP
                 if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_stream_lines:
                     conveyor_dust_timer = 0.0
-                    for _ in range(3):
-                        if conveyor_stream_lines:
-                            line = conveyor_stream_lines[conveyor_stream_idx % len(conveyor_stream_lines)]
-                            conveyor_stream_idx = (conveyor_stream_idx + 1) % len(conveyor_stream_lines)
-                            for wx, wz, dx, dz in line:
-                                spawn_conveyor_dust(float(wx), float(wz), float(dx), float(dz))
+                    line = conveyor_stream_lines[conveyor_stream_idx % len(conveyor_stream_lines)]
+                    conveyor_stream_idx = (conveyor_stream_idx + 1) % len(conveyor_stream_lines)
+                    for wx, wz, dx, dz in line:
+                        spawn_conveyor_dust(float(wx), float(wz), float(dx), float(dz))
 
             else:
                 # --- COOLDOWN --- nothing happens
