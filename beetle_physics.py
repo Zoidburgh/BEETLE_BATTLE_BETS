@@ -1583,7 +1583,7 @@ def reset_match():
     global hole_mode, hole_time, hole_x, hole_z
     global comet_mode, comet_time, comet_cycle_count, comet_strip_angle, comet_strip_cx, comet_strip_cz, comet_impacts, comet_dust_timer, comet_spawned_indices, comet_landing_spots, comet_spawn_order, comet_spawn_times, comet_horiz_vels, comet_shove_effects, comet_current_cycle_len
     global board_break_mode, board_break_time, board_break_cycle_count, board_break_dust_timer, board_break_current_cycle_len, board_break_pattern_spots, board_break_edge_spots, board_break_active, board_break_edge_idx, board_break_saws_exploded
-    global conveyor_mode, conveyor_time, conveyor_cycle_count, conveyor_dust_timer, conveyor_current_cycle_len, conveyor_active, conveyor_dir_np_x, conveyor_dir_np_z, conveyor_pattern_name
+    global conveyor_mode, conveyor_time, conveyor_cycle_count, conveyor_dust_timer, conveyor_current_cycle_len, conveyor_active, conveyor_dir_np_x, conveyor_dir_np_z, conveyor_pattern_name, conveyor_stream_lines, conveyor_stream_idx
 
     # Sync GPU to ensure any pending operations complete before reset
     ti.sync()
@@ -1767,6 +1767,8 @@ def reset_match():
     conveyor_dir_np_x = None
     conveyor_dir_np_z = None
     conveyor_pattern_name = ''
+    conveyor_stream_lines = []
+    conveyor_stream_idx = 0
 
     # Reset venom charges for scorpion beetles
     venom_charges_blue = VENOM_MAX_CHARGES
@@ -2759,6 +2761,8 @@ conveyor_active = False
 conveyor_dir_np_x = None   # numpy arrays for CPU-side direction lookup
 conveyor_dir_np_z = None
 conveyor_pattern_name = ''
+conveyor_stream_lines = []  # pre-computed list of [(wx, wz, dx, dz), ...] lines for organized particle spawning
+conveyor_stream_idx = 0     # cycling index into stream lines
 
 # Beetle assembly animation state (voxel rain effect)
 blue_assembling = False
@@ -12600,7 +12604,58 @@ def generate_conveyor_pattern():
         dir_x = np.where(side >= 0, -norm_x, norm_x).astype(np.float32)
         dir_z = np.where(side >= 0, -norm_z, norm_z).astype(np.float32)
 
-    return dir_x, dir_z, pattern
+    # --- Build stream lines: organized rows of emitter points along flow ---
+    # For each line, pick a starting point and walk in the push direction to form a lane.
+    # This gives particles visible structure instead of random scatter.
+    stream_lines = []
+    n_lines = 20  # number of parallel stream lanes
+    pts_per_line = 10  # emitter points per lane
+
+    if pattern == 'whirlpool':
+        # Concentric rings at different radii
+        for li in range(n_lines):
+            radius = 8.0 + li * 2.0
+            line = []
+            for pi in range(pts_per_line * 2):  # more points for circular paths
+                ang = pi * 2.0 * math.pi / (pts_per_line * 2)
+                gi = int(center + radius * math.cos(ang))
+                gk = int(center + radius * math.sin(ang))
+                if 4 <= gi < 124 and 4 <= gk < 124:
+                    dx_v = float(dir_x[gi, gk])
+                    dz_v = float(dir_z[gi, gk])
+                    if abs(dx_v) > 0.01 or abs(dz_v) > 0.01:
+                        line.append((float(gi) - 64.0, float(gk) - 64.0, dx_v, dz_v))
+            if line:
+                stream_lines.append(line)
+    else:
+        # For directional patterns: lay lines perpendicular to the local flow.
+        # Sample a grid of evenly-spaced emitter rows.
+        spacing = 128.0 / (n_lines + 1)
+        for li in range(n_lines):
+            line = []
+            # Alternate: rows along i-axis and k-axis for good coverage
+            if li % 2 == 0:
+                gi_fixed = int(spacing * (li // 2 + 1))
+                for pi in range(pts_per_line):
+                    gk_pos = int(spacing * pi + spacing * 0.5)
+                    if 4 <= gi_fixed < 124 and 4 <= gk_pos < 124:
+                        dx_v = float(dir_x[gi_fixed, gk_pos])
+                        dz_v = float(dir_z[gi_fixed, gk_pos])
+                        if abs(dx_v) > 0.01 or abs(dz_v) > 0.01:
+                            line.append((float(gi_fixed) - 64.0, float(gk_pos) - 64.0, dx_v, dz_v))
+            else:
+                gk_fixed = int(spacing * (li // 2 + 1))
+                for pi in range(pts_per_line):
+                    gi_pos = int(spacing * pi + spacing * 0.5)
+                    if 4 <= gi_pos < 124 and 4 <= gk_fixed < 124:
+                        dx_v = float(dir_x[gi_pos, gk_fixed])
+                        dz_v = float(dir_z[gi_pos, gk_fixed])
+                        if abs(dx_v) > 0.01 or abs(dz_v) > 0.01:
+                            line.append((float(gi_pos) - 64.0, float(gk_fixed) - 64.0, dx_v, dz_v))
+            if line:
+                stream_lines.append(line)
+
+    return dir_x, dir_z, pattern, stream_lines
 
 
 @ti.kernel
@@ -18954,31 +19009,30 @@ try:
             if cycle_cv < t_telegraph_end:
                 # --- TELEGRAPH PHASE ---
                 if cycle_cv < PHYSICS_TIMESTEP * 2:
-                    # First frame: generate new pattern
-                    conveyor_dir_np_x, conveyor_dir_np_z, conveyor_pattern_name = generate_conveyor_pattern()
+                    # First frame: generate new pattern + stream lines
+                    conveyor_dir_np_x, conveyor_dir_np_z, conveyor_pattern_name, conveyor_stream_lines = generate_conveyor_pattern()
                     conveyor_active = False
                     conveyor_dust_timer = 0.0
+                    conveyor_stream_idx = 0
 
-                # Spawn streak particles across the arena — evenly spaced grid for clear flow
+                # Spawn streak particles along pre-computed stream lines
                 conveyor_dust_timer += PHYSICS_TIMESTEP
-                if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_dir_np_x is not None:
+                if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_stream_lines:
                     conveyor_dust_timer = 0.0
-                    # 15 particles per tick across spread-out positions
-                    for _ in range(15):
-                        gi = random.randint(16, 111)
-                        gk = random.randint(16, 111)
-                        dx = float(conveyor_dir_np_x[gi, gk])
-                        dz = float(conveyor_dir_np_z[gi, gk])
-                        if abs(dx) > 0.01 or abs(dz) > 0.01:
-                            wx = float(gi) - 64.0
-                            wz = float(gk) - 64.0
-                            spawn_conveyor_arrow(float(wx), float(wz), float(dx), float(dz), float(cycle_cv))
+                    # Walk through stream lines sequentially — 3 lines per tick, all points on each
+                    for _ in range(3):
+                        if conveyor_stream_lines:
+                            line = conveyor_stream_lines[conveyor_stream_idx % len(conveyor_stream_lines)]
+                            conveyor_stream_idx = (conveyor_stream_idx + 1) % len(conveyor_stream_lines)
+                            for wx, wz, dx, dz in line:
+                                spawn_conveyor_arrow(float(wx), float(wz), float(dx), float(dz), float(cycle_cv))
 
             elif cycle_cv < t_active_end:
                 # --- ACTIVE PHASE --- belts running, push beetles
                 if not conveyor_active:
                     conveyor_active = True
                     conveyor_dust_timer = 0.0
+                    conveyor_stream_idx = 0
 
                 # Apply force to beetles and ball
                 if conveyor_dir_np_x is not None:
@@ -18993,19 +19047,16 @@ try:
                                 beetle.vx += dx * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
                                 beetle.vz += dz * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
 
-                # Spawn fast sliding dust — many particles for visible flow
+                # Spawn dust along stream lines — organized flow
                 conveyor_dust_timer += PHYSICS_TIMESTEP
-                if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_dir_np_x is not None:
+                if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_stream_lines:
                     conveyor_dust_timer = 0.0
-                    for _ in range(12):
-                        gi = random.randint(16, 111)
-                        gk = random.randint(16, 111)
-                        dx = float(conveyor_dir_np_x[gi, gk])
-                        dz = float(conveyor_dir_np_z[gi, gk])
-                        if abs(dx) > 0.01 or abs(dz) > 0.01:
-                            wx = float(gi) - 64.0
-                            wz = float(gk) - 64.0
-                            spawn_conveyor_dust(float(wx), float(wz), float(dx), float(dz))
+                    for _ in range(3):
+                        if conveyor_stream_lines:
+                            line = conveyor_stream_lines[conveyor_stream_idx % len(conveyor_stream_lines)]
+                            conveyor_stream_idx = (conveyor_stream_idx + 1) % len(conveyor_stream_lines)
+                            for wx, wz, dx, dz in line:
+                                spawn_conveyor_dust(float(wx), float(wz), float(dx), float(dz))
 
             else:
                 # --- COOLDOWN --- nothing happens
@@ -21748,6 +21799,8 @@ try:
                     conveyor_dir_np_x = None
                     conveyor_dir_np_z = None
                     conveyor_pattern_name = ''
+                    conveyor_stream_lines = []
+                    conveyor_stream_idx = 0
                     print("CONVEYOR BELT HAZARD ENABLED - watch the floor!")
                 else:
                     conveyor_time = 0.0
@@ -21757,6 +21810,8 @@ try:
                     conveyor_dir_np_x = None
                     conveyor_dir_np_z = None
                     conveyor_pattern_name = ''
+                    conveyor_stream_lines = []
+                    conveyor_stream_idx = 0
                     print("Conveyor belt hazard disabled")
                 # Sync to guest
                 if network_manager and network_manager.is_host:
