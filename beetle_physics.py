@@ -1192,7 +1192,7 @@ BOARD_BREAK_WEDGE_ANGLE = 55.0     # Degrees per wedge slice
 BOARD_BREAK_RING_INNER = 12.0      # Inner radius of ring cutout
 BOARD_BREAK_RING_OUTER = 24.0      # Outer radius of ring cutout
 
-# Conveyor Belt hazard — active push, cooldown cycle (no telegraph)
+# Conveyor Belt hazard — telegraph, active push, cooldown cycle
 CONVEYOR_ACTIVE_DURATION = 6.0
 CONVEYOR_COOLDOWN_DURATION = 4.0
 CONVEYOR_CYCLE_TOTAL = 10.0
@@ -12683,9 +12683,11 @@ def spawn_conveyor_dust(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti
         vz = dir_z * spd + (ti.random() - 0.5) * 0.3
         vy = 0.05 + ti.random() * 0.1
         simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-        # Light tan/stone — distinct from blue telegraph
-        grey = 0.5 + ti.random() * 0.2
-        simulation.debris_material[idx] = ti.math.vec3(grey, grey * 0.92, grey * 0.8)
+        # Blue/cyan color
+        cr = 0.05 + ti.random() * 0.08
+        cg = 0.45 + ti.random() * 0.35
+        cb = 0.75 + ti.random() * 0.25
+        simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
         simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.25
 
 
@@ -15097,7 +15099,7 @@ spawn_board_break_saw(0.0, -100.0, 1.0, 0.0, 0.0)
 spawn_board_break_saw_explode(0.0, -100.0)
 spawn_board_break_debris(0.0, -100.0, 1.0)
 renderer.clear_board_break_mask()
-# Conveyor belt hazard warmup
+# Conveyor belt hazard warmup (debris-based kernels)
 spawn_conveyor_dust(0.0, -100.0, 1.0, 0.0)
 spawn_arena_transition_ring(0.0, 4.0, 1)  # Arena transition ring warmup
 spawn_arena_transition_rings(0.0, 4.0, 1)  # Arena transition rings warmup
@@ -18974,9 +18976,7 @@ try:
                 conveyor_cycle_count += 1
             cycle_cv = conveyor_time
 
-            t_active_end = CONVEYOR_ACTIVE_DURATION
-
-            if cycle_cv < t_active_end:
+            if cycle_cv < CONVEYOR_ACTIVE_DURATION:
                 # --- ACTIVE PHASE --- belts running, push beetles
                 if not conveyor_active:
                     # First frame: generate new pattern + stream lines
@@ -18998,13 +18998,13 @@ try:
                                 beetle.vx += dx * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
                                 beetle.vz += dz * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
 
-                # Spawn dust — pick a random point from a random line for even coverage
+                # Spawn dust along stream lines — 1 line per tick
                 conveyor_dust_timer += PHYSICS_TIMESTEP
                 if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_stream_lines:
                     conveyor_dust_timer = 0.0
-                    for _ in range(6):
-                        line = random.choice(conveyor_stream_lines)
-                        wx, wz, dx, dz = random.choice(line)
+                    line = conveyor_stream_lines[conveyor_stream_idx % len(conveyor_stream_lines)]
+                    conveyor_stream_idx = (conveyor_stream_idx + 1) % len(conveyor_stream_lines)
+                    for wx, wz, dx, dz in line:
                         spawn_conveyor_dust(float(wx), float(wz), float(dx), float(dz))
 
             else:
