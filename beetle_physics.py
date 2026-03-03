@@ -18998,14 +18998,14 @@ try:
                                 beetle.vx += dx * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
                                 beetle.vz += dz * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
 
-                # Spawn dust along stream lines — 1 line per tick
+                # Spawn dust — pick a random point from each stream line
                 conveyor_dust_timer += PHYSICS_TIMESTEP
                 if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_stream_lines:
                     conveyor_dust_timer = 0.0
-                    line = conveyor_stream_lines[conveyor_stream_idx % len(conveyor_stream_lines)]
-                    conveyor_stream_idx = (conveyor_stream_idx + 1) % len(conveyor_stream_lines)
-                    for wx, wz, dx, dz in line:
-                        spawn_conveyor_dust(float(wx), float(wz), float(dx), float(dz))
+                    for line in conveyor_stream_lines:
+                        if line:
+                            wx, wz, dx, dz = random.choice(line)
+                            spawn_conveyor_dust(float(wx), float(wz), float(dx), float(dz))
 
             else:
                 # --- COOLDOWN --- nothing happens
