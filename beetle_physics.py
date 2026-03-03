@@ -1197,7 +1197,7 @@ CONVEYOR_ACTIVE_DURATION = 6.0
 CONVEYOR_COOLDOWN_DURATION = 4.0
 CONVEYOR_CYCLE_TOTAL = 10.0
 CONVEYOR_CYCLE_JITTER = 1.5
-CONVEYOR_FORCE = 100.0              # push strength (sandstorm=200, tornado=100)
+CONVEYOR_FORCE = 130.0              # push strength (sandstorm=200, tornado=100)
 CONVEYOR_BALL_FORCE_MULT = 2.5      # ball gets pushed more
 CONVEYOR_PARTICLE_INTERVAL = 0.02
 
@@ -12612,12 +12612,12 @@ def generate_conveyor_pattern():
     # --- Build stream lines: organized rows of emitter points along flow ---
     # Only include points that are on actual floor voxels.
     stream_lines = []
-    n_lines = 20  # number of parallel stream lanes
+    n_lines = 30  # number of parallel stream lanes
 
     if pattern == 'whirlpool':
         # Concentric rings at different radii — only on floor
         for li in range(n_lines):
-            radius = 4.0 + li * 1.5
+            radius = 2.0 + li * 1.0
             line = []
             n_pts = max(12, int(radius * 1.5))  # more points on larger rings
             for pi in range(n_pts):
@@ -12633,12 +12633,11 @@ def generate_conveyor_pattern():
                 stream_lines.append(line)
     else:
         # For directional patterns: evenly-spaced rows, but only on floor cells.
-        # Use tighter spacing that covers the arena area.
-        spacing = 4.0  # voxels between lines
+        spacing = 2  # voxels between lines — tight for good coverage on small arenas
         # Rows along i-axis
-        for gi_fixed in range(34, 95, int(spacing)):
+        for gi_fixed in range(34, 95, spacing):
             line = []
-            for gk_pos in range(34, 95, int(spacing)):
+            for gk_pos in range(34, 95, spacing):
                 if is_floor[gi_fixed, gk_pos]:
                     dx_v = float(dir_x[gi_fixed, gk_pos])
                     dz_v = float(dir_z[gi_fixed, gk_pos])
@@ -12647,9 +12646,9 @@ def generate_conveyor_pattern():
             if line:
                 stream_lines.append(line)
         # Rows along k-axis (interleaved with i-rows for cross coverage)
-        for gk_fixed in range(36, 93, int(spacing)):
+        for gk_fixed in range(35, 94, spacing):
             line = []
-            for gi_pos in range(34, 95, int(spacing)):
+            for gi_pos in range(34, 95, spacing):
                 if is_floor[gi_pos, gk_fixed]:
                     dx_v = float(dir_x[gi_pos, gk_fixed])
                     dz_v = float(dir_z[gi_pos, gk_fixed])
