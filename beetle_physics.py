@@ -12582,17 +12582,19 @@ def generate_conveyor_pattern():
         dir_x[q4] = -sin_a; dir_z[q4] = -cos_a    # -rk in world
 
     elif pattern == 'shear':
-        # Two halves slide parallel along the split line, but in opposite directions
+        # Two halves push perpendicular to each other, split by a line
         angle = random.uniform(0, 2 * math.pi)
         # Split line normal
         split_nx = math.sin(angle)
         split_nz = -math.cos(angle)
-        # Push direction is along the split line (perpendicular to normal)
-        push_x = math.cos(angle)
-        push_z = math.sin(angle)
+        # One half pushes along the split line, other half pushes across it
+        along_x = math.cos(angle)
+        along_z = math.sin(angle)
+        across_x = split_nx
+        across_z = split_nz
         side = DI * split_nx + DK * split_nz
-        dir_x = np.where(side >= 0, push_x, -push_x).astype(np.float32)
-        dir_z = np.where(side >= 0, push_z, -push_z).astype(np.float32)
+        dir_x = np.where(side >= 0, along_x, across_x).astype(np.float32)
+        dir_z = np.where(side >= 0, along_z, across_z).astype(np.float32)
 
     elif pattern == 'pinch':
         # Two halves pushing toward center line
