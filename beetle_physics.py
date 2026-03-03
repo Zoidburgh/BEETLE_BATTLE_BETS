@@ -1186,8 +1186,8 @@ BOARD_BREAK_COOLDOWN_DURATION = 5.0
 BOARD_BREAK_CYCLE_TOTAL = 10.8
 BOARD_BREAK_CYCLE_JITTER = 1.5
 BOARD_BREAK_PARTICLE_INTERVAL = 0.02
-BOARD_BREAK_STRIP_WIDTH = 14.0     # Width of strip pattern in voxels
-BOARD_BREAK_CROSS_ARM = 8.0        # Half-width of cross arms
+BOARD_BREAK_STRIP_WIDTH = 18.0     # Width of strip pattern in voxels
+BOARD_BREAK_CROSS_ARM = 10.0       # Half-width of cross arms
 BOARD_BREAK_WEDGE_ANGLE = 55.0     # Degrees per wedge slice
 BOARD_BREAK_RING_INNER = 12.0      # Inner radius of ring cutout
 BOARD_BREAK_RING_OUTER = 24.0      # Outer radius of ring cutout
@@ -1550,6 +1550,7 @@ def reset_match():
     """Reset beetles to starting positions for new match"""
     global beetle_blue, beetle_red, match_winner, blue_celebrating, red_celebrating, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
     global blue_pulse_timer, red_pulse_timer, blue_confetti_timer, red_confetti_timer
+    global blue_spawn_immunity, red_spawn_immunity
     global spray_charges_blue, spray_charges_red, spray_recharge_timer_blue, spray_recharge_timer_red
     global stripe_color_blue, stripe_color_red
     global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red, prev_spray_aim_blue, prev_spray_aim_red
@@ -2638,6 +2639,9 @@ BASE_DIGIT_SCALE = 2.0  # Base size multiplier for score digits (1.0 = 5x7 voxel
 # Beetle respawn state
 blue_respawn_timer = 0.0  # Timer for blue beetle respawn
 red_respawn_timer = 0.0   # Timer for red beetle respawn
+blue_spawn_immunity = 0.0  # Seconds of board break tipping immunity after spawn
+red_spawn_immunity = 0.0
+SPAWN_IMMUNITY_DURATION = 3.0
 BEETLE_RESPAWN_DELAY = 4.0  # Same timing as ball celebration
 
 # Spawn downwash state (dust stream + push during beetle drop)
@@ -5447,6 +5451,7 @@ collision_spatial_hash = ti.field(dtype=ti.i32, shape=(128, 128))
 edge_tipping_vy = ti.field(ti.f32, shape=())  # Downward velocity to apply
 edge_tipping_pitch_vel = ti.field(ti.f32, shape=())  # Pitch angular velocity
 edge_tipping_roll_vel = ti.field(ti.f32, shape=())  # Roll angular velocity
+bb_tip_immune = ti.field(ti.i32, shape=())  # 1 = skip board break tipping for current beetle
 
 # Donut mode state for GPU kernels (inner edge tipping)
 donut_mode_active = ti.field(ti.i32, shape=())  # 1 if donut mode, 0 otherwise
@@ -9649,7 +9654,7 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                                 is_over_edge = 1
 
                         # Board break: beetle voxel over a broken cell → over edge
-                        if renderer.board_break_mask_active[None] == 1 and is_over_edge == 0:
+                        if renderer.board_break_mask_active[None] == 1 and is_over_edge == 0 and bb_tip_immune[None] == 0:
                             if 0 <= i < 128 and 0 <= k < 128:
                                 if renderer.board_break_mask[i, k] == 1:
                                     is_over_edge = 1
@@ -12146,7 +12151,7 @@ def generate_board_break_pattern():
     """Generate a random board break cutout pattern. Returns (pattern_spots, edge_spots, mask_np)."""
     import numpy as np
 
-    pattern = random.choice(['strip', 'cross', 'wedges', 'ring', 'circles', 'smiley'])
+    pattern = random.choice(['strip', 'cross', 'wedges', 'ring', 'circles', 'smiley', 'checkerboard'])
     center = 64.0
     floor_j = int(RENDER_Y_OFFSET)
 
@@ -12189,36 +12194,87 @@ def generate_board_break_pattern():
         broken = np.logical_and(dist > BOARD_BREAK_RING_INNER, dist < BOARD_BREAK_RING_OUTER)
 
     elif pattern == 'circles':
-        # Two random circles, same radius as the hole hazard
+        # Two random circles, same radius as the hole hazard, guaranteed spacing
         r = HOLE_RADIUS
-        wander = 18.0  # how far from center the circles can be placed
-        for _ in range(2):
-            cx = center + random.uniform(-wander, wander)
-            ck = center + random.uniform(-wander, wander)
-            d = np.sqrt((GI - cx) ** 2 + (GK - ck) ** 2)
-            broken = np.logical_or(broken, d < r)
+        wander = 18.0
+        min_dist = r * 2.5  # minimum distance between circle centers
+        cx1 = center + random.uniform(-wander, wander)
+        ck1 = center + random.uniform(-wander, wander)
+        # Place second circle with minimum distance from first
+        for _attempt in range(20):
+            cx2 = center + random.uniform(-wander, wander)
+            ck2 = center + random.uniform(-wander, wander)
+            if math.sqrt((cx2 - cx1) ** 2 + (ck2 - ck1) ** 2) >= min_dist:
+                break
+        d1 = np.sqrt((GI - cx1) ** 2 + (GK - ck1) ** 2)
+        d2 = np.sqrt((GI - cx2) ** 2 + (GK - ck2) ** 2)
+        broken = np.logical_or(d1 < r, d2 < r)
 
     elif pattern == 'smiley':
-        # Smiley face: two big circle eyes + wide crescent mouth — fills most of the arena
+        # Smiley or frowny face — randomly chosen each cycle
+        is_frown = random.random() < 0.5
         eye_r = 10.0
-        eye_spread = 15.0  # horizontal distance from center to each eye
-        eye_up = 12.0      # how far above center the eyes sit
+        eye_spread = 15.0
+        eye_up = 12.0
         # Left eye
         d_left = np.sqrt((DI + eye_spread) ** 2 + (DK + eye_up) ** 2)
         broken = np.logical_or(broken, d_left < eye_r)
         # Right eye
         d_right = np.sqrt((DI - eye_spread) ** 2 + (DK + eye_up) ** 2)
         broken = np.logical_or(broken, d_right < eye_r)
-        # Mouth: arc bottom + flat top connecting the corners
-        mouth_cy = -4.0
-        mouth_outer = 26.0
-        d_mouth = np.sqrt(DI ** 2 + (DK - mouth_cy) ** 2)
-        # Everything inside the arc AND below the straight line across the top
-        mouth_top_z = 8.0  # straight line connecting the mouth corners
-        inside_arc = d_mouth < mouth_outer
-        below_line = DK > mouth_top_z
-        mouth_mask = np.logical_and(inside_arc, below_line)
+        if not is_frown:
+            # Smile: arc bottom + flat top
+            mouth_cy = -4.0
+            mouth_outer = 26.0
+            d_mouth = np.sqrt(DI ** 2 + (DK - mouth_cy) ** 2)
+            mouth_top_z = 8.0
+            inside_arc = d_mouth < mouth_outer
+            below_line = DK > mouth_top_z
+            mouth_mask = np.logical_and(inside_arc, below_line)
+        else:
+            # Frown: arc top + flat bottom (inverted smile), shifted down from eyes
+            mouth_cy = 34.0  # arc center further below
+            mouth_outer = 26.0
+            d_mouth = np.sqrt(DI ** 2 + (DK - mouth_cy) ** 2)
+            mouth_bottom_z = 18.0  # flat line across the bottom
+            inside_arc = d_mouth < mouth_outer
+            above_line = DK < mouth_bottom_z
+            mouth_mask = np.logical_and(inside_arc, above_line)
         broken = np.logical_or(broken, mouth_mask)
+
+    elif pattern == 'heart':
+        # Big heart shape — two overlapping circles on top + triangle bottom
+        heart_scale = 24.0  # fills most of the arena
+        lobe_r = heart_scale * 0.5  # radius of each lobe
+        lobe_spread = heart_scale * 0.42  # horizontal offset for each lobe
+        lobe_up = 4.0  # lobes sit above center
+        # Left lobe
+        d_ll = np.sqrt((DI + lobe_spread) ** 2 + (DK + lobe_up) ** 2)
+        broken = np.logical_or(broken, d_ll < lobe_r)
+        # Right lobe
+        d_rl = np.sqrt((DI - lobe_spread) ** 2 + (DK + lobe_up) ** 2)
+        broken = np.logical_or(broken, d_rl < lobe_r)
+        # V-shape below lobes — starts where lobes end, matches their width
+        lobe_bottom = -lobe_up + lobe_r  # DK where lobes end (bottom of circles)
+        tip_z = lobe_bottom + heart_scale * 0.55  # point below lobes
+        # At lobe_bottom, width = 2 * lobe_spread (circles have zero radius there)
+        v_top_half_width = lobe_spread
+        below_lobes = DK > lobe_bottom
+        above_tip = DK < tip_z
+        # Linear taper from lobe_spread at lobe_bottom to 0 at tip_z
+        frac = np.clip((DK - lobe_bottom) / (tip_z - lobe_bottom), 0.0, 1.0)
+        half_w = v_top_half_width * (1.0 - frac)
+        in_taper = np.abs(DI) < half_w
+        tri_mask = in_taper & below_lobes & above_tip
+        broken = np.logical_or(broken, tri_mask)
+
+    elif pattern == 'checkerboard':
+        # Checkerboard: 2x2 grid that evenly divides the arena into 4 big squares
+        # Anchor to center so pattern covers full floor with no slivers
+        square_size = 38
+        si = (GI.astype(int) - 64 + square_size) // square_size
+        sk = (GK.astype(int) - 64 + square_size) // square_size
+        broken = (si + sk) % 2 == 0
 
     # Intersect with actual floor voxels
     mask = np.logical_and(broken, is_floor).astype(np.int32)
@@ -12374,10 +12430,10 @@ def spawn_board_break_vibrate(spot_x: ti.f32, spot_z: ti.f32):
         vz = (ti.random() - 0.5) * 1.5
         vy = 0.5 + ti.random() * 1.5
         simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-        # Stone color matching respawn debris
-        grey = 0.35 + ti.random() * 0.15
+        # Mixed dark/bright stone colors
+        grey = 0.05 + ti.random() * 0.85  # very wide: near-black (0.05) to bright (0.90)
         simulation.debris_material[idx] = ti.math.vec3(grey, grey * 0.95, grey * 0.9)
-        simulation.debris_radius[idx] = 0.1 + ti.random() * 0.05
+        simulation.debris_radius[idx] = 0.0  # use default radius (won't corrupt other particles)
         simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.1
 
 
@@ -12425,7 +12481,7 @@ def spawn_board_break_saw_explode(spot_x: ti.f32, spot_z: ti.f32):
             cg = 0.1 + ti.random() * 0.3
             cb = ti.random() * 0.05
             simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
-            simulation.debris_radius[idx] = 0.12 + ti.random() * 0.06
+            simulation.debris_radius[idx] = 0.0  # use default radius
             simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.4
 
 
@@ -17533,6 +17589,7 @@ try:
                     beetle_blue.has_exploded = False
                     beetle_blue.is_falling = False
                     beetle_blue.on_ground = False
+                    blue_spawn_immunity = SPAWN_IMMUNITY_DURATION
                     print("Blue beetle hovering to spawn point!")
                 else:
                     # Normal mode - spawn directly
@@ -17558,6 +17615,7 @@ try:
                     beetle_blue.forward_bonus = 0.0
                     beetle_blue.backward_bonus = 0.0
                     beetle_blue.silk_speed_mult = 1.0
+                    blue_spawn_immunity = SPAWN_IMMUNITY_DURATION
                     red_celebrating = False
                     red_pulse_timer = 0.0
                     red_confetti_timer = 0.0
@@ -17677,6 +17735,7 @@ try:
                     beetle_red.has_exploded = False
                     beetle_red.is_falling = False
                     beetle_red.on_ground = False
+                    red_spawn_immunity = SPAWN_IMMUNITY_DURATION
                     print("Red beetle hovering to spawn point!")
                 else:
                     # Normal mode - spawn directly
@@ -17702,6 +17761,7 @@ try:
                     beetle_red.forward_bonus = 0.0
                     beetle_red.backward_bonus = 0.0
                     beetle_red.silk_speed_mult = 1.0
+                    red_spawn_immunity = SPAWN_IMMUNITY_DURATION
                     blue_celebrating = False
                     blue_pulse_timer = 0.0
                     blue_confetti_timer = 0.0
@@ -18704,7 +18764,7 @@ try:
                 if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_blue = -1000.0
             # Board break override: drop floor when beetle center is over a broken cell
-            if board_break_active and not beetle_ball.active and floor_y_blue > -100.0:
+            if board_break_active and not beetle_ball.active and blue_spawn_immunity <= 0 and floor_y_blue > -100.0:
                 bb_gi = int(beetle_blue.x + 64.0)
                 bb_gk = int(beetle_blue.z + 64.0)
                 if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
@@ -18756,7 +18816,7 @@ try:
                 if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_red = -1000.0
             # Board break override: drop floor when beetle center is over a broken cell
-            if board_break_active and not beetle_ball.active and floor_y_red > -100.0:
+            if board_break_active and not beetle_ball.active and red_spawn_immunity <= 0 and floor_y_red > -100.0:
                 bb_gi = int(beetle_red.x + 64.0)
                 bb_gk = int(beetle_red.z + 64.0)
                 if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
@@ -18855,8 +18915,15 @@ try:
 
         # Apply edge tipping physics (GPU-accelerated)
         # Reuse cached floor_y values from penetration check above
+        # Tick spawn immunity timers
+        if blue_spawn_immunity > 0:
+            blue_spawn_immunity -= PHYSICS_TIMESTEP
+        if red_spawn_immunity > 0:
+            red_spawn_immunity -= PHYSICS_TIMESTEP
+
         if beetle_blue.active and not beetle_blue.is_falling:
             if floor_y_blue <= -100.0:  # No floor support (use cached value)
+                bb_tip_immune[None] = 1 if blue_spawn_immunity > 0 else 0
                 calculate_edge_tipping_kernel(beetle_blue.x, beetle_blue.z, simulation.BEETLE_BLUE,
                                               PHYSICS_TIMESTEP, beetle_blue.pitch_inertia, beetle_blue.roll_inertia)
                 beetle_blue.vy += edge_tipping_vy[None]
@@ -18865,6 +18932,7 @@ try:
 
         if beetle_red.active and not beetle_red.is_falling:
             if floor_y_red <= -100.0:  # No floor support (use cached value)
+                bb_tip_immune[None] = 1 if red_spawn_immunity > 0 else 0
                 calculate_edge_tipping_kernel(beetle_red.x, beetle_red.z, simulation.BEETLE_RED,
                                               PHYSICS_TIMESTEP, beetle_red.pitch_inertia, beetle_red.roll_inertia)
                 beetle_red.vy += edge_tipping_vy[None]
