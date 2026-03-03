@@ -12604,23 +12604,28 @@ def generate_conveyor_pattern():
         dir_x = np.where(side >= 0, -norm_x, norm_x).astype(np.float32)
         dir_z = np.where(side >= 0, -norm_z, norm_z).astype(np.float32)
 
+    # --- Read actual floor mask so stream lines only cover real arena ---
+    floor_j = int(RENDER_Y_OFFSET)
+    voxel_np = simulation.voxel_type.to_numpy()
+    floor_slice = voxel_np[:, floor_j, :]
+    is_floor = np.logical_or(floor_slice == 2, floor_slice == 21)  # CONCRETE or SLIPPERY
+
     # --- Build stream lines: organized rows of emitter points along flow ---
-    # For each line, pick a starting point and walk in the push direction to form a lane.
-    # This gives particles visible structure instead of random scatter.
+    # Only include points that are on actual floor voxels.
     stream_lines = []
     n_lines = 20  # number of parallel stream lanes
-    pts_per_line = 10  # emitter points per lane
 
     if pattern == 'whirlpool':
-        # Concentric rings at different radii
+        # Concentric rings at different radii — only on floor
         for li in range(n_lines):
-            radius = 8.0 + li * 2.0
+            radius = 4.0 + li * 1.5
             line = []
-            for pi in range(pts_per_line * 2):  # more points for circular paths
-                ang = pi * 2.0 * math.pi / (pts_per_line * 2)
+            n_pts = max(12, int(radius * 1.5))  # more points on larger rings
+            for pi in range(n_pts):
+                ang = pi * 2.0 * math.pi / n_pts
                 gi = int(center + radius * math.cos(ang))
                 gk = int(center + radius * math.sin(ang))
-                if 4 <= gi < 124 and 4 <= gk < 124:
+                if 0 <= gi < 128 and 0 <= gk < 128 and is_floor[gi, gk]:
                     dx_v = float(dir_x[gi, gk])
                     dz_v = float(dir_z[gi, gk])
                     if abs(dx_v) > 0.01 or abs(dz_v) > 0.01:
@@ -12628,30 +12633,29 @@ def generate_conveyor_pattern():
             if line:
                 stream_lines.append(line)
     else:
-        # For directional patterns: lay lines perpendicular to the local flow.
-        # Sample a grid of evenly-spaced emitter rows.
-        spacing = 128.0 / (n_lines + 1)
-        for li in range(n_lines):
+        # For directional patterns: evenly-spaced rows, but only on floor cells.
+        # Use tighter spacing that covers the arena area.
+        spacing = 4.0  # voxels between lines
+        # Rows along i-axis
+        for gi_fixed in range(34, 95, int(spacing)):
             line = []
-            # Alternate: rows along i-axis and k-axis for good coverage
-            if li % 2 == 0:
-                gi_fixed = int(spacing * (li // 2 + 1))
-                for pi in range(pts_per_line):
-                    gk_pos = int(spacing * pi + spacing * 0.5)
-                    if 4 <= gi_fixed < 124 and 4 <= gk_pos < 124:
-                        dx_v = float(dir_x[gi_fixed, gk_pos])
-                        dz_v = float(dir_z[gi_fixed, gk_pos])
-                        if abs(dx_v) > 0.01 or abs(dz_v) > 0.01:
-                            line.append((float(gi_fixed) - 64.0, float(gk_pos) - 64.0, dx_v, dz_v))
-            else:
-                gk_fixed = int(spacing * (li // 2 + 1))
-                for pi in range(pts_per_line):
-                    gi_pos = int(spacing * pi + spacing * 0.5)
-                    if 4 <= gi_pos < 124 and 4 <= gk_fixed < 124:
-                        dx_v = float(dir_x[gi_pos, gk_fixed])
-                        dz_v = float(dir_z[gi_pos, gk_fixed])
-                        if abs(dx_v) > 0.01 or abs(dz_v) > 0.01:
-                            line.append((float(gi_pos) - 64.0, float(gk_fixed) - 64.0, dx_v, dz_v))
+            for gk_pos in range(34, 95, int(spacing)):
+                if is_floor[gi_fixed, gk_pos]:
+                    dx_v = float(dir_x[gi_fixed, gk_pos])
+                    dz_v = float(dir_z[gi_fixed, gk_pos])
+                    if abs(dx_v) > 0.01 or abs(dz_v) > 0.01:
+                        line.append((float(gi_fixed) - 64.0, float(gk_pos) - 64.0, dx_v, dz_v))
+            if line:
+                stream_lines.append(line)
+        # Rows along k-axis (interleaved with i-rows for cross coverage)
+        for gk_fixed in range(36, 93, int(spacing)):
+            line = []
+            for gi_pos in range(34, 95, int(spacing)):
+                if is_floor[gi_pos, gk_fixed]:
+                    dx_v = float(dir_x[gi_pos, gk_fixed])
+                    dz_v = float(dir_z[gi_pos, gk_fixed])
+                    if abs(dx_v) > 0.01 or abs(dz_v) > 0.01:
+                        line.append((float(gi_pos) - 64.0, float(gk_fixed) - 64.0, dx_v, dz_v))
             if line:
                 stream_lines.append(line)
 
