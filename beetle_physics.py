@@ -12683,10 +12683,10 @@ def spawn_conveyor_dust(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti
         vz = dir_z * spd + (ti.random() - 0.5) * 0.3
         vy = 0.05 + ti.random() * 0.1
         simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-        # Blue/cyan color
-        cr = 0.05 + ti.random() * 0.08
-        cg = 0.45 + ti.random() * 0.35
-        cb = 0.75 + ti.random() * 0.25
+        # Muted blue/cyan
+        cr = 0.15 + ti.random() * 0.1
+        cg = 0.3 + ti.random() * 0.15
+        cb = 0.45 + ti.random() * 0.15
         simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
         simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.25
 
