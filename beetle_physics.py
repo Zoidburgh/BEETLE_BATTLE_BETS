@@ -12678,7 +12678,7 @@ def spawn_conveyor_dust(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti
         py = floor_y + ti.random() * 0.15
         simulation.debris_pos[idx] = ti.math.vec3(px, py, pz)
         # Fast directional slide — very little lateral scatter
-        spd = 8.0 + ti.random() * 5.0
+        spd = 22.0 + ti.random() * 10.0
         vx = dir_x * spd + (ti.random() - 0.5) * 0.3
         vz = dir_z * spd + (ti.random() - 0.5) * 0.3
         vy = 0.05 + ti.random() * 0.1
