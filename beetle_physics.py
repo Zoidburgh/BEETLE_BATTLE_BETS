@@ -12605,57 +12605,61 @@ def generate_conveyor_pattern():
 
 @ti.kernel
 def spawn_conveyor_arrow(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti.f32, phase: ti.f32):
-    """Spawn arrow-shaped telegraph particles showing conveyor push direction — blue/cyan"""
+    """Spawn a fast-moving streak particle that visibly flows in the push direction — blue/cyan"""
     floor_y = RENDER_Y_OFFSET + 0.5
     pulse = 0.5 + 0.5 * ti.sin(phase * 5.0)
-    # Arrow: 2 particles along direction + 1 at tip
-    for i in range(3):
-        idx = ti.atomic_add(simulation.num_debris[None], 1)
-        if idx < simulation.MAX_DEBRIS:
-            simulation.debris_active[idx] = 1
-            ti.atomic_add(simulation.debris_active_count[None], 1)
-            # Spread along push direction to form arrow shape
-            offset = float(i) * 0.6 - 0.6  # -0.6, 0.0, +0.6
-            px = spot_x + dir_x * offset + (ti.random() - 0.5) * 0.3
-            pz = spot_z + dir_z * offset + (ti.random() - 0.5) * 0.3
-            spawn_y = floor_y + ti.random() * 0.2
-            simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
-            # Velocity in push direction
-            spd = 1.0 + pulse * 2.0
-            vx = dir_x * spd + (ti.random() - 0.5) * 0.3
-            vz = dir_z * spd + (ti.random() - 0.5) * 0.3
-            vy = 0.3 + ti.random() * 0.8
-            simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-            # Blue/cyan color
-            cr = 0.1 + ti.random() * 0.1
-            cg = 0.5 + pulse * 0.3 + ti.random() * 0.1
-            cb = 0.8 + ti.random() * 0.2
-            simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
-            simulation.debris_lifetime[idx] = 0.15 + ti.random() * 0.1
+    idx = ti.atomic_add(simulation.num_debris[None], 1)
+    if idx < simulation.MAX_DEBRIS:
+        simulation.debris_active[idx] = 1
+        ti.atomic_add(simulation.debris_active_count[None], 1)
+        # Slight perpendicular scatter so streaks form lanes, not a single line
+        perp_x = -dir_z
+        perp_z = dir_x
+        perp_off = (ti.random() - 0.5) * 0.6
+        px = spot_x + perp_x * perp_off
+        pz = spot_z + perp_z * perp_off
+        spawn_y = floor_y + ti.random() * 0.15
+        simulation.debris_pos[idx] = ti.math.vec3(px, spawn_y, pz)
+        # Strong directional velocity — creates visible streaks
+        spd = 6.0 + ti.random() * 4.0 + pulse * 3.0
+        vx = dir_x * spd
+        vz = dir_z * spd
+        vy = 0.1 + ti.random() * 0.2
+        simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+        # Bright blue/cyan — pulsing intensity
+        cr = 0.05 + ti.random() * 0.08
+        cg = 0.45 + pulse * 0.35 + ti.random() * 0.1
+        cb = 0.75 + pulse * 0.2 + ti.random() * 0.05
+        simulation.debris_material[idx] = ti.math.vec3(cr, cg, cb)
+        simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.3
 
 
 @ti.kernel
 def spawn_conveyor_dust(spot_x: ti.f32, spot_z: ti.f32, dir_x: ti.f32, dir_z: ti.f32):
-    """Spawn a small dust particle sliding along floor in push direction"""
+    """Spawn a fast floor-sliding particle that clearly shows push direction"""
     floor_y = RENDER_Y_OFFSET + 0.3
     idx = ti.atomic_add(simulation.num_debris[None], 1)
     if idx < simulation.MAX_DEBRIS:
         simulation.debris_active[idx] = 1
         ti.atomic_add(simulation.debris_active_count[None], 1)
-        px = spot_x + (ti.random() - 0.5) * 0.8
-        pz = spot_z + (ti.random() - 0.5) * 0.8
-        py = floor_y + ti.random() * 0.2
+        # Slight perpendicular scatter
+        perp_x = -dir_z
+        perp_z = dir_x
+        perp_off = (ti.random() - 0.5) * 0.5
+        px = spot_x + perp_x * perp_off
+        pz = spot_z + perp_z * perp_off
+        py = floor_y + ti.random() * 0.15
         simulation.debris_pos[idx] = ti.math.vec3(px, py, pz)
-        # Slide along belt direction
-        spd = 3.0 + ti.random() * 2.0
-        vx = dir_x * spd + (ti.random() - 0.5) * 0.5
-        vz = dir_z * spd + (ti.random() - 0.5) * 0.5
-        vy = 0.1 + ti.random() * 0.3
+        # Fast directional slide — very little lateral scatter
+        spd = 8.0 + ti.random() * 5.0
+        vx = dir_x * spd + (ti.random() - 0.5) * 0.3
+        vz = dir_z * spd + (ti.random() - 0.5) * 0.3
+        vy = 0.05 + ti.random() * 0.1
         simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-        # Stone/grey colored
-        grey = 0.35 + ti.random() * 0.25
-        simulation.debris_material[idx] = ti.math.vec3(grey, grey * 0.95, grey * 0.9)
-        simulation.debris_lifetime[idx] = 0.25 + ti.random() * 0.15
+        # Light tan/stone — distinct from blue telegraph
+        grey = 0.5 + ti.random() * 0.2
+        simulation.debris_material[idx] = ti.math.vec3(grey, grey * 0.92, grey * 0.8)
+        simulation.debris_lifetime[idx] = 0.4 + ti.random() * 0.25
 
 
 @ti.kernel
@@ -18955,13 +18959,14 @@ try:
                     conveyor_active = False
                     conveyor_dust_timer = 0.0
 
-                # Spawn arrow particles at random floor spots
+                # Spawn streak particles across the arena — evenly spaced grid for clear flow
                 conveyor_dust_timer += PHYSICS_TIMESTEP
                 if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_dir_np_x is not None:
                     conveyor_dust_timer = 0.0
-                    for _ in range(8):
-                        gi = random.randint(20, 107)
-                        gk = random.randint(20, 107)
+                    # 15 particles per tick across spread-out positions
+                    for _ in range(15):
+                        gi = random.randint(16, 111)
+                        gk = random.randint(16, 111)
                         dx = float(conveyor_dir_np_x[gi, gk])
                         dz = float(conveyor_dir_np_z[gi, gk])
                         if abs(dx) > 0.01 or abs(dz) > 0.01:
@@ -18988,13 +18993,13 @@ try:
                                 beetle.vx += dx * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
                                 beetle.vz += dz * CONVEYOR_FORCE * PHYSICS_TIMESTEP * force_mult
 
-                # Spawn sliding dust particles
+                # Spawn fast sliding dust — many particles for visible flow
                 conveyor_dust_timer += PHYSICS_TIMESTEP
                 if conveyor_dust_timer >= CONVEYOR_PARTICLE_INTERVAL and conveyor_dir_np_x is not None:
                     conveyor_dust_timer = 0.0
-                    for _ in range(5):
-                        gi = random.randint(20, 107)
-                        gk = random.randint(20, 107)
+                    for _ in range(12):
+                        gi = random.randint(16, 111)
+                        gk = random.randint(16, 111)
                         dx = float(conveyor_dir_np_x[gi, gk])
                         dz = float(conveyor_dir_np_z[gi, gk])
                         if abs(dx) > 0.01 or abs(dz) > 0.01:
