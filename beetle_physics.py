@@ -934,8 +934,10 @@ class InputBuffer:
 
         # Cleanup old inputs (keep last 120 frames = 2 seconds)
         cleanup_threshold = self.current_frame - 120
-        self.local_inputs = {k: v for k, v in self.local_inputs.items() if k > cleanup_threshold}
-        self.remote_inputs = {k: v for k, v in self.remote_inputs.items() if k > cleanup_threshold}
+        for k in [k for k in self.local_inputs if k <= cleanup_threshold]:
+            del self.local_inputs[k]
+        for k in [k for k in self.remote_inputs if k <= cleanup_threshold]:
+            del self.remote_inputs[k]
 
     def _get_percentile_ping(self, percentile=90):
         """Get the Nth percentile ping from samples (jitter buffer technique).
@@ -1781,6 +1783,7 @@ def reset_match():
     simulation.red_stripe_color[None] = ti.Vector([r[0], r[1], r[2]])
     r = window.red_horn_tip_color
     simulation.red_horn_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
+    _gpu_color_cache.clear()  # Invalidate color cache after reset
 
     # Reset scorpion tracking variables to prevent geometry cache desync
     previous_stinger_curvature = 0.0
@@ -1888,6 +1891,7 @@ def apply_remote_beetle_config(network_mgr):
             simulation.blue_leg_tip_color[None] = ti.Vector([config['leg_tip_color'][0], config['leg_tip_color'][1], config['leg_tip_color'][2]])
             simulation.blue_stripe_color[None] = ti.Vector([config['stripe_color'][0], config['stripe_color'][1], config['stripe_color'][2]])
             simulation.blue_horn_tip_color[None] = ti.Vector([config['horn_tip_color'][0], config['horn_tip_color'][1], config['horn_tip_color'][2]])
+            _gpu_color_cache.clear()
         # Only rebuild geometry if shape parameters changed (prevents jumping when only colors change)
         if geometry_changed:
             rebuild_blue_beetle(
@@ -1930,6 +1934,7 @@ def apply_remote_beetle_config(network_mgr):
             simulation.red_leg_tip_color[None] = ti.Vector([config['leg_tip_color'][0], config['leg_tip_color'][1], config['leg_tip_color'][2]])
             simulation.red_stripe_color[None] = ti.Vector([config['stripe_color'][0], config['stripe_color'][1], config['stripe_color'][2]])
             simulation.red_horn_tip_color[None] = ti.Vector([config['horn_tip_color'][0], config['horn_tip_color'][1], config['horn_tip_color'][2]])
+            _gpu_color_cache.clear()
         # Only rebuild geometry if shape parameters changed (prevents jumping when only colors change)
         if geometry_changed:
             rebuild_red_beetle(
@@ -2192,6 +2197,16 @@ stripe_color_red = [0.5, 1.0, 0.3]   # Current displayed stripe color (starts at
 # Venom tip color interpolation for smooth transitions (scorpion)
 venom_tip_color_blue = [0.6, 0.2, 0.8]  # Current displayed venom tip color (starts at full charge - bright purple)
 venom_tip_color_red = [0.6, 0.2, 0.8]   # Current displayed venom tip color (starts at full charge - bright purple)
+
+# GPU color write cache — skip writes when color hasn't changed (avoids GPU sync stalls)
+_gpu_color_cache = {}
+
+def _set_color_field(field, r, g, b, key):
+    """Write color to GPU field only if changed. Avoids redundant GPU sync stalls."""
+    val = (round(r, 4), round(g, 4), round(b, 4))
+    if _gpu_color_cache.get(key) != val:
+        field[None] = ti.Vector([r, g, b])
+        _gpu_color_cache[key] = val
 
 # Bombardier spray aim angle (vertical tilt)
 SPRAY_AIM_MAX = 0.175  # ~10 degrees in radians
@@ -13081,6 +13096,7 @@ def apply_preset(palette, window, simulation, side):
     getattr(simulation, f'{side}_leg_tip_color')[None] = ti.Vector(list(palette['leg_tips']))
     getattr(simulation, f'{side}_stripe_color')[None] = ti.Vector(list(palette['stripe']))
     getattr(simulation, f'{side}_horn_tip_color')[None] = ti.Vector(list(palette['horn_tips']))
+    _gpu_color_cache.clear()
 
 def apply_horn_defaults(beetle, horn_type):
     """Set horn pitch/yaw defaults for a given beetle type."""
@@ -19597,17 +19613,17 @@ try:
 
         # Pulse all blue beetle colors
         b = window.blue_body_color
-        simulation.blue_body_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        _set_color_field(simulation.blue_body_color, min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0), 'bb')
         b = window.blue_leg_color
-        simulation.blue_leg_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        _set_color_field(simulation.blue_leg_color, min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0), 'bl')
         b = window.blue_leg_tip_color
-        simulation.blue_leg_tip_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        _set_color_field(simulation.blue_leg_tip_color, min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0), 'blt')
         b = window.blue_stripe_color
-        simulation.blue_stripe_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        _set_color_field(simulation.blue_stripe_color, min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0), 'bs')
         b = window.blue_horn_tip_color
-        simulation.blue_horn_tip_color[None] = ti.Vector([min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0)])
+        _set_color_field(simulation.blue_horn_tip_color, min(b[0] * blue_pulse, 1.0), min(b[1] * blue_pulse, 1.0), min(b[2] * blue_pulse, 1.0), 'bht')
         if blue_horn_type_id == 3:
-            simulation.blue_venom_tip_color[None] = ti.Vector([min(0.6 * blue_pulse, 1.0), min(0.2 * blue_pulse, 1.0), min(0.8 * blue_pulse, 1.0)])
+            _set_color_field(simulation.blue_venom_tip_color, min(0.6 * blue_pulse, 1.0), min(0.2 * blue_pulse, 1.0), min(0.8 * blue_pulse, 1.0), 'bvt')
 
     # RED's independent celebration
     if red_celebrating and red_pulse_timer < VICTORY_PULSE_DURATION:
@@ -19635,42 +19651,42 @@ try:
 
         # Pulse all red beetle colors
         r = window.red_body_color
-        simulation.red_body_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        _set_color_field(simulation.red_body_color, min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0), 'rb')
         r = window.red_leg_color
-        simulation.red_leg_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        _set_color_field(simulation.red_leg_color, min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0), 'rl')
         r = window.red_leg_tip_color
-        simulation.red_leg_tip_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        _set_color_field(simulation.red_leg_tip_color, min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0), 'rlt')
         r = window.red_stripe_color
-        simulation.red_stripe_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        _set_color_field(simulation.red_stripe_color, min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0), 'rs')
         r = window.red_horn_tip_color
-        simulation.red_horn_tip_color[None] = ti.Vector([min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0)])
+        _set_color_field(simulation.red_horn_tip_color, min(r[0] * red_pulse, 1.0), min(r[1] * red_pulse, 1.0), min(r[2] * red_pulse, 1.0), 'rht')
         if red_horn_type_id == 3:
-            simulation.red_venom_tip_color[None] = ti.Vector([min(0.6 * red_pulse, 1.0), min(0.2 * red_pulse, 1.0), min(0.8 * red_pulse, 1.0)])
+            _set_color_field(simulation.red_venom_tip_color, min(0.6 * red_pulse, 1.0), min(0.2 * red_pulse, 1.0), min(0.8 * red_pulse, 1.0), 'rvt')
 
     # Reset colors after pulse ends - each independently
     if blue_celebrating and blue_pulse_timer >= VICTORY_PULSE_DURATION:
         b = window.blue_body_color
-        simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+        _set_color_field(simulation.blue_body_color, b[0], b[1], b[2], 'bb')
         b = window.blue_leg_color
-        simulation.blue_leg_color[None] = ti.Vector([b[0], b[1], b[2]])
+        _set_color_field(simulation.blue_leg_color, b[0], b[1], b[2], 'bl')
         b = window.blue_leg_tip_color
-        simulation.blue_leg_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
+        _set_color_field(simulation.blue_leg_tip_color, b[0], b[1], b[2], 'blt')
         b = window.blue_stripe_color
-        simulation.blue_stripe_color[None] = ti.Vector([b[0], b[1], b[2]])
+        _set_color_field(simulation.blue_stripe_color, b[0], b[1], b[2], 'bs')
         b = window.blue_horn_tip_color
-        simulation.blue_horn_tip_color[None] = ti.Vector([b[0], b[1], b[2]])
+        _set_color_field(simulation.blue_horn_tip_color, b[0], b[1], b[2], 'bht')
 
     if red_celebrating and red_pulse_timer >= VICTORY_PULSE_DURATION:
         r = window.red_body_color
-        simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+        _set_color_field(simulation.red_body_color, r[0], r[1], r[2], 'rb')
         r = window.red_leg_color
-        simulation.red_leg_color[None] = ti.Vector([r[0], r[1], r[2]])
+        _set_color_field(simulation.red_leg_color, r[0], r[1], r[2], 'rl')
         r = window.red_leg_tip_color
-        simulation.red_leg_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
+        _set_color_field(simulation.red_leg_tip_color, r[0], r[1], r[2], 'rlt')
         r = window.red_stripe_color
-        simulation.red_stripe_color[None] = ti.Vector([r[0], r[1], r[2]])
+        _set_color_field(simulation.red_stripe_color, r[0], r[1], r[2], 'rs')
         r = window.red_horn_tip_color
-        simulation.red_horn_tip_color[None] = ti.Vector([r[0], r[1], r[2]])
+        _set_color_field(simulation.red_horn_tip_color, r[0], r[1], r[2], 'rht')
 
     perf_monitor.stop('animation')
 
@@ -19806,9 +19822,9 @@ try:
         stripe_color_blue[2] += (target_b - stripe_color_blue[2]) * lerp_factor
 
         if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
-            simulation.blue_stripe_color[None] = ti.Vector([stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2]])
+            _set_color_field(simulation.blue_stripe_color, stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2], 'bs')
             b = window.blue_body_color
-            simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+            _set_color_field(simulation.blue_body_color, b[0], b[1], b[2], 'bb')
 
     elif blue_horn_type_id == 5:  # Blue is bombardier
         # Determine target stripe color based on charge level
@@ -19833,17 +19849,17 @@ try:
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
         if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
-            simulation.blue_stripe_color[None] = ti.Vector([stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2]])
+            _set_color_field(simulation.blue_stripe_color, stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2], 'bs')
             b = window.blue_body_color
-            simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+            _set_color_field(simulation.blue_body_color, b[0], b[1], b[2], 'bb')
         blue_charge_glow = spray_charges_blue / float(SPRAY_MAX_CHARGES)
     else:
         # Non-bombardier: use normal colors (skip during victory pulse)
         if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
             b = window.blue_body_color
-            simulation.blue_body_color[None] = ti.Vector([b[0], b[1], b[2]])
+            _set_color_field(simulation.blue_body_color, b[0], b[1], b[2], 'bb')
             s = window.blue_stripe_color
-            simulation.blue_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
+            _set_color_field(simulation.blue_stripe_color, s[0], s[1], s[2], 'bs')
 
     if red_horn_type_id == 6:  # Red is spider - glow based on silk charge
         # Full glow when charge is full, fades as charge depletes
@@ -19870,9 +19886,9 @@ try:
         stripe_color_red[2] += (target_b - stripe_color_red[2]) * lerp_factor
 
         if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
-            simulation.red_stripe_color[None] = ti.Vector([stripe_color_red[0], stripe_color_red[1], stripe_color_red[2]])
+            _set_color_field(simulation.red_stripe_color, stripe_color_red[0], stripe_color_red[1], stripe_color_red[2], 'rs')
             r = window.red_body_color
-            simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+            _set_color_field(simulation.red_body_color, r[0], r[1], r[2], 'rb')
 
     elif red_horn_type_id == 5:  # Red is bombardier
         # Determine target stripe color based on charge level
@@ -19897,17 +19913,17 @@ try:
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
         if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
-            simulation.red_stripe_color[None] = ti.Vector([stripe_color_red[0], stripe_color_red[1], stripe_color_red[2]])
+            _set_color_field(simulation.red_stripe_color, stripe_color_red[0], stripe_color_red[1], stripe_color_red[2], 'rs')
             r = window.red_body_color
-            simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+            _set_color_field(simulation.red_body_color, r[0], r[1], r[2], 'rb')
         red_charge_glow = spray_charges_red / float(SPRAY_MAX_CHARGES)
     else:
         # Non-bombardier: use normal colors (skip during victory pulse)
         if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
             r = window.red_body_color
-            simulation.red_body_color[None] = ti.Vector([r[0], r[1], r[2]])
+            _set_color_field(simulation.red_body_color, r[0], r[1], r[2], 'rb')
             s = window.red_stripe_color
-            simulation.red_stripe_color[None] = ti.Vector([s[0], s[1], s[2]])
+            _set_color_field(simulation.red_stripe_color, s[0], s[1], s[2], 'rs')
 
     # === SCORPION VENOM TIP GLOW EFFECT ===
     # Update venom tip color based on charges (smooth lerp like bombardier stripes)
@@ -19934,7 +19950,7 @@ try:
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
         if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
-            simulation.blue_venom_tip_color[None] = ti.Vector([venom_tip_color_blue[0], venom_tip_color_blue[1], venom_tip_color_blue[2]])
+            _set_color_field(simulation.blue_venom_tip_color, venom_tip_color_blue[0], venom_tip_color_blue[1], venom_tip_color_blue[2], 'bvt')
 
     if red_horn_type_id == 3:  # Red is scorpion
         # Determine target venom tip color based on charge level (dark purple shades)
@@ -19959,7 +19975,7 @@ try:
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
         if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
-            simulation.red_venom_tip_color[None] = ti.Vector([venom_tip_color_red[0], venom_tip_color_red[1], venom_tip_color_red[2]])
+            _set_color_field(simulation.red_venom_tip_color, venom_tip_color_red[0], venom_tip_color_red[1], venom_tip_color_red[2], 'rvt')
 
     # === BEETLE RENDER TIMING ===
     perf_monitor.start('beetle_render')
@@ -22104,8 +22120,10 @@ try:
                 blue_color_changed = True
 
             # Send config immediately when host changes blue beetle colors
-            if blue_color_changed and network_manager and network_manager.connected and network_manager.is_host:
-                send_local_beetle_config(network_manager, is_host=True)
+            if blue_color_changed:
+                _gpu_color_cache.clear()  # Invalidate so per-frame code resync
+                if network_manager and network_manager.connected and network_manager.is_host:
+                    send_local_beetle_config(network_manager, is_host=True)
 
             # B1 skin preset controls - slider + prev/next buttons
             b1_skin_name = BEETLE_PRESETS[blue_preset_index % len(BEETLE_PRESETS)]["name"]
@@ -22270,8 +22288,10 @@ try:
                 red_color_changed = True
 
             # Send config immediately when guest changes red beetle colors
-            if red_color_changed and network_manager and network_manager.connected and not network_manager.is_host:
-                send_local_beetle_config(network_manager, is_host=False)
+            if red_color_changed:
+                _gpu_color_cache.clear()  # Invalidate so per-frame code resync
+                if network_manager and network_manager.connected and not network_manager.is_host:
+                    send_local_beetle_config(network_manager, is_host=False)
 
             # B2 skin preset controls - slider + prev/next buttons
             b2_skin_name = BEETLE_PRESETS[red_preset_index % len(BEETLE_PRESETS)]["name"]
