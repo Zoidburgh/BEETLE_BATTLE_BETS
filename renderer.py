@@ -318,12 +318,12 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     # Ladybug cheerleader colors
     elif voxel_type == 35:  # LADYBUG_SHELL - bright red
         color = ti.math.vec3(0.85, 0.12, 0.08)
-    elif voxel_type == 36:  # LADYBUG_SPOTS - black
-        color = ti.math.vec3(0.08, 0.08, 0.08)
-    elif voxel_type == 37:  # LADYBUG_HEAD - black
-        color = ti.math.vec3(0.1, 0.1, 0.1)
-    elif voxel_type == 38:  # LADYBUG_LEGS - dark brown/black
-        color = ti.math.vec3(0.12, 0.1, 0.08)
+    elif voxel_type == 36:  # LADYBUG_SPOTS - dark charcoal
+        color = ti.math.vec3(0.15, 0.13, 0.12)
+    elif voxel_type == 37:  # LADYBUG_HEAD - dark brown
+        color = ti.math.vec3(0.22, 0.18, 0.14)
+    elif voxel_type == 38:  # LADYBUG_LEGS - dark brown
+        color = ti.math.vec3(0.25, 0.2, 0.15)
     elif voxel_type == 39:  # LADYBUG_WINGS - translucent amber/gold
         color = ti.math.vec3(0.95, 0.85, 0.6)
 
@@ -488,6 +488,36 @@ def arena_sdf(x: ti.f32, z: ti.f32, mode: ti.i32) -> ti.f32:
             conn_d = ti.sqrt(cx_c * cx_c + dz_c * dz_c)
             min_d = ti.min(min_d, conn_d)
         d = min_d - hw
+    elif mode == 11:
+        # Square: half-size 32
+        d = ti.max(ti.abs(x) - 32.0, ti.abs(z) - 32.0)
+    elif mode == 12:
+        # Star: 5-pointed star with straight edges (tip points up +Z)
+        dist = ti.sqrt(x * x + z * z)
+        angle = ti.atan2(z, x)
+        shifted = angle + 1.5707963
+        shifted = shifted - ti.floor(shifted / 6.2831853) * 6.2831853
+        sector_angle = 6.2831853 / 10.0
+        sin_sa = ti.sin(sector_angle)
+        sector_pos = shifted - ti.floor(shifted / sector_angle) * sector_angle
+        sector_idx = ti.cast(ti.floor(shifted / sector_angle), ti.i32) % 10
+        r1 = ti.cast(58.0, ti.f32)
+        r2 = ti.cast(23.0, ti.f32)
+        if sector_idx % 2 == 0:
+            r1 = 58.0
+            r2 = 23.0
+        else:
+            r1 = 23.0
+            r2 = 58.0
+        sin_alpha = ti.sin(sector_pos)
+        sin_rem = ti.sin(sector_angle - sector_pos)
+        denom = r2 * sin_alpha + r1 * sin_rem
+        r_boundary = ti.cast(58.0, ti.f32)
+        if denom > 0.001:
+            r_boundary = r1 * r2 * sin_sa / denom
+        else:
+            r_boundary = r1
+        d = dist - r_boundary
     return d
 
 @ti.kernel

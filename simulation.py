@@ -296,6 +296,7 @@ bg_cache_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXEL
 bg_cache_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
 bg_cache_radii = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
 num_visible_bg = ti.field(dtype=ti.i32, shape=())  # Count of visible voxels in cache
+bg_anim_time = ti.field(dtype=ti.f32, shape=())  # Cached time for use in update_bg_cache
 
 # Background theme state
 bg_theme_active = ti.field(dtype=ti.i32, shape=())  # 0=off, 1=stars, 2=grass, 3=fireflies, etc.
@@ -471,7 +472,7 @@ ball_stripe_color[None] = ti.Vector([0.35, 0.22, 0.1])  # Darker brown stripe
 
 # Arena board color (customizable, not networked)
 board_color = ti.Vector.field(3, dtype=ti.f32, shape=())
-board_color[None] = ti.Vector([0.41, 0.39, 0.37])  # Default brownish gray
+board_color[None] = ti.Vector([0.42, 0.3, 0.16])  # Warm amber wood default
 
 # Material property functions (for physics calculations)
 @ti.func
@@ -1058,6 +1059,105 @@ def init_square_arena():
     print(f"SQUARE ARENA constructed - 64x64 flat platform")
 
 @ti.kernel
+def init_cut_square_arena():
+    """
+    CUT SQUARE ARENA - Square ring with large hole and diagonal bridge
+    64x64 outer platform, 44x44 inner hole, diagonal bridge corner-to-corner
+    """
+    # Clear floor layers only (Y=30-40 covers floor at 33)
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    center_x = 64
+    center_z = 64
+    half_size = 32
+    inner_half = 22
+    bridge_half_width = 5.0
+    floor_y_offset = 33
+
+    for i in range(center_x - half_size, center_x + half_size + 1):
+        for k in range(center_z - half_size, center_z + half_size + 1):
+            dx = i - center_x
+            dz = k - center_z
+            in_hole = 0
+            on_bridge = 0
+            if ti.abs(dx) <= inner_half and ti.abs(dz) <= inner_half:
+                in_hole = 1
+                if ti.abs(ti.cast(dx - dz, ti.f32)) / 1.4142 <= bridge_half_width:
+                    on_bridge = 1
+            if in_hole == 0 or on_bridge == 1:
+                voxel_type[i, floor_y_offset, k] = CONCRETE
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY
+
+    print(f"CUT SQUARE ARENA constructed - ring with hole and diagonal bridge")
+
+@ti.kernel
+def init_star_arena():
+    """
+    STAR ARENA - 5-pointed star platform with smooth beveled edges.
+    Uses SDF blending: outer star radius ~44, inner radius ~18.
+    """
+    # Clear floor layers
+    for i, j, k in ti.ndrange(n_grid, (30, 41), n_grid):
+        voxel_type[i, j, k] = EMPTY
+
+    center_x = 64.0
+    center_z = 64.0
+    floor_y_offset = 33
+
+    # Star geometry
+    outer_r = 58.0   # Tip radius (maximized for 128 grid, center 64, range 4-124)
+    inner_r = 23.0   # Valley radius (between points)
+    num_points = 5
+    bevel = 0.5       # Tight SDF offset for clean edges
+    sector_angle = 6.2831853 / (num_points * 2)  # pi/5
+    # Precompute sin of sector angle for straight-edge formula
+    sin_sa = ti.sin(sector_angle)
+
+    for i in range(4, 124):
+        for k in range(4, 124):
+            dx = ti.cast(i, ti.f32) - center_x
+            dz = ti.cast(k, ti.f32) - center_z
+            dist = ti.sqrt(dx * dx + dz * dz)
+
+            angle = ti.atan2(dz, dx)
+            # Rotate so a tip points up (+Z)
+            shifted = angle + 1.5707963
+            shifted = shifted - ti.floor(shifted / 6.2831853) * 6.2831853
+
+            sector_pos = shifted - ti.floor(shifted / sector_angle) * sector_angle
+            sector_idx = ti.cast(ti.floor(shifted / sector_angle), ti.i32) % (num_points * 2)
+
+            # Straight-edge star: boundary is line segment between adjacent vertices
+            # Polar line formula: r = r1*r2*sin(sa) / (r2*sin(alpha) + r1*sin(sa-alpha))
+            alpha = sector_pos
+            r1 = outer_r  # Pre-declare for Taichi
+            r2 = inner_r
+            if sector_idx % 2 == 0:
+                r1 = outer_r
+                r2 = inner_r
+            else:
+                r1 = inner_r
+                r2 = outer_r
+
+            sin_alpha = ti.sin(alpha)
+            sin_rem = ti.sin(sector_angle - alpha)
+            denom = r2 * sin_alpha + r1 * sin_rem
+            star_r = outer_r  # Pre-declare for Taichi
+            if denom > 0.001:
+                star_r = r1 * r2 * sin_sa / denom
+            else:
+                star_r = r1  # At vertex, use vertex radius
+
+            sdf = dist - star_r
+
+            if sdf <= bevel:
+                voxel_type[i, floor_y_offset, k] = CONCRETE
+                voxel_type[i, floor_y_offset + 1, k] = EMPTY
+
+    print("STAR ARENA constructed - 5-pointed star platform")
+
+@ti.kernel
 def init_squiggle_arena():
     """
     SQUIGGLE ARENA - Serpentine/snake path with 5 parallel vertical segments
@@ -1132,6 +1232,7 @@ def animate_background(time: ti.f32):
     Animate all background voxels based on their animation type.
     Called once per frame. Updates brightness and offset fields.
     """
+    bg_anim_time[None] = time
     for i in range(num_bg_voxels[None]):
         if bg_active[i] == 0:
             continue
@@ -1156,8 +1257,8 @@ def animate_background(time: ti.f32):
             # Gentle base shimmer + occasional bright twinkle flash
             base = 0.85 + 0.1 * ti.sin(t)
             # Use two overlapping sin waves with different frequencies to create rare alignment peaks
-            wave1 = ti.sin(time * speed * 0.7 + amplitude * 3.14)
-            wave2 = ti.sin(time * speed * 1.1 + amplitude * 7.77)
+            wave1 = ti.sin(time * speed * 0.7 + phase * 3.14)
+            wave2 = ti.sin(time * speed * 1.1 + phase * 7.77)
             combined = wave1 * wave2  # Only peaks when both waves align (~1.0)
             # Sharp power curve so only the highest peaks create a visible flash
             flash = 0.0
@@ -3707,8 +3808,31 @@ def update_bg_cache():
             pos.y += bg_offset_y[idx]
             pos.z += bg_offset_z[idx]
             bg_cache_positions[write_idx] = pos
-            bg_cache_colors[write_idx] = bg_colors[idx] * bg_brightness[idx]
-            bg_cache_radii[write_idx] = bg_size[idx]
+
+            bright = bg_brightness[idx]
+            base_color = bg_colors[idx]
+            anim = bg_anim_type[idx]
+            radius = bg_size[idx]
+
+            if anim == BG_ANIM_TWINKLE:
+                # Color shift: warm/cool tint based on slow phase cycle
+                color_cycle = ti.sin(bg_anim_time[None] * 0.15 + bg_phase[idx] * 2.17)
+                r_boost = ti.max(0.0, color_cycle) * 0.06
+                b_boost = ti.max(0.0, -color_cycle) * 0.1
+                color = ti.Vector([
+                    base_color.x * bright + r_boost * bright,
+                    base_color.y * bright,
+                    base_color.z * bright + b_boost * bright
+                ])
+                bg_cache_colors[write_idx] = color
+                # Starburst: size pulse on bright flashes (bright > 1.0)
+                size_boost = 1.0
+                if bright > 1.05:
+                    size_boost = 1.0 + (bright - 1.05) * 1.5
+                bg_cache_radii[write_idx] = radius * size_boost
+            else:
+                bg_cache_colors[write_idx] = base_color * bright
+                bg_cache_radii[write_idx] = radius
 
 def clear_background():
     """Clear all background voxels by zeroing numpy buffers and flushing to GPU."""
@@ -3770,7 +3894,7 @@ def generate_stars(count: int = 2400, seed: int = 42):
 
         # Animation: twinkle with varied speeds
         _bg_anim_type_np[idx] = BG_ANIM_TWINKLE
-        _bg_anim_speed_np[idx] = random.uniform(1.5, 4.0)
+        _bg_anim_speed_np[idx] = random.uniform(0.75, 2.0)
         _bg_anim_amp_np[idx] = 0.0
         _bg_phase_np[idx] = random.uniform(0, 6.28)
 
@@ -4516,7 +4640,7 @@ def toggle_theme(theme_id: int):
     else:
         # Add the theme
         add_functions = {
-            THEME_STARS: lambda: add_stars(495),
+            THEME_STARS: lambda: add_stars(569),
             THEME_GRASS: lambda: add_grass(625),
             THEME_FIREFLIES: lambda: add_fireflies(483),
             THEME_WATER: lambda: add_water(2250),
@@ -4578,9 +4702,10 @@ def add_stars(count: int = 1200, seed: int = 42):
                 (-4, 10), (4, 10),                     # 7-8: body top
                 (-5, 5), (5, 5),                       # 9-10: body widest
                 (-3, 0), (3, 0),                       # 11-12: body bottom
-                # Legs
-                (-8, 9), (8, 9),                       # 13-14: front legs
-                (-9, 4), (9, 4),                       # 15-16: back legs
+                # Legs (3 pairs - angled away from body)
+                (-8, 11), (8, 11),                     # 13-14: front legs (angled forward+out)
+                (-9, 5), (9, 5),                       # 15-16: middle legs (straight out)
+                (-8, -1), (8, -1),                     # 17-18: back legs (angled backward+out)
             ],
             'edges': [
                 (0, 1), (1, 2), (2, 6),                # left horn curve
@@ -4589,7 +4714,8 @@ def add_stars(count: int = 1200, seed: int = 42):
                 (7, 9), (8, 10),                       # body sides
                 (9, 11), (10, 12), (11, 12),           # body bottom
                 (7, 13), (8, 14),                      # front legs
-                (9, 15), (10, 16),                     # back legs
+                (9, 15), (10, 16),                     # middle legs
+                (11, 17), (12, 18),                    # back legs
             ],
         },
     ]
@@ -4700,7 +4826,7 @@ def add_stars(count: int = 1200, seed: int = 42):
                 idx += 1
 
     # === SCATTERED BACKGROUND STARS (dimmer, fill the sky) ===
-    min_dist = 85
+    min_dist = 92
     bg_star_count = count
     attempts = 0
     placed = 0
@@ -4710,7 +4836,7 @@ def add_stars(count: int = 1200, seed: int = 42):
             break
 
         x = random.uniform(-150, 150)
-        y = random.uniform(-10, 60)
+        y = random.uniform(-120, 70)
         z = random.uniform(-150, 150)
 
         dist_xz = math.sqrt(x * x + z * z)
@@ -4718,21 +4844,30 @@ def add_stars(count: int = 1200, seed: int = 42):
             continue
 
         _bg_pos_np[idx] = [x, y, z]
-        blue_tint = random.uniform(0.0, 0.25)
-        brightness = random.uniform(0.4, 0.8)
+
+        # Depth layering: 0=close (92), 1=far (150)
+        depth = min(1.0, (dist_xz - min_dist) / (150.0 - min_dist))
+
+        # Far stars dimmer, close stars brighter
+        brightness = random.uniform(0.3, 0.55) + (1.0 - depth) * 0.35
+        # Far stars cooler (more blue tint)
+        blue_tint = random.uniform(0.0, 0.15) + depth * 0.15
         _bg_col_np[idx] = [
             brightness * (1.0 - blue_tint * 0.5),
             brightness * (1.0 - blue_tint * 0.3),
             brightness
         ]
 
-        if random.random() < 0.08:
-            _bg_size_np[idx] = random.uniform(0.15, 0.25)
+        # Far stars smaller, close stars can be bigger
+        if random.random() < 0.08 and depth < 0.5:
+            _bg_size_np[idx] = random.uniform(0.12, 0.18)
         else:
-            _bg_size_np[idx] = random.uniform(0.05, 0.12)
+            base_size = 0.03 + (1.0 - depth) * 0.04
+            _bg_size_np[idx] = random.uniform(base_size, base_size + 0.05)
 
         _bg_anim_type_np[idx] = BG_ANIM_TWINKLE
-        _bg_anim_speed_np[idx] = random.uniform(1.5, 4.0)
+        # Far stars twinkle slower, close stars faster
+        _bg_anim_speed_np[idx] = random.uniform(0.5, 1.2) + (1.0 - depth) * 0.8
         _bg_anim_amp_np[idx] = 0.0
         _bg_phase_np[idx] = random.uniform(0, 6.28)
         _bg_brightness_np[idx] = 1.0
