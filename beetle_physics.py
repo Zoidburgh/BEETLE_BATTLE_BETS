@@ -8333,6 +8333,20 @@ beetle_red.horn_length = initial_horn_length
 
 def calculate_horn_tip_position(beetle):
     """Calculate world position of horn tip using exact voxel placement transform chain"""
+    # Scorpion - use front of claws for collision
+    if beetle.horn_type == "scorpion":
+        tip_local_x = 9.0   # Front of claw pincers
+        tip_local_y = 4.0   # Claw height
+        tip_local_z = 0.0   # Center (claws spread sideways but cylinder covers width)
+
+        # Apply beetle body rotation only (no horn rotation)
+        cos_rotation = math.cos(beetle.rotation)
+        sin_rotation = math.sin(beetle.rotation)
+        rotated_x = tip_local_x * cos_rotation - tip_local_z * sin_rotation
+        rotated_z = tip_local_x * sin_rotation + tip_local_z * cos_rotation
+
+        return beetle.x + rotated_x, beetle.y + tip_local_y, beetle.z + rotated_z
+
     # Spider - use front of prosoma/fangs for collision (wider coverage than just fang tips)
     if beetle.horn_type == "spider":
         # Prosoma extends to dx=7, fangs to dx=11
@@ -8452,6 +8466,18 @@ def calculate_horn_shaft_base_position(beetle):
         base_local_x = 3.0  # Closer to body
         base_local_y = 1.0
         base_local_z = 0.0
+    elif beetle.horn_type == "scorpion":
+        # Scorpion - base at arm attachment, creates cylinder covering claws
+        base_local_x = 2.0   # Where arms attach to body
+        base_local_y = 4.0   # Claw height
+        base_local_z = 0.0   # Center
+
+        cos_rotation = math.cos(beetle.rotation)
+        sin_rotation = math.sin(beetle.rotation)
+        rotated_x = base_local_x * cos_rotation - base_local_z * sin_rotation
+        rotated_z = base_local_x * sin_rotation + base_local_z * cos_rotation
+
+        return beetle.x + rotated_x, beetle.y + base_local_y, beetle.z + rotated_z
     elif beetle.horn_type == "spider":
         # Spider - base at pedicel (thin waist), creates cylinder covering prosoma
         base_local_x = 3.0   # Pedicel/start of prosoma
@@ -13776,13 +13802,13 @@ def beetle_collision(b1, b2, params):
         shaft_cylinder_radius = params.get("SHAFT_CYLINDER_RADIUS", 6.0)
         shaft_cylinder_push = params.get("SHAFT_CYLINDER_PUSH", 0.25)
 
-        # All beetle types except scorpion (tail is behind, not forward)
-        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier")
-        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier")
+        # All beetle types (scorpion claws treated like forward head area)
+        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier", "scorpion")
+        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier", "scorpion")
 
-        # Use same radius for all beetle types
-        b1_radius = shaft_cylinder_radius
-        b2_radius = shaft_cylinder_radius
+        # Larger radius for hornless/short-reach types to prevent body clipping
+        b1_radius = shaft_cylinder_radius + 1.5 if b1.horn_type in ("spider", "bombardier", "scorpion") else shaft_cylinder_radius
+        b2_radius = shaft_cylinder_radius + 1.5 if b2.horn_type in ("spider", "bombardier", "scorpion") else shaft_cylinder_radius
 
         if b1_has_shaft or b2_has_shaft:
             # Get shaft endpoints for beetles with horns
