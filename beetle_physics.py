@@ -1309,6 +1309,10 @@ class Beetle:
         # Collision cooldown timers
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
         self.tip_cooldown = 0.0   # Time remaining before next tipping torque (separate from lift)
+        self.pending_lift = 0.0    # Queued lift force, drained smoothly over multiple frames
+        self.pending_pitch = 0.0   # Queued pitch torque, drained smoothly
+        self.pending_roll = 0.0    # Queued roll torque, drained smoothly
+        self.pending_yaw = 0.0     # Queued yaw torque, drained smoothly
 
         # Predictive collision smoothing (prevents horn clipping during fast spins)
         self.predictive_push_x = 0.0
@@ -1371,6 +1375,32 @@ class Beetle:
         # Decrement tip cooldown timer (separate from lift - for horn tipping torque)
         if self.tip_cooldown > 0.0:
             self.tip_cooldown = max(0.0, self.tip_cooldown - dt)
+
+        # Drain pending collision forces smoothly (20% per tick, ~15 frames to fully apply)
+        if self.pending_lift > 0.0:
+            drain = self.pending_lift * 0.2
+            if drain < 0.05:
+                drain = self.pending_lift
+            self.vy += drain
+            self.pending_lift -= drain
+        if abs(self.pending_pitch) > 0.0:
+            drain = self.pending_pitch * 0.2
+            if abs(drain) < 0.02:
+                drain = self.pending_pitch
+            self.pitch_velocity += drain
+            self.pending_pitch -= drain
+        if abs(self.pending_roll) > 0.0:
+            drain = self.pending_roll * 0.2
+            if abs(drain) < 0.02:
+                drain = self.pending_roll
+            self.roll_velocity += drain
+            self.pending_roll -= drain
+        if abs(self.pending_yaw) > 0.0:
+            drain = self.pending_yaw * 0.2
+            if abs(drain) < 0.02:
+                drain = self.pending_yaw
+            self.angular_velocity += drain
+            self.pending_yaw -= drain
 
         # Decay horn pitch/yaw damping when not in contact (Phase 2: Horn Clipping Prevention)
         if self.horn_pitch_damping > 0.0:
@@ -14095,8 +14125,8 @@ def beetle_collision(b1, b2, params):
                             # Blue has advantage - lifts red
                             # print(f"  -> BLUE lifts RED!")
                             lift_force = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
-                            b2.vy += lift_force  # Red gets lifted HIGHER
-                            b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction)
+                            b2.pending_lift += min(lift_force, 12.0)  # Red gets lifted (smoothed, capped)
+                            b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction, instant is fine)
 
                             # TORQUE: Apply rotation from off-center force
                             # Calculate lever arm in beetle's LOCAL space (not arena coords)
@@ -14110,11 +14140,11 @@ def beetle_collision(b1, b2, params):
                             # Pitch torque: collision in front tips nose up
                             tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
                             pitch_torque = local_z * lift_force * tumble_mult
-                            b2.pitch_velocity += pitch_torque / b2.pitch_inertia
+                            b2.pending_pitch += pitch_torque / b2.pitch_inertia
 
                             # Roll torque: collision to the right tips right side up
                             roll_torque = local_x * lift_force * tumble_mult
-                            b2.roll_velocity += roll_torque / b2.roll_inertia
+                            b2.pending_roll += roll_torque / b2.roll_inertia
 
                             # Set cooldown for both beetles
                             b1.lift_cooldown = LIFT_COOLDOWN_DURATION
@@ -14124,8 +14154,8 @@ def beetle_collision(b1, b2, params):
                             # Red has advantage - lifts blue
                             # print(f"  -> RED lifts BLUE!")
                             lift_force = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
-                            b1.vy += lift_force  # Blue gets lifted HIGHER
-                            b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction)
+                            b1.pending_lift += min(lift_force, 12.0)  # Blue gets lifted (smoothed, capped)
+                            b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction, instant is fine)
 
                             # TORQUE: Apply rotation from off-center force
                             # Calculate lever arm in beetle's LOCAL space (not arena coords)
@@ -14139,11 +14169,11 @@ def beetle_collision(b1, b2, params):
                             # Pitch torque: collision in front tips nose up
                             tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
                             pitch_torque = local_z * lift_force * tumble_mult
-                            b1.pitch_velocity += pitch_torque / b1.pitch_inertia
+                            b1.pending_pitch += pitch_torque / b1.pitch_inertia
 
                             # Roll torque: collision to the right tips right side up
                             roll_torque = local_x * lift_force * tumble_mult
-                            b1.roll_velocity += roll_torque / b1.roll_inertia
+                            b1.pending_roll += roll_torque / b1.roll_inertia
 
                             # Set cooldown for both beetles
                             b1.lift_cooldown = LIFT_COOLDOWN_DURATION
@@ -14153,8 +14183,8 @@ def beetle_collision(b1, b2, params):
                             # Evenly matched - both get pushed (with torque)
                             # print(f"  -> BOTH beetles pushed!")
                             push_force = lift_impulse * 0.06 * height_penalty
-                            b1.vy += push_force
-                            b2.vy += push_force
+                            b1.pending_lift += min(push_force, 12.0)
+                            b2.pending_lift += min(push_force, 12.0)
 
                             # Apply torque to both (using LOCAL coordinates)
                             world_lever_x1 = collision_x - b1.x
@@ -14163,8 +14193,8 @@ def beetle_collision(b1, b2, params):
                             sin_r1 = math.sin(b1.rotation)
                             local_x1 = world_lever_x1 * cos_r1 + world_lever_z1 * sin_r1
                             local_z1 = world_lever_z1 * cos_r1 - world_lever_x1 * sin_r1
-                            b1.pitch_velocity += (-local_z1 * push_force) / b1.pitch_inertia
-                            b1.roll_velocity += (local_x1 * push_force) / b1.roll_inertia
+                            b1.pending_pitch += (-local_z1 * push_force) / b1.pitch_inertia
+                            b1.pending_roll += (local_x1 * push_force) / b1.roll_inertia
 
                             world_lever_x2 = collision_x - b2.x
                             world_lever_z2 = collision_z - b2.z
@@ -14172,8 +14202,8 @@ def beetle_collision(b1, b2, params):
                             sin_r2 = math.sin(b2.rotation)
                             local_x2 = world_lever_x2 * cos_r2 + world_lever_z2 * sin_r2
                             local_z2 = world_lever_z2 * cos_r2 - world_lever_x2 * sin_r2
-                            b2.pitch_velocity += (-local_z2 * push_force) / b2.pitch_inertia
-                            b2.roll_velocity += (local_x2 * push_force) / b2.roll_inertia
+                            b2.pending_pitch += (-local_z2 * push_force) / b2.pitch_inertia
+                            b2.pending_roll += (local_x2 * push_force) / b2.roll_inertia
 
                             # Set cooldown for both beetles
                             b1.lift_cooldown = LIFT_COOLDOWN_DURATION
@@ -14218,11 +14248,11 @@ def beetle_collision(b1, b2, params):
                     torque_b1 = base_torque_b1 * velocity_factor
                     torque_b2 = base_torque_b2 * velocity_factor
 
-                    # Apply angular impulses with horn leverage
+                    # Apply angular impulses with horn leverage (smoothed)
                     angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 1.3
                     angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 1.3
-                    b1.angular_velocity += angular_impulse_b1
-                    b2.angular_velocity -= angular_impulse_b2
+                    b1.pending_yaw += angular_impulse_b1
+                    b2.pending_yaw -= angular_impulse_b2
 
                     # AWAY-FROM-ATTACKER BIAS: Ensure hit beetle spins away from attacker
                     # This fixes counterintuitive behavior where shaft hits cause turning INTO attacker
@@ -14254,7 +14284,7 @@ def beetle_collision(b1, b2, params):
                         # Scale by momentum difference
                         momentum_factor = (b1_toward_bias - b2_toward_bias) / (b1_toward_bias + b2_toward_bias + 0.01)
                         bias_torque = away_spin * bias_strength * momentum_factor * horn_leverage
-                        b2.angular_velocity += bias_torque / b2.moment_of_inertia
+                        b2.pending_yaw += bias_torque / b2.moment_of_inertia
 
                     # b2 is attacking b1 - make b1 spin away from b2
                     elif b2_toward_bias > b1_toward_bias + 0.5:
@@ -14268,7 +14298,7 @@ def beetle_collision(b1, b2, params):
 
                         momentum_factor = (b2_toward_bias - b1_toward_bias) / (b1_toward_bias + b2_toward_bias + 0.01)
                         bias_torque = away_spin * bias_strength * momentum_factor * horn_leverage
-                        b1.angular_velocity += bias_torque / b1.moment_of_inertia
+                        b1.pending_yaw += bias_torque / b1.moment_of_inertia
 
             # Separation/tipping to prevent stuck collisions
             separation_force = params["SEPARATION_FORCE"]
@@ -14309,12 +14339,12 @@ def beetle_collision(b1, b2, params):
                     local2_z = world_lever2_z * cos_r2 - world_lever2_x * sin_r2  # front/back
 
                     # Pitch torque (collision in front tips nose up - both beetles tip back)
-                    b1.pitch_velocity += local1_z * b1_tip_received / b1.pitch_inertia
-                    b2.pitch_velocity += local2_z * b2_tip_received / b2.pitch_inertia
+                    b1.pending_pitch += local1_z * b1_tip_received / b1.pitch_inertia
+                    b2.pending_pitch += local2_z * b2_tip_received / b2.pitch_inertia
 
                     # Roll torque (collision to the side tips away - both beetles tip away)
-                    b1.roll_velocity -= local1_x * b1_tip_received / b1.roll_inertia
-                    b2.roll_velocity -= local2_x * b2_tip_received / b2.roll_inertia
+                    b1.pending_roll -= local1_x * b1_tip_received / b1.roll_inertia
+                    b2.pending_roll -= local2_x * b2_tip_received / b2.roll_inertia
 
                     # Yaw torque (tangential spin) - disabled for now, already handled by horn leverage
                     yaw_factor = 0.0
@@ -18987,7 +19017,7 @@ try:
                     penetration_depth = floor_surface - lowest_point_blue
 
                     # Clamp correction to prevent jumps from pitch changes
-                    MAX_FLOOR_CORRECTION = 0.5  # Smaller limit = smoother
+                    MAX_FLOOR_CORRECTION = 1.2  # Raised from 0.5 — smoothed rotation reduces jump risk
                     beetle_blue.y += min(penetration_depth, MAX_FLOOR_CORRECTION)
 
                     # Stop downward motion but don't add upward velocity (prevents bouncing)
@@ -19037,7 +19067,7 @@ try:
                     penetration_depth = floor_surface - lowest_point_red
 
                     # Clamp correction to prevent jumps from pitch changes
-                    MAX_FLOOR_CORRECTION = 0.5  # Smaller limit = smoother
+                    MAX_FLOOR_CORRECTION = 1.2  # Raised from 0.5 — smoothed rotation reduces jump risk
                     beetle_red.y += min(penetration_depth, MAX_FLOOR_CORRECTION)
 
                     # Stop downward motion but don't add upward velocity (prevents bouncing)
