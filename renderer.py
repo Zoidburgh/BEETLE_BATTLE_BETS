@@ -458,8 +458,44 @@ def arena_sdf(x: ti.f32, z: ti.f32, mode: ti.i32) -> ti.f32:
         bridge = ti.max(ti.abs(x) - 28.0, ti.abs(z) - 5.0)
         d = ti.min(ring, bridge)
     elif mode == 8:
-        # Circle with bowl perimeter (beetle ball): radius 44 (32 arena + 12 bowl)
-        d = ti.sqrt(x * x + z * z) - 44.0
+        # Circle with bowl perimeter (beetle ball): radius 44 minus goal pits with rounded corners
+        d_circ = ti.sqrt(x * x + z * z) - 44.0
+        corner_r = 5.0
+        az = ti.abs(z)
+
+        # Blue pit subtraction (x <= -32, |z| <= 12, rounded corners at (-32, ±12))
+        bx_b = -x - 32.0   # positive inside pit
+        bz_b = 12.0 - az   # positive inside pit
+        d_sub_b = -999.0    # default: far outside pit
+        if bx_b >= 0.0 and bz_b >= 0.0:
+            if bx_b < corner_r and bz_b < corner_r:
+                d_sub_b = ti.sqrt(bx_b * bx_b + bz_b * bz_b) - corner_r
+            else:
+                d_sub_b = ti.min(bx_b, bz_b)
+        elif bx_b < 0.0 and bz_b < 0.0:
+            d_sub_b = -ti.sqrt(bx_b * bx_b + bz_b * bz_b)
+        elif bx_b < 0.0:
+            d_sub_b = bx_b
+        else:
+            d_sub_b = bz_b
+
+        # Red pit subtraction (x >= 32, |z| <= 12, rounded corners at (32, ±12))
+        bx_r = x - 32.0    # positive inside pit
+        bz_r = 12.0 - az   # positive inside pit
+        d_sub_r = -999.0
+        if bx_r >= 0.0 and bz_r >= 0.0:
+            if bx_r < corner_r and bz_r < corner_r:
+                d_sub_r = ti.sqrt(bx_r * bx_r + bz_r * bz_r) - corner_r
+            else:
+                d_sub_r = ti.min(bx_r, bz_r)
+        elif bx_r < 0.0 and bz_r < 0.0:
+            d_sub_r = -ti.sqrt(bx_r * bx_r + bz_r * bz_r)
+        elif bx_r < 0.0:
+            d_sub_r = bx_r
+        else:
+            d_sub_r = bz_r
+
+        d = ti.max(d_circ, ti.max(d_sub_b, d_sub_r))
     elif mode == 9:
         # True figure 8: two circles r=18 at x=+-18, path half-width 6
         dx_l = x + 18.0

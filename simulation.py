@@ -273,6 +273,7 @@ BG_ANIM_FISH_SPLASH = 34    # Splash burst on dolphin water entry/exit
 BG_ANIM_SQUID_TENTACLE = 35 # Giant squid tentacle chain
 BG_ANIM_SQUID_SPLASH = 36   # Splash on tentacle emerge/plunge
 BG_ANIM_BIG_ERUPTION = 37   # Big volcano: dramatic eruption spray + lava bombs + crater glow
+BG_ANIM_SHOOTING_STAR = 38  # Shooting star: brief streak across sky, mostly invisible
 
 # Background voxel fields
 bg_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)      # Base position
@@ -1266,6 +1267,42 @@ def animate_background(time: ti.f32):
                 flash = (combined - 0.7) / 0.3  # 0 to 1 ramp
                 flash = flash * flash * 0.7  # squared for sharp spike, up to 0.7 extra brightness
             bg_brightness[i] = base + flash
+
+        elif anim == BG_ANIM_SHOOTING_STAR:
+            # Shooting star: invisible most of the time, briefly streaks then fades
+            # phase = random offset, speed = cycle period multiplier
+            # amplitude encodes streak direction: floor(amp/10)=dx_sign, amp%10=dz_sign
+            cycle_period = 8.0 + phase * 3.0  # 8-27 seconds between appearances
+            cycle_t = (time + phase * cycle_period) % cycle_period
+            streak_duration = 1.2  # How long the streak lasts
+            if cycle_t < streak_duration:
+                # Active streak phase
+                progress = cycle_t / streak_duration  # 0 to 1
+                # Fade in fast, fade out slow (bright at start, trail off)
+                bright = 1.0 - progress
+                bright = bright * bright * 1.8  # Squared falloff, boosted
+                bg_brightness[i] = bright
+                # Move tangentially across the sky (perpendicular to radial direction)
+                streak_len = 200.0
+                # Get star's base position to compute tangent
+                pos = bg_positions[i]
+                # Tangent = cross(radial, up) — always perpendicular to center
+                rad_x = pos.x
+                rad_z = pos.z
+                rad_len = ti.sqrt(rad_x * rad_x + rad_z * rad_z) + 0.01
+                # Tangent direction (perpendicular in XZ plane)
+                tan_x = -rad_z / rad_len
+                tan_z = rad_x / rad_len
+                # Flip direction based on amplitude encoding
+                flip = 1.0 if amplitude > 5.0 else -1.0
+                bg_offset_x[i] = flip * tan_x * progress * streak_len
+                bg_offset_y[i] = -progress * streak_len * 0.15  # Gentle downward arc
+                bg_offset_z[i] = flip * tan_z * progress * streak_len
+            else:
+                bg_brightness[i] = 0.0
+                bg_offset_x[i] = 0.0
+                bg_offset_y[i] = 0.0
+                bg_offset_z[i] = 0.0
 
         elif anim == BG_ANIM_CONSTELLATION:
             # Constellation stars: synced pulse per constellation + traveling sparkle on lines
@@ -3830,6 +3867,16 @@ def update_bg_cache():
                 if bright > 1.05:
                     size_boost = 1.0 + (bright - 1.05) * 1.5
                 bg_cache_radii[write_idx] = radius * size_boost
+            elif anim == BG_ANIM_SHOOTING_STAR:
+                # Hot glowing streak: starts intense white-blue, fades to warm orange
+                warmth = 1.0 - bright  # 0 at start (white-blue), 1 at end (warm)
+                glow = bright * 2.2  # Overdriven brightness for glow effect
+                bg_cache_colors[write_idx] = ti.Vector([
+                    glow * (1.0 + warmth * 0.4),
+                    glow * (0.95 - warmth * 0.2),
+                    glow * (1.1 - warmth * 0.6)
+                ])
+                bg_cache_radii[write_idx] = radius * (0.6 + bright * 1.0)  # Shrinks as it fades
             else:
                 bg_cache_colors[write_idx] = base_color * bright
                 bg_cache_radii[write_idx] = radius
@@ -4877,6 +4924,26 @@ def add_stars(count: int = 1200, seed: int = 42):
         _bg_active_np[idx] = 1
         idx += 1
         placed += 1
+
+    # === SHOOTING STARS (subtle, ~8 scattered across the sky) ===
+    num_shooting = 30
+    for s in range(num_shooting):
+        angle = random.uniform(0, 2 * math.pi)
+        dist = random.uniform(130, 155)
+        sx = math.cos(angle) * dist
+        sz = math.sin(angle) * dist
+        sy = random.uniform(10, 60)
+        _bg_pos_np[idx] = [sx, sy, sz]
+        _bg_col_np[idx] = [1.0, 1.0, 1.0]  # White (color modified in render)
+        _bg_size_np[idx] = 0.13
+        _bg_anim_type_np[idx] = BG_ANIM_SHOOTING_STAR
+        _bg_anim_speed_np[idx] = random.uniform(0.8, 1.2)
+        # Encode streak direction in amplitude
+        _bg_anim_amp_np[idx] = random.uniform(0, 10)
+        _bg_phase_np[idx] = random.uniform(0, 6.28)
+        _bg_brightness_np[idx] = 0.0  # Start invisible
+        _bg_active_np[idx] = 1
+        idx += 1
 
     theme_start_idx[THEME_STARS] = start_idx
     theme_count[THEME_STARS] = idx - start_idx
@@ -7468,11 +7535,27 @@ def render_bowl_perimeter():
 
             # Only place voxels in the bowl ring (outside arena, within bowl width)
             if dist > arena_radius and dist <= arena_radius + bowl_width:
-                # Skip goal pit areas (blue goal at x<32, red goal at x>96, both at z~64)
+                # Skip goal pit areas with rounded corners
+                # Blue goal at x<=32, red goal at x>=96, centered at z=64
                 in_goal_pit = False
-                if abs(k - center_z) < goal_pit_half_width:
-                    if i <= 32 or i >= 96:  # Goal pit zones
-                        in_goal_pit = True
+                corner_r = 5.0
+                az = ti.abs(float(k - center_z))  # Distance from center in Z
+                if az < goal_pit_half_width:
+                    if i <= 32 or i >= 96:
+                        # Distance from corner (where wall meets pit edge)
+                        dx_corner = 0.0
+                        if i <= 32:
+                            dx_corner = 32.0 - float(i)
+                        else:
+                            dx_corner = float(i) - 96.0
+                        dz_corner = float(goal_pit_half_width) - az
+
+                        if dx_corner < corner_r and dz_corner < corner_r:
+                            # Corner zone: inside quarter-circle = filled (rounded)
+                            if dx_corner * dx_corner + dz_corner * dz_corner >= corner_r * corner_r:
+                                in_goal_pit = True
+                        else:
+                            in_goal_pit = True  # Main pit body
 
                 if not in_goal_pit:
                     # Calculate height based on distance from arena edge

@@ -21,23 +21,23 @@ try:
     pygame.display.init()
     pygame.font.init()
     _di = pygame.display.Info()
-    _sw, _sh = 480, 140
+    _sw, _sh = 960, 280
     os.environ['SDL_VIDEO_WINDOW_POS'] = f'{(_di.current_w - _sw) // 2},{(_di.current_h - _sh) // 2}'
     _splash = pygame.display.set_mode((_sw, _sh), pygame.NOFRAME)
     _splash.fill((10, 10, 12))  # Black background
-    _ft = pygame.font.Font(None, 48)
-    _fs = pygame.font.Font(None, 28)
+    _ft = pygame.font.Font(None, 96)
+    _fs = pygame.font.Font(None, 56)
     # Title words in team colors matching the in-game title screen
     _w1 = _ft.render("BEETLE ", True, (77, 153, 255))   # Blue
     _w2 = _ft.render("BATTLE ", True, (255, 77, 51))    # Red
     _w3 = _ft.render("BROS", True, (230, 191, 77))      # Gold
     _title_w = _w1.get_width() + _w2.get_width() + _w3.get_width()
     _tx = (_sw - _title_w) // 2
-    _splash.blit(_w1, (_tx, 35))
-    _splash.blit(_w2, (_tx + _w1.get_width(), 35))
-    _splash.blit(_w3, (_tx + _w1.get_width() + _w2.get_width(), 35))
-    _t2 = _fs.render("Loading...", True, (140, 140, 140))
-    _splash.blit(_t2, (_sw // 2 - _t2.get_width() // 2, 95))
+    _splash.blit(_w1, (_tx, 70))
+    _splash.blit(_w2, (_tx + _w1.get_width(), 70))
+    _splash.blit(_w3, (_tx + _w1.get_width() + _w2.get_width(), 70))
+    _t2 = _fs.render("Loading...", True, (210, 210, 210))
+    _splash.blit(_t2, (_sw // 2 - _t2.get_width() // 2, 190))
     pygame.display.flip()
     _splash_active = True
 except Exception:
@@ -19102,11 +19102,35 @@ try:
 
         # Ball floor collision (same as beetles, but skip in goal pit areas)
         if beetle_ball.active:
-            # Check if ball is in goal pit area (no floor there)
+            # Check if ball is in goal pit area (no floor there) — with rounded corners
             goal_pit_half_width = 12
             near_goal_margin = beetle_ball.radius  # Ball edge can be over pit while center isn't
-            in_goal_pit = abs(beetle_ball.z) < goal_pit_half_width and (beetle_ball.x <= -32 or beetle_ball.x >= 32)
-            near_goal_pit = abs(beetle_ball.z) < goal_pit_half_width and (beetle_ball.x < -32 + near_goal_margin or beetle_ball.x > 32 - near_goal_margin)
+            az = abs(beetle_ball.z)
+            in_goal_pit = False
+            near_goal_pit = False
+
+            # Pit with rounded corners (world coords: blue at x<=-32, red at x>=32)
+            corner_r = 5.0
+            if az < goal_pit_half_width and (beetle_ball.x <= -34 or beetle_ball.x >= 34):
+                # Distance from corner (where wall meets pit edge)
+                if beetle_ball.x <= -32:
+                    dx_corner = -32.0 - beetle_ball.x
+                else:
+                    dx_corner = beetle_ball.x - 32.0
+                dz_corner = goal_pit_half_width - az
+
+                if dx_corner < corner_r and dz_corner < corner_r:
+                    # Corner zone: inside quarter-circle = floor (rounded)
+                    if dx_corner * dx_corner + dz_corner * dz_corner >= corner_r * corner_r:
+                        in_goal_pit = True
+                else:
+                    in_goal_pit = True  # Main pit body
+            if az < goal_pit_half_width and (beetle_ball.x < -32 + near_goal_margin or beetle_ball.x > 32 - near_goal_margin):
+                near_goal_pit = True
+
+            # Latch: once ball drops below floor in goal area, commit to falling (prevents corner pop-back)
+            if beetle_ball.y < -1.0 and beetle_ball.vy < 0:
+                in_goal_pit = True
 
             if in_goal_pit:
                 # Ball is in goal pit - no floor collision, let it fall
