@@ -14700,11 +14700,12 @@ def beetle_collision(b1, b2, params):
                     # This mimics beetle-to-beetle combat where horn pitch velocity determines lift
                     if contact_offset_y < ball.radius * 0.3:  # Contact at or below ball center (bottom 80%)
                         # Check if beetle is actively tilting horn upward (positive horn_pitch_velocity)
-                        if beetle.horn_pitch_velocity > 0.5:  # Beetle is scooping up
+                        if beetle.horn_pitch_velocity > 0.5 and beetle.lift_cooldown <= 0.0:  # Beetle is scooping up
                             # Scale lift force by horn velocity (more aggressive scoop = more lift)
                             scoop_strength = min(beetle.horn_pitch_velocity / 2.0, 1.5)  # Cap at 1.5x
                             horn_scoop_lift = params["BALL_LIFT_STRENGTH"] * 2.0 * scoop_strength * push_mult
                             ball.vy += horn_scoop_lift
+                            beetle.lift_cooldown = 0.05  # Prevent rapid-fire ball scooping
 
                     # PASSIVE LIFT: Hit from below (contact point is below ball center)
                     # Base upward force when beetle pushes ball from below
