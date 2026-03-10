@@ -48,17 +48,50 @@ import taichi as ti
 import simulation
 import renderer
 
-# Close splash screen before Taichi window opens
+# Keep splash screen alive during Taichi window creation + Phase 0 warmup
+# Set it TOPMOST so it stays above the Taichi window
+import ctypes as _ctypes
+_sdl_hwnd = None
+HWND_TOPMOST = -1
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
 if _splash_active:
     try:
-        pygame.display.quit()
-        pygame.font.quit()
+        _sdl_hwnd = pygame.display.get_wm_info()['window']
+        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+    except Exception:
+        pass  # If TOPMOST fails, splash still works, just might be behind
+
+def _close_splash():
+    """Close the pygame splash screen. Safe to call multiple times."""
+    global _splash_active
+    if _splash_active:
+        try:
+            pygame.display.quit()
+            pygame.font.quit()
+            # Reinit video with dummy driver so controller event pump still works
+            os.environ['SDL_VIDEODRIVER'] = 'dummy'
+            pygame.display.init()
+        except Exception:
+            pass
+        _splash_active = False
+
+def _update_splash(text):
+    """Update splash screen status text and re-force TOPMOST."""
+    if not _splash_active:
+        return
+    try:
+        # Redraw bottom portion with new status
+        _splash.fill((10, 10, 12), (0, 170, _sw, 110))
+        _status = _fs.render(text, True, (210, 210, 210))
+        _splash.blit(_status, (_sw // 2 - _status.get_width() // 2, 190))
+        pygame.display.flip()
+        # Re-force on top every update in case Taichi window stole focus
+        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
     except Exception:
         pass
-    _splash_active = False
 
-# Set dummy video driver so future pygame.init() (controller support) won't create a window
-os.environ['SDL_VIDEODRIVER'] = 'dummy'
+# Don't set dummy video driver yet — splash still needs pygame display
 
 # Controller support via pygame (works alongside Taichi GGUI)
 try:
@@ -14772,6 +14805,14 @@ window.GUI.text("Compiling shaders...")
 window.GUI.text("First launch takes longer.")
 window.GUI.end()
 safe_window_show(window)
+
+# Re-force splash on top after Taichi window steals focus
+if _splash_active:
+    try:
+        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+        _ctypes.windll.user32.SetForegroundWindow(_sdl_hwnd)
+    except Exception:
+        pass
 print(f"[Timing] Window visible at {time.perf_counter() - simulation._startup_clock:.2f}s")
 
 # Initialize slider values for beetle customization (needed before game loop)
@@ -14977,6 +15018,7 @@ previous_tail_rotation = blue_previous_tail_rotation
 # ============== WARMUP WITH LOADING SCREEN ==============
 print("Warming up kernels...")
 _t_warmup_start = time.perf_counter()
+_update_splash("Compiling renderer...")
 
 # PHASE 0: Warm up renderer first so we can show loading screen
 # Place temporary voxels to warm up explode_loading_screen with actual work
@@ -14991,12 +15033,14 @@ print(f"[Timing] Phase 0a: Place temp voxels: {time.perf_counter() - _t0:.2f}s")
 _t0 = time.perf_counter()
 explode_loading_screen()
 print(f"[Timing] Phase 0b: explode_loading_screen(): {time.perf_counter() - _t0:.2f}s")
+_update_splash("Compiling voxel engine...")
 
 # Warm up extract kernels individually to see compilation breakdown
 renderer.num_voxels[None] = 0
 _t0 = time.perf_counter()
 renderer.extract_voxels(simulation.voxel_type, 128, 1, 0)
 print(f"[Timing] Phase 0c-1: extract_voxels compile: {time.perf_counter() - _t0:.2f}s")
+_update_splash("Compiling render pipeline...")
 _t0 = time.perf_counter()
 renderer.extract_particles()
 print(f"[Timing] Phase 0c-2: extract_particles compile: {time.perf_counter() - _t0:.2f}s")
@@ -15020,6 +15064,9 @@ print(f"[Timing] Phase 0d: First window.show() + sync: {time.perf_counter() - _t
 # Clear warmup debris
 simulation.num_debris[None] = 0
 simulation.debris_active_count[None] = 0
+
+# Close splash screen now — loading bar is about to render in Taichi window
+_close_splash()
 
 # Render "LOADING" text into voxel grid
 _t0 = time.perf_counter()
@@ -15284,6 +15331,7 @@ for anim_type in range(38):
 simulation._bg_count = 38
 simulation.bg_flush()  # Warm up all 14 from_numpy() transfers
 simulation.bg_theme_active[None] = 1  # Enable so renderer PHASE 6 compiles
+simulation.star_ripple_time[None] = -999.0  # No ripple at startup
 simulation.animate_background(0.0)  # Now hits all animation branches
 simulation.update_bg_cache()  # Warm up cache kernel
 # Quick render pass to compile renderer's split kernels (PHASE 6 path)
@@ -20622,6 +20670,11 @@ try:
     perf_monitor.start('background')
     if simulation.num_bg_voxels[None] > 0:
         if render_frame % simulation.BG_ANIM_FREQUENCY == 0:
+            # Trigger star ripple wave every 15-30 seconds
+            if simulation.THEME_STARS in simulation.active_themes:
+                ripple_age = background_time - float(simulation.star_ripple_time[None])
+                if ripple_age > 8.0 + (background_time * 7.3 % 7.0):  # Pseudo-random interval
+                    simulation.trigger_star_ripple(background_time)
             simulation.animate_background(background_time)
             simulation.update_bg_cache()
         simulation.decay_stadium_excitement(frame_dt)

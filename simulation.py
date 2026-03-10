@@ -302,6 +302,11 @@ bg_anim_time = ti.field(dtype=ti.f32, shape=())  # Cached time for use in update
 # Background theme state
 bg_theme_active = ti.field(dtype=ti.i32, shape=())  # 0=off, 1=stars, 2=grass, 3=fireflies, etc.
 
+# Star ripple wave — expanding brightness shockwave across sky
+star_ripple_origin = ti.Vector.field(3, dtype=ti.f32, shape=())   # XYZ of ripple center
+star_ripple_time = ti.field(dtype=ti.f32, shape=())               # Time ripple started (-999 = inactive)
+star_ripple_speed = ti.field(dtype=ti.f32, shape=())              # Expansion speed (units/sec)
+
 # ============================================================
 # STACKABLE THEME SYSTEM - Multiple themes can be active at once
 # ============================================================
@@ -1278,9 +1283,9 @@ def animate_background(time: ti.f32):
             if cycle_t < streak_duration:
                 # Active streak phase
                 progress = cycle_t / streak_duration  # 0 to 1
-                # Fade in fast, fade out slow (bright at start, trail off)
-                bright = 1.0 - progress
-                bright = bright * bright * 1.8  # Squared falloff, boosted
+                # Fade in then fade out (symmetric arc, peak at middle)
+                bright = 1.0 - 2.0 * ti.abs(progress - 0.5)  # 0→1→0 triangle
+                bright = bright * bright * 1.8  # Squared for smooth curve
                 bg_brightness[i] = bright
                 # Move tangentially across the sky (perpendicular to radial direction)
                 streak_len = 200.0
@@ -3829,6 +3834,26 @@ def animate_background(time: ti.f32):
                     bg_offset_z[i] = base_oz
                     bg_brightness[i] = smooth * (1.6 + 0.3 * ti.sin(time * 1.2 + phase))
 
+        # --- Star ripple wave overlay (applies to twinkle + constellation stars) ---
+        ripple_age = time - star_ripple_time[None]
+        if ripple_age < 4.0 and (anim == BG_ANIM_TWINKLE or anim == BG_ANIM_CONSTELLATION):
+            ripple_radius = ripple_age * star_ripple_speed[None]
+            pos = bg_positions[i]
+            dx = pos.x - star_ripple_origin[None].x
+            dy = pos.y - star_ripple_origin[None].y
+            dz = pos.z - star_ripple_origin[None].z
+            dist = ti.sqrt(dx * dx + dy * dy + dz * dz)
+            # Wavefront width — stars within this band get boosted
+            wave_width = 30.0
+            dist_from_front = ti.abs(dist - ripple_radius)
+            if dist_from_front < wave_width:
+                # Sharp peak at wavefront, fades outward
+                wave_strength = 1.0 - dist_from_front / wave_width
+                wave_strength = wave_strength * wave_strength  # Squared for sharper pulse
+                # Fade out over lifetime
+                fade = 1.0 - ripple_age / 4.0
+                bg_brightness[i] += wave_strength * fade * 1.5
+
 @ti.kernel
 def update_bg_cache():
     """Pre-compute renderer-ready bg data. Only call at animation frequency."""
@@ -4951,6 +4976,19 @@ def add_stars(count: int = 1200, seed: int = 42):
     _bg_count = idx
     bg_flush()
     print(f"Added {idx - start_idx} star voxels (total: {idx})")
+
+def trigger_star_ripple(time: float):
+    """Trigger a brightness ripple wave from a random point on the sky sphere."""
+    import math, random
+    angle = random.uniform(0, 2 * math.pi)
+    elev = random.uniform(-0.3, 1.0)  # Bias upward
+    r = 155.0
+    ox = math.cos(angle) * math.cos(elev) * r
+    oy = math.sin(elev) * r
+    oz = math.sin(angle) * math.cos(elev) * r
+    star_ripple_origin[None] = [ox, oy, oz]
+    star_ripple_time[None] = time
+    star_ripple_speed[None] = random.uniform(60.0, 100.0)
 
 def add_comet():
     """Add a giant comet orbiting the arena."""
