@@ -1439,7 +1439,11 @@ class Beetle:
         self.y += self.vy * dt
 
         # Cap vertical velocity to prevent outlier launches (hard safety limit)
-        if self.vy > MAX_VERTICAL_VELOCITY:
+        # Ball gets a higher cap to allow proper bouncing from high falls
+        if self.horn_type == "ball":
+            if self.vy > 50.0:
+                self.vy = 50.0
+        elif self.vy > MAX_VERTICAL_VELOCITY:
             self.vy = MAX_VERTICAL_VELOCITY
 
         # Ground contact will be determined by floor collision detection in main loop
@@ -10402,8 +10406,8 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             if idx < simulation.MAX_DEBRIS:
                 simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
                 ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
-                # Random angle around circle (radial spread)
-                angle = ti.random() * 2.0 * 3.14159
+                # Evenly spaced angles with small jitter for clean radial ring
+                angle = (float(i) / float(num_particles)) * 2.0 * 3.14159 + ti.random() * 0.3
 
                 # Spawn at ball edge (slightly inside to look like impact point)
                 spawn_radius = ball_radius * 0.8
@@ -10412,11 +10416,11 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
 
                 simulation.debris_pos[idx] = ti.math.vec3(spawn_x, pos_y + 0.5, spawn_z)
 
-                # Velocity points outward from center
-                particle_speed = base_speed * (0.8 + ti.random() * 0.4)
+                # Velocity points outward from center — uniform speed with slight variation
+                particle_speed = base_speed * (0.9 + ti.random() * 0.2)
                 vx = ti.cos(angle) * particle_speed
                 vz = ti.sin(angle) * particle_speed
-                vy = particle_speed * upward_ratio * (0.8 + ti.random() * 0.4)
+                vy = particle_speed * upward_ratio * (0.9 + ti.random() * 0.2)
 
                 simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
 
@@ -10644,6 +10648,7 @@ def update_pending_arena_switch(dt):
         # Re-render bowl perimeter if ball is active (arena rebuild wipes it)
         if beetle_ball.active:
             simulation.render_bowl_perimeter()
+            simulation.clear_goal_pit_floor()
         build_floor_height_cache()
     else:
         # Still waiting
@@ -15897,6 +15902,7 @@ try:
                         init_ball_cache(beetle_ball.radius)
                     # Render bowl and rebuild floor cache
                     simulation.render_bowl_perimeter()
+                    simulation.clear_goal_pit_floor()
                     build_floor_height_cache()
                     print("Ball enabled via state sync")
                 elif not sync['ball_active'] and beetle_ball.active:
@@ -16681,6 +16687,20 @@ try:
 
         # Ball physics update (uses same beetle physics now)
         # Skip physics if ball has exploded (waiting for celebration to end)
+        # DEBUG: track ball max height and vy for bounce diagnostics
+        if not hasattr(beetle_ball, '_dbg_max_y'):
+            beetle_ball._dbg_max_y = 0.0
+            beetle_ball._dbg_was_airborne = False
+            beetle_ball._dbg_launch_vy = 0.0
+        if beetle_ball.active and not beetle_ball.on_ground:
+            if beetle_ball.y > beetle_ball._dbg_max_y:
+                beetle_ball._dbg_max_y = beetle_ball.y
+            if not beetle_ball._dbg_was_airborne:
+                beetle_ball._dbg_launch_vy = beetle_ball.vy
+                beetle_ball._dbg_was_airborne = True
+            # Log every 15 frames while airborne
+            if physics_frame % 15 == 0:
+                print(f"[BALL AIR] y={beetle_ball.y:.2f} vy={beetle_ball.vy:.2f} maxY={beetle_ball._dbg_max_y:.2f} launchVy={beetle_ball._dbg_launch_vy:.2f}")
         if beetle_ball.active and not g['ball_has_exploded']:
             # If ball has scored, just apply gravity and let it fall (no collisions/bounces)
             if g['ball_scored_this_fall']:
@@ -17213,6 +17233,7 @@ try:
                         g['red_score'] = 0
                         # Immediately render bowl — don't queue, avoids overwrite by arena switches
                         simulation.render_bowl_perimeter()
+                        simulation.clear_goal_pit_floor()
                         build_floor_height_cache()
                     else:
                         # Disabling ball - clear voxels immediately
@@ -19111,7 +19132,7 @@ try:
 
             # Pit with rounded corners (world coords: blue at x<=-32, red at x>=32)
             corner_r = 5.0
-            if az < goal_pit_half_width and (beetle_ball.x <= -34 or beetle_ball.x >= 34):
+            if az < goal_pit_half_width and (beetle_ball.x <= -35 or beetle_ball.x >= 35):
                 # Distance from corner (where wall meets pit edge)
                 if beetle_ball.x <= -32:
                     dx_corner = -32.0 - beetle_ball.x
@@ -19126,7 +19147,9 @@ try:
                 else:
                     in_goal_pit = True  # Main pit body
             if az < goal_pit_half_width and (beetle_ball.x < -32 + near_goal_margin or beetle_ball.x > 32 - near_goal_margin):
-                near_goal_pit = True
+                # Only suppress bounce when ball is actually dropping into pit (below floor)
+                if beetle_ball.y < 1.0:
+                    near_goal_pit = True
 
             # Latch: once ball drops below floor in goal area, commit to falling (prevents corner pop-back)
             if beetle_ball.y < -1.0 and beetle_ball.vy < 0:
@@ -19176,12 +19199,21 @@ try:
                             if near_goal_pit:
                                 beetle_ball.vy = 0.0
                             else:
+                                pre_bounce_vy = beetle_ball.vy
                                 beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
                                 # If bounce is very small, stop bouncing and settle
-                                if abs(beetle_ball.vy) < 0.5:
+                                if abs(beetle_ball.vy) < 2.0:
                                     beetle_ball.vy = 0.0
+                                    beetle_ball.y = floor_surface + beetle_ball.radius  # Settle on floor exactly
+                                print(f"[BALL BOUNCE] impact_vy={pre_bounce_vy:.2f} bounce_vy={beetle_ball.vy:.2f} maxY={beetle_ball._dbg_max_y:.2f} coeff={physics_params['BALL_GROUND_BOUNCE']:.2f}")
+                            beetle_ball._dbg_max_y = beetle_ball.y  # reset for next arc
+                            beetle_ball._dbg_was_airborne = False
 
-                        beetle_ball.on_ground = True
+                        # After bounce with upward velocity, mark airborne so gravity doesn't eat bounce
+                        if beetle_ball.vy > 0:
+                            beetle_ball.on_ground = False
+                        else:
+                            beetle_ball.on_ground = True
                     elif lowest_point_ball < floor_surface + 0.5:  # Close to ground
                         beetle_ball.on_ground = True
                     else:

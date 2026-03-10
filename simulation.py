@@ -7568,10 +7568,26 @@ def render_bowl_perimeter():
                         voxel_type[i, bowl_y, k] = SLIPPERY
 
 @ti.kernel
+def clear_goal_pit_floor():
+    """
+    Remove arena floor voxels inside the goal pit area (ball mode only).
+    The circular arena floor can leave stray voxels at the pit opening.
+    """
+    center_z = 64
+    floor_y_offset = 33
+    goal_pit_half_width = 12
+
+    for i in range(0, 33):  # Blue pit: grid x 0..32
+        for k in range(center_z - goal_pit_half_width, center_z + goal_pit_half_width):
+            if voxel_type[i, floor_y_offset, k] == CONCRETE:
+                voxel_type[i, floor_y_offset, k] = EMPTY
+    for i in range(96, 128):  # Red pit: grid x 96..127
+        for k in range(center_z - goal_pit_half_width, center_z + goal_pit_half_width):
+            if voxel_type[i, floor_y_offset, k] == CONCRETE:
+                voxel_type[i, floor_y_offset, k] = EMPTY
+
+@ti.kernel
 def clear_bowl_perimeter():
-    """
-    Clear the bowl perimeter voxels (when disabling ball mode)
-    """
     center_x = 64
     center_z = 64
     arena_radius = 32
