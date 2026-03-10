@@ -1503,14 +1503,29 @@ class Beetle:
 
         # Apply angular friction (pitch/roll) - different damping based on ground contact
         if self.on_ground:
-            # Heavy damping when on ground for stability
-            self.pitch_velocity *= ANGULAR_FRICTION * 0.9  # Extra damping
-            self.roll_velocity *= ANGULAR_FRICTION * 0.9
+            # Blend damping only when landing (vy < -1) and tilted — lets restoring slam beetle flat
+            # Don't blend when on ground being tipped by hazards (vy >= -1)
+            tilt = abs(self.pitch) + abs(self.roll)
+            ground_damp = ANGULAR_FRICTION * 0.9  # Heavy when flat (~0.585)
+            if self.vy < -1.0 and tilt > 0.3:
+                tilted_damp = 0.78
+                blend = min(1.0, tilt / 1.2)
+                damp = ground_damp + (tilted_damp - ground_damp) * blend
+            else:
+                damp = ground_damp
+            self.pitch_velocity *= damp
+            self.roll_velocity *= damp
         else:
             # Light damping when airborne to allow dramatic tumbling (tunable via slider)
             airborne_damping = physics_params.get("AIRBORNE_DAMPING", 0.98)
             self.pitch_velocity *= airborne_damping
             self.roll_velocity *= airborne_damping
+
+        # Airborne restoring torque - gently pull beetle upright while falling
+        if not self.on_ground and self.horn_type != "ball":
+            AIR_RESTORING = physics_params.get("AIR_RESTORING", 35.0)
+            self.pitch_velocity -= self.pitch * AIR_RESTORING * dt
+            self.roll_velocity -= self.roll * AIR_RESTORING * dt
 
         # Ground restoring torque - automatically level out when on ground
         # Only apply strong restoring when beetle is settled, not just bouncing
@@ -14204,7 +14219,7 @@ def beetle_collision(b1, b2, params):
                     # In this case, the presser should have reduced self-effect and push the opponent
                     b1_pressing_down = b1_effective_vel < -0.3 and abs(b2_effective_vel) < 0.3
                     b2_pressing_down = b2_effective_vel < -0.3 and abs(b1_effective_vel) < 0.3
-                    PRESS_DOWN_SELF_MULT = 0.2   # Reduced self-lift when pressing down (20% of normal)
+                    PRESS_DOWN_SELF_MULT = 0.13  # Reduced self-lift when pressing down (13% of normal)
                     PRESS_DOWN_PUSH_MULT = 0.5   # How much force transfers to opponent as push
 
                     # Check if both beetles are off cooldown before applying lift forces
@@ -14922,8 +14937,8 @@ physics_params = {
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
-    "TUMBLE_MULTIPLIER": 5.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
-    "HORN_LIFT_STRENGTH": 1.6,  # Multiplier for horn combat lift force (higher = more intense lifts)
+    "TUMBLE_MULTIPLIER": 3.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
+    "HORN_LIFT_STRENGTH": 1.3,  # Multiplier for horn combat lift force (higher = more intense lifts)
     "HORN_TIP_STRENGTH": 1.5,  # Tipping torque strength for horn collisions (replaces separation)
     "COLLISION_SPIN_BIAS": 0.8,  # Strength of away-from-attacker spin bias (prevents turning into collisions)
     "BODY_TILT_STRENGTH": 1.8,  # How much bodies tilt on body-to-body collisions (opposite directions)
@@ -18014,6 +18029,15 @@ try:
             beetle_blue.pitch = wobble
             beetle_blue.roll = math.cos(blue_hover_timer * 8.0) * 0.1 * spin_factor
 
+            # Start downwash push 0.3s before hover ends (anti-camp)
+            if blue_hover_timer >= HOVER_DURATION - 0.3 and not blue_downwash_active:
+                blue_downwash_active = True
+                blue_downwash_strength = DOWNWASH_MIN_STRENGTH
+                blue_downwash_x = blue_hover_target_x
+                blue_downwash_z = blue_hover_target_z
+                blue_downwash_dust_timer = 0.0
+                blue_downwash_fade_timer = 0.0
+
             # Complete hover when done
             if progress >= 1.0:
                 blue_hovering = False
@@ -18159,6 +18183,15 @@ try:
             wobble = math.sin(red_hover_timer * 10.0 + 1.5) * 0.15 * spin_factor
             beetle_red.pitch = wobble
             beetle_red.roll = math.cos(red_hover_timer * 8.0 + 2.0) * 0.1 * spin_factor
+
+            # Start downwash push 0.3s before hover ends (anti-camp)
+            if red_hover_timer >= HOVER_DURATION - 0.3 and not red_downwash_active:
+                red_downwash_active = True
+                red_downwash_strength = DOWNWASH_MIN_STRENGTH
+                red_downwash_x = red_hover_target_x
+                red_downwash_z = red_hover_target_z
+                red_downwash_dust_timer = 0.0
+                red_downwash_fade_timer = 0.0
 
             # Complete hover when done
             if progress >= 1.0:
