@@ -53,12 +53,15 @@ import renderer
 import ctypes as _ctypes
 _sdl_hwnd = None
 HWND_TOPMOST = -1
-SWP_NOMOVE = 0x0002
 SWP_NOSIZE = 0x0001
+_splash_cx = 0
+_splash_cy = 0
 if _splash_active:
     try:
         _sdl_hwnd = pygame.display.get_wm_info()['window']
-        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+        _splash_cx = (_di.current_w - _sw) // 2
+        _splash_cy = (_di.current_h - _sh) // 2
+        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, _splash_cx, _splash_cy, 0, 0, SWP_NOSIZE)
     except Exception:
         pass  # If TOPMOST fails, splash still works, just might be behind
 
@@ -86,8 +89,8 @@ def _update_splash(text):
         _status = _fs.render(text, True, (210, 210, 210))
         _splash.blit(_status, (_sw // 2 - _status.get_width() // 2, 190))
         pygame.display.flip()
-        # Re-force on top every update in case Taichi window stole focus
-        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+        # Re-force on top + centered every update in case Taichi window stole focus
+        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, _splash_cx, _splash_cy, 0, 0, SWP_NOSIZE)
     except Exception:
         pass
 
@@ -8344,7 +8347,10 @@ def clear_and_render_ball_fast(ball_x, ball_y, ball_z, rotation, pitch, roll):
 
     # Clear old position if ball was previously rendered
     if ball_last_rendered[None] == 1:
-        clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+        try:
+            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+        except (RuntimeError, Exception):
+            ball_last_rendered[None] = 0  # Reset so next frame starts fresh
 
     # Render at new position
     render_ball_fast(grid_x, grid_y, grid_z, rotation, pitch, roll, num_voxels)
@@ -14825,7 +14831,7 @@ safe_window_show(window)
 # Re-force splash on top after Taichi window steals focus
 if _splash_active:
     try:
-        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, _splash_cx, _splash_cy, 0, 0, SWP_NOSIZE)
         _ctypes.windll.user32.SetForegroundWindow(_sdl_hwnd)
     except Exception:
         pass
