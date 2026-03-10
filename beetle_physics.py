@@ -24,12 +24,19 @@ try:
     _sw, _sh = 480, 140
     os.environ['SDL_VIDEO_WINDOW_POS'] = f'{(_di.current_w - _sw) // 2},{(_di.current_h - _sh) // 2}'
     _splash = pygame.display.set_mode((_sw, _sh), pygame.NOFRAME)
-    _splash.fill((20, 35, 25))  # Dark forest green
+    _splash.fill((10, 10, 12))  # Black background
     _ft = pygame.font.Font(None, 48)
     _fs = pygame.font.Font(None, 28)
-    _t1 = _ft.render("BEETLE BATTLE BROS", True, (220, 220, 200))
-    _t2 = _fs.render("Loading...", True, (140, 140, 130))
-    _splash.blit(_t1, (_sw // 2 - _t1.get_width() // 2, 35))
+    # Title words in team colors matching the in-game title screen
+    _w1 = _ft.render("BEETLE ", True, (77, 153, 255))   # Blue
+    _w2 = _ft.render("BATTLE ", True, (255, 77, 51))    # Red
+    _w3 = _ft.render("BROS", True, (230, 191, 77))      # Gold
+    _title_w = _w1.get_width() + _w2.get_width() + _w3.get_width()
+    _tx = (_sw - _title_w) // 2
+    _splash.blit(_w1, (_tx, 35))
+    _splash.blit(_w2, (_tx + _w1.get_width(), 35))
+    _splash.blit(_w3, (_tx + _w1.get_width() + _w2.get_width(), 35))
+    _t2 = _fs.render("Loading...", True, (140, 140, 140))
     _splash.blit(_t2, (_sw // 2 - _t2.get_width() // 2, 95))
     pygame.display.flip()
     _splash_active = True
@@ -14118,64 +14125,75 @@ def beetle_collision(b1, b2, params):
                         height_above_normal = avg_height - NORMAL_HEIGHT
                         height_penalty = 1.0 / (1.0 + height_above_normal * HEIGHT_PENALTY_FACTOR)
 
+                    # Detect "pressing down" scenario: one beetle lowering horn into idle opponent
+                    # In this case, the presser should have reduced self-effect and push the opponent
+                    b1_pressing_down = b1_effective_vel < -0.3 and abs(b2_effective_vel) < 0.3
+                    b2_pressing_down = b2_effective_vel < -0.3 and abs(b1_effective_vel) < 0.3
+                    PRESS_DOWN_SELF_MULT = 0.2   # Reduced self-lift when pressing down (20% of normal)
+                    PRESS_DOWN_PUSH_MULT = 0.5   # How much force transfers to opponent as push
+
                     # Check if both beetles are off cooldown before applying lift forces
                     if b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
                         # Cooldown expired - can apply lift force
                         if lift_advantage > ADVANTAGE_THRESHOLD:
                             # Blue has advantage - lifts red
-                            # print(f"  -> BLUE lifts RED!")
                             lift_force = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
-                            b2.pending_lift += min(lift_force, 12.0)  # Red gets lifted (smoothed, capped)
-                            b1.vy -= lift_impulse * 0.03  # Blue pushes down (reaction, instant is fine)
+
+                            if b2_pressing_down:
+                                # Red is pressing down into blue — reduced self-lift, push blue instead
+                                b2.pending_lift += min(lift_force * PRESS_DOWN_SELF_MULT, 12.0)
+                                # Push blue away horizontally
+                                push_h = lift_force * PRESS_DOWN_PUSH_MULT
+                                b1.vx += normal_x * push_h
+                                b1.vz += normal_z * push_h
+                            else:
+                                b2.pending_lift += min(lift_force, 12.0)
+                                b1.vy -= lift_impulse * 0.03  # Reaction (skip when pressing down)
 
                             # TORQUE: Apply rotation from off-center force
-                            # Calculate lever arm in beetle's LOCAL space (not arena coords)
                             world_lever_x = collision_x - b2.x
                             world_lever_z = collision_z - b2.z
                             cos_r = math.cos(b2.rotation)
                             sin_r = math.sin(b2.rotation)
-                            local_x = world_lever_x * cos_r + world_lever_z * sin_r  # left/right relative to beetle
-                            local_z = world_lever_z * cos_r - world_lever_x * sin_r  # front/back relative to beetle
+                            local_x = world_lever_x * cos_r + world_lever_z * sin_r
+                            local_z = world_lever_z * cos_r - world_lever_x * sin_r
 
-                            # Pitch torque: collision in front tips nose up
                             tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
-                            pitch_torque = local_z * lift_force * tumble_mult
-                            b2.pending_pitch += pitch_torque / b2.pitch_inertia
+                            torque_scale = PRESS_DOWN_SELF_MULT if b2_pressing_down else 1.0
+                            b2.pending_pitch += (local_z * lift_force * tumble_mult * torque_scale) / b2.pitch_inertia
+                            b2.pending_roll += (local_x * lift_force * tumble_mult * torque_scale) / b2.roll_inertia
 
-                            # Roll torque: collision to the right tips right side up
-                            roll_torque = local_x * lift_force * tumble_mult
-                            b2.pending_roll += roll_torque / b2.roll_inertia
-
-                            # Set cooldown for both beetles
                             b1.lift_cooldown = LIFT_COOLDOWN_DURATION
                             b2.lift_cooldown = LIFT_COOLDOWN_DURATION
 
                         elif lift_advantage < -ADVANTAGE_THRESHOLD:
                             # Red has advantage - lifts blue
-                            # print(f"  -> RED lifts BLUE!")
                             lift_force = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
-                            b1.pending_lift += min(lift_force, 12.0)  # Blue gets lifted (smoothed, capped)
-                            b2.vy -= lift_impulse * 0.03  # Red pushes down (reaction, instant is fine)
+
+                            if b1_pressing_down:
+                                # Blue is pressing down into red — reduced self-lift, push red instead
+                                b1.pending_lift += min(lift_force * PRESS_DOWN_SELF_MULT, 12.0)
+                                # Push red away horizontally
+                                push_h = lift_force * PRESS_DOWN_PUSH_MULT
+                                b2.vx -= normal_x * push_h
+                                b2.vz -= normal_z * push_h
+                            else:
+                                b1.pending_lift += min(lift_force, 12.0)
+                                b2.vy -= lift_impulse * 0.03  # Reaction (skip when pressing down)
 
                             # TORQUE: Apply rotation from off-center force
-                            # Calculate lever arm in beetle's LOCAL space (not arena coords)
                             world_lever_x = collision_x - b1.x
                             world_lever_z = collision_z - b1.z
                             cos_r = math.cos(b1.rotation)
                             sin_r = math.sin(b1.rotation)
-                            local_x = world_lever_x * cos_r + world_lever_z * sin_r  # left/right relative to beetle
-                            local_z = world_lever_z * cos_r - world_lever_x * sin_r  # front/back relative to beetle
+                            local_x = world_lever_x * cos_r + world_lever_z * sin_r
+                            local_z = world_lever_z * cos_r - world_lever_x * sin_r
 
-                            # Pitch torque: collision in front tips nose up
                             tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
-                            pitch_torque = local_z * lift_force * tumble_mult
-                            b1.pending_pitch += pitch_torque / b1.pitch_inertia
+                            torque_scale = PRESS_DOWN_SELF_MULT if b1_pressing_down else 1.0
+                            b1.pending_pitch += (local_z * lift_force * tumble_mult * torque_scale) / b1.pitch_inertia
+                            b1.pending_roll += (local_x * lift_force * tumble_mult * torque_scale) / b1.roll_inertia
 
-                            # Roll torque: collision to the right tips right side up
-                            roll_torque = local_x * lift_force * tumble_mult
-                            b1.pending_roll += roll_torque / b1.roll_inertia
-
-                            # Set cooldown for both beetles
                             b1.lift_cooldown = LIFT_COOLDOWN_DURATION
                             b2.lift_cooldown = LIFT_COOLDOWN_DURATION
 

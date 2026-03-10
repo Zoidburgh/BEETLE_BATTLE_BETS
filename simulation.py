@@ -1254,8 +1254,8 @@ def animate_background(time: ti.f32):
         bg_offset_y[i] = 0.0
 
         if anim == BG_ANIM_TWINKLE:
-            # Gentle base shimmer + occasional bright twinkle flash
-            base = 0.85 + 0.1 * ti.sin(t)
+            # Bright base shimmer + occasional twinkle flash
+            base = 1.05 + 0.15 * ti.sin(t)
             # Use two overlapping sin waves with different frequencies to create rare alignment peaks
             wave1 = ti.sin(time * speed * 0.7 + phase * 3.14)
             wave2 = ti.sin(time * speed * 1.1 + phase * 7.77)
@@ -1264,7 +1264,7 @@ def animate_background(time: ti.f32):
             flash = 0.0
             if combined > 0.7:
                 flash = (combined - 0.7) / 0.3  # 0 to 1 ramp
-                flash = flash * flash * 0.5  # squared for sharp spike, up to 0.5 extra brightness
+                flash = flash * flash * 0.7  # squared for sharp spike, up to 0.7 extra brightness
             bg_brightness[i] = base + flash
 
         elif anim == BG_ANIM_CONSTELLATION:
