@@ -10395,9 +10395,11 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
     color_g = 0.40
     color_b = 0.35
 
+    # Impact intensity factor (0.0 at threshold, 1.0 at strong hit)
+    intensity = ti.min(scaled_speed / 20.0, 1.0)  # 0-1 range over impact 7-27
     # Speed scales with impact (harder hit = faster dust)
-    base_speed = 1.5 + impact_speed * 0.6
-    upward_ratio = 0.466  # ~25° angle like leg dust
+    base_speed = 1.0 + intensity * 10.0
+    upward_ratio = 0.3 + intensity * 0.4  # Low bounces stay flat, big bounces splash up
 
     # Fixed loop with conditional (Taichi needs compile-time loop bounds)
     for i in range(32):
@@ -10406,21 +10408,21 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             if idx < simulation.MAX_DEBRIS:
                 simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
                 ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
-                # Evenly spaced angles with small jitter for clean radial ring
-                angle = (float(i) / float(num_particles)) * 2.0 * 3.14159 + ti.random() * 0.3
+                # Loosely spaced angles — evenly distributed but with natural jitter
+                angle = (float(i) / float(num_particles)) * 2.0 * 3.14159 + (ti.random() - 0.5) * 0.5
 
-                # Spawn at ball edge (slightly inside to look like impact point)
-                spawn_radius = ball_radius * 0.8
+                # Spawn at ball edge with slight radial scatter
+                spawn_radius = ball_radius * (0.7 + ti.random() * 0.3)
                 spawn_x = pos_x + ti.cos(angle) * spawn_radius
                 spawn_z = pos_z + ti.sin(angle) * spawn_radius
 
                 simulation.debris_pos[idx] = ti.math.vec3(spawn_x, pos_y + 0.5, spawn_z)
 
-                # Velocity points outward from center — uniform speed with slight variation
-                particle_speed = base_speed * (0.9 + ti.random() * 0.2)
+                # Velocity points outward — moderate variation in speed
+                particle_speed = base_speed * (0.8 + ti.random() * 0.4)
                 vx = ti.cos(angle) * particle_speed
                 vz = ti.sin(angle) * particle_speed
-                vy = particle_speed * upward_ratio * (0.9 + ti.random() * 0.2)
+                vy = particle_speed * upward_ratio * (0.7 + ti.random() * 0.6)
 
                 simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
 
@@ -10429,7 +10431,42 @@ def spawn_ball_bounce_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                 simulation.debris_material[idx] = ti.math.vec3(color_r * color_var, color_g * color_var, color_b * color_var)
 
                 # Lifetime scales slightly with impact (bigger bounce = longer hang time)
-                simulation.debris_lifetime[idx] = 0.4 + ti.min(impact_speed * 0.06, 0.4) + ti.random() * 0.15
+                simulation.debris_lifetime[idx] = 0.2 + intensity * 0.5 + ti.random() * 0.1
+
+@ti.kernel
+def spawn_ball_roll_dust(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
+                         speed: ti.f32, ball_radius: ti.f32):
+    """Spawn dust trail behind rolling ball"""
+    # Spawn 2-3 particles per call for visible trail
+    num = 2 + ti.cast(ti.random() * 2.0, ti.i32)  # 2 or 3
+    for i in range(3):
+        if i < num:
+            idx = ti.atomic_add(simulation.num_debris[None], 1)
+            if idx < simulation.MAX_DEBRIS:
+                simulation.debris_active[idx] = 1
+                ti.atomic_add(simulation.debris_active_count[None], 1)
+
+                # Spawn at ground contact with random offset
+                offset_angle = ti.random() * 2.0 * 3.14159
+                offset_r = ball_radius * 0.5 * ti.random()
+                spawn_x = pos_x + ti.cos(offset_angle) * offset_r
+                spawn_z = pos_z + ti.sin(offset_angle) * offset_r
+
+                simulation.debris_pos[idx] = ti.math.vec3(spawn_x, pos_y + 0.3, spawn_z)
+
+                # Upward drift with horizontal scatter
+                vx = (ti.random() - 0.5) * 2.0
+                vz = (ti.random() - 0.5) * 2.0
+                vy = 1.0 + ti.random() * 2.0
+
+                simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
+
+                # Brownish dust color
+                color_var = 0.9 + ti.random() * 0.2
+                simulation.debris_material[idx] = ti.math.vec3(0.45 * color_var, 0.40 * color_var, 0.35 * color_var)
+
+                # Longer lifetime for visibility
+                simulation.debris_lifetime[idx] = 0.3 + ti.random() * 0.3
 
 @ti.kernel
 def spawn_arena_transition_ring(ring_radius: ti.f32, ring_width: ti.f32, num_particles: ti.i32):
@@ -15044,6 +15081,7 @@ update_loading(1)
 spawn_death_explosion_batch(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0, 1, 1)
 spawn_ball_explosion_batch(0.0, -100.0, 0.0, 0, 1, 1)
 spawn_ball_bounce_dust(0.0, -100.0, 0.0, 10.0, 4.0)
+spawn_ball_roll_dust(0.0, -100.0, 0.0, 10.0, 4.0)
 spawn_downwash_dust(0.0, -100.0, 0.5)
 spawn_downwash_landing_burst(0.0, -100.0)
 spawn_tornado_dust(0.0, -100.0, 0.0)
@@ -16745,6 +16783,13 @@ try:
 
                     # Apply angular friction to yaw spin (horizontal spin from collisions)
                     beetle_ball.angular_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
+
+                    # Dust trail when ball rolls on ground
+                    ball_ground_speed = math.sqrt(beetle_ball.vx**2 + beetle_ball.vz**2)
+                    if ball_ground_speed > 4.0:
+                        spawn_ball_roll_dust(
+                            beetle_ball.x, RENDER_Y_OFFSET + 0.2, beetle_ball.z,
+                            ball_ground_speed, beetle_ball.radius)
 
                 # Apply bowl slide to ball (slippery perimeter pushes toward center)
                 apply_bowl_slide(beetle_ball, physics_params)
