@@ -488,9 +488,9 @@ HORN_MIN_PITCH_HERCULES = math.radians(2)   # +2 degrees (jaws fully closed)
 # Atlas-specific limits (optimized for scoop-and-lift combat mechanics)
 HORN_MAX_PITCH_ATLAS = math.radians(20)  # +20 degrees (full upward lift)
 HORN_MIN_PITCH_ATLAS = math.radians(-40)   # -40 degrees (angled down toward ground)
-# Scorpion-specific limits (symmetric ±17° around 20° default for equal claw range)
-HORN_MAX_PITCH_SCORPION = math.radians(45)  # +45 degrees (3° more up)
-HORN_MIN_PITCH_SCORPION = math.radians(-5)  # -5 degrees (3° more down)
+# Scorpion-specific limits
+HORN_MAX_PITCH_SCORPION = math.radians(58)  # +58 degrees (wider open)
+HORN_MIN_PITCH_SCORPION = math.radians(-18) # -18 degrees (deeper close)
 
 # Horn yaw control (Phase 2 - pincer spread for stag, yaw for rhino)
 HORN_YAW_SPEED = 1.15  # Radians per second (15% faster for parity with pitch speed)
@@ -14176,11 +14176,11 @@ def beetle_collision(b1, b2, params):
                         _, _, rel_z = get_local_collision(b1, collision_x, collision_y, collision_z)
                         if rel_z < -1.0:  # Left claw - inverted motion
                             b1_effective_vel = -b1.horn_pitch_velocity
-                    elif b1.horn_type_id == 2:  # Hercules - top horn is fixed
+                    elif b1.horn_type_id == 2:  # Hercules - top horn uses yaw velocity
                         rel_x, rel_y, _ = get_local_collision(b1, collision_x, collision_y, collision_z)
                         is_bottom_horn = rel_y < 5 or (rel_y < 8 and rel_x >= 10.0)
-                        if not is_bottom_horn:  # Top horn - no velocity
-                            b1_effective_vel = 0.0
+                        if not is_bottom_horn:  # Top horn - use yaw movement as effective velocity
+                            b1_effective_vel = abs(b1.horn_yaw_velocity) * 0.4
                     elif b1.horn_type_id == 4:  # Atlas - side horns are fixed
                         _, _, rel_z = get_local_collision(b1, collision_x, collision_y, collision_z)
                         if abs(rel_z) > 1.5:  # Side pronotum horns - no velocity
@@ -14190,11 +14190,11 @@ def beetle_collision(b1, b2, params):
                         _, _, rel_z = get_local_collision(b2, collision_x, collision_y, collision_z)
                         if rel_z < -1.0:  # Left claw - inverted motion
                             b2_effective_vel = -b2.horn_pitch_velocity
-                    elif b2.horn_type_id == 2:  # Hercules - top horn is fixed
+                    elif b2.horn_type_id == 2:  # Hercules - top horn uses yaw velocity
                         rel_x, rel_y, _ = get_local_collision(b2, collision_x, collision_y, collision_z)
                         is_bottom_horn = rel_y < 5 or (rel_y < 8 and rel_x >= 10.0)
-                        if not is_bottom_horn:  # Top horn - no velocity
-                            b2_effective_vel = 0.0
+                        if not is_bottom_horn:  # Top horn - use yaw movement as effective velocity
+                            b2_effective_vel = abs(b2.horn_yaw_velocity) * 0.4
                     elif b2.horn_type_id == 4:  # Atlas - side horns are fixed
                         _, _, rel_z = get_local_collision(b2, collision_x, collision_y, collision_z)
                         if abs(rel_z) > 1.5:  # Side pronotum horns - no velocity
@@ -14225,7 +14225,7 @@ def beetle_collision(b1, b2, params):
                     # In this case, the presser should have reduced self-effect and push the opponent
                     b1_pressing_down = b1_effective_vel < -0.3 and abs(b2_effective_vel) < 0.3
                     b2_pressing_down = b2_effective_vel < -0.3 and abs(b1_effective_vel) < 0.3
-                    PRESS_DOWN_SELF_MULT = 0.13  # Reduced self-lift when pressing down (13% of normal)
+                    PRESS_DOWN_SELF_MULT = 0.15  # Reduced self-lift when pressing down (15% of normal)
                     PRESS_DOWN_PUSH_MULT = 0.5   # How much force transfers to opponent as push
 
                     # Check if both beetles are off cooldown before applying lift forces
@@ -16307,7 +16307,7 @@ try:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.78 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
 
             if blue_inputs & INPUT_HORN_UP:
                 effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
@@ -16600,7 +16600,7 @@ try:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.78 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
 
             if red_inputs & INPUT_HORN_UP:
                 effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
