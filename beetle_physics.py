@@ -6624,9 +6624,10 @@ def generate_giraffe_weevil_neck(shaft_len, prong_len):
 
     # === SEGMENT 1: Fixed upward neck (controlled by shaft slider) ===
 
-    # Base attachment to body (x=2-3, thick 3x3 cross-section)
-    for dx in range(2, 4):
-        for dy in range(base_y, base_y + 3):
+    # Base attachment to body (x=2-5, thick 3x3 cross-section, front raised)
+    for dx in range(2, 6):
+        y_offset = 2 if dx >= 4 else 0
+        for dy in range(base_y + y_offset, base_y + y_offset + 3):
             for dz in range(-1, 2):
                 neck_voxels.append((dx, dy, dz))
 
@@ -6650,10 +6651,13 @@ def generate_giraffe_weevil_neck(shaft_len, prong_len):
     for i in range(head_len):
         dx = tip_x + 1 + i
         dy = tip_y - round(i * 1.0)  # Angled downward ~45 deg from horizontal
-        # 2x3 cross-section (2 tall, 3 wide)
+        # Last 3 segments before head get thicker (3 tall instead of 2)
+        near_head = (head_len - 1 - i) <= 2
         for dz in range(-1, 2):
             neck_voxels.append((dx, dy, dz))
             neck_voxels.append((dx, dy + 1, dz))
+            if near_head:
+                neck_voxels.append((dx, dy + 2, dz))
 
     # Head knob at end — 3x3x3
     head_x = tip_x + 1 + head_len
@@ -16471,7 +16475,7 @@ try:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle_blue.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle_blue.horn_type_id == 3 else (HORN_YAW_SPEED if beetle_blue.horn_type_id == 7 else HORN_TILT_SPEED)
 
             if blue_inputs & INPUT_HORN_UP:
                 effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
@@ -16528,7 +16532,8 @@ try:
 
                 if blue_inputs & INPUT_HORN_LEFT:
                     # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_yaw_damping)
+                    base_yaw_speed = HORN_TILT_SPEED if beetle_blue.horn_type_id == 7 else HORN_YAW_SPEED
+                    effective_speed = base_yaw_speed * (1.0 - beetle_blue.horn_yaw_damping)
 
                     new_yaw = beetle_blue.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
@@ -16555,7 +16560,8 @@ try:
                                 beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
                 elif blue_inputs & INPUT_HORN_RIGHT:
                     # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_blue.horn_yaw_damping)
+                    base_yaw_speed = HORN_TILT_SPEED if beetle_blue.horn_type_id == 7 else HORN_YAW_SPEED
+                    effective_speed = base_yaw_speed * (1.0 - beetle_blue.horn_yaw_damping)
 
                     new_yaw = beetle_blue.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
@@ -16764,7 +16770,7 @@ try:
             max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
 
             # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle_red.horn_type_id == 3 else HORN_TILT_SPEED
+            base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle_red.horn_type_id == 3 else (HORN_YAW_SPEED if beetle_red.horn_type_id == 7 else HORN_TILT_SPEED)
 
             if red_inputs & INPUT_HORN_UP:
                 effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
@@ -16821,7 +16827,8 @@ try:
 
                 if red_inputs & INPUT_HORN_LEFT:
                     # N key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_yaw_damping)
+                    base_yaw_speed = HORN_TILT_SPEED if beetle_red.horn_type_id == 7 else HORN_YAW_SPEED
+                    effective_speed = base_yaw_speed * (1.0 - beetle_red.horn_yaw_damping)
 
                     new_yaw = beetle_red.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                     new_yaw = max(min_yaw_limit, new_yaw)
@@ -16848,7 +16855,8 @@ try:
                                 beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
                 elif red_inputs & INPUT_HORN_RIGHT:
                     # M key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
-                    effective_speed = HORN_YAW_SPEED * (1.0 - beetle_red.horn_yaw_damping)
+                    base_yaw_speed = HORN_TILT_SPEED if beetle_red.horn_type_id == 7 else HORN_YAW_SPEED
+                    effective_speed = base_yaw_speed * (1.0 - beetle_red.horn_yaw_damping)
 
                     new_yaw = beetle_red.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                     new_yaw = min(max_yaw_limit, new_yaw)
