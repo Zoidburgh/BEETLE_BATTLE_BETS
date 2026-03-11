@@ -508,7 +508,7 @@ HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to 
 
 # OPTIMIZATION: Horn type ID mapping and pitch/yaw limit lookup tables
 # Eliminates string comparisons in the physics loop (120 checks/sec -> integer lookup)
-HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "spider": 6}
+HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "spider": 6, "giraffe": 7}
 # Pitch limits: (max_pitch, min_pitch) indexed by horn_type_id
 HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_RHINO, HORN_MIN_PITCH_RHINO),       # 0: rhino
@@ -518,6 +518,7 @@ HORN_PITCH_LIMITS = [
     (HORN_MAX_PITCH_ATLAS, HORN_MIN_PITCH_ATLAS),       # 4: atlas
     (0.0, 0.0),                                         # 5: bombardier (no horn - uses firing controls)
     (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 6: spider (fangs)
+    (math.radians(25), math.radians(-40)),               # 7: giraffe weevil (+25° up, -40° down)
 ]
 # Yaw limits: (max_yaw, min_yaw) indexed by horn_type_id
 HORN_YAW_LIMITS = [
@@ -528,6 +529,7 @@ HORN_YAW_LIMITS = [
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 4: atlas
     (0.0, 0.0),                             # 5: bombardier (no horn - uses firing controls)
     (HORN_MAX_YAW, HORN_MIN_YAW),           # 6: spider
+    (math.radians(55), math.radians(-55)),   # 7: giraffe weevil (±55° to compensate pitch compression)
 ]
 
 # ============================================================================
@@ -4401,6 +4403,10 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
                 front_progress = 1.0 - ((dx - (-1)) / (-body_length - (-1)))  # 1.0 at dx=-1, 0.0 at dx=-body_length
                 # Front should be 4 voxels higher than rear
                 y_offset = int(front_progress * 4)
+            elif horn_type == "giraffe":
+                # Gentle front-up tilt (half of bombardier) to angle neck forward
+                front_progress = 1.0 - ((dx - (-1)) / (-body_length - (-1)))
+                y_offset = int(front_progress * 2)
             else:
                 y_offset = 0
 
@@ -4423,8 +4429,11 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
 
     for dx in range(-1, 2):
         # BOMBARDIER: Thorax elevated to match tilted body (front +4)
+        # GIRAFFE: Gentler tilt (front +2)
         if horn_type == "bombardier":
             thorax_y_offset = 4
+        elif horn_type == "giraffe":
+            thorax_y_offset = 2
         else:
             thorax_y_offset = 0
 
@@ -4443,8 +4452,8 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
     head_dz_max = head_half + 1
     head_base_width = head_width / 1.25  # Scale from constrained head_width to prevent floating voxels
 
-    # Skip default head base for bombardier and spider (they have custom head sections)
-    if horn_type not in ("bombardier", "spider"):
+    # Skip default head base for bombardier, spider, giraffe (they have custom head sections)
+    if horn_type not in ("bombardier", "spider", "giraffe"):
         for dx in range(2, 4):
             for dy in range(0, 1):
                 for dz in range(head_dz_min, head_dz_max):
@@ -4577,6 +4586,12 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         # This horn will be rotated in place_animated_beetle based on horn_pitch
         cephalic_horn = generate_atlas_cephalic_horn(horn_shaft_len)
         body_voxels.extend(cephalic_horn)
+    elif horn_type == "giraffe":
+        # GIRAFFE WEEVIL - Fixed shaft + movable prong with head
+        giraffe_voxels, _giraffe_piv_x, _giraffe_piv_y = generate_giraffe_weevil_neck(horn_shaft_len, horn_prong_len)
+        body_voxels.extend(giraffe_voxels)
+        # Store pivot globally so rebuild functions can set ti.fields
+        generate_beetle_geometry._giraffe_pivot = (_giraffe_piv_x, _giraffe_piv_y)
     elif horn_type == "bombardier":
         # BOMBARDIER BEETLE - No horn, just a rounded head with mandibles and antennae
         # Head is small and rounded with powerful jaws
@@ -4860,6 +4875,8 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         leg_multipliers = [0.9, 0.9, 1.0, 1.0, 1.1, 1.1, 1.0, 1.0]  # Front pair shorter, middle longer, back normal
     elif horn_type == "bombardier":
         leg_multipliers = [1.15, 1.15, 1.1, 1.1, 1.0, 1.0]  # Slightly longer front legs for tilted body
+    elif horn_type == "giraffe":
+        leg_multipliers = [1.05, 1.05, 1.0, 1.0, 1.0, 1.0]  # Slightly longer front legs for gentle tilt
     else:
         leg_multipliers = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]  # All same length for beetles
 
@@ -4870,7 +4887,13 @@ def generate_beetle_geometry(horn_shaft_len=12, horn_prong_len=5, front_body_hei
         front_leg_y_offset = 4  # Body front is elevated - coxa/femur attach here
         middle_leg_y_offset = 2  # Halfway
         rear_leg_y_offset = 0   # Body rear at ground level
-        # Tips reach ground - NO offset for bombardier
+        front_tip_y_offset = 0
+        middle_tip_y_offset = 0
+        rear_tip_y_offset = 0
+    elif horn_type == "giraffe":
+        front_leg_y_offset = 2  # Body front is elevated +2
+        middle_leg_y_offset = 1  # Halfway
+        rear_leg_y_offset = 0
         front_tip_y_offset = 0
         middle_tip_y_offset = 0
         rear_tip_y_offset = 0
@@ -5505,6 +5528,12 @@ red_body_stripe_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is
 red_body_horn_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is horn tip
 red_body_very_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is very tip (scorpion)
 
+# Giraffe weevil pivot point (where prong attaches to shaft tip) — set per beetle during geometry rebuild
+giraffe_blue_pivot_x = ti.field(ti.f32, shape=())
+giraffe_blue_pivot_y = ti.field(ti.f32, shape=())
+giraffe_red_pivot_x = ti.field(ti.f32, shape=())
+giraffe_red_pivot_y = ti.field(ti.f32, shape=())
+
 # Create OVERSIZED Taichi fields for leg geometry cache (6 legs)
 # Store all leg voxels flattened with offsets to know where each leg starts
 # Max leg length=14: coxa(3) + femur(6) + tibia(6) = 15 voxels per segment
@@ -5865,28 +5894,36 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
     beetle_blue.horn_type = horn_type
     beetle_blue.horn_type_id = HORN_TYPE_IDS.get(horn_type, 0)
 
+    # Giraffe weevil: set pivot point for prong rotation
+    if horn_type == "giraffe" and hasattr(generate_beetle_geometry, '_giraffe_pivot'):
+        giraffe_blue_pivot_x[None] = float(generate_beetle_geometry._giraffe_pivot[0])
+        giraffe_blue_pivot_y[None] = float(generate_beetle_geometry._giraffe_pivot[1])
+
     # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
     beetle_blue.body_pitch_offset = 0.0
 
-    # Reset horn state to neutral (prevents carrying over from previous beetle type)
-    beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
-    beetle_blue.horn_yaw = 0.0
-    beetle_blue.horn_pitch_velocity = 0.0
-    beetle_blue.horn_yaw_velocity = 0.0
-    beetle_blue.horn_pitch_damping = 0.0
-    beetle_blue.horn_yaw_damping = 0.0
+    # Reset horn state to neutral only when switching beetle types
+    old_type = getattr(rebuild_blue_beetle, '_last_type', None)
+    rebuild_blue_beetle._last_type = horn_type
+    if old_type != horn_type:
+        beetle_blue.horn_pitch = HORN_DEFAULT_PITCH
+        beetle_blue.horn_yaw = 0.0
+        beetle_blue.horn_pitch_velocity = 0.0
+        beetle_blue.horn_yaw_velocity = 0.0
+        beetle_blue.horn_pitch_damping = 0.0
+        beetle_blue.horn_yaw_damping = 0.0
 
-    # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
-    spider_aim_blue = 0.0
-    spray_aim_blue = 0.0
-    beetle_blue.tail_rotation_angle = 20.0  # Tail rests at max up position
+        # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
+        spider_aim_blue = 0.0
+        spray_aim_blue = 0.0
+        beetle_blue.tail_rotation_angle = 20.0  # Tail rests at max up position
 
-    # Reset speed boost state (prevents carryover from previous beetle type)
-    beetle_blue.forward_hold_time = 0.0
-    beetle_blue.backward_hold_time = 0.0
-    beetle_blue.forward_bonus = 0.0
-    beetle_blue.backward_bonus = 0.0
-    beetle_blue.silk_speed_mult = 1.0
+        # Reset speed boost state (prevents carryover from previous beetle type)
+        beetle_blue.forward_hold_time = 0.0
+        beetle_blue.backward_hold_time = 0.0
+        beetle_blue.forward_bonus = 0.0
+        beetle_blue.backward_bonus = 0.0
+        beetle_blue.silk_speed_mult = 1.0
 
     print(f"Rebuilt blue beetle: {len(BLUE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
@@ -5995,28 +6032,36 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
     beetle_red.horn_type = horn_type
     beetle_red.horn_type_id = HORN_TYPE_IDS.get(horn_type, 0)
 
+    # Giraffe weevil: set pivot point for prong rotation
+    if horn_type == "giraffe" and hasattr(generate_beetle_geometry, '_giraffe_pivot'):
+        giraffe_red_pivot_x[None] = float(generate_beetle_geometry._giraffe_pivot[0])
+        giraffe_red_pivot_y[None] = float(generate_beetle_geometry._giraffe_pivot[1])
+
     # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
     beetle_red.body_pitch_offset = 0.0
 
-    # Reset horn state to neutral (prevents carrying over from previous beetle type)
-    beetle_red.horn_pitch = HORN_DEFAULT_PITCH
-    beetle_red.horn_yaw = 0.0
-    beetle_red.horn_pitch_velocity = 0.0
-    beetle_red.horn_yaw_velocity = 0.0
-    beetle_red.horn_pitch_damping = 0.0
-    beetle_red.horn_yaw_damping = 0.0
+    # Reset horn state to neutral only when switching beetle types
+    old_type = getattr(rebuild_red_beetle, '_last_type', None)
+    rebuild_red_beetle._last_type = horn_type
+    if old_type != horn_type:
+        beetle_red.horn_pitch = HORN_DEFAULT_PITCH
+        beetle_red.horn_yaw = 0.0
+        beetle_red.horn_pitch_velocity = 0.0
+        beetle_red.horn_yaw_velocity = 0.0
+        beetle_red.horn_pitch_damping = 0.0
+        beetle_red.horn_yaw_damping = 0.0
 
-    # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
-    spider_aim_red = 0.0
-    spray_aim_red = 0.0
-    beetle_red.tail_rotation_angle = 20.0  # Tail rests at max up position
+        # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
+        spider_aim_red = 0.0
+        spray_aim_red = 0.0
+        beetle_red.tail_rotation_angle = 20.0  # Tail rests at max up position
 
-    # Reset speed boost state (prevents carryover from previous beetle type)
-    beetle_red.forward_hold_time = 0.0
-    beetle_red.backward_hold_time = 0.0
-    beetle_red.forward_bonus = 0.0
-    beetle_red.backward_bonus = 0.0
-    beetle_red.silk_speed_mult = 1.0
+        # Reset speed boost state (prevents carryover from previous beetle type)
+        beetle_red.forward_hold_time = 0.0
+        beetle_red.backward_hold_time = 0.0
+        beetle_red.forward_bonus = 0.0
+        beetle_red.backward_bonus = 0.0
+        beetle_red.silk_speed_mult = 1.0
 
     print(f"Rebuilt red beetle: {len(RED_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
@@ -6564,6 +6609,62 @@ def generate_atlas_cephalic_horn(shaft_len=5):
 
     return horn_voxels
 
+def generate_giraffe_weevil_neck(shaft_len, prong_len):
+    """Generate giraffe weevil neck geometry.
+
+    Segment 1 (shaft_len): Fixed upward column, 3x3 cross-section, ~52 degree angle.
+    Segment 2 (prong_len): Movable head piece, 2x3 cross-section angling down, 3x3 head knob at tip.
+
+    Coordinate system: x=forward, y=up, z=lateral. Body head is at x~2-3, y=0-2.
+    """
+    neck_voxels = []
+    length = 9 + round(shaft_len) - 8
+    head_len = round(prong_len) + 6
+    base_y = 2  # Match giraffe body tilt (front elevated by 2)
+
+    # === SEGMENT 1: Fixed upward neck (controlled by shaft slider) ===
+
+    # Base attachment to body (x=2-3, thick 3x3 cross-section)
+    for dx in range(2, 4):
+        for dy in range(base_y, base_y + 3):
+            for dz in range(-1, 2):
+                neck_voxels.append((dx, dy, dz))
+
+    # Main neck — angled forward ~52 degrees
+    # Consistent 3x3 cross-section the whole way
+    for i in range(length):
+        dx = 3 + i
+        dy = base_y + 3 + int(i * 1.4)
+        for dz in range(-1, 2):
+            neck_voxels.append((dx, dy, dz))
+            neck_voxels.append((dx, dy + 1, dz))
+            neck_voxels.append((dx, dy + 2, dz))
+
+    # === SEGMENT 2: Movable head piece (controlled by prong slider) ===
+    # Attaches at tip of segment 1, angles downward
+    # 2 voxels thick (2x3), with 3x3 head knob at the end
+
+    tip_x = 3 + (length - 1)
+    tip_y = base_y + 3 + int((length - 1) * 1.4)
+
+    for i in range(head_len):
+        dx = tip_x + 1 + i
+        dy = tip_y - round(i * 1.0)  # Angled downward ~45 deg from horizontal
+        # 2x3 cross-section (2 tall, 3 wide)
+        for dz in range(-1, 2):
+            neck_voxels.append((dx, dy, dz))
+            neck_voxels.append((dx, dy + 1, dz))
+
+    # Head knob at end — 3x3x3
+    head_x = tip_x + 1 + head_len
+    head_y = tip_y - round((head_len - 1) * 1.0)
+    for dz in range(-1, 2):
+        neck_voxels.append((head_x, head_y, dz))
+        neck_voxels.append((head_x, head_y + 1, dz))
+        neck_voxels.append((head_x, head_y + 2, dz))
+
+    return neck_voxels, tip_x, tip_y
+
 @ti.kernel
 def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
     """Check floor height using pre-computed cache - FAST version
@@ -6834,9 +6935,12 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
     sin_pitch = ti.sin(horn_pitch)
 
     # Horn/claw pivot point in local coordinates (where horn/claw attaches to head)
-    # Scorpion claws pivot at X=2, beetle horns pivot at X=3
+    # Scorpion claws pivot at X=2, beetle horns pivot at X=3, giraffe uses dynamic pivot
     horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
     horn_pivot_y = 2
+    if horn_type_id == 7:  # Giraffe weevil - pivot at shaft tip
+        horn_pivot_x = giraffe_blue_pivot_x[None]
+        horn_pivot_y = int(giraffe_blue_pivot_y[None])
 
     # OPTIMIZATION: Pre-calculate all trigonometry values ONCE before voxel loop
     # These are constant for all voxels in this beetle, no need to recalculate 600+ times
@@ -6879,6 +6983,8 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             should_rotate = body_cache_x[i] >= 3 and abs(local_z) <= 1.5
         elif horn_type_id == 6:  # Spider - no rotation at all (fangs are fixed)
             should_rotate = False
+        elif horn_type_id == 7:  # Giraffe weevil - only prong rotates (voxels beyond shaft tip)
+            should_rotate = body_cache_x[i] > int(horn_pivot_x)
         elif body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
             should_rotate = True
 
@@ -6945,6 +7051,10 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
                 # should_rotate already filtered for |Z| <= 1.5, so just apply rotation
                 pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
                 pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+            elif horn_type_id == 7:
+                # GIRAFFE WEEVIL: Skip pitch here — combined yaw+pitch in Step 2
+                pitched_x = rel_x
+                pitched_y = rel_y
             else:
                 # STAG/RHINO: Rotate entire horn
                 pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
@@ -6961,6 +7071,8 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             yawed_x = pitched_x
             yawed_y = pitched_y
             yawed_z = pitched_z
+            temp_x = 0.0
+            temp_z = 0.0
 
             if horn_type_id == 1:
                 # STAG BEETLE: Apply opposite rotations to left vs right pincers
@@ -6985,9 +7097,18 @@ def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32
             elif horn_type_id == 4:
                 # ATLAS BEETLE: Apply yaw rotation to cephalic horn (scanning left/right)
                 # Same as rhino - uniform rotation around Y-axis
-                # V/B keys scan the cephalic horn left/right (±15°)
+                # V/B keys scan the cephalice horn left/right (±15°)
                 yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
                 yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+            elif horn_type_id == 7:
+                # GIRAFFE WEEVIL: Yaw first, then pitch (so sweep works at any pitch angle)
+                # Step A: Yaw on raw rel coords (inverted for downward prong)
+                temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
+                temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
+                # Step B: Pitch on yawed result
+                yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
+                yawed_z = temp_z
             else:
                 # RHINO BEETLE (horn_type_id == 0): Apply uniform rotation to entire horn
                 yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
@@ -7380,9 +7501,12 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
     sin_pitch = ti.sin(horn_pitch)
 
     # Horn/claw pivot point in local coordinates (where horn/claw attaches to head)
-    # Scorpion claws pivot at X=2, beetle horns pivot at X=3
+    # Scorpion claws pivot at X=2, beetle horns pivot at X=3, giraffe uses dynamic pivot
     horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
     horn_pivot_y = 2
+    if horn_type_id == 7:  # Giraffe weevil - pivot at shaft tip
+        horn_pivot_x = giraffe_red_pivot_x[None]
+        horn_pivot_y = int(giraffe_red_pivot_y[None])
 
     # OPTIMIZATION: Pre-calculate all trigonometry values ONCE before voxel loop
     # These are constant for all voxels in this beetle, no need to recalculate 600+ times
@@ -7425,6 +7549,8 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             should_rotate = red_body_cache_x[i] >= 3 and abs(local_z) <= 1.5
         elif horn_type_id == 6:  # Spider - no rotation at all (fangs are fixed)
             should_rotate = False
+        elif horn_type_id == 7:  # Giraffe weevil - only prong rotates (voxels beyond shaft tip)
+            should_rotate = red_body_cache_x[i] > int(horn_pivot_x)
         elif red_body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
             should_rotate = True
 
@@ -7491,6 +7617,10 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                 # should_rotate already filtered for |Z| <= 1.5, so just apply rotation
                 pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
                 pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+            elif horn_type_id == 7:
+                # GIRAFFE WEEVIL: Skip pitch here — combined yaw+pitch in Step 2
+                pitched_x = rel_x
+                pitched_y = rel_y
             else:
                 # STAG/RHINO: Rotate entire horn
                 pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
@@ -7507,6 +7637,8 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             yawed_x = pitched_x
             yawed_y = pitched_y
             yawed_z = pitched_z
+            temp_x = 0.0
+            temp_z = 0.0
 
             if horn_type_id == 1:
                 # STAG BEETLE: Apply opposite rotations to left vs right pincers
@@ -7531,9 +7663,18 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             elif horn_type_id == 4:
                 # ATLAS BEETLE: Apply yaw rotation to cephalic horn (scanning left/right)
                 # Same as rhino - uniform rotation around Y-axis
-                # V/B keys scan the cephalic horn left/right (±15°)
+                # V/B keys scan the cephalice horn left/right (±15°)
                 yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
                 yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+            elif horn_type_id == 7:
+                # GIRAFFE WEEVIL: Yaw first, then pitch (so sweep works at any pitch angle)
+                # Step A: Yaw on raw rel coords (inverted for downward prong)
+                temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
+                temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
+                # Step B: Pitch on yawed result
+                yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
+                yawed_z = temp_z
             else:
                 # RHINO BEETLE (horn_type_id == 0): Apply uniform rotation to entire horn
                 yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
@@ -10922,9 +11063,16 @@ def transform_body_voxel_to_world(
     cos_deviation = ti.cos(pitch_deviation)
     sin_deviation = ti.sin(pitch_deviation)
 
-    # Horn pivot (scorpion claws at x=2, others at x=3)
+    # Horn pivot (scorpion claws at x=2, others at x=3, giraffe dynamic)
     horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
     horn_pivot_y = 2
+    if horn_type_id == 7:
+        if is_blue == 1:
+            horn_pivot_x = giraffe_blue_pivot_x[None]
+            horn_pivot_y = int(giraffe_blue_pivot_y[None])
+        else:
+            horn_pivot_x = giraffe_red_pivot_x[None]
+            horn_pivot_y = int(giraffe_red_pivot_y[None])
 
     # Detect if this is a horn voxel that needs rotation
     should_rotate = False
@@ -10935,6 +11083,8 @@ def transform_body_voxel_to_world(
         should_rotate = orig_local_x >= 3.0 and ti.abs(orig_local_z) <= 1.5
     elif horn_type_id == 6:  # Spider - no horn rotation
         should_rotate = False
+    elif horn_type_id == 7:  # Giraffe weevil - only prong rotates
+        should_rotate = orig_local_x > horn_pivot_x
     elif orig_local_x >= 3.0:  # Other beetles - rotate horns
         should_rotate = True
 
@@ -10979,6 +11129,10 @@ def transform_body_voxel_to_world(
                 pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
             # else: top horn stays fixed (pitched = rel)
 
+        elif horn_type_id == 7:
+            # GIRAFFE WEEVIL: Skip pitch here — combined yaw+pitch in Step 2
+            pitched_x = rel_x
+            pitched_y = rel_y
         else:
             # STAG/RHINO/ATLAS: Rotate entire horn
             pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
@@ -10990,6 +11144,8 @@ def transform_body_voxel_to_world(
         yawed_x = pitched_x
         yawed_y = pitched_y
         yawed_z = pitched_z
+        temp_x = 0.0
+        temp_z = 0.0
 
         if horn_type_id == 1:
             # STAG: Opposite rotations for left vs right pincers
@@ -11010,6 +11166,14 @@ def transform_body_voxel_to_world(
         elif horn_type_id == 3:
             # SCORPION: No yaw for claws (already handled in pitch)
             pass
+
+        elif horn_type_id == 7:
+            # GIRAFFE WEEVIL: Yaw first, then pitch (so sweep works at any pitch angle)
+            temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
+            temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
+            yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
+            yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
+            yawed_z = temp_z
 
         else:
             # RHINO/ATLAS: Standard yaw rotation
@@ -13232,7 +13396,7 @@ BEETLE_PRESETS = [
 ]
 
 # Beetle type list for slider cycling
-BEETLE_TYPES = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "spider"]
+BEETLE_TYPES = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "spider", "giraffe"]
 
 # Track current preset index per beetle
 blue_preset_index = 66
