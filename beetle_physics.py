@@ -15018,7 +15018,7 @@ FONT_5X7 = {
 
 import numpy as np
 
-OVERLAY_MAX_VERTS = 18000  # Generous for all tabs
+OVERLAY_MAX_VERTS = 24000  # Generous for both panels
 overlay_positions = ti.Vector.field(2, dtype=ti.f32, shape=OVERLAY_MAX_VERTS)
 overlay_colors = ti.Vector.field(3, dtype=ti.f32, shape=OVERLAY_MAX_VERTS)
 overlay_positions.fill([-10.0, -10.0])
@@ -15030,16 +15030,67 @@ _overlay_cache = {}  # Dirty tracking - stores last-seen values per tab
 _overlay_dirty = True  # Force first build
 
 # Panel layout constants
-OVR_X0, OVR_X1 = 0.58, 0.98  # Panel horizontal bounds
-OVR_TAB_Y1 = 0.97  # Top of tab bar
-OVR_TAB_Y0 = 0.93  # Bottom of tab bar (top of content)
-OVR_CONTENT_Y0 = 0.45  # Bottom of content area (when expanded)
-OVR_BW = 0.003  # Border width
+OVR_X0, OVR_X1 = 0.60, 0.995  # Panel horizontal bounds
+OVR_TAB_Y1 = 0.995  # Top of tab bar
+OVR_TAB_Y0 = 0.96  # Bottom of tab bar (top of content)
+OVR_CONTENT_Y0 = 0.48  # Bottom of content area (when expanded)
+OVR_BW = 0.002  # Border width
 OVR_PX = 0.004  # Text pixel size
 
-# Tab definitions
-OVERLAY_TABS = ['beetles', 'arena', 'hazards']
-OVERLAY_TAB_LABELS = {'beetles': 'BEETLES', 'arena': 'ARENA', 'hazards': 'HAZARDS'}
+# --- Overlay color palette ---
+CLR_TAB_BG = (0.05, 0.05, 0.08)       # Tab bar background
+CLR_TAB_ACTIVE = (0.12, 0.14, 0.22)   # Active tab bg (slight blue tint)
+CLR_TAB_ACTIVE_TXT = (0.85, 0.92, 1.0)   # Active tab text (bright ice white-blue)
+CLR_TAB_INACTIVE = (0.07, 0.07, 0.10) # Inactive tab bg
+CLR_TAB_INACTIVE_TXT = (0.55, 0.52, 0.60)  # Inactive tab text
+CLR_PANEL_BG = (0.04, 0.04, 0.07)     # Content panel background
+CLR_BORDER = (0.15, 0.13, 0.20)       # Panel border
+CLR_BTN = (0.10, 0.09, 0.14)          # Inactive button bg
+CLR_BTN_TXT = (0.68, 0.65, 0.72)      # Inactive button text
+CLR_BTN_ON = (0.30, 0.24, 0.08)       # Active/on button bg (gold)
+CLR_BTN_ON_TXT = (1.0, 0.90, 0.50)    # Active/on button text (bright gold)
+CLR_HEADING = (0.85, 0.68, 0.35)      # Section heading text (bright warm gold)
+CLR_ARROW_BG = (0.12, 0.10, 0.18)     # < > adjuster button bg
+CLR_ARROW_TXT = (0.82, 0.78, 0.88)    # < > adjuster text
+CLR_VAL_TXT = (0.95, 0.88, 0.65)      # Value display text (gold)
+CLR_LABEL_TXT = (0.70, 0.66, 0.75)    # Stat label text
+CLR_MINBTN_CLOSE = (0.25, 0.08, 0.08) # [-] button bg
+CLR_MINBTN_CLOSE_TXT = (0.9, 0.5, 0.5)
+CLR_MINBTN_OPEN = (0.08, 0.18, 0.08)  # [+] button bg
+CLR_MINBTN_OPEN_TXT = (0.5, 0.85, 0.5)
+CLR_RANDOM_BG = (0.20, 0.14, 0.28)    # Random/special button bg
+CLR_RANDOM_TXT = (0.80, 0.65, 0.95)   # Random/special button text
+CLR_DANGER_BG = (0.28, 0.08, 0.08)    # Destructive button bg (clear all, disconnect)
+CLR_DANGER_TXT = (0.95, 0.50, 0.45)   # Destructive button text
+CLR_BLUE_ACCENT = (0.35, 0.55, 0.95)  # Blue beetle accent
+CLR_BLUE_HI = (0.10, 0.16, 0.35)      # Blue beetle active bg
+CLR_RED_ACCENT = (0.95, 0.40, 0.35)   # Red beetle accent
+CLR_RED_HI = (0.35, 0.10, 0.10)       # Red beetle active bg
+CLR_HAZARD_ON = (0.40, 0.22, 0.05)    # Hazard active bg (amber)
+CLR_HAZARD_ON_TXT = (1.0, 0.82, 0.40) # Hazard active text
+CLR_BIOME_ON = (0.12, 0.30, 0.15)     # Biome active bg
+CLR_BIOME_ON_TXT = (0.60, 0.95, 0.60) # Biome active text
+CLR_EXTRA_ON = (0.15, 0.18, 0.35)     # Extra theme active bg
+CLR_EXTRA_ON_TXT = (0.60, 0.72, 0.95) # Extra theme active text
+HOVER_BOOST = 0.08                     # Brightness boost for hovered buttons
+CLR_TAB_UNDERLINE = (0.50, 0.65, 0.95) # Active tab underline (cool blue)
+
+# Hover tracking - stores (x0, y0, x1, y1) hitboxes and their vertex ranges
+_overlay_btn_hitboxes = []  # list of (x0, y0, x1, y1, vi_start, vi_end)
+_overlay_hover_idx = -1     # index into _overlay_btn_hitboxes, -1 = none
+
+# Tab definitions (right panel)
+OVERLAY_TABS = ['beetles', 'arena', 'world']
+OVERLAY_TAB_LABELS = {'beetles': 'BEETLES', 'arena': 'ARENA', 'world': 'WORLD'}
+
+# Left panel layout
+OVL_X0, OVL_X1 = 0.005, 0.36  # Left panel horizontal bounds
+OVL_TAB_Y1 = 0.995
+OVL_TAB_Y0 = 0.96
+OVL_CONTENT_Y0 = 0.63  # Smaller panel - camera/network don't need as much space
+overlay_left_active_tab = 'display'  # 'display', 'network', or None
+OVERLAY_LEFT_TABS = ['display', 'network']
+OVERLAY_LEFT_TAB_LABELS = {'display': 'DISPLAY', 'network': 'NETWORK'}
 
 # Arena mode names and their variable names (order matches display)
 # Beetle genetics stat definitions (label, window attr suffix, min, max)
@@ -15077,6 +15128,24 @@ ARENA_MODES = [
     ('CUT SQ', 'cut_square'),
     ('SQUIGGLE', 'squiggle'),
     ('STAR', 'star'),
+]
+
+# Background theme definitions
+BG_BIOMES = [
+    ('DESERT', simulation.THEME_DESERT),
+    ('GRASS', simulation.THEME_GRASS),
+    ('OCEAN', simulation.THEME_WAVES),
+    ('SWAMP', simulation.THEME_SWAMP),
+    ('LAVA', simulation.THEME_LAVA),
+]
+BG_EXTRAS = [
+    ('STARS', simulation.THEME_STARS),
+    ('COMET', simulation.THEME_COMET),
+    ('FIREFLY', simulation.THEME_FIREFLIES),
+    ('BTTRFLY', simulation.THEME_BUTTERFLIES),
+    ('PALMS', simulation.THEME_PALM_TREES),
+    ('CLOUDS', simulation.THEME_CLOUDS),
+    ('PTERO', simulation.THEME_PTERODACTYL),
 ]
 
 def _ovr_add_quad(pos, col, vi, x0, y0, x1, y1, r, g, b):
@@ -15124,46 +15193,60 @@ def _ovr_add_text_left(pos, col, vi, text, lx, cy, pixel_size, r, g, b):
 
 def _overlay_rebuild_all(state):
     """Rebuild entire overlay from current state. state is a dict of all needed values."""
+    global _overlay_btn_hitboxes
     pos = np.full((OVERLAY_MAX_VERTS, 2), -10.0, dtype=np.float32)
     col = np.zeros((OVERLAY_MAX_VERTS, 3), dtype=np.float32)
     vi = [0]
+    hitboxes = []  # (x0, y0, x1, y1, vi_start_of_bg_quad)
     aq = lambda x0,y0,x1,y1,r,g,b: _ovr_add_quad(pos,col,vi,x0,y0,x1,y1,r,g,b)
     at = lambda t,cx,cy,ps,r,g,b: _ovr_add_text(pos,col,vi,t,cx,cy,ps,r,g,b)
     atl = lambda t,lx,cy,ps,r,g,b: _ovr_add_text_left(pos,col,vi,t,lx,cy,ps,r,g,b)
+    def aq_btn(x0,y0,x1,y1,r,g,b):
+        """Add a button quad and register its hitbox for hover."""
+        v_start = vi[0]
+        _ovr_add_quad(pos,col,vi,x0,y0,x1,y1,r,g,b)
+        hitboxes.append((x0,y0,x1,y1,v_start,vi[0]))
 
     active = overlay_active_tab
     cx = (OVR_X0 + OVR_X1) / 2.0
     px = OVR_PX
 
     # --- Tab bar (always visible) ---
-    aq(OVR_X0, OVR_TAB_Y0, OVR_X1, OVR_TAB_Y1, 0.12, 0.12, 0.18)
-    # Tab buttons
+    aq(OVR_X0, OVR_TAB_Y0, OVR_X1, OVR_TAB_Y1, *CLR_TAB_BG)
+    # Min/max button at right edge
+    min_btn_w = 0.035
+    min_x0 = OVR_X1 - min_btn_w
+    min_x1 = OVR_X1
+    if active is not None:
+        aq(min_x0 + 0.002, OVR_TAB_Y0 + 0.002, min_x1 - 0.002, OVR_TAB_Y1 - 0.002, *CLR_MINBTN_CLOSE)
+        at("-", (min_x0+min_x1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.8, *CLR_MINBTN_CLOSE_TXT)
+    else:
+        aq(min_x0 + 0.002, OVR_TAB_Y0 + 0.002, min_x1 - 0.002, OVR_TAB_Y1 - 0.002, *CLR_MINBTN_OPEN)
+        at("+", (min_x0+min_x1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.8, *CLR_MINBTN_OPEN_TXT)
+    # Tab buttons (fit in remaining space)
     n_tabs = len(OVERLAY_TABS)
-    tab_w = (OVR_X1 - OVR_X0) / n_tabs
+    tab_w = (min_x0 - OVR_X0) / n_tabs
     for ti2, tab_id in enumerate(OVERLAY_TABS):
         tx0 = OVR_X0 + ti2 * tab_w
         tx1 = tx0 + tab_w
-        # Active tab brighter, inactive dimmer
         if tab_id == active:
-            aq(tx0 + 0.002, OVR_TAB_Y0 + 0.002, tx1 - 0.002, OVR_TAB_Y1 - 0.002, 0.22, 0.22, 0.35)
-            at(OVERLAY_TAB_LABELS[tab_id], (tx0+tx1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.7, 1.0, 1.0, 1.0)
+            aq(tx0 + 0.002, OVR_TAB_Y0 + 0.002, tx1 - 0.002, OVR_TAB_Y1 - 0.002, *CLR_TAB_ACTIVE)
+            at(OVERLAY_TAB_LABELS[tab_id], (tx0+tx1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.7, *CLR_TAB_ACTIVE_TXT)
+            # Underline bar for active tab
+            aq(tx0 + 0.004, OVR_TAB_Y0 + 0.002, tx1 - 0.004, OVR_TAB_Y0 + 0.005, *CLR_TAB_UNDERLINE)
         else:
-            aq(tx0 + 0.002, OVR_TAB_Y0 + 0.002, tx1 - 0.002, OVR_TAB_Y1 - 0.002, 0.10, 0.10, 0.15)
-            at(OVERLAY_TAB_LABELS[tab_id], (tx0+tx1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.7, 0.5, 0.5, 0.6)
+            aq(tx0 + 0.002, OVR_TAB_Y0 + 0.002, tx1 - 0.002, OVR_TAB_Y1 - 0.002, *CLR_TAB_INACTIVE)
+            at(OVERLAY_TAB_LABELS[tab_id], (tx0+tx1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.7, *CLR_TAB_INACTIVE_TXT)
 
     # --- Content area (only if a tab is active) ---
-    if active is None:
-        overlay_positions.from_numpy(pos)
-        overlay_colors.from_numpy(col)
-        return
-
-    # Panel background + border
-    aq(OVR_X0, OVR_CONTENT_Y0, OVR_X1, OVR_TAB_Y0, 0.08, 0.08, 0.12)
-    bw = OVR_BW
-    aq(OVR_X0, OVR_TAB_Y0 - bw, OVR_X1, OVR_TAB_Y0, 0.3, 0.35, 0.5)  # top border under tabs
-    aq(OVR_X0, OVR_CONTENT_Y0, OVR_X1, OVR_CONTENT_Y0 + bw, 0.3, 0.35, 0.5)
-    aq(OVR_X0, OVR_CONTENT_Y0, OVR_X0 + bw, OVR_TAB_Y0, 0.3, 0.35, 0.5)
-    aq(OVR_X1 - bw, OVR_CONTENT_Y0, OVR_X1, OVR_TAB_Y0, 0.3, 0.35, 0.5)
+    if active is not None:
+        # Panel background + border
+        aq(OVR_X0, OVR_CONTENT_Y0, OVR_X1, OVR_TAB_Y0, *CLR_PANEL_BG)
+        bw = OVR_BW
+        aq(OVR_X0, OVR_TAB_Y0 - bw, OVR_X1, OVR_TAB_Y0, *CLR_BORDER)
+        aq(OVR_X0, OVR_CONTENT_Y0, OVR_X1, OVR_CONTENT_Y0 + bw, *CLR_BORDER)
+        aq(OVR_X0, OVR_CONTENT_Y0, OVR_X0 + bw, OVR_TAB_Y0, *CLR_BORDER)
+        aq(OVR_X1 - bw, OVR_CONTENT_Y0, OVR_X1, OVR_TAB_Y0, *CLR_BORDER)
 
     if active == 'beetles':
         subtab = state.get('beetle_subtab', 1)
@@ -15183,22 +15266,22 @@ def _overlay_rebuild_all(state):
         sub_mid = cx
         # B1 button
         if subtab == 1:
-            aq(col_left_x0, sub_y0, sub_mid - 0.005, sub_y1, 0.15, 0.22, 0.45)
-            at("BEETLE 1", (col_left_x0 + sub_mid - 0.005)/2, (sub_y0+sub_y1)/2, px*0.65, 0.7, 0.85, 1.0)
+            aq_btn(col_left_x0, sub_y0, sub_mid - 0.005, sub_y1, *CLR_BLUE_HI)
+            at("BEETLE 1", (col_left_x0 + sub_mid - 0.005)/2, (sub_y0+sub_y1)/2, px*0.65, *CLR_BLUE_ACCENT)
         else:
-            aq(col_left_x0, sub_y0, sub_mid - 0.005, sub_y1, 0.12, 0.12, 0.18)
-            at("BEETLE 1", (col_left_x0 + sub_mid - 0.005)/2, (sub_y0+sub_y1)/2, px*0.65, 0.4, 0.4, 0.55)
+            aq_btn(col_left_x0, sub_y0, sub_mid - 0.005, sub_y1, *CLR_TAB_INACTIVE)
+            at("BEETLE 1", (col_left_x0 + sub_mid - 0.005)/2, (sub_y0+sub_y1)/2, px*0.65, *CLR_TAB_INACTIVE_TXT)
         # B2 button
         if subtab == 2:
-            aq(sub_mid + 0.005, sub_y0, col_right_x1, sub_y1, 0.45, 0.15, 0.15)
-            at("BEETLE 2", (sub_mid + 0.005 + col_right_x1)/2, (sub_y0+sub_y1)/2, px*0.65, 1.0, 0.7, 0.7)
+            aq_btn(sub_mid + 0.005, sub_y0, col_right_x1, sub_y1, *CLR_RED_HI)
+            at("BEETLE 2", (sub_mid + 0.005 + col_right_x1)/2, (sub_y0+sub_y1)/2, px*0.65, *CLR_RED_ACCENT)
         else:
-            aq(sub_mid + 0.005, sub_y0, col_right_x1, sub_y1, 0.12, 0.12, 0.18)
-            at("BEETLE 2", (sub_mid + 0.005 + col_right_x1)/2, (sub_y0+sub_y1)/2, px*0.65, 0.4, 0.4, 0.55)
+            aq_btn(sub_mid + 0.005, sub_y0, col_right_x1, sub_y1, *CLR_TAB_INACTIVE)
+            at("BEETLE 2", (sub_mid + 0.005 + col_right_x1)/2, (sub_y0+sub_y1)/2, px*0.65, *CLR_TAB_INACTIVE_TXT)
 
         # Accent color for selected beetle
-        accent_r, accent_g, accent_b = (0.4, 0.6, 1.0) if subtab == 1 else (1.0, 0.4, 0.4)
-        hi_bg = (0.12, 0.20, 0.45) if subtab == 1 else (0.45, 0.12, 0.12)
+        accent_clr = CLR_BLUE_ACCENT if subtab == 1 else CLR_RED_ACCENT
+        hi_bg = CLR_BLUE_HI if subtab == 1 else CLR_RED_HI
 
         # --- Type grid (2 columns, 4 rows) ---
         type_start_y = sub_y0 - 0.01
@@ -15211,11 +15294,11 @@ def _overlay_rebuild_all(state):
             by0 = by1 - btn_h
             is_active = (btype == cur_type)
             if is_active:
-                aq(bx0, by0, bx1, by1, *hi_bg)
-                at(btype.upper(), (bx0+bx1)/2, (by0+by1)/2, px*0.6, accent_r, accent_g, accent_b)
+                aq_btn(bx0, by0, bx1, by1, *hi_bg)
+                at(btype.upper(), (bx0+bx1)/2, (by0+by1)/2, px*0.6, *accent_clr)
             else:
-                aq(bx0, by0, bx1, by1, 0.15, 0.15, 0.20)
-                at(btype.upper(), (bx0+bx1)/2, (by0+by1)/2, px*0.6, 0.6, 0.6, 0.7)
+                aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
+                at(btype.upper(), (bx0+bx1)/2, (by0+by1)/2, px*0.6, *CLR_BTN_TXT)
 
         # --- Stat adjusters: LABEL  < VAL > ---
         stat_start_y = type_start_y - 4 * (btn_h + gap) - 0.012
@@ -15232,36 +15315,36 @@ def _overlay_rebuild_all(state):
             scy = (sy0 + sy1) / 2.0
 
             # Label
-            atl(slabel, label_x, scy, px*0.55, 0.7, 0.7, 0.8)
+            atl(slabel, label_x, scy, px*0.55, *CLR_LABEL_TXT)
 
-            # Current value
+            # Current value (display as 1-based: 1 = min, max-min+1 = max)
             val = cur_stats[si] if si < len(cur_stats) else smin
-            val_str = str(int(val))
+            val_str = str(int(val - smin + 1))
 
             # < button
             lt_x0 = val_region_x0
             lt_x1 = lt_x0 + arrow_w
-            aq(lt_x0, sy0, lt_x1, sy1, 0.18, 0.18, 0.25)
-            at("<", (lt_x0+lt_x1)/2, scy, px*0.6, 0.8, 0.8, 0.9)
+            aq_btn(lt_x0, sy0, lt_x1, sy1, *CLR_ARROW_BG)
+            at("<", (lt_x0+lt_x1)/2, scy, px*0.6, *CLR_ARROW_TXT)
 
             # Value display
             vd_x0 = lt_x1 + 0.004
             vd_x1 = val_region_x1 - arrow_w - 0.004
-            at(val_str, (vd_x0+vd_x1)/2, scy, px*0.6, accent_r, accent_g, accent_b)
+            at(val_str, (vd_x0+vd_x1)/2, scy, px*0.6, *accent_clr)
 
             # > button
             gt_x0 = val_region_x1 - arrow_w
             gt_x1 = val_region_x1
-            aq(gt_x0, sy0, gt_x1, sy1, 0.18, 0.18, 0.25)
-            at(">", (gt_x0+gt_x1)/2, scy, px*0.6, 0.8, 0.8, 0.9)
+            aq_btn(gt_x0, sy0, gt_x1, sy1, *CLR_ARROW_BG)
+            at(">", (gt_x0+gt_x1)/2, scy, px*0.6, *CLR_ARROW_TXT)
 
         # --- RANDOM button ---
         rand_y1 = stat_start_y - len(BEETLE_STATS) * (stat_row_h + stat_gap) - 0.005
         rand_y0 = rand_y1 - btn_h
         rand_x0 = cx - 0.06
         rand_x1 = cx + 0.06
-        aq(rand_x0, rand_y0, rand_x1, rand_y1, 0.25, 0.18, 0.35)
-        at("RANDOM", (rand_x0+rand_x1)/2, (rand_y0+rand_y1)/2, px*0.6, 0.9, 0.7, 1.0)
+        aq_btn(rand_x0, rand_y0, rand_x1, rand_y1, *CLR_RANDOM_BG)
+        at("RANDOM", (rand_x0+rand_x1)/2, (rand_y0+rand_y1)/2, px*0.6, *CLR_RANDOM_TXT)
 
     elif active == 'arena':
         active_arena = state.get('active_arena', 'circle')
@@ -15284,39 +15367,274 @@ def _overlay_rebuild_all(state):
 
             is_active = (mode_id == active_arena)
             if is_active:
-                aq(bx0, by0, bx1, by1, 0.15, 0.35, 0.15)  # Green highlight
-                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, 0.7, 1.0, 0.7)
+                aq_btn(bx0, by0, bx1, by1, *CLR_BTN_ON)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, *CLR_BTN_ON_TXT)
             else:
-                aq(bx0, by0, bx1, by1, 0.15, 0.15, 0.20)
-                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, 0.6, 0.6, 0.7)
+                aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, *CLR_BTN_TXT)
 
-    elif active == 'hazards':
+    elif active == 'world':
         hazard_states = state.get('hazard_states', {})
-        # 2-column grid of toggle buttons
+        bg_states = state.get('bg_states', set())
         col_left_x0 = OVR_X0 + 0.02
         col_left_x1 = cx - 0.01
         col_right_x0 = cx + 0.01
         col_right_x1 = OVR_X1 - 0.02
-        btn_h = 0.035
-        gap = 0.008
-        start_y = OVR_TAB_Y0 - 0.04
+        btn_h = 0.028
+        gap = 0.005
+        spx = px * 0.6  # smaller text for this dense tab
+
+        # --- HAZARDS section ---
+        cur_y = OVR_TAB_Y0 - 0.015
+        at("HAZARDS", cx, cur_y, spx, *CLR_HEADING)
+        haz_start_y = cur_y - 0.018
 
         for idx, (label, haz_id) in enumerate(HAZARD_MODES):
             row = idx // 2
             is_left = (idx % 2 == 0)
             bx0 = col_left_x0 if is_left else col_right_x0
             bx1 = col_left_x1 if is_left else col_right_x1
-            by1 = start_y - row * (btn_h + gap)
+            by1 = haz_start_y - row * (btn_h + gap)
             by0 = by1 - btn_h
-
             is_on = hazard_states.get(haz_id, False)
             if is_on:
-                aq(bx0, by0, bx1, by1, 0.45, 0.25, 0.08)  # Orange highlight for active
-                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, 1.0, 0.85, 0.5)
+                aq_btn(bx0, by0, bx1, by1, *CLR_HAZARD_ON)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_HAZARD_ON_TXT)
             else:
-                aq(bx0, by0, bx1, by1, 0.15, 0.15, 0.20)
-                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, 0.6, 0.6, 0.7)
+                aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_BTN_TXT)
 
+        haz_rows = (len(HAZARD_MODES) + 1) // 2
+        divider_y = haz_start_y - haz_rows * (btn_h + gap) - 0.004
+
+        # --- BIOMES section ---
+        cur_y = divider_y - 0.008
+        at("BIOMES", cx, cur_y, spx, *CLR_HEADING)
+        biome_start_y = cur_y - 0.018
+
+        for idx, (label, theme_id) in enumerate(BG_BIOMES):
+            row = idx // 2
+            is_left = (idx % 2 == 0)
+            bx0 = col_left_x0 if is_left else col_right_x0
+            bx1 = col_left_x1 if is_left else col_right_x1
+            by1 = biome_start_y - row * (btn_h + gap)
+            by0 = by1 - btn_h
+            is_on = theme_id in bg_states
+            if is_on:
+                aq_btn(bx0, by0, bx1, by1, *CLR_BIOME_ON)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_BIOME_ON_TXT)
+            else:
+                aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_BTN_TXT)
+
+        biome_rows = (len(BG_BIOMES) + 1) // 2
+
+        # --- EXTRAS section ---
+        cur_y = biome_start_y - biome_rows * (btn_h + gap) - 0.008
+        at("EXTRAS", cx, cur_y, spx, *CLR_HEADING)
+        extras_start_y = cur_y - 0.018
+
+        for idx, (label, theme_id) in enumerate(BG_EXTRAS):
+            row = idx // 2
+            is_left = (idx % 2 == 0)
+            bx0 = col_left_x0 if is_left else col_right_x0
+            bx1 = col_left_x1 if is_left else col_right_x1
+            by1 = extras_start_y - row * (btn_h + gap)
+            by0 = by1 - btn_h
+            is_on = theme_id in bg_states
+            if is_on:
+                aq_btn(bx0, by0, bx1, by1, *CLR_EXTRA_ON)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_EXTRA_ON_TXT)
+            else:
+                aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_BTN_TXT)
+
+        # CLEAR ALL button
+        extras_rows = (len(BG_EXTRAS) + 1) // 2
+        clear_y1 = extras_start_y - extras_rows * (btn_h + gap) - 0.006
+        clear_y0 = clear_y1 - btn_h
+        clear_x0 = cx - 0.06
+        clear_x1 = cx + 0.06
+        aq_btn(clear_x0, clear_y0, clear_x1, clear_y1, *CLR_DANGER_BG)
+        at("CLEAR ALL", (clear_x0+clear_x1)/2, (clear_y0+clear_y1)/2, spx, *CLR_DANGER_TXT)
+
+    # === LEFT PANEL ===
+    left_active = overlay_left_active_tab
+    lcx = (OVL_X0 + OVL_X1) / 2.0
+
+    # Left tab bar (always visible)
+    aq(OVL_X0, OVL_TAB_Y0, OVL_X1, OVL_TAB_Y1, *CLR_TAB_BG)
+    # Min/max button at right edge
+    lmin_btn_w = 0.035
+    lmin_x0 = OVL_X1 - lmin_btn_w
+    lmin_x1 = OVL_X1
+    if left_active is not None:
+        aq(lmin_x0 + 0.002, OVL_TAB_Y0 + 0.002, lmin_x1 - 0.002, OVL_TAB_Y1 - 0.002, *CLR_MINBTN_CLOSE)
+        at("-", (lmin_x0+lmin_x1)/2, (OVL_TAB_Y0+OVL_TAB_Y1)/2, px*0.8, *CLR_MINBTN_CLOSE_TXT)
+    else:
+        aq(lmin_x0 + 0.002, OVL_TAB_Y0 + 0.002, lmin_x1 - 0.002, OVL_TAB_Y1 - 0.002, *CLR_MINBTN_OPEN)
+        at("+", (lmin_x0+lmin_x1)/2, (OVL_TAB_Y0+OVL_TAB_Y1)/2, px*0.8, *CLR_MINBTN_OPEN_TXT)
+    # Tab buttons
+    ln_tabs = len(OVERLAY_LEFT_TABS)
+    ltab_w = (lmin_x0 - OVL_X0) / ln_tabs
+    for lti, ltab_id in enumerate(OVERLAY_LEFT_TABS):
+        ltx0 = OVL_X0 + lti * ltab_w
+        ltx1 = ltx0 + ltab_w
+        if ltab_id == left_active:
+            aq(ltx0 + 0.002, OVL_TAB_Y0 + 0.002, ltx1 - 0.002, OVL_TAB_Y1 - 0.002, *CLR_TAB_ACTIVE)
+            at(OVERLAY_LEFT_TAB_LABELS[ltab_id], (ltx0+ltx1)/2, (OVL_TAB_Y0+OVL_TAB_Y1)/2, px*0.7, *CLR_TAB_ACTIVE_TXT)
+            # Underline bar for active tab
+            aq(ltx0 + 0.004, OVL_TAB_Y0 + 0.002, ltx1 - 0.004, OVL_TAB_Y0 + 0.005, *CLR_TAB_UNDERLINE)
+        else:
+            aq(ltx0 + 0.002, OVL_TAB_Y0 + 0.002, ltx1 - 0.002, OVL_TAB_Y1 - 0.002, *CLR_TAB_INACTIVE)
+            at(OVERLAY_LEFT_TAB_LABELS[ltab_id], (ltx0+ltx1)/2, (OVL_TAB_Y0+OVL_TAB_Y1)/2, px*0.7, *CLR_TAB_INACTIVE_TXT)
+
+    if left_active is not None:
+        # Panel background + border
+        aq(OVL_X0, OVL_CONTENT_Y0, OVL_X1, OVL_TAB_Y0, *CLR_PANEL_BG)
+        lbw = OVR_BW
+        aq(OVL_X0, OVL_TAB_Y0 - lbw, OVL_X1, OVL_TAB_Y0, *CLR_BORDER)
+        aq(OVL_X0, OVL_CONTENT_Y0, OVL_X1, OVL_CONTENT_Y0 + lbw, *CLR_BORDER)
+        aq(OVL_X0, OVL_CONTENT_Y0, OVL_X0 + lbw, OVL_TAB_Y0, *CLR_BORDER)
+        aq(OVL_X1 - lbw, OVL_CONTENT_Y0, OVL_X1, OVL_TAB_Y0, *CLR_BORDER)
+
+        if left_active == 'display':
+            cam_mode = state.get('camera_mode', 'moving')
+            lbtn_h = 0.035
+            lgap = 0.008
+            lbtn_x0 = OVL_X0 + 0.02
+            lbtn_x1 = OVL_X1 - 0.02
+            spx = px * 0.6
+            cur_y = OVL_TAB_Y0 - 0.015
+
+            # Fullscreen toggle at top
+            fs_on = state.get('is_fullscreen', False)
+            fs_y1 = cur_y
+            fs_y0 = fs_y1 - lbtn_h
+            if fs_on:
+                aq_btn(lbtn_x0, fs_y0, lbtn_x1, fs_y1, *CLR_BTN_ON)
+                at("FULLSCREEN: ON", (lbtn_x0+lbtn_x1)/2, (fs_y0+fs_y1)/2, px*0.65, *CLR_BTN_ON_TXT)
+            else:
+                aq_btn(lbtn_x0, fs_y0, lbtn_x1, fs_y1, *CLR_BTN)
+                at("FULLSCREEN: OFF", (lbtn_x0+lbtn_x1)/2, (fs_y0+fs_y1)/2, px*0.65, *CLR_BTN_TXT)
+
+            # CAMERA heading
+            cur_y = fs_y0 - 0.025
+            at("CAMERA", lcx, cur_y, spx, *CLR_HEADING)
+            cam_start_y = cur_y - 0.022
+
+            cam_modes = [('3RD PERSON', '3rd'), ('FIXED', 'fixed'), ('MOVING', 'moving')]
+            for ci, (clabel, cmode) in enumerate(cam_modes):
+                cy1 = cam_start_y - ci * (lbtn_h + lgap)
+                cy0 = cy1 - lbtn_h
+                is_active = (cam_mode == cmode)
+                if is_active:
+                    aq_btn(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_BTN_ON)
+                    at(clabel, (lbtn_x0+lbtn_x1)/2, (cy0+cy1)/2, px*0.7, *CLR_BTN_ON_TXT)
+                else:
+                    aq_btn(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_BTN)
+                    at(clabel, (lbtn_x0+lbtn_x1)/2, (cy0+cy1)/2, px*0.7, *CLR_BTN_TXT)
+
+            # Camera distance adjuster (< DISTANCE > style) - always shown
+            dist_y1 = cam_start_y - 3 * (lbtn_h + lgap) - 0.005
+            dist_y0 = dist_y1 - lbtn_h
+            dist_cy = (dist_y0 + dist_y1) / 2.0
+            arrow_w = 0.04
+            dist_level = state.get('cam_dist_level', 5)
+            atl("DISTANCE", lbtn_x0 + 0.005, dist_cy, px*0.55, *CLR_LABEL_TXT)
+            lt_x0 = lcx + 0.01
+            lt_x1 = lt_x0 + arrow_w
+            aq_btn(lt_x0, dist_y0, lt_x1, dist_y1, *CLR_ARROW_BG)
+            at("<", (lt_x0+lt_x1)/2, dist_cy, px*0.6, *CLR_ARROW_TXT)
+            vd_x0 = lt_x1 + 0.004
+            vd_x1 = lbtn_x1 - arrow_w - 0.004
+            at(str(dist_level), (vd_x0+vd_x1)/2, dist_cy, px*0.6, *CLR_VAL_TXT)
+            gt_x0 = lbtn_x1 - arrow_w
+            gt_x1 = lbtn_x1
+            aq_btn(gt_x0, dist_y0, gt_x1, dist_y1, *CLR_ARROW_BG)
+            at(">", (gt_x0+gt_x1)/2, dist_cy, px*0.6, *CLR_ARROW_TXT)
+
+        elif left_active == 'network':
+            gs = state.get('game_state', 0)
+            net_conn = state.get('net_connected', False)
+            net_host = state.get('net_is_host', False)
+            lobby_id = state.get('net_lobby_id', '')
+            lbtn_h = 0.035
+            lgap = 0.008
+            lbtn_x0 = OVL_X0 + 0.02
+            lbtn_x1 = OVL_X1 - 0.02
+            net_start_y = OVL_TAB_Y0 - 0.02
+
+            if gs == 'local_play':  # GAME_STATE_LOCAL_PLAY
+                # HOST and JOIN buttons
+                hy1 = net_start_y
+                hy0 = hy1 - lbtn_h
+                aq_btn(lbtn_x0, hy0, lbtn_x1, hy1, *CLR_BTN)
+                at("HOST GAME", (lbtn_x0+lbtn_x1)/2, (hy0+hy1)/2, px*0.7, *CLR_BTN_TXT)
+
+                jy1 = hy0 - lgap
+                jy0 = jy1 - lbtn_h
+                aq_btn(lbtn_x0, jy0, lbtn_x1, jy1, *CLR_BTN)
+                at("JOIN GAME", (lbtn_x0+lbtn_x1)/2, (jy0+jy1)/2, px*0.7, *CLR_BTN_TXT)
+
+            elif gs == 'lobby_host':  # GAME_STATE_LOBBY_HOST
+                at("HOSTING...", lcx, net_start_y - 0.015, px*0.65, *CLR_VAL_TXT)
+                if lobby_id:
+                    at("LOBBY: " + lobby_id[:12], lcx, net_start_y - 0.05, px*0.5, *CLR_BTN_TXT)
+                    cy1 = net_start_y - 0.07
+                    cy0 = cy1 - lbtn_h
+                    aq_btn(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_RANDOM_BG)
+                    at("COPY ID", (lbtn_x0+lbtn_x1)/2, (cy0+cy1)/2, px*0.65, *CLR_RANDOM_TXT)
+                if net_conn:
+                    sy1 = net_start_y - 0.12
+                    sy0 = sy1 - lbtn_h
+                    aq_btn(lbtn_x0, sy0, lbtn_x1, sy1, *CLR_BTN_ON)
+                    at("START MATCH", (lbtn_x0+lbtn_x1)/2, (sy0+sy1)/2, px*0.7, *CLR_BTN_ON_TXT)
+
+            elif gs == 'lobby_join':  # GAME_STATE_LOBBY_JOIN
+                at("JOIN GAME", lcx, net_start_y - 0.015, px*0.65, *CLR_VAL_TXT)
+                # Show current lobby ID input
+                lid_display = lobby_id_input if lobby_id_input else "..."
+                at("> " + lid_display[:14], lcx, net_start_y - 0.045, px*0.5, *CLR_BTN_TXT)
+                # PASTE button
+                py1 = net_start_y - 0.065
+                py0 = py1 - lbtn_h
+                aq_btn(lbtn_x0, py0, lbtn_x1, py1, *CLR_RANDOM_BG)
+                at("PASTE ID", (lbtn_x0+lbtn_x1)/2, (py0+py1)/2, px*0.65, *CLR_RANDOM_TXT)
+                # CONNECT button (only if we have input)
+                if lobby_id_input:
+                    cy1 = py0 - lgap
+                    cy0 = cy1 - lbtn_h
+                    aq_btn(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_BTN_ON)
+                    at("CONNECT", (lbtn_x0+lbtn_x1)/2, (cy0+cy1)/2, px*0.65, *CLR_BTN_ON_TXT)
+                # CANCEL button
+                cancel_y1 = net_start_y - 0.065 - lbtn_h - lgap
+                if lobby_id_input:
+                    cancel_y1 -= (lbtn_h + lgap)
+                cancel_y0 = cancel_y1 - lbtn_h
+                aq_btn(lbtn_x0, cancel_y0, lbtn_x1, cancel_y1, *CLR_DANGER_BG)
+                at("CANCEL", (lbtn_x0+lbtn_x1)/2, (cancel_y0+cancel_y1)/2, px*0.65, *CLR_DANGER_TXT)
+
+            elif gs == 'lobby_conn':  # GAME_STATE_LOBBY_CONNECTING
+                at("CONNECTING...", lcx, net_start_y - 0.015, px*0.65, *CLR_VAL_TXT)
+                cy1 = net_start_y - 0.05
+                cy0 = cy1 - lbtn_h
+                aq_btn(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_DANGER_BG)
+                at("CANCEL", (lbtn_x0+lbtn_x1)/2, (cy0+cy1)/2, px*0.65, *CLR_DANGER_TXT)
+
+            elif gs == 'lobby_wait':  # GAME_STATE_LOBBY_WAITING
+                at("IN LOBBY", lcx, net_start_y - 0.015, px*0.65, *CLR_BTN_ON_TXT)
+                at("WAITING FOR HOST...", lcx, net_start_y - 0.045, px*0.5, *CLR_BTN_TXT)
+
+            elif gs in ('syncing', 'online_play'):  # SYNCING or ONLINE_PLAY
+                status = "ONLINE" if gs == 'online_play' else "SYNCING..."
+                at(status, lcx, net_start_y - 0.015, px*0.65, *CLR_BTN_ON_TXT)
+                dy1 = net_start_y - 0.05
+                dy0 = dy1 - lbtn_h
+                aq_btn(lbtn_x0, dy0, lbtn_x1, dy1, *CLR_DANGER_BG)
+                at("DISCONNECT", (lbtn_x0+lbtn_x1)/2, (dy0+dy1)/2, px*0.65, *CLR_DANGER_TXT)
+
+    _overlay_btn_hitboxes = hitboxes
     overlay_positions.from_numpy(pos)
     overlay_colors.from_numpy(col)
 
@@ -15356,16 +15674,54 @@ def _overlay_get_state():
             'comet': comet_mode,
             'board_break': board_break_mode,
         },
+        'bg_states': frozenset(simulation.active_themes),
+        # Left panel state
+        'left_tab': overlay_left_active_tab,
+        'camera_mode': 'moving' if auto_follow_enabled else ('3rd' if third_person_camera else 'fixed'),
+        'game_state': game_state,
+        'net_connected': network_manager.connected if network_manager else False,
+        'net_is_host': network_manager.is_host if network_manager else False,
+        'net_lobby_id': str(network_manager.lobby_id) if network_manager and network_manager.lobby_id else '',
+        'lobby_id_input': lobby_id_input,
+        'is_fullscreen': is_fullscreen,
+        'cam_dist_level': camera_distance_level,
     }
 
+_overlay_colors_np = None  # cached numpy copy of colors for hover manipulation
+
 def overlay_draw(canvas):
-    """Draw the overlay menu. Rebuilds only when state changes."""
-    global _overlay_cache, _overlay_dirty
+    """Draw the overlay menu. Rebuilds only when state changes. Applies hover highlight per-frame."""
+    global _overlay_cache, _overlay_dirty, _overlay_hover_idx, _overlay_colors_np
     state = _overlay_get_state()
+    rebuilt = False
     if state != _overlay_cache or _overlay_dirty:
         _overlay_rebuild_all(state)
         _overlay_cache = state.copy()
         _overlay_dirty = False
+        _overlay_hover_idx = -1
+        _overlay_colors_np = overlay_colors.to_numpy()
+        rebuilt = True
+    # Hover highlight — check cursor against button hitboxes (lightweight per-frame)
+    if _overlay_colors_np is not None and _overlay_btn_hitboxes:
+        mx, my = window.get_cursor_pos()
+        new_hover = -1
+        for i, (x0, y0, x1, y1, vs, ve) in enumerate(_overlay_btn_hitboxes):
+            if x0 <= mx <= x1 and y0 <= my <= y1:
+                new_hover = i
+                break
+        if new_hover != _overlay_hover_idx:
+            # Undo previous hover boost
+            if _overlay_hover_idx >= 0 and not rebuilt:
+                _, _, _, _, pvs, pve = _overlay_btn_hitboxes[_overlay_hover_idx]
+                _overlay_colors_np[pvs:pve] -= HOVER_BOOST
+                np.clip(_overlay_colors_np[pvs:pve], 0.0, 1.0, out=_overlay_colors_np[pvs:pve])
+            # Apply new hover boost
+            if new_hover >= 0:
+                _, _, _, _, nvs, nve = _overlay_btn_hitboxes[new_hover]
+                _overlay_colors_np[nvs:nve] += HOVER_BOOST
+                np.clip(_overlay_colors_np[nvs:nve], 0.0, 1.0, out=_overlay_colors_np[nvs:nve])
+            overlay_colors.from_numpy(_overlay_colors_np)
+            _overlay_hover_idx = new_hover
     canvas.triangles(overlay_positions, per_vertex_color=overlay_colors)
 
 # Show window immediately with "Compiling..." text so user sees something during kernel compilation
@@ -15428,12 +15784,23 @@ camera.pitch = TITLE_CAM_PITCH
 camera.yaw = TITLE_CAM_YAW
 
 # Auto-follow camera toggle
-auto_follow_enabled = True  # Start with auto-follow camera enabled (press C to toggle)
+auto_follow_enabled = False  # Start with 3rd person camera (press C to toggle)
 
 # 3rd person follow camera settings
 third_person_camera = True  # Toggle for 3rd person follow cam
 THIRD_PERSON_DISTANCE = 60.0  # Distance behind beetle (horizontal)
 fixed_camera_zoom = 1.0  # Multiplier for fixed camera distance (1.0 = default position)
+camera_distance_level = 5  # Unified distance 1-8, maps to both TP distance and fixed zoom
+
+def apply_camera_distance(level):
+    """Map unified distance level (1-8) to internal camera values. 1=close, 8=far."""
+    global THIRD_PERSON_DISTANCE, fixed_camera_zoom
+    # 3rd person: level 1=40, 8=75 (step 5)
+    THIRD_PERSON_DISTANCE = 35.0 + level * 5.0
+    # Fixed zoom: level 1=0.8 (close), 8=1.5 (far) — higher zoom = camera further out
+    fixed_camera_zoom = 0.7 + level * 0.1
+
+apply_camera_distance(camera_distance_level)  # Set initial values from default level
 # Camera always uses opposite side view (beetles in foreground, edge in background)
 camera_edge_angle = None  # Previous edge angle for smooth transitions (None = not yet initialized)
 spotlight_strength = 0.443  # Spotlight intensity (adjustable via GUI slider)
@@ -21294,18 +21661,28 @@ try:
 
             # --- Tab bar clicks ---
             if OVR_TAB_Y0 <= my <= OVR_TAB_Y1 and OVR_X0 <= mx <= OVR_X1:
-                tab_w = (OVR_X1 - OVR_X0) / len(OVERLAY_TABS)
-                tab_idx = int((mx - OVR_X0) / tab_w)
-                tab_idx = min(tab_idx, len(OVERLAY_TABS) - 1)
-                clicked_tab = OVERLAY_TABS[tab_idx]
-                if overlay_active_tab == clicked_tab:
-                    overlay_active_tab = None  # Minimize
+                min_btn_w = 0.035
+                min_x0 = OVR_X1 - min_btn_w
+                if mx >= min_x0:
+                    # Min/max button clicked
+                    if overlay_active_tab is not None:
+                        overlay_active_tab = None  # Minimize
+                    else:
+                        overlay_active_tab = 'beetles'  # Restore to default tab
                 else:
-                    overlay_active_tab = clicked_tab
+                    # Tab button clicked
+                    tab_w = (min_x0 - OVR_X0) / len(OVERLAY_TABS)
+                    tab_idx = int((mx - OVR_X0) / tab_w)
+                    tab_idx = min(tab_idx, len(OVERLAY_TABS) - 1)
+                    clicked_tab = OVERLAY_TABS[tab_idx]
+                    if overlay_active_tab == clicked_tab:
+                        overlay_active_tab = None  # Minimize
+                    else:
+                        overlay_active_tab = clicked_tab
                 _overlay_dirty = True
 
             # --- Content clicks (only if tab is open) ---
-            elif overlay_active_tab == 'beetles' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0:
+            elif overlay_active_tab == 'beetles' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0 and OVR_X0 <= mx <= OVR_X1:
                 # Layout must match _overlay_rebuild_all beetles tab
                 _cx = (OVR_X0 + OVR_X1) / 2.0
                 col_left_x0 = OVR_X0 + 0.02
@@ -21442,7 +21819,7 @@ try:
                                         send_local_beetle_config(network_manager, is_host=False)
                                 print(f"{'Blue' if is_blue else 'Red'} beetle RANDOMIZED")
 
-            elif overlay_active_tab == 'arena' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0 and is_host_or_local:
+            elif overlay_active_tab == 'arena' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0 and OVR_X0 <= mx <= OVR_X1 and is_host_or_local:
                 # Arena button grid click detection
                 col_left_x0 = OVR_X0 + 0.02
                 col_left_x1 = (OVR_X0 + OVR_X1) / 2.0 - 0.01
@@ -21546,26 +21923,27 @@ try:
                             network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, cut_square_mode, board_break_mode, star_mode)
                         break  # Only handle one button click
 
-            elif overlay_active_tab == 'hazards' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0 and is_host_or_local:
-                # Hazard toggle grid click detection
-                _hcx = (OVR_X0 + OVR_X1) / 2.0
+            elif overlay_active_tab == 'world' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0 and OVR_X0 <= mx <= OVR_X1:
+                # World tab click detection (must match _overlay_rebuild_all world layout)
+                _wcx = (OVR_X0 + OVR_X1) / 2.0
                 col_left_x0 = OVR_X0 + 0.02
-                col_left_x1 = _hcx - 0.01
-                col_right_x0 = _hcx + 0.01
+                col_left_x1 = _wcx - 0.01
+                col_right_x0 = _wcx + 0.01
                 col_right_x1 = OVR_X1 - 0.02
-                btn_h = 0.035
-                gap = 0.008
-                start_y = OVR_TAB_Y0 - 0.04
+                btn_h = 0.028
+                gap = 0.005
 
+                # --- Hazard buttons ---
+                haz_start_y = OVR_TAB_Y0 - 0.015 - 0.018
                 for idx, (label, haz_id) in enumerate(HAZARD_MODES):
                     row = idx // 2
                     is_left = (idx % 2 == 0)
                     bx0 = col_left_x0 if is_left else col_right_x0
                     bx1 = col_left_x1 if is_left else col_right_x1
-                    by1 = start_y - row * (btn_h + gap)
+                    by1 = haz_start_y - row * (btn_h + gap)
                     by0 = by1 - btn_h
 
-                    if bx0 <= mx <= bx1 and by0 <= my <= by1:
+                    if bx0 <= mx <= bx1 and by0 <= my <= by1 and is_host_or_local:
                         # Toggle this hazard
                         if haz_id == 'tornado':
                             tornado_mode = not tornado_mode
@@ -21641,6 +22019,252 @@ try:
                         if network_manager and network_manager.is_host:
                             network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, cut_square_mode, board_break_mode, star_mode)
                         break
+
+                # --- Biome buttons ---
+                haz_rows = (len(HAZARD_MODES) + 1) // 2
+                divider_y = haz_start_y - haz_rows * (btn_h + gap) - 0.004
+                biome_start_y = divider_y - 0.008 - 0.018
+                biome_ids_set = [t_id for _, t_id in BG_BIOMES]
+
+                for idx, (label, theme_id) in enumerate(BG_BIOMES):
+                    row = idx // 2
+                    is_left = (idx % 2 == 0)
+                    bx0 = col_left_x0 if is_left else col_right_x0
+                    bx1 = col_left_x1 if is_left else col_right_x1
+                    by1 = biome_start_y - row * (btn_h + gap)
+                    by0 = by1 - btn_h
+                    if bx0 <= mx <= bx1 and by0 <= my <= by1:
+                        if simulation.is_theme_active(theme_id):
+                            simulation.toggle_theme(theme_id)
+                        else:
+                            for b_id in biome_ids_set:
+                                if b_id != theme_id and simulation.is_theme_active(b_id):
+                                    simulation.remove_theme(b_id)
+                            simulation.toggle_theme(theme_id)
+                        print(f"Biome {label} toggled")
+                        break
+
+                # --- Extra buttons ---
+                biome_rows = (len(BG_BIOMES) + 1) // 2
+                extras_start_y = biome_start_y - biome_rows * (btn_h + gap) - 0.008 - 0.018
+                for idx, (label, theme_id) in enumerate(BG_EXTRAS):
+                    row = idx // 2
+                    is_left = (idx % 2 == 0)
+                    bx0 = col_left_x0 if is_left else col_right_x0
+                    bx1 = col_left_x1 if is_left else col_right_x1
+                    by1 = extras_start_y - row * (btn_h + gap)
+                    by0 = by1 - btn_h
+                    if bx0 <= mx <= bx1 and by0 <= my <= by1:
+                        simulation.toggle_theme(theme_id)
+                        print(f"Extra {label} toggled")
+                        break
+
+                # CLEAR ALL button
+                extras_rows = (len(BG_EXTRAS) + 1) // 2
+                clear_y1 = extras_start_y - extras_rows * (btn_h + gap) - 0.006
+                clear_y0 = clear_y1 - btn_h
+                clear_x0 = _wcx - 0.06
+                clear_x1 = _wcx + 0.06
+                if clear_x0 <= mx <= clear_x1 and clear_y0 <= my <= clear_y1:
+                    simulation.clear_all_themes()
+                    print("All background themes cleared")
+
+            # === LEFT PANEL CLICKS ===
+            # Left tab bar
+            elif OVL_TAB_Y0 <= my <= OVL_TAB_Y1 and OVL_X0 <= mx <= OVL_X1:
+                lmin_btn_w = 0.035
+                lmin_x0 = OVL_X1 - lmin_btn_w
+                if mx >= lmin_x0:
+                    if overlay_left_active_tab is not None:
+                        overlay_left_active_tab = None
+                    else:
+                        overlay_left_active_tab = 'display'
+                else:
+                    ltab_w = (lmin_x0 - OVL_X0) / len(OVERLAY_LEFT_TABS)
+                    ltab_idx = int((mx - OVL_X0) / ltab_w)
+                    ltab_idx = min(ltab_idx, len(OVERLAY_LEFT_TABS) - 1)
+                    clicked_ltab = OVERLAY_LEFT_TABS[ltab_idx]
+                    if overlay_left_active_tab == clicked_ltab:
+                        overlay_left_active_tab = None
+                    else:
+                        overlay_left_active_tab = clicked_ltab
+                _overlay_dirty = True
+
+            # Left panel content - display
+            elif overlay_left_active_tab == 'display' and OVL_CONTENT_Y0 <= my <= OVL_TAB_Y0 and OVL_X0 <= mx <= OVL_X1:
+                lbtn_h = 0.035
+                lgap = 0.008
+                lbtn_x0 = OVL_X0 + 0.02
+                lbtn_x1 = OVL_X1 - 0.02
+                _lcx = (OVL_X0 + OVL_X1) / 2.0
+                cur_y = OVL_TAB_Y0 - 0.015
+
+                # Fullscreen button (at top)
+                fs_y1 = cur_y
+                fs_y0 = fs_y1 - lbtn_h
+                if lbtn_x0 <= mx <= lbtn_x1 and fs_y0 <= my <= fs_y1:
+                    toggle_fullscreen_windows()
+                    print(f"Fullscreen: {'ON' if is_fullscreen else 'OFF'}")
+
+                # Camera mode buttons (below heading)
+                cam_start_y = fs_y0 - 0.025 - 0.022
+                cam_modes = [('3RD PERSON', '3rd'), ('FIXED', 'fixed'), ('MOVING', 'moving')]
+                for ci, (clabel, cmode) in enumerate(cam_modes):
+                    cy1 = cam_start_y - ci * (lbtn_h + lgap)
+                    cy0 = cy1 - lbtn_h
+                    if lbtn_x0 <= mx <= lbtn_x1 and cy0 <= my <= cy1:
+                        if cmode == 'moving':
+                            auto_follow_enabled = True
+                            third_person_camera = False
+                        elif cmode == 'fixed':
+                            auto_follow_enabled = False
+                            third_person_camera = False
+                        elif cmode == '3rd':
+                            third_person_camera = True
+                            auto_follow_enabled = False
+                        print(f"Camera mode: {clabel}")
+                        break
+
+                # Camera distance adjuster
+                dist_y1 = cam_start_y - 3 * (lbtn_h + lgap) - 0.005
+                dist_y0 = dist_y1 - lbtn_h
+                arrow_w = 0.04
+                if dist_y0 <= my <= dist_y1:
+                    lt_x0 = _lcx + 0.01
+                    lt_x1 = lt_x0 + arrow_w
+                    gt_x0 = lbtn_x1 - arrow_w
+                    gt_x1 = lbtn_x1
+                    if lt_x0 <= mx <= lt_x1:  # < button
+                        camera_distance_level = max(1, camera_distance_level - 1)
+                        apply_camera_distance(camera_distance_level)
+                        print(f"Camera distance: {camera_distance_level}")
+                    elif gt_x0 <= mx <= gt_x1:  # > button
+                        camera_distance_level = min(8, camera_distance_level + 1)
+                        apply_camera_distance(camera_distance_level)
+                        print(f"Camera distance: {camera_distance_level}")
+
+            # Left panel content - network
+            elif overlay_left_active_tab == 'network' and OVL_CONTENT_Y0 <= my <= OVL_TAB_Y0 and OVL_X0 <= mx <= OVL_X1:
+                lbtn_h = 0.035
+                lgap = 0.008
+                lbtn_x0 = OVL_X0 + 0.02
+                lbtn_x1 = OVL_X1 - 0.02
+                net_start_y = OVL_TAB_Y0 - 0.02
+
+                if game_state == GAME_STATE_LOCAL_PLAY:
+                    # HOST button
+                    hy1 = net_start_y
+                    hy0 = hy1 - lbtn_h
+                    if lbtn_x0 <= mx <= lbtn_x1 and hy0 <= my <= hy1:
+                        if NETWORK_AVAILABLE:
+                            game_state = GAME_STATE_LOBBY_HOST
+                            network_manager = NetworkManager()
+                            if network_manager.init():
+                                network_manager.create_lobby("public", 2)
+                                network_error_msg = ""
+                            else:
+                                network_error_msg = "Failed to init Steam"
+                                game_state = GAME_STATE_LOCAL_PLAY
+                                network_manager = None
+                            print("Hosting online game...")
+                    # JOIN button
+                    jy1 = hy0 - lgap
+                    jy0 = jy1 - lbtn_h
+                    if lbtn_x0 <= mx <= lbtn_x1 and jy0 <= my <= jy1:
+                        if NETWORK_AVAILABLE:
+                            game_state = GAME_STATE_LOBBY_JOIN
+                            lobby_id_input = ""
+                            network_error_msg = ""
+                            print("Joining online game...")
+
+                elif game_state == GAME_STATE_LOBBY_HOST:
+                    # COPY ID button
+                    if network_manager and network_manager.lobby_id:
+                        cy1 = net_start_y - 0.07
+                        cy0 = cy1 - lbtn_h
+                        if lbtn_x0 <= mx <= lbtn_x1 and cy0 <= my <= cy1:
+                            copy_to_clipboard(str(network_manager.lobby_id))
+                            print("Lobby ID copied!")
+                    # START MATCH button
+                    if network_manager and network_manager.connected:
+                        sy1 = net_start_y - 0.12
+                        sy0 = sy1 - lbtn_h
+                        if lbtn_x0 <= mx <= lbtn_x1 and sy0 <= my <= sy1:
+                            game_state = GAME_STATE_SYNCING
+                            input_buffer.is_network_mode = True
+                            input_buffer.delay = 8
+                            input_buffer.local_player_id = 0
+                            input_buffer.reset()
+                            local_player_id = 0
+                            network_manager.start_match_now()
+                            hazard_seed = network_manager.random_seed
+                            print(f"[Game] Host starting match, seed: {hazard_seed}")
+
+                elif game_state == GAME_STATE_LOBBY_JOIN:
+                    # PASTE button
+                    py1 = net_start_y - 0.065
+                    py0 = py1 - lbtn_h
+                    if lbtn_x0 <= mx <= lbtn_x1 and py0 <= my <= py1:
+                        try:
+                            import subprocess
+                            result = subprocess.run(['powershell', '-command', 'Get-Clipboard'],
+                                                   capture_output=True, text=True)
+                            clipboard_text = result.stdout.strip()
+                            digits_only = ''.join(c for c in clipboard_text if c.isdigit())
+                            if digits_only:
+                                lobby_id_input = digits_only
+                                print(f"Pasted lobby ID: {lobby_id_input}")
+                        except:
+                            pass
+                    # CONNECT button (only if we have input)
+                    if lobby_id_input:
+                        cy1 = py0 - lgap
+                        cy0 = cy1 - lbtn_h
+                        if lbtn_x0 <= mx <= lbtn_x1 and cy0 <= my <= cy1:
+                            try:
+                                lid = int(lobby_id_input)
+                                network_manager = NetworkManager()
+                                if network_manager.init():
+                                    network_manager.join_lobby(lid)
+                                    game_state = GAME_STATE_LOBBY_CONNECTING
+                                    network_error_msg = ""
+                                    print(f"Connecting to lobby {lid}...")
+                                else:
+                                    network_error_msg = "Failed to init Steam"
+                            except ValueError:
+                                network_error_msg = "Invalid lobby ID"
+                    # CANCEL button
+                    cancel_y1 = py0 - lgap
+                    if lobby_id_input:
+                        cancel_y1 -= (lbtn_h + lgap)
+                    cancel_y0 = cancel_y1 - lbtn_h
+                    if lbtn_x0 <= mx <= lbtn_x1 and cancel_y0 <= my <= cancel_y1:
+                        game_state = GAME_STATE_LOCAL_PLAY
+                        lobby_id_input = ""
+                        print("Join cancelled")
+
+                elif game_state == GAME_STATE_LOBBY_CONNECTING:
+                    # CANCEL button
+                    cy1 = net_start_y - 0.05
+                    cy0 = cy1 - lbtn_h
+                    if lbtn_x0 <= mx <= lbtn_x1 and cy0 <= my <= cy1:
+                        if network_manager:
+                            network_manager.shutdown()
+                            network_manager = None
+                        game_state = GAME_STATE_LOCAL_PLAY
+                        print("Connection cancelled")
+
+                elif game_state in (GAME_STATE_SYNCING, GAME_STATE_ONLINE_PLAY):
+                    # DISCONNECT button
+                    dy1 = net_start_y - 0.05
+                    dy0 = dy1 - lbtn_h
+                    if lbtn_x0 <= mx <= lbtn_x1 and dy0 <= my <= dy1:
+                        if network_manager:
+                            network_manager.disconnect()
+                            network_manager = None
+                        game_state = GAME_STATE_LOCAL_PLAY
+                        input_buffer.is_network_mode = False
+                        print("Disconnected from online game")
 
         elif not mouse_clicked:
             window._overlay_lmb_held = False
