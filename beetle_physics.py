@@ -14988,6 +14988,386 @@ window = ti.ui.Window("Beetle Physics", WINDOW_RESOLUTION, vsync=VSYNC_ENABLED, 
 canvas = window.get_canvas()
 scene = window.get_scene()
 
+# === CANVAS UI OVERLAY SYSTEM ===
+# Bitmap font rendered via canvas.triangles() for readable game UI
+# 5x7 pixel font, each char = up to 35 filled quads (2 triangles each)
+
+FONT_5X7 = {
+    'A': [0x7C,0x12,0x11,0x12,0x7C], 'B': [0x7F,0x49,0x49,0x49,0x36], 'C': [0x3E,0x41,0x41,0x41,0x22],
+    'D': [0x7F,0x41,0x41,0x22,0x1C], 'E': [0x7F,0x49,0x49,0x49,0x41], 'F': [0x7F,0x09,0x09,0x09,0x01],
+    'G': [0x3E,0x41,0x49,0x49,0x7A], 'H': [0x7F,0x08,0x08,0x08,0x7F], 'I': [0x00,0x41,0x7F,0x41,0x00],
+    'J': [0x20,0x40,0x41,0x3F,0x01], 'K': [0x7F,0x08,0x14,0x22,0x41], 'L': [0x7F,0x40,0x40,0x40,0x40],
+    'M': [0x7F,0x02,0x0C,0x02,0x7F], 'N': [0x7F,0x04,0x08,0x10,0x7F], 'O': [0x3E,0x41,0x41,0x41,0x3E],
+    'P': [0x7F,0x09,0x09,0x09,0x06], 'Q': [0x3E,0x41,0x51,0x21,0x5E], 'R': [0x7F,0x09,0x19,0x29,0x46],
+    'S': [0x46,0x49,0x49,0x49,0x31], 'T': [0x01,0x01,0x7F,0x01,0x01], 'U': [0x3F,0x40,0x40,0x40,0x3F],
+    'V': [0x1F,0x20,0x40,0x20,0x1F], 'W': [0x3F,0x40,0x38,0x40,0x3F], 'X': [0x63,0x14,0x08,0x14,0x63],
+    'Y': [0x07,0x08,0x70,0x08,0x07], 'Z': [0x61,0x51,0x49,0x45,0x43],
+    '0': [0x3E,0x51,0x49,0x45,0x3E], '1': [0x00,0x42,0x7F,0x40,0x00], '2': [0x42,0x61,0x51,0x49,0x46],
+    '3': [0x21,0x41,0x45,0x4B,0x31], '4': [0x18,0x14,0x12,0x7F,0x10], '5': [0x27,0x45,0x45,0x45,0x39],
+    '6': [0x3C,0x4A,0x49,0x49,0x30], '7': [0x01,0x71,0x09,0x05,0x03], '8': [0x36,0x49,0x49,0x49,0x36],
+    '9': [0x06,0x49,0x49,0x29,0x1E],
+    ' ': [0x00,0x00,0x00,0x00,0x00], ':': [0x00,0x36,0x36,0x00,0x00], '-': [0x08,0x08,0x08,0x08,0x08],
+    '<': [0x08,0x14,0x22,0x41,0x00], '>': [0x00,0x41,0x22,0x14,0x08],
+    '+': [0x08,0x08,0x3E,0x08,0x08], '.': [0x00,0x60,0x60,0x00,0x00],
+}
+
+# === CANVAS TRIANGLE OVERLAY MENU ===
+# Tabbed menu rendered via canvas.triangles() - GPU-cheap, readable text
+# Tabs: BEETLES, ARENA (more later). Click active tab to minimize.
+# All vertex data built in numpy, single bulk copy to GPU on change.
+
+import numpy as np
+
+OVERLAY_MAX_VERTS = 18000  # Generous for all tabs
+overlay_positions = ti.Vector.field(2, dtype=ti.f32, shape=OVERLAY_MAX_VERTS)
+overlay_colors = ti.Vector.field(3, dtype=ti.f32, shape=OVERLAY_MAX_VERTS)
+overlay_positions.fill([-10.0, -10.0])
+
+# Menu state
+overlay_active_tab = 'beetles'  # 'beetles', 'arena', 'hazards', or None (minimized)
+overlay_beetle_subtab = 1  # 1 = beetle 1 (blue), 2 = beetle 2 (red)
+_overlay_cache = {}  # Dirty tracking - stores last-seen values per tab
+_overlay_dirty = True  # Force first build
+
+# Panel layout constants
+OVR_X0, OVR_X1 = 0.58, 0.98  # Panel horizontal bounds
+OVR_TAB_Y1 = 0.97  # Top of tab bar
+OVR_TAB_Y0 = 0.93  # Bottom of tab bar (top of content)
+OVR_CONTENT_Y0 = 0.45  # Bottom of content area (when expanded)
+OVR_BW = 0.003  # Border width
+OVR_PX = 0.004  # Text pixel size
+
+# Tab definitions
+OVERLAY_TABS = ['beetles', 'arena', 'hazards']
+OVERLAY_TAB_LABELS = {'beetles': 'BEETLES', 'arena': 'ARENA', 'hazards': 'HAZARDS'}
+
+# Arena mode names and their variable names (order matches display)
+# Beetle genetics stat definitions (label, window attr suffix, min, max)
+BEETLE_STATS = [
+    ('SHAFT',  'horn_shaft_value',       8, 15),
+    ('PRONG',  'horn_prong_value',       3,  6),
+    ('BACK',   'back_body_height_value', 4,  8),
+    ('LENGTH', 'body_length_value',      9, 14),
+    ('WIDTH',  'body_width_value',       5,  9),
+    ('LEGS',   'leg_length_value',       6, 10),
+]
+
+# Hazard definitions (label, variable name key)
+HAZARD_MODES = [
+    ('TORNADO', 'tornado'),
+    ('SANDSTORM', 'sandstorm'),
+    ('UFO LASER', 'ufo'),
+    ('ICE PATCHES', 'ice'),
+    ('MOVE HOLE', 'hole'),
+    ('COMET RAIN', 'comet'),
+    ('BOARD BREAK', 'board_break'),
+]
+
+ARENA_MODES = [
+    ('CIRCLE', 'circle'),
+    ('BALL', 'ball'),
+    ('DONUT', 'donut'),
+    ('X STAGE', 'x_stage'),
+    ('BARBELL', 'barbell'),
+    ('FIGURE 8', 'figure8'),
+    ('YIN-YANG', 'yinyang'),
+    ('HOURGLASS', 'hourglass'),
+    ('SQ BRIDGE', 'square_bridge'),
+    ('SQUARE', 'square'),
+    ('CUT SQ', 'cut_square'),
+    ('SQUIGGLE', 'squiggle'),
+    ('STAR', 'star'),
+]
+
+def _ovr_add_quad(pos, col, vi, x0, y0, x1, y1, r, g, b):
+    i = vi[0]
+    if i + 6 > OVERLAY_MAX_VERTS:
+        return
+    pos[i+0] = (x0, y0); pos[i+1] = (x1, y0); pos[i+2] = (x0, y1)
+    pos[i+3] = (x1, y0); pos[i+4] = (x1, y1); pos[i+5] = (x0, y1)
+    col[i:i+6] = (r, g, b)
+    vi[0] += 6
+
+def _ovr_add_text(pos, col, vi, text, cx, cy, pixel_size, r, g, b):
+    text = text.upper()
+    total_width = len(text) * 6 * pixel_size
+    cursor_x = cx - total_width / 2.0
+    for ch in text:
+        glyph = FONT_5X7.get(ch)
+        if glyph is None:
+            cursor_x += 6 * pixel_size
+            continue
+        for ci2, col_bits in enumerate(glyph):
+            for row in range(7):
+                if col_bits & (1 << row):
+                    px = cursor_x + ci2 * pixel_size
+                    py = cy + (3 - row) * pixel_size
+                    _ovr_add_quad(pos, col, vi, px, py, px + pixel_size, py + pixel_size, r, g, b)
+        cursor_x += 6 * pixel_size
+
+def _ovr_add_text_left(pos, col, vi, text, lx, cy, pixel_size, r, g, b):
+    """Render text left-aligned at lx."""
+    text = text.upper()
+    cursor_x = lx
+    for ch in text:
+        glyph = FONT_5X7.get(ch)
+        if glyph is None:
+            cursor_x += 6 * pixel_size
+            continue
+        for ci2, col_bits in enumerate(glyph):
+            for row in range(7):
+                if col_bits & (1 << row):
+                    px = cursor_x + ci2 * pixel_size
+                    py = cy + (3 - row) * pixel_size
+                    _ovr_add_quad(pos, col, vi, px, py, px + pixel_size, py + pixel_size, r, g, b)
+        cursor_x += 6 * pixel_size
+
+def _overlay_rebuild_all(state):
+    """Rebuild entire overlay from current state. state is a dict of all needed values."""
+    pos = np.full((OVERLAY_MAX_VERTS, 2), -10.0, dtype=np.float32)
+    col = np.zeros((OVERLAY_MAX_VERTS, 3), dtype=np.float32)
+    vi = [0]
+    aq = lambda x0,y0,x1,y1,r,g,b: _ovr_add_quad(pos,col,vi,x0,y0,x1,y1,r,g,b)
+    at = lambda t,cx,cy,ps,r,g,b: _ovr_add_text(pos,col,vi,t,cx,cy,ps,r,g,b)
+    atl = lambda t,lx,cy,ps,r,g,b: _ovr_add_text_left(pos,col,vi,t,lx,cy,ps,r,g,b)
+
+    active = overlay_active_tab
+    cx = (OVR_X0 + OVR_X1) / 2.0
+    px = OVR_PX
+
+    # --- Tab bar (always visible) ---
+    aq(OVR_X0, OVR_TAB_Y0, OVR_X1, OVR_TAB_Y1, 0.12, 0.12, 0.18)
+    # Tab buttons
+    n_tabs = len(OVERLAY_TABS)
+    tab_w = (OVR_X1 - OVR_X0) / n_tabs
+    for ti2, tab_id in enumerate(OVERLAY_TABS):
+        tx0 = OVR_X0 + ti2 * tab_w
+        tx1 = tx0 + tab_w
+        # Active tab brighter, inactive dimmer
+        if tab_id == active:
+            aq(tx0 + 0.002, OVR_TAB_Y0 + 0.002, tx1 - 0.002, OVR_TAB_Y1 - 0.002, 0.22, 0.22, 0.35)
+            at(OVERLAY_TAB_LABELS[tab_id], (tx0+tx1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.7, 1.0, 1.0, 1.0)
+        else:
+            aq(tx0 + 0.002, OVR_TAB_Y0 + 0.002, tx1 - 0.002, OVR_TAB_Y1 - 0.002, 0.10, 0.10, 0.15)
+            at(OVERLAY_TAB_LABELS[tab_id], (tx0+tx1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.7, 0.5, 0.5, 0.6)
+
+    # --- Content area (only if a tab is active) ---
+    if active is None:
+        overlay_positions.from_numpy(pos)
+        overlay_colors.from_numpy(col)
+        return
+
+    # Panel background + border
+    aq(OVR_X0, OVR_CONTENT_Y0, OVR_X1, OVR_TAB_Y0, 0.08, 0.08, 0.12)
+    bw = OVR_BW
+    aq(OVR_X0, OVR_TAB_Y0 - bw, OVR_X1, OVR_TAB_Y0, 0.3, 0.35, 0.5)  # top border under tabs
+    aq(OVR_X0, OVR_CONTENT_Y0, OVR_X1, OVR_CONTENT_Y0 + bw, 0.3, 0.35, 0.5)
+    aq(OVR_X0, OVR_CONTENT_Y0, OVR_X0 + bw, OVR_TAB_Y0, 0.3, 0.35, 0.5)
+    aq(OVR_X1 - bw, OVR_CONTENT_Y0, OVR_X1, OVR_TAB_Y0, 0.3, 0.35, 0.5)
+
+    if active == 'beetles':
+        subtab = state.get('beetle_subtab', 1)
+        cur_type = state.get('blue_horn_type' if subtab == 1 else 'red_horn_type', 'rhino')
+        cur_stats = state.get('blue_stats' if subtab == 1 else 'red_stats', ())
+
+        col_left_x0 = OVR_X0 + 0.02
+        col_left_x1 = cx - 0.01
+        col_right_x0 = cx + 0.01
+        col_right_x1 = OVR_X1 - 0.02
+        btn_h = 0.030
+        gap = 0.006
+
+        # --- Sub-tab bar: BEETLE 1 / BEETLE 2 ---
+        sub_y1 = OVR_TAB_Y0 - 0.01
+        sub_y0 = sub_y1 - 0.032
+        sub_mid = cx
+        # B1 button
+        if subtab == 1:
+            aq(col_left_x0, sub_y0, sub_mid - 0.005, sub_y1, 0.15, 0.22, 0.45)
+            at("BEETLE 1", (col_left_x0 + sub_mid - 0.005)/2, (sub_y0+sub_y1)/2, px*0.65, 0.7, 0.85, 1.0)
+        else:
+            aq(col_left_x0, sub_y0, sub_mid - 0.005, sub_y1, 0.12, 0.12, 0.18)
+            at("BEETLE 1", (col_left_x0 + sub_mid - 0.005)/2, (sub_y0+sub_y1)/2, px*0.65, 0.4, 0.4, 0.55)
+        # B2 button
+        if subtab == 2:
+            aq(sub_mid + 0.005, sub_y0, col_right_x1, sub_y1, 0.45, 0.15, 0.15)
+            at("BEETLE 2", (sub_mid + 0.005 + col_right_x1)/2, (sub_y0+sub_y1)/2, px*0.65, 1.0, 0.7, 0.7)
+        else:
+            aq(sub_mid + 0.005, sub_y0, col_right_x1, sub_y1, 0.12, 0.12, 0.18)
+            at("BEETLE 2", (sub_mid + 0.005 + col_right_x1)/2, (sub_y0+sub_y1)/2, px*0.65, 0.4, 0.4, 0.55)
+
+        # Accent color for selected beetle
+        accent_r, accent_g, accent_b = (0.4, 0.6, 1.0) if subtab == 1 else (1.0, 0.4, 0.4)
+        hi_bg = (0.12, 0.20, 0.45) if subtab == 1 else (0.45, 0.12, 0.12)
+
+        # --- Type grid (2 columns, 4 rows) ---
+        type_start_y = sub_y0 - 0.01
+        for idx, btype in enumerate(BEETLE_TYPES):
+            row = idx // 2
+            is_left = (idx % 2 == 0)
+            bx0 = col_left_x0 if is_left else col_right_x0
+            bx1 = col_left_x1 if is_left else col_right_x1
+            by1 = type_start_y - row * (btn_h + gap)
+            by0 = by1 - btn_h
+            is_active = (btype == cur_type)
+            if is_active:
+                aq(bx0, by0, bx1, by1, *hi_bg)
+                at(btype.upper(), (bx0+bx1)/2, (by0+by1)/2, px*0.6, accent_r, accent_g, accent_b)
+            else:
+                aq(bx0, by0, bx1, by1, 0.15, 0.15, 0.20)
+                at(btype.upper(), (bx0+bx1)/2, (by0+by1)/2, px*0.6, 0.6, 0.6, 0.7)
+
+        # --- Stat adjusters: LABEL  < VAL > ---
+        stat_start_y = type_start_y - 4 * (btn_h + gap) - 0.012
+        stat_row_h = 0.030
+        stat_gap = 0.006
+        arrow_w = 0.035  # width of < and > buttons
+        label_x = col_left_x0 + 0.005
+        val_region_x0 = cx - 0.02  # < button left edge
+        val_region_x1 = col_right_x1  # > button right edge
+
+        for si, (slabel, sattr, smin, smax) in enumerate(BEETLE_STATS):
+            sy1 = stat_start_y - si * (stat_row_h + stat_gap)
+            sy0 = sy1 - stat_row_h
+            scy = (sy0 + sy1) / 2.0
+
+            # Label
+            atl(slabel, label_x, scy, px*0.55, 0.7, 0.7, 0.8)
+
+            # Current value
+            val = cur_stats[si] if si < len(cur_stats) else smin
+            val_str = str(int(val))
+
+            # < button
+            lt_x0 = val_region_x0
+            lt_x1 = lt_x0 + arrow_w
+            aq(lt_x0, sy0, lt_x1, sy1, 0.18, 0.18, 0.25)
+            at("<", (lt_x0+lt_x1)/2, scy, px*0.6, 0.8, 0.8, 0.9)
+
+            # Value display
+            vd_x0 = lt_x1 + 0.004
+            vd_x1 = val_region_x1 - arrow_w - 0.004
+            at(val_str, (vd_x0+vd_x1)/2, scy, px*0.6, accent_r, accent_g, accent_b)
+
+            # > button
+            gt_x0 = val_region_x1 - arrow_w
+            gt_x1 = val_region_x1
+            aq(gt_x0, sy0, gt_x1, sy1, 0.18, 0.18, 0.25)
+            at(">", (gt_x0+gt_x1)/2, scy, px*0.6, 0.8, 0.8, 0.9)
+
+        # --- RANDOM button ---
+        rand_y1 = stat_start_y - len(BEETLE_STATS) * (stat_row_h + stat_gap) - 0.005
+        rand_y0 = rand_y1 - btn_h
+        rand_x0 = cx - 0.06
+        rand_x1 = cx + 0.06
+        aq(rand_x0, rand_y0, rand_x1, rand_y1, 0.25, 0.18, 0.35)
+        at("RANDOM", (rand_x0+rand_x1)/2, (rand_y0+rand_y1)/2, px*0.6, 0.9, 0.7, 1.0)
+
+    elif active == 'arena':
+        active_arena = state.get('active_arena', 'circle')
+        # 2-column grid of arena buttons
+        col_left_x0 = OVR_X0 + 0.02
+        col_left_x1 = cx - 0.01
+        col_right_x0 = cx + 0.01
+        col_right_x1 = OVR_X1 - 0.02
+        btn_h = 0.035
+        gap = 0.008
+        start_y = OVR_TAB_Y0 - 0.04
+
+        for idx, (label, mode_id) in enumerate(ARENA_MODES):
+            row = idx // 2
+            is_left = (idx % 2 == 0)
+            bx0 = col_left_x0 if is_left else col_right_x0
+            bx1 = col_left_x1 if is_left else col_right_x1
+            by1 = start_y - row * (btn_h + gap)
+            by0 = by1 - btn_h
+
+            is_active = (mode_id == active_arena)
+            if is_active:
+                aq(bx0, by0, bx1, by1, 0.15, 0.35, 0.15)  # Green highlight
+                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, 0.7, 1.0, 0.7)
+            else:
+                aq(bx0, by0, bx1, by1, 0.15, 0.15, 0.20)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, 0.6, 0.6, 0.7)
+
+    elif active == 'hazards':
+        hazard_states = state.get('hazard_states', {})
+        # 2-column grid of toggle buttons
+        col_left_x0 = OVR_X0 + 0.02
+        col_left_x1 = cx - 0.01
+        col_right_x0 = cx + 0.01
+        col_right_x1 = OVR_X1 - 0.02
+        btn_h = 0.035
+        gap = 0.008
+        start_y = OVR_TAB_Y0 - 0.04
+
+        for idx, (label, haz_id) in enumerate(HAZARD_MODES):
+            row = idx // 2
+            is_left = (idx % 2 == 0)
+            bx0 = col_left_x0 if is_left else col_right_x0
+            bx1 = col_left_x1 if is_left else col_right_x1
+            by1 = start_y - row * (btn_h + gap)
+            by0 = by1 - btn_h
+
+            is_on = hazard_states.get(haz_id, False)
+            if is_on:
+                aq(bx0, by0, bx1, by1, 0.45, 0.25, 0.08)  # Orange highlight for active
+                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, 1.0, 0.85, 0.5)
+            else:
+                aq(bx0, by0, bx1, by1, 0.15, 0.15, 0.20)
+                at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, 0.6, 0.6, 0.7)
+
+    overlay_positions.from_numpy(pos)
+    overlay_colors.from_numpy(col)
+
+def _overlay_get_state():
+    """Gather current game state needed for overlay rendering."""
+    # Determine active arena
+    active_arena = 'circle'
+    if beetle_ball.active: active_arena = 'ball'
+    elif donut_mode: active_arena = 'donut'
+    elif x_stage_mode: active_arena = 'x_stage'
+    elif barbell_mode: active_arena = 'barbell'
+    elif figure8_mode: active_arena = 'figure8'
+    elif yinyang_mode: active_arena = 'yinyang'
+    elif hourglass_mode: active_arena = 'hourglass'
+    elif square_bridge_mode: active_arena = 'square_bridge'
+    elif square_mode: active_arena = 'square'
+    elif cut_square_mode: active_arena = 'cut_square'
+    elif squiggle_mode: active_arena = 'squiggle'
+    elif star_mode: active_arena = 'star'
+    # Beetle genetics
+    blue_stats = tuple(getattr(window, f'blue_{s[1]}') for s in BEETLE_STATS)
+    red_stats = tuple(getattr(window, f'red_{s[1]}') for s in BEETLE_STATS)
+    return {
+        'blue_horn_type': blue_horn_type,
+        'red_horn_type': red_horn_type,
+        'blue_stats': blue_stats,
+        'red_stats': red_stats,
+        'active_arena': active_arena,
+        'active_tab': overlay_active_tab,
+        'beetle_subtab': overlay_beetle_subtab,
+        'hazard_states': {
+            'tornado': tornado_mode,
+            'sandstorm': sandstorm_mode,
+            'ufo': ufo_mode,
+            'ice': ice_mode,
+            'hole': hole_mode,
+            'comet': comet_mode,
+            'board_break': board_break_mode,
+        },
+    }
+
+def overlay_draw(canvas):
+    """Draw the overlay menu. Rebuilds only when state changes."""
+    global _overlay_cache, _overlay_dirty
+    state = _overlay_get_state()
+    if state != _overlay_cache or _overlay_dirty:
+        _overlay_rebuild_all(state)
+        _overlay_cache = state.copy()
+        _overlay_dirty = False
+    canvas.triangles(overlay_positions, per_vertex_color=overlay_colors)
+
 # Show window immediately with "Compiling..." text so user sees something during kernel compilation
 canvas.set_background_color(LOADING_BG_COLOR)
 window.GUI.begin("", 0.30, 0.42, 0.45, 0.20)
@@ -20900,6 +21280,372 @@ try:
                     front_light_strength=render_front_strength,
                     floor_y=int(RENDER_Y_OFFSET))
     canvas.scene(scene)
+
+    # === CANVAS OVERLAY MENU (drawn after scene, before GUI) ===
+    if show_settings_panel:
+        can_edit_blue = not network_manager or not network_manager.connected or network_manager.is_host
+        can_edit_red = not network_manager or not network_manager.connected or not network_manager.is_host
+        is_host_or_local = not network_manager or not network_manager.connected or network_manager.is_host
+
+        mouse_clicked = window.is_pressed(ti.ui.LMB)
+        if mouse_clicked and not getattr(window, '_overlay_lmb_held', False):
+            window._overlay_lmb_held = True
+            mx, my = window.get_cursor_pos()
+
+            # --- Tab bar clicks ---
+            if OVR_TAB_Y0 <= my <= OVR_TAB_Y1 and OVR_X0 <= mx <= OVR_X1:
+                tab_w = (OVR_X1 - OVR_X0) / len(OVERLAY_TABS)
+                tab_idx = int((mx - OVR_X0) / tab_w)
+                tab_idx = min(tab_idx, len(OVERLAY_TABS) - 1)
+                clicked_tab = OVERLAY_TABS[tab_idx]
+                if overlay_active_tab == clicked_tab:
+                    overlay_active_tab = None  # Minimize
+                else:
+                    overlay_active_tab = clicked_tab
+                _overlay_dirty = True
+
+            # --- Content clicks (only if tab is open) ---
+            elif overlay_active_tab == 'beetles' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0:
+                # Layout must match _overlay_rebuild_all beetles tab
+                _cx = (OVR_X0 + OVR_X1) / 2.0
+                col_left_x0 = OVR_X0 + 0.02
+                col_left_x1 = _cx - 0.01
+                col_right_x0 = _cx + 0.01
+                col_right_x1 = OVR_X1 - 0.02
+                btn_h = 0.030
+                gap = 0.006
+
+                # Sub-tab bar clicks (BEETLE 1 / BEETLE 2)
+                sub_y1 = OVR_TAB_Y0 - 0.01
+                sub_y0 = sub_y1 - 0.032
+                if sub_y0 <= my <= sub_y1:
+                    if col_left_x0 <= mx <= _cx - 0.005:
+                        overlay_beetle_subtab = 1
+                        _overlay_dirty = True
+                    elif _cx + 0.005 <= mx <= col_right_x1:
+                        overlay_beetle_subtab = 2
+                        _overlay_dirty = True
+                else:
+                    # Determine which beetle we're editing
+                    is_blue = (overlay_beetle_subtab == 1)
+                    can_edit = can_edit_blue if is_blue else can_edit_red
+
+                    # Type grid (starts below sub-tab bar)
+                    type_start_y = sub_y0 - 0.01
+                    type_clicked = False
+                    for idx, btype in enumerate(BEETLE_TYPES):
+                        row = idx // 2
+                        is_left = (idx % 2 == 0)
+                        bx0 = col_left_x0 if is_left else col_right_x0
+                        bx1 = col_left_x1 if is_left else col_right_x1
+                        by1 = type_start_y - row * (btn_h + gap)
+                        by0 = by1 - btn_h
+                        if can_edit and bx0 <= mx <= bx1 and by0 <= my <= by1:
+                            cur_type = blue_horn_type if is_blue else red_horn_type
+                            if btype != cur_type:
+                                if is_blue:
+                                    blue_horn_type = btype
+                                    apply_horn_defaults(beetle_blue, blue_horn_type)
+                                    rebuild_blue_beetle(window.blue_horn_shaft_value, window.blue_horn_prong_value, 4,
+                                                       window.blue_back_body_height_value, window.blue_body_length_value,
+                                                       window.blue_body_width_value, window.blue_leg_length_value,
+                                                       blue_horn_type, stinger_curvature=0.0)
+                                    reset_walk_phase_on_geometry_change(beetle_blue)
+                                    if network_manager and network_manager.connected and network_manager.is_host:
+                                        send_local_beetle_config(network_manager, is_host=True)
+                                    print(f"Blue beetle -> {blue_horn_type.upper()}")
+                                else:
+                                    red_horn_type = btype
+                                    apply_horn_defaults(beetle_red, red_horn_type)
+                                    rebuild_red_beetle(window.red_horn_shaft_value, window.red_horn_prong_value, 4,
+                                                      window.red_back_body_height_value, window.red_body_length_value,
+                                                      window.red_body_width_value, window.red_leg_length_value,
+                                                      red_horn_type, stinger_curvature=0.0)
+                                    reset_walk_phase_on_geometry_change(beetle_red)
+                                    if network_manager and network_manager.connected and not network_manager.is_host:
+                                        send_local_beetle_config(network_manager, is_host=False)
+                                    print(f"Red beetle -> {red_horn_type.upper()}")
+                            type_clicked = True
+                            break
+
+                    if not type_clicked and can_edit:
+                        # Stat adjuster clicks
+                        stat_start_y = type_start_y - 4 * (btn_h + gap) - 0.012
+                        stat_row_h = 0.030
+                        stat_gap = 0.006
+                        arrow_w = 0.035
+                        val_region_x0 = _cx - 0.02
+                        val_region_x1 = col_right_x1
+                        prefix = 'blue_' if is_blue else 'red_'
+
+                        stat_clicked = False
+                        for si, (slabel, sattr, smin, smax) in enumerate(BEETLE_STATS):
+                            sy1 = stat_start_y - si * (stat_row_h + stat_gap)
+                            sy0 = sy1 - stat_row_h
+                            if sy0 <= my <= sy1:
+                                lt_x0 = val_region_x0
+                                lt_x1 = lt_x0 + arrow_w
+                                gt_x0 = val_region_x1 - arrow_w
+                                gt_x1 = val_region_x1
+                                cur_val = getattr(window, prefix + sattr)
+                                new_val = cur_val
+                                if lt_x0 <= mx <= lt_x1:  # < button
+                                    new_val = max(smin, cur_val - 1)
+                                elif gt_x0 <= mx <= gt_x1:  # > button
+                                    new_val = min(smax, cur_val + 1)
+                                if new_val != cur_val:
+                                    setattr(window, prefix + sattr, new_val)
+                                    if is_blue:
+                                        rebuild_blue_beetle(window.blue_horn_shaft_value, window.blue_horn_prong_value, 4,
+                                                           window.blue_back_body_height_value, window.blue_body_length_value,
+                                                           window.blue_body_width_value, window.blue_leg_length_value,
+                                                           blue_horn_type, stinger_curvature=0.0)
+                                        reset_walk_phase_on_geometry_change(beetle_blue)
+                                        if network_manager and network_manager.connected and network_manager.is_host:
+                                            send_local_beetle_config(network_manager, is_host=True)
+                                    else:
+                                        rebuild_red_beetle(window.red_horn_shaft_value, window.red_horn_prong_value, 4,
+                                                          window.red_back_body_height_value, window.red_body_length_value,
+                                                          window.red_body_width_value, window.red_leg_length_value,
+                                                          red_horn_type, stinger_curvature=0.0)
+                                        reset_walk_phase_on_geometry_change(beetle_red)
+                                        if network_manager and network_manager.connected and not network_manager.is_host:
+                                            send_local_beetle_config(network_manager, is_host=False)
+                                    print(f"{'Blue' if is_blue else 'Red'} {slabel} -> {new_val}")
+                                stat_clicked = True
+                                break
+
+                        # RANDOM button
+                        if not stat_clicked:
+                            rand_y1 = stat_start_y - len(BEETLE_STATS) * (stat_row_h + stat_gap) - 0.005
+                            rand_y0 = rand_y1 - btn_h
+                            rand_x0 = _cx - 0.06
+                            rand_x1 = _cx + 0.06
+                            if rand_x0 <= mx <= rand_x1 and rand_y0 <= my <= rand_y1:
+                                for si, (slabel, sattr, smin, smax) in enumerate(BEETLE_STATS):
+                                    setattr(window, prefix + sattr, random.randint(smin, smax))
+                                if is_blue:
+                                    rebuild_blue_beetle(window.blue_horn_shaft_value, window.blue_horn_prong_value, 4,
+                                                       window.blue_back_body_height_value, window.blue_body_length_value,
+                                                       window.blue_body_width_value, window.blue_leg_length_value,
+                                                       blue_horn_type, stinger_curvature=0.0)
+                                    reset_walk_phase_on_geometry_change(beetle_blue)
+                                    if network_manager and network_manager.connected and network_manager.is_host:
+                                        send_local_beetle_config(network_manager, is_host=True)
+                                else:
+                                    rebuild_red_beetle(window.red_horn_shaft_value, window.red_horn_prong_value, 4,
+                                                      window.red_back_body_height_value, window.red_body_length_value,
+                                                      window.red_body_width_value, window.red_leg_length_value,
+                                                      red_horn_type, stinger_curvature=0.0)
+                                    reset_walk_phase_on_geometry_change(beetle_red)
+                                    if network_manager and network_manager.connected and not network_manager.is_host:
+                                        send_local_beetle_config(network_manager, is_host=False)
+                                print(f"{'Blue' if is_blue else 'Red'} beetle RANDOMIZED")
+
+            elif overlay_active_tab == 'arena' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0 and is_host_or_local:
+                # Arena button grid click detection
+                col_left_x0 = OVR_X0 + 0.02
+                col_left_x1 = (OVR_X0 + OVR_X1) / 2.0 - 0.01
+                col_right_x0 = (OVR_X0 + OVR_X1) / 2.0 + 0.01
+                col_right_x1 = OVR_X1 - 0.02
+                btn_h = 0.035
+                gap = 0.008
+                start_y = OVR_TAB_Y0 - 0.04
+
+                for idx, (label, mode_id) in enumerate(ARENA_MODES):
+                    row = idx // 2
+                    is_left = (idx % 2 == 0)
+                    bx0 = col_left_x0 if is_left else col_right_x0
+                    bx1 = col_left_x1 if is_left else col_right_x1
+                    by1 = start_y - row * (btn_h + gap)
+                    by0 = by1 - btn_h
+
+                    if bx0 <= mx <= bx1 and by0 <= my <= by1:
+                        # Clicked this arena mode - switch to it
+                        # First disable all modes
+                        if beetle_ball.active:
+                            if ball_last_rendered[None] == 1:
+                                num_voxels = ball_cache_size[None]
+                                if num_voxels > 0:
+                                    clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+                                ball_last_rendered[None] = 0
+                            else:
+                                clear_ball()
+                            simulation.clear_bowl_perimeter()
+                            beetle_ball.active = False
+                            blue_score = 0
+                            red_score = 0
+                        donut_mode = False; donut_mode_active[None] = 0
+                        x_stage_mode = False; x_stage_mode_active[None] = 0
+                        barbell_mode = False; barbell_mode_active[None] = 0
+                        figure8_mode = False; figure8_mode_active[None] = 0
+                        yinyang_mode = False; yinyang_mode_active[None] = 0
+                        hourglass_mode = False; hourglass_mode_active[None] = 0
+                        square_bridge_mode = False; square_bridge_mode_active[None] = 0
+                        square_mode = False; square_mode_active[None] = 0
+                        cut_square_mode = False; cut_square_mode_active[None] = 0
+                        squiggle_mode = False; squiggle_mode_active[None] = 0
+                        star_mode = False; star_mode_active[None] = 0
+
+                        # Enable selected mode
+                        if mode_id == 'circle':
+                            queue_arena_switch('normal')
+                        elif mode_id == 'ball':
+                            if not ball_cache_initialized:
+                                init_ball_cache(beetle_ball.radius)
+                                ball_cache_initialized = True
+                            beetle_ball.x = 0.0; beetle_ball.y = 28.0; beetle_ball.z = 0.0
+                            beetle_ball.vx = 0.0; beetle_ball.vy = 0.0; beetle_ball.vz = 0.0
+                            beetle_ball.rotation = 0.0; beetle_ball.angular_velocity = 0.0
+                            beetle_ball.pitch = 0.0; beetle_ball.pitch_velocity = 0.0
+                            beetle_ball.roll = 0.0; beetle_ball.roll_velocity = 0.0
+                            beetle_ball.prev_x = beetle_ball.x; beetle_ball.prev_y = beetle_ball.y; beetle_ball.prev_z = beetle_ball.z
+                            beetle_ball.prev_rotation = beetle_ball.rotation
+                            beetle_ball.prev_pitch = beetle_ball.pitch; beetle_ball.prev_roll = beetle_ball.roll
+                            blue_score = 0; red_score = 0
+                            g['ball_scored_this_fall'] = False; g['ball_has_exploded'] = False
+                            g['ball_explosion_delay'] = 0.0; g['ball_explosion_timer'] = 0.0
+                            beetle_ball.active = True
+                            queue_arena_switch('ball')
+                        elif mode_id == 'donut':
+                            donut_mode = True; donut_mode_active[None] = 1
+                            queue_arena_switch('donut')
+                        elif mode_id == 'x_stage':
+                            x_stage_mode = True; x_stage_mode_active[None] = 1
+                            queue_arena_switch('x_stage')
+                        elif mode_id == 'barbell':
+                            barbell_mode = True; barbell_mode_active[None] = 1
+                            queue_arena_switch('barbell')
+                        elif mode_id == 'figure8':
+                            figure8_mode = True; figure8_mode_active[None] = 1
+                            queue_arena_switch('figure8')
+                        elif mode_id == 'yinyang':
+                            yinyang_mode = True; yinyang_mode_active[None] = 1
+                            queue_arena_switch('yinyang')
+                        elif mode_id == 'hourglass':
+                            hourglass_mode = True; hourglass_mode_active[None] = 1
+                            queue_arena_switch('hourglass')
+                        elif mode_id == 'square_bridge':
+                            square_bridge_mode = True; square_bridge_mode_active[None] = 1
+                            queue_arena_switch('square_bridge')
+                        elif mode_id == 'square':
+                            square_mode = True; square_mode_active[None] = 1
+                            queue_arena_switch('square')
+                        elif mode_id == 'cut_square':
+                            cut_square_mode = True; cut_square_mode_active[None] = 1
+                            queue_arena_switch('cut_square')
+                        elif mode_id == 'squiggle':
+                            squiggle_mode = True; squiggle_mode_active[None] = 1
+                            queue_arena_switch('squiggle')
+                        elif mode_id == 'star':
+                            star_mode = True; star_mode_active[None] = 1
+                            queue_arena_switch('star')
+
+                        print(f"Arena -> {label}")
+                        if network_manager and network_manager.is_host:
+                            network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, cut_square_mode, board_break_mode, star_mode)
+                        break  # Only handle one button click
+
+            elif overlay_active_tab == 'hazards' and OVR_CONTENT_Y0 <= my <= OVR_TAB_Y0 and is_host_or_local:
+                # Hazard toggle grid click detection
+                _hcx = (OVR_X0 + OVR_X1) / 2.0
+                col_left_x0 = OVR_X0 + 0.02
+                col_left_x1 = _hcx - 0.01
+                col_right_x0 = _hcx + 0.01
+                col_right_x1 = OVR_X1 - 0.02
+                btn_h = 0.035
+                gap = 0.008
+                start_y = OVR_TAB_Y0 - 0.04
+
+                for idx, (label, haz_id) in enumerate(HAZARD_MODES):
+                    row = idx // 2
+                    is_left = (idx % 2 == 0)
+                    bx0 = col_left_x0 if is_left else col_right_x0
+                    bx1 = col_left_x1 if is_left else col_right_x1
+                    by1 = start_y - row * (btn_h + gap)
+                    by0 = by1 - btn_h
+
+                    if bx0 <= mx <= bx1 and by0 <= my <= by1:
+                        # Toggle this hazard
+                        if haz_id == 'tornado':
+                            tornado_mode = not tornado_mode
+                            tornado_time = 0.0; tornado_dust_timer = 0.0; tornado_phase = 0.0
+                            tornado_x = 0.0; tornado_z = 0.0
+                            print(f"Tornado {'ON' if tornado_mode else 'OFF'}")
+                        elif haz_id == 'sandstorm':
+                            sandstorm_mode = not sandstorm_mode
+                            sandstorm_time = 0.0; sandstorm_dust_timer = 0.0; sandstorm_force_intensity = 0.0
+                            print(f"Sandstorm {'ON' if sandstorm_mode else 'OFF'}")
+                        elif haz_id == 'ufo':
+                            ufo_mode = not ufo_mode
+                            if ufo_mode:
+                                ufo_time = 0.0; ufo_phase = 0.0; ufo_x = 0.0; ufo_z = 0.0
+                                ufo_target_x = 0.0; ufo_target_z = 0.0; ufo_dust_timer = 0.0
+                                ufo_prev_x = 0.0; ufo_prev_z = 0.0; ufo_beam_needs_clear = False
+                            else:
+                                clear_ufo_bounded(ufo_x, UFO_ALTITUDE, ufo_z)
+                                clear_ufo_beam_bounded(ufo_target_x, ufo_target_z, UFO_ALTITUDE)
+                                ufo_time = 0.0; ufo_phase = 0.0; ufo_x = 0.0; ufo_z = 0.0
+                                ufo_target_x = 0.0; ufo_target_z = 0.0; ufo_dust_timer = 0.0
+                                ufo_prev_x = 0.0; ufo_prev_z = 0.0; ufo_beam_needs_clear = False
+                            print(f"UFO Laser {'ON' if ufo_mode else 'OFF'}")
+                        elif haz_id == 'ice':
+                            ice_mode = not ice_mode
+                            ice_time = 0.0
+                            if ice_mode:
+                                renderer.invalidate_floor_cache()
+                                renderer.set_ice_active(True)
+                            else:
+                                simulation.clear_ice_patches()
+                                renderer.ice_params[None] = [0.0, 0.0, 0.0, 0.0, 0.0]
+                                renderer.set_ice_active(False)
+                                renderer.invalidate_floor_cache()
+                            print(f"Ice Patches {'ON' if ice_mode else 'OFF'}")
+                        elif haz_id == 'hole':
+                            hole_mode = not hole_mode
+                            hole_time = 0.0; hole_x = 0.0; hole_z = 0.0
+                            if hole_mode:
+                                renderer.invalidate_floor_cache()
+                                renderer.set_hole_active(True)
+                            else:
+                                hole_hazard_active[None] = 0
+                                hole_center_x[None] = 0.0; hole_center_z[None] = 0.0
+                                renderer.hole_params[None] = [0.0, 0.0, 0.0]
+                                renderer.set_hole_active(False)
+                                renderer.invalidate_floor_cache()
+                            print(f"Moving Hole {'ON' if hole_mode else 'OFF'}")
+                        elif haz_id == 'comet':
+                            comet_mode = not comet_mode
+                            comet_time = 0.0; comet_cycle_count = 0
+                            comet_impacts.clear(); comet_spawned_indices.clear()
+                            comet_landing_spots.clear(); comet_spawn_order.clear()
+                            comet_spawn_times.clear(); comet_horiz_vels.clear()
+                            comet_shove_effects.clear()
+                            if not comet_mode:
+                                comet_dust_timer = 0.0
+                            print(f"Comet Rain {'ON' if comet_mode else 'OFF'}")
+                        elif haz_id == 'board_break':
+                            board_break_mode = not board_break_mode
+                            board_break_time = 0.0; board_break_cycle_count = 0
+                            board_break_pattern_spots.clear(); board_break_edge_spots.clear()
+                            board_break_dust_timer = 0.0
+                            if not board_break_mode:
+                                board_break_active = False
+                                renderer.board_break_mask_active[None] = 0
+                                renderer.set_board_break_active(False)
+                                renderer.clear_board_break_mask()
+                                renderer.invalidate_floor_cache()
+                            print(f"Board Break {'ON' if board_break_mode else 'OFF'}")
+
+                        # Sync to guest
+                        if network_manager and network_manager.is_host:
+                            network_manager.send_game_options(referee_enabled, beetle_ball.active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, cut_square_mode, board_break_mode, star_mode)
+                        break
+
+        elif not mouse_clicked:
+            window._overlay_lmb_held = False
+
+        overlay_draw(canvas)
 
     perf_monitor.stop('scene_render')
 
