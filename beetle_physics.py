@@ -15197,6 +15197,22 @@ CLR_TAB_UNDERLINE = (0.50, 0.65, 0.95) # Active tab underline (cool blue)
 _overlay_btn_hitboxes = []  # list of (x0, y0, x1, y1, vi_start, vi_end)
 _overlay_hover_idx = -1     # index into _overlay_btn_hitboxes, -1 = none
 
+# Pulse glow tracking - vertex ranges for active/on buttons that should breathe
+_overlay_pulse_ranges = []  # list of (vi_start, vi_end) for active button bg quads
+PULSE_AMPLITUDE = 0.015    # ±1.5% brightness (subtle, avoids dark dip)
+PULSE_SPEED = 0.5          # Cycles per second (slow ambient breathe, ~2s full cycle)
+_pulse_clock = 0.0         # Accumulated time for pulse
+
+# Tab wipe transition state (right panel)
+_wipe_active = False
+_wipe_frame = 0
+_wipe_total_frames = 4     # Wipe completes in 4 frames
+_wipe_pending_tab = None    # The tab we're wiping TO
+# Tab wipe transition state (left panel)
+_lwipe_active = False
+_lwipe_frame = 0
+_lwipe_pending_tab = None
+
 # Tab definitions (right panel)
 OVERLAY_TABS = ['beetles', 'arena', 'world']
 OVERLAY_TAB_LABELS = {'beetles': 'BEETLES', 'arena': 'ARENA', 'world': 'WORLD'}
@@ -15311,11 +15327,12 @@ def _ovr_add_text_left(pos, col, vi, text, lx, cy, pixel_size, r, g, b):
 
 def _overlay_rebuild_all(state):
     """Rebuild entire overlay from current state. state is a dict of all needed values."""
-    global _overlay_btn_hitboxes
+    global _overlay_btn_hitboxes, _overlay_pulse_ranges
     pos = np.full((OVERLAY_MAX_VERTS, 2), -10.0, dtype=np.float32)
     col = np.zeros((OVERLAY_MAX_VERTS, 3), dtype=np.float32)
     vi = [0]
     hitboxes = []  # (x0, y0, x1, y1, vi_start_of_bg_quad)
+    pulse_ranges = []  # (vi_start, vi_end) for active button pulse glow
     aq = lambda x0,y0,x1,y1,r,g,b: _ovr_add_quad(pos,col,vi,x0,y0,x1,y1,r,g,b)
     at = lambda t,cx,cy,ps,r,g,b: _ovr_add_text(pos,col,vi,t,cx,cy,ps,r,g,b)
     atl = lambda t,lx,cy,ps,r,g,b: _ovr_add_text_left(pos,col,vi,t,lx,cy,ps,r,g,b)
@@ -15324,6 +15341,12 @@ def _overlay_rebuild_all(state):
         v_start = vi[0]
         _ovr_add_quad(pos,col,vi,x0,y0,x1,y1,r,g,b)
         hitboxes.append((x0,y0,x1,y1,v_start,vi[0]))
+    def aq_btn_pulse(x0,y0,x1,y1,r,g,b):
+        """Add an active/on button quad with hover hitbox AND pulse glow tracking."""
+        v_start = vi[0]
+        _ovr_add_quad(pos,col,vi,x0,y0,x1,y1,r,g,b)
+        hitboxes.append((x0,y0,x1,y1,v_start,vi[0]))
+        pulse_ranges.append((v_start, vi[0]))
 
     active = overlay_active_tab
     cx = (OVR_X0 + OVR_X1) / 2.0
@@ -15412,7 +15435,7 @@ def _overlay_rebuild_all(state):
             by0 = by1 - btn_h
             is_active = (btype == cur_type)
             if is_active:
-                aq_btn(bx0, by0, bx1, by1, *hi_bg)
+                aq_btn_pulse(bx0, by0, bx1, by1, *hi_bg)
                 at(btype.upper(), (bx0+bx1)/2, (by0+by1)/2, px*0.6, *accent_clr)
             else:
                 aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
@@ -15485,7 +15508,7 @@ def _overlay_rebuild_all(state):
 
             is_active = (mode_id == active_arena)
             if is_active:
-                aq_btn(bx0, by0, bx1, by1, *CLR_BTN_ON)
+                aq_btn_pulse(bx0, by0, bx1, by1, *CLR_BTN_ON)
                 at(label, (bx0+bx1)/2, (by0+by1)/2, px*0.7, *CLR_BTN_ON_TXT)
             else:
                 aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
@@ -15516,7 +15539,7 @@ def _overlay_rebuild_all(state):
             by0 = by1 - btn_h
             is_on = hazard_states.get(haz_id, False)
             if is_on:
-                aq_btn(bx0, by0, bx1, by1, *CLR_HAZARD_ON)
+                aq_btn_pulse(bx0, by0, bx1, by1, *CLR_HAZARD_ON)
                 at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_HAZARD_ON_TXT)
             else:
                 aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
@@ -15539,7 +15562,7 @@ def _overlay_rebuild_all(state):
             by0 = by1 - btn_h
             is_on = theme_id in bg_states
             if is_on:
-                aq_btn(bx0, by0, bx1, by1, *CLR_BIOME_ON)
+                aq_btn_pulse(bx0, by0, bx1, by1, *CLR_BIOME_ON)
                 at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_BIOME_ON_TXT)
             else:
                 aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
@@ -15561,7 +15584,7 @@ def _overlay_rebuild_all(state):
             by0 = by1 - btn_h
             is_on = theme_id in bg_states
             if is_on:
-                aq_btn(bx0, by0, bx1, by1, *CLR_EXTRA_ON)
+                aq_btn_pulse(bx0, by0, bx1, by1, *CLR_EXTRA_ON)
                 at(label, (bx0+bx1)/2, (by0+by1)/2, spx, *CLR_EXTRA_ON_TXT)
             else:
                 aq_btn(bx0, by0, bx1, by1, *CLR_BTN)
@@ -15630,7 +15653,7 @@ def _overlay_rebuild_all(state):
             fs_y1 = cur_y
             fs_y0 = fs_y1 - lbtn_h
             if fs_on:
-                aq_btn(lbtn_x0, fs_y0, lbtn_x1, fs_y1, *CLR_BTN_ON)
+                aq_btn_pulse(lbtn_x0, fs_y0, lbtn_x1, fs_y1, *CLR_BTN_ON)
                 at("FULLSCREEN: ON", (lbtn_x0+lbtn_x1)/2, (fs_y0+fs_y1)/2, px*0.65, *CLR_BTN_ON_TXT)
             else:
                 aq_btn(lbtn_x0, fs_y0, lbtn_x1, fs_y1, *CLR_BTN)
@@ -15647,7 +15670,7 @@ def _overlay_rebuild_all(state):
                 cy0 = cy1 - lbtn_h
                 is_active = (cam_mode == cmode)
                 if is_active:
-                    aq_btn(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_BTN_ON)
+                    aq_btn_pulse(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_BTN_ON)
                     at(clabel, (lbtn_x0+lbtn_x1)/2, (cy0+cy1)/2, px*0.7, *CLR_BTN_ON_TXT)
                 else:
                     aq_btn(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_BTN)
@@ -15706,7 +15729,7 @@ def _overlay_rebuild_all(state):
                 if net_conn:
                     sy1 = net_start_y - 0.12
                     sy0 = sy1 - lbtn_h
-                    aq_btn(lbtn_x0, sy0, lbtn_x1, sy1, *CLR_BTN_ON)
+                    aq_btn_pulse(lbtn_x0, sy0, lbtn_x1, sy1, *CLR_BTN_ON)
                     at("START MATCH", (lbtn_x0+lbtn_x1)/2, (sy0+sy1)/2, px*0.7, *CLR_BTN_ON_TXT)
 
             elif gs == 'lobby_join':  # GAME_STATE_LOBBY_JOIN
@@ -15723,7 +15746,7 @@ def _overlay_rebuild_all(state):
                 if lobby_id_input:
                     cy1 = py0 - lgap
                     cy0 = cy1 - lbtn_h
-                    aq_btn(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_BTN_ON)
+                    aq_btn_pulse(lbtn_x0, cy0, lbtn_x1, cy1, *CLR_BTN_ON)
                     at("CONNECT", (lbtn_x0+lbtn_x1)/2, (cy0+cy1)/2, px*0.65, *CLR_BTN_ON_TXT)
                 # CANCEL button
                 cancel_y1 = net_start_y - 0.065 - lbtn_h - lgap
@@ -15753,6 +15776,7 @@ def _overlay_rebuild_all(state):
                 at("DISCONNECT", (lbtn_x0+lbtn_x1)/2, (dy0+dy1)/2, px*0.65, *CLR_DANGER_TXT)
 
     _overlay_btn_hitboxes = hitboxes
+    _overlay_pulse_ranges = pulse_ranges
     overlay_positions.from_numpy(pos)
     overlay_colors.from_numpy(col)
 
@@ -15808,10 +15832,52 @@ def _overlay_get_state():
 _overlay_colors_np = None  # cached numpy copy of colors for hover manipulation
 
 def overlay_draw(canvas):
-    """Draw the overlay menu. Rebuilds only when state changes. Applies hover highlight per-frame."""
+    """Draw the overlay menu. Rebuilds only when state changes. Applies hover highlight and pulse per-frame."""
     global _overlay_cache, _overlay_dirty, _overlay_hover_idx, _overlay_colors_np
+    global _pulse_clock
+    global _wipe_active, _wipe_frame, _wipe_pending_tab, overlay_active_tab
+    global _lwipe_active, _lwipe_frame, _lwipe_pending_tab, overlay_left_active_tab
     state = _overlay_get_state()
     rebuilt = False
+
+    # --- Right panel tab wipe transition ---
+    new_tab = state.get('active_tab')
+    old_tab = _overlay_cache.get('active_tab') if _overlay_cache else None
+    if new_tab != old_tab and old_tab is not None and new_tab is not None and not _wipe_active:
+        _wipe_active = True
+        _wipe_frame = 0
+        _wipe_pending_tab = new_tab
+        overlay_active_tab = old_tab
+        state = _overlay_get_state()
+
+    if _wipe_active:
+        _wipe_frame += 1
+        if _wipe_frame >= _wipe_total_frames:
+            _wipe_active = False
+            overlay_active_tab = _wipe_pending_tab
+            _wipe_pending_tab = None
+            state = _overlay_get_state()
+            _overlay_dirty = True
+
+    # --- Left panel tab wipe transition ---
+    new_ltab = state.get('left_tab')
+    old_ltab = _overlay_cache.get('left_tab') if _overlay_cache else None
+    if new_ltab != old_ltab and old_ltab is not None and new_ltab is not None and not _lwipe_active:
+        _lwipe_active = True
+        _lwipe_frame = 0
+        _lwipe_pending_tab = new_ltab
+        overlay_left_active_tab = old_ltab
+        state = _overlay_get_state()
+
+    if _lwipe_active:
+        _lwipe_frame += 1
+        if _lwipe_frame >= _wipe_total_frames:
+            _lwipe_active = False
+            overlay_left_active_tab = _lwipe_pending_tab
+            _lwipe_pending_tab = None
+            state = _overlay_get_state()
+            _overlay_dirty = True
+
     if state != _overlay_cache or _overlay_dirty:
         _overlay_rebuild_all(state)
         _overlay_cache = state.copy()
@@ -15819,15 +15885,65 @@ def overlay_draw(canvas):
         _overlay_hover_idx = -1
         _overlay_colors_np = overlay_colors.to_numpy()
         rebuilt = True
-    # Hover highlight — check cursor against button hitboxes (lightweight per-frame)
-    if _overlay_colors_np is not None and _overlay_btn_hitboxes:
+
+    if _overlay_colors_np is None:
+        canvas.triangles(overlay_positions, per_vertex_color=overlay_colors)
+        return
+
+    colors_changed = rebuilt
+
+    # --- Tab wipe: black out content area progressively top-to-bottom ---
+    any_wipe = _wipe_active or _lwipe_active
+    if any_wipe and _overlay_colors_np is not None:
+        pos_np = overlay_positions.to_numpy()
+        all_ranges = [(h[4], h[5]) for h in _overlay_btn_hitboxes]
+        all_ranges.extend(_overlay_pulse_ranges)
+        # Right panel wipe
+        if _wipe_active:
+            progress = _wipe_frame / _wipe_total_frames
+            cutoff = OVR_TAB_Y0 - progress * (OVR_TAB_Y0 - OVR_CONTENT_Y0)
+            for vs, ve in all_ranges:
+                avg_y = np.mean(pos_np[vs:ve, 1])
+                avg_x = np.mean(pos_np[vs:ve, 0])
+                if OVR_X0 < avg_x < OVR_X1 and OVR_CONTENT_Y0 < avg_y < OVR_TAB_Y0 and avg_y > cutoff:
+                    _overlay_colors_np[vs:ve] = 0.0
+        # Left panel wipe
+        if _lwipe_active:
+            progress = _lwipe_frame / _wipe_total_frames
+            cutoff = OVL_TAB_Y0 - progress * (OVL_TAB_Y0 - OVL_CONTENT_Y0)
+            for vs, ve in all_ranges:
+                avg_y = np.mean(pos_np[vs:ve, 1])
+                avg_x = np.mean(pos_np[vs:ve, 0])
+                if OVL_X0 < avg_x < OVL_X1 and OVL_CONTENT_Y0 < avg_y < OVL_TAB_Y0 and avg_y > cutoff:
+                    _overlay_colors_np[vs:ve] = 0.0
+        colors_changed = True
+
+    # --- Pulse glow: slow sine breathe on active button backgrounds ---
+    _pulse_clock += 1.0 / 60.0  # Approximate dt at 60fps
+    if _overlay_pulse_ranges and not any_wipe:
+        pulse_val = math.sin(_pulse_clock * PULSE_SPEED * 2.0 * math.pi) * PULSE_AMPLITUDE
+        # Re-read base colors on rebuild, otherwise apply delta from last frame
+        if rebuilt:
+            # Store base colors for pulse ranges so we oscillate around them
+            overlay_draw._pulse_base = {}
+            for vs, ve in _overlay_pulse_ranges:
+                overlay_draw._pulse_base[(vs, ve)] = _overlay_colors_np[vs:ve].copy()
+        if hasattr(overlay_draw, '_pulse_base'):
+            for vs, ve in _overlay_pulse_ranges:
+                base = overlay_draw._pulse_base.get((vs, ve))
+                if base is not None:
+                    _overlay_colors_np[vs:ve] = np.clip(base + pulse_val, 0.0, 1.0)
+            colors_changed = True
+
+    # --- Hover highlight — check cursor against button hitboxes ---
+    if _overlay_btn_hitboxes:
         mx, my = window.get_cursor_pos()
         new_hover = -1
         for i, (x0, y0, x1, y1, vs, ve) in enumerate(_overlay_btn_hitboxes):
             if x0 <= mx <= x1 and y0 <= my <= y1:
                 new_hover = i
                 break
-        if new_hover != _overlay_hover_idx:
+        if new_hover != _overlay_hover_idx or rebuilt:
             # Undo previous hover boost
             if _overlay_hover_idx >= 0 and not rebuilt:
                 _, _, _, _, pvs, pve = _overlay_btn_hitboxes[_overlay_hover_idx]
@@ -15838,25 +15954,41 @@ def overlay_draw(canvas):
                 _, _, _, _, nvs, nve = _overlay_btn_hitboxes[new_hover]
                 _overlay_colors_np[nvs:nve] += HOVER_BOOST
                 np.clip(_overlay_colors_np[nvs:nve], 0.0, 1.0, out=_overlay_colors_np[nvs:nve])
-            overlay_colors.from_numpy(_overlay_colors_np)
             _overlay_hover_idx = new_hover
+            colors_changed = True
+
+    if colors_changed:
+        overlay_colors.from_numpy(_overlay_colors_np)
     canvas.triangles(overlay_positions, per_vertex_color=overlay_colors)
 
-# Show window immediately with "Compiling..." text so user sees something during kernel compilation
-canvas.set_background_color(LOADING_BG_COLOR)
-window.GUI.begin("", 0.30, 0.42, 0.45, 0.20)
-window.GUI.text("Compiling shaders...")
-window.GUI.text("First launch takes longer.")
-window.GUI.end()
-safe_window_show(window)
+# === IMGUI LOADING SCREEN ===
+# Used before the voxel renderer is compiled. Provides immediate visual feedback
+# in the Taichi window using flat imgui drawing (no GPU kernels needed).
+def show_imgui_loading(status_text, progress=0.0):
+    """Render an imgui-based loading screen with progress bar. Works before renderer warmup."""
+    canvas.set_background_color(LOADING_BG_COLOR)
+    # Title
+    window.GUI.begin("Loading", 0.22, 0.32, 0.56, 0.36)
+    window.GUI.text("BEETLE BATTLE BROS")
+    window.GUI.text("")
+    window.GUI.text(status_text)
+    window.GUI.text("")
+    # Progress bar (text-based since imgui doesn't have native bar)
+    bar_width = 30
+    filled = int(progress * bar_width)
+    bar = "[" + "=" * filled + "-" * (bar_width - filled) + f"] {int(progress * 100)}%"
+    window.GUI.text(bar)
+    if progress < 0.3:
+        window.GUI.text("")
+        window.GUI.text("First launch takes longer.")
+    window.GUI.end()
+    safe_window_show(window)
 
-# Re-force splash on top after Taichi window steals focus
-if _splash_active:
-    try:
-        _ctypes.windll.user32.SetWindowPos(_sdl_hwnd, HWND_TOPMOST, _splash_cx, _splash_cy, 0, 0, SWP_NOSIZE)
-        _ctypes.windll.user32.SetForegroundWindow(_sdl_hwnd)
-    except Exception:
-        pass
+# Close splash immediately — Taichi window is now visible with imgui loading
+_close_splash()
+
+# Show first imgui loading frame
+show_imgui_loading("Compiling shaders...", 0.0)
 print(f"[Timing] Window visible at {time.perf_counter() - simulation._startup_clock:.2f}s")
 
 # Initialize slider values for beetle customization (needed before game loop)
@@ -16071,11 +16203,14 @@ previous_tail_rotation = blue_previous_tail_rotation
 # Ball state now handled by beetle_ball Beetle object (created at line ~318)
 
 # ============== WARMUP WITH LOADING SCREEN ==============
+# Phase 0 uses imgui loading bar (no renderer needed).
+# Once renderer is warm, switches to the voxel loading bar for remaining phases.
 print("Warming up kernels...")
 _t_warmup_start = time.perf_counter()
-_update_splash("Compiling renderer...")
 
-# PHASE 0: Warm up renderer first so we can show loading screen
+# PHASE 0: Warm up renderer — imgui bar provides visual feedback during compilation
+show_imgui_loading("Compiling renderer...", 0.05)
+
 # Place temporary voxels to warm up explode_loading_screen with actual work
 _t0 = time.perf_counter()
 for x in range(50, 78):
@@ -16088,17 +16223,18 @@ print(f"[Timing] Phase 0a: Place temp voxels: {time.perf_counter() - _t0:.2f}s")
 _t0 = time.perf_counter()
 explode_loading_screen()
 print(f"[Timing] Phase 0b: explode_loading_screen(): {time.perf_counter() - _t0:.2f}s")
-_update_splash("Compiling voxel engine...")
+show_imgui_loading("Compiling voxel engine...", 0.10)
 
 # Warm up extract kernels individually to see compilation breakdown
 renderer.num_voxels[None] = 0
 _t0 = time.perf_counter()
 renderer.extract_voxels(simulation.voxel_type, 128, 1, 0)
 print(f"[Timing] Phase 0c-1: extract_voxels compile: {time.perf_counter() - _t0:.2f}s")
-_update_splash("Compiling render pipeline...")
+show_imgui_loading("Compiling render pipeline...", 0.15)
 _t0 = time.perf_counter()
 renderer.extract_particles()
 print(f"[Timing] Phase 0c-2: extract_particles compile: {time.perf_counter() - _t0:.2f}s")
+show_imgui_loading("First render pass...", 0.20)
 # Now do full render (kernels already compiled, should be fast)
 _t0 = time.perf_counter()
 renderer.render(
@@ -16120,25 +16256,24 @@ print(f"[Timing] Phase 0d: First window.show() + sync: {time.perf_counter() - _t
 simulation.num_debris[None] = 0
 simulation.debris_active_count[None] = 0
 
-# Close splash screen now — loading bar is about to render in Taichi window
-_close_splash()
+show_imgui_loading("Preparing loading screen...", 0.25)
 
+# === RENDERER IS NOW WARM — switch to voxel loading bar ===
 # Render "LOADING" text into voxel grid
 _t0 = time.perf_counter()
 render_loading_screen()
 print(f"[Timing] Phase 0e: render_loading_screen(): {time.perf_counter() - _t0:.2f}s")
 
-# Set forest green background (same as game)
 canvas.set_background_color(LOADING_BG_COLOR)
 
-# Warm up the extract_voxels + extract_particles kernels by rendering first frame
+# Render first voxel loading frame to verify it works
 _t0 = time.perf_counter()
 renderer.render(
     camera, canvas, scene, simulation.voxel_type, 128,
     dynamic_lighting=False,
     spotlight_pos=None,
     spotlight_strength=0.0,
-    base_light_brightness=1.5  # Brighter for loading screen visibility
+    base_light_brightness=1.5
 )
 print(f"[Timing] Phase 0f: Second renderer.render(): {time.perf_counter() - _t0:.2f}s")
 
@@ -16978,24 +17113,51 @@ try:
             # Always lerp toward host state - no more snapping
             # Larger lerp factor for faster convergence since syncing more often
             lerp_factor = 0.5
-            beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
-            beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
-            beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
-            beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
+
+            # Handle falling desync: if guest thinks beetle is falling but host
+            # says it's above the board, trust host and rescue the beetle.
+            # If host also shows beetle below board, let it fall cleanly (skip lerp).
+            FALL_RESCUE_Y = -5.0  # Match POINT_OF_NO_RETURN
+            blue_falling = beetle_blue.is_falling
+            red_falling = beetle_red.is_falling
+
+            if blue_falling and 'blue_y' in sync and sync['blue_y'] > FALL_RESCUE_Y:
+                # Host beetle is alive — guest desync, rescue it
+                beetle_blue.is_falling = False
+                beetle_blue.vy = 0.0
+                beetle_blue.x = sync['blue_x']
+                beetle_blue.y = sync['blue_y']
+                beetle_blue.z = sync['blue_z']
+                blue_falling = False
+
+            if red_falling and 'red_y' in sync and sync['red_y'] > FALL_RESCUE_Y:
+                beetle_red.is_falling = False
+                beetle_red.vy = 0.0
+                beetle_red.x = sync['red_x']
+                beetle_red.y = sync['red_y']
+                beetle_red.z = sync['red_z']
+                red_falling = False
+
+            if not blue_falling:
+                beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
+                beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
+            if not red_falling:
+                beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
+                beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
 
             # Sync beetle Y positions (prevents death desync near edges/pits)
             # After lerping Y, clamp to floor so beetle never gets stuck under arena
-            if 'blue_y' in sync:
+            if 'blue_y' in sync and not blue_falling:
                 beetle_blue.y += (sync['blue_y'] - beetle_blue.y) * lerp_factor
-                if beetle_blue.active and not beetle_blue.is_falling:
+                if beetle_blue.active:
                     floor_y = check_floor_collision(beetle_blue.x, beetle_blue.z)
                     if floor_y > -100.0:
                         floor_surface = floor_y + 0.5
                         if beetle_blue.y < floor_surface:
                             beetle_blue.y = floor_surface
-            if 'red_y' in sync:
+            if 'red_y' in sync and not red_falling:
                 beetle_red.y += (sync['red_y'] - beetle_red.y) * lerp_factor
-                if beetle_red.active and not beetle_red.is_falling:
+                if beetle_red.active:
                     floor_y = check_floor_collision(beetle_red.x, beetle_red.z)
                     if floor_y > -100.0:
                         floor_surface = floor_y + 0.5
@@ -17005,15 +17167,17 @@ try:
             # Rotation lerp with angle wrapping (shortest path)
             # This prevents beetles from spinning the wrong way when angles wrap around 0/2π
             TWO_PI = 2.0 * math.pi
-            blue_rot_diff = (sync['blue_rot'] - beetle_blue.rotation) % TWO_PI
-            if blue_rot_diff > math.pi:
-                blue_rot_diff -= TWO_PI
-            beetle_blue.rotation += blue_rot_diff * lerp_factor
+            if not blue_falling:
+                blue_rot_diff = (sync['blue_rot'] - beetle_blue.rotation) % TWO_PI
+                if blue_rot_diff > math.pi:
+                    blue_rot_diff -= TWO_PI
+                beetle_blue.rotation += blue_rot_diff * lerp_factor
 
-            red_rot_diff = (sync['red_rot'] - beetle_red.rotation) % TWO_PI
-            if red_rot_diff > math.pi:
-                red_rot_diff -= TWO_PI
-            beetle_red.rotation += red_rot_diff * lerp_factor
+            if not red_falling:
+                red_rot_diff = (sync['red_rot'] - beetle_red.rotation) % TWO_PI
+                if red_rot_diff > math.pi:
+                    red_rot_diff -= TWO_PI
+                beetle_red.rotation += red_rot_diff * lerp_factor
 
             # Ball sync (if present in sync data)
             if 'ball_x' in sync:
