@@ -1948,7 +1948,7 @@ def apply_remote_beetle_config(network_mgr):
     network_mgr.remote_beetle_config = None  # Consume it
 
     # Reverse lookup horn type from ID
-    horn_names = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "spider"]
+    horn_names = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "spider", "giraffe"]
     horn_type = horn_names[config['horn_type_id']] if config['horn_type_id'] < len(horn_names) else "rhino"
 
     # Determine which beetle to update based on sender's player_id
@@ -8618,6 +8618,54 @@ def calculate_horn_tip_position(beetle):
 
         return beetle.x + rotated_x, beetle.y + tip_local_y, beetle.z + rotated_z
 
+    # Giraffe weevil: custom two-segment collision (fixed shaft + rotating prong at dynamic pivot)
+    if beetle.horn_type == "giraffe":
+        # Get dynamic pivot (shaft tip where prong attaches)
+        if beetle.color == "blue":
+            pivot_x = float(giraffe_blue_pivot_x[None])
+            pivot_y = float(giraffe_blue_pivot_y[None])
+        else:
+            pivot_x = float(giraffe_red_pivot_x[None])
+            pivot_y = float(giraffe_red_pivot_y[None])
+
+        # Head knob tip: prong extends head_len voxels from pivot, angling down ~45deg
+        head_len = round(beetle.horn_prong_len) + 6
+        tip_local_x = pivot_x + 1.0 + head_len + 3.0  # +3 safety buffer
+        tip_local_y = pivot_y - round((head_len - 1) * 1.0)
+        tip_local_z = 0.0
+
+        # Translate to pivot
+        rel_x = tip_local_x - pivot_x
+        rel_y = tip_local_y - pivot_y
+        rel_z = tip_local_z
+
+        # Giraffe rotation order: yaw first, then pitch (matches Taichi kernel)
+        cos_horn_yaw = math.cos(beetle.horn_yaw)
+        sin_horn_yaw = math.sin(beetle.horn_yaw)
+        cos_horn_pitch = math.cos(beetle.horn_pitch)
+        sin_horn_pitch = math.sin(beetle.horn_pitch)
+
+        # Step A: Yaw on raw rel coords
+        temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
+        temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
+        # Step B: Pitch on yawed result
+        yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
+        yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
+        yawed_z = temp_z
+
+        # Translate back from pivot
+        local_x = yawed_x + pivot_x
+        local_y = float(int(ti.round(yawed_y + pivot_y)))
+        local_z = yawed_z
+
+        # Apply beetle body rotation
+        cos_rotation = math.cos(beetle.rotation)
+        sin_rotation = math.sin(beetle.rotation)
+        rotated_x = local_x * cos_rotation - local_z * sin_rotation
+        rotated_z = local_x * sin_rotation + local_z * cos_rotation
+
+        return beetle.x + rotated_x, beetle.y + local_y, beetle.z + rotated_z
+
     # Horn tip in local coordinates (furthest voxel + safety margin)
     # For both rhino and stag: max_x = 3 + shaft_len + prong_len (approx)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0  # Actual furthest voxel + margin
@@ -8744,8 +8792,20 @@ def calculate_horn_shaft_base_position(beetle):
         rotated_z = base_local_x * sin_rotation + base_local_z * cos_rotation
 
         return beetle.x + rotated_x, beetle.y + base_local_y, beetle.z + rotated_z
+    elif beetle.horn_type == "giraffe":
+        # Giraffe weevil - base at body/neck attachment point
+        base_local_x = 3.0   # Where neck attaches to body
+        base_local_y = 4.0   # Elevated base (front raised by 2 + base height)
+        base_local_z = 0.0   # Center
+
+        cos_rotation = math.cos(beetle.rotation)
+        sin_rotation = math.sin(beetle.rotation)
+        rotated_x = base_local_x * cos_rotation - base_local_z * sin_rotation
+        rotated_z = base_local_x * sin_rotation + base_local_z * cos_rotation
+
+        return beetle.x + rotated_x, beetle.y + base_local_y, beetle.z + rotated_z
     else:
-        # Scorpion - no forward shaft to check (tail is behind)
+        # No forward shaft to check
         return beetle.x, beetle.y, beetle.z
 
     # Step 1: Translate to horn pivot (3.0, 1, 0)
@@ -8830,12 +8890,57 @@ def point_to_line_segment_distance(px, py, pz, ax, ay, az, bx, by, bz):
     return math.sqrt(dx*dx + dy*dy + dz*dz)
 
 
+def _giraffe_tip_with_angles(beetle, pitch_angle, yaw_angle):
+    """Giraffe weevil tip position with given pitch/yaw (shared by predictive collision helpers)"""
+    if beetle.color == "blue":
+        pivot_x = float(giraffe_blue_pivot_x[None])
+        pivot_y = float(giraffe_blue_pivot_y[None])
+    else:
+        pivot_x = float(giraffe_red_pivot_x[None])
+        pivot_y = float(giraffe_red_pivot_y[None])
+
+    head_len = round(beetle.horn_prong_len) + 6
+    tip_local_x = pivot_x + 1.0 + head_len + 3.0
+    tip_local_y = pivot_y - round((head_len - 1) * 1.0)
+
+    rel_x = tip_local_x - pivot_x
+    rel_y = tip_local_y - pivot_y
+    rel_z = 0.0
+
+    cos_yaw = math.cos(yaw_angle)
+    sin_yaw = math.sin(yaw_angle)
+    cos_pitch = math.cos(pitch_angle)
+    sin_pitch = math.sin(pitch_angle)
+
+    temp_x = rel_x * cos_yaw - rel_z * sin_yaw
+    temp_z = rel_x * sin_yaw + rel_z * cos_yaw
+    yawed_x = temp_x * cos_pitch - rel_y * sin_pitch
+    yawed_y = temp_x * sin_pitch + rel_y * cos_pitch
+    yawed_z = temp_z
+
+    local_x = yawed_x + pivot_x
+    local_y = float(int(ti.round(yawed_y + pivot_y)))
+    local_z = yawed_z
+
+    cos_rotation = math.cos(beetle.rotation)
+    sin_rotation = math.sin(beetle.rotation)
+    rotated_x = local_x * cos_rotation - local_z * sin_rotation
+    rotated_z = local_x * sin_rotation + local_z * cos_rotation
+
+    return beetle.x + rotated_x, beetle.y + local_y, beetle.z + rotated_z
+
 def calculate_horn_tip_position_with_yaw(beetle, yaw_angle):
     """Calculate horn tip position with a specific yaw angle (for predictive collision checking)"""
+    if beetle.horn_type == "giraffe":
+        return _giraffe_tip_with_angles(beetle, beetle.horn_pitch, yaw_angle)
+
     # Horn tip in local coordinates (same as base function)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
-    # Rhino Y-fork prongs extend upward, need buffer for prong height + rotation safety
-    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else 0.0)
+    # Y-buffer per type (must match base calculate_horn_tip_position)
+    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else
+                         beetle.horn_prong_len + 2.0 if beetle.horn_type == "stag" else
+                         3.0 if beetle.horn_type == "scorpion" else
+                         beetle.horn_prong_len * 2 if beetle.horn_type == "atlas" else 0.0)
     tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
     # Add safety buffer for tip width + voxel edge + rotation margin
@@ -8897,10 +9002,16 @@ def calculate_horn_tip_position_with_yaw(beetle, yaw_angle):
 
 def calculate_horn_tip_position_with_pitch(beetle, pitch_angle):
     """Calculate horn tip position with a specific pitch angle (for predictive collision checking)"""
+    if beetle.horn_type == "giraffe":
+        return _giraffe_tip_with_angles(beetle, pitch_angle, beetle.horn_yaw)
+
     # Horn tip in local coordinates (same as base function)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
-    # Rhino Y-fork prongs extend upward, need buffer for prong height + rotation safety
-    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else 0.0)
+    # Y-buffer per type (must match base calculate_horn_tip_position)
+    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else
+                         beetle.horn_prong_len + 2.0 if beetle.horn_type == "stag" else
+                         3.0 if beetle.horn_type == "scorpion" else
+                         beetle.horn_prong_len * 2 if beetle.horn_type == "atlas" else 0.0)
     tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
     # Add safety buffer for tip width + voxel edge + rotation margin
@@ -8962,10 +9073,16 @@ def calculate_horn_tip_position_with_pitch(beetle, pitch_angle):
 
 def calculate_horn_tip_position_with_both(beetle, pitch_angle, yaw_angle):
     """Calculate horn tip position with both pitch and yaw (optimized for combined movements)"""
+    if beetle.horn_type == "giraffe":
+        return _giraffe_tip_with_angles(beetle, pitch_angle, yaw_angle)
+
     # Horn tip in local coordinates (same as base function)
     tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
-    # Rhino Y-fork prongs extend upward, need buffer for prong height + rotation safety
-    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else 0.0)
+    # Y-buffer per type (must match base calculate_horn_tip_position)
+    tip_local_y = 1.0 + (beetle.horn_prong_len + 2.0 if beetle.horn_type == "rhino" else
+                         beetle.horn_prong_len + 2.0 if beetle.horn_type == "stag" else
+                         3.0 if beetle.horn_type == "scorpion" else
+                         beetle.horn_prong_len * 2 if beetle.horn_type == "atlas" else 0.0)
     tip_local_z = 0.0 if beetle.horn_type == "rhino" else beetle.horn_prong_len
 
     # Add safety buffer for tip width + voxel edge + rotation margin
@@ -14104,12 +14221,13 @@ def beetle_collision(b1, b2, params):
         shaft_cylinder_push = params.get("SHAFT_CYLINDER_PUSH", 0.25)
 
         # All beetle types (scorpion claws treated like forward head area)
-        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier", "scorpion")
-        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier", "scorpion")
+        b1_has_shaft = b1.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier", "scorpion", "giraffe")
+        b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier", "scorpion", "giraffe")
 
         # Larger radius for hornless/short-reach types to prevent body clipping
-        b1_radius = shaft_cylinder_radius + 1.5 if b1.horn_type in ("spider", "bombardier", "scorpion") else shaft_cylinder_radius
-        b2_radius = shaft_cylinder_radius + 1.5 if b2.horn_type in ("spider", "bombardier", "scorpion") else shaft_cylinder_radius
+        # Giraffe gets +2.0 since its long neck has a wide sweep arc
+        b1_radius = shaft_cylinder_radius + 2.0 if b1.horn_type == "giraffe" else shaft_cylinder_radius + 1.5 if b1.horn_type in ("spider", "bombardier", "scorpion") else shaft_cylinder_radius
+        b2_radius = shaft_cylinder_radius + 2.0 if b2.horn_type == "giraffe" else shaft_cylinder_radius + 1.5 if b2.horn_type in ("spider", "bombardier", "scorpion") else shaft_cylinder_radius
 
         if b1_has_shaft or b2_has_shaft:
             # Get shaft endpoints for beetles with horns
