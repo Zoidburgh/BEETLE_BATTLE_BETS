@@ -104,8 +104,23 @@ except ImportError:
     CONTROLLER_SUPPORT = False
     print("[Controller] pygame._sdl2.controller not available - controller support disabled")
 
+def pump_messages():
+    """Pump the Windows message queue to prevent 'Not Responding' during long JIT compilation.
+    Lightweight — no rendering, just tells Windows the process is alive."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        msg = wintypes.MSG()
+        PM_REMOVE = 0x0001
+        while ctypes.windll.user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, PM_REMOVE):
+            ctypes.windll.user32.TranslateMessage(ctypes.byref(msg))
+            ctypes.windll.user32.DispatchMessageW(ctypes.byref(msg))
+    except Exception:
+        pass
+
 def safe_window_show(win):
     """Wrapper for window.show() that handles Vulkan swapchain errors during window move/resize"""
+    pump_messages()
     try:
         win.show()
     except RuntimeError:
@@ -15157,12 +15172,12 @@ OVR_PX = 0.004  # Text pixel size
 
 # --- Overlay color palette ---
 CLR_TAB_BG = (0.05, 0.05, 0.08)       # Tab bar background
-CLR_TAB_ACTIVE = (0.12, 0.14, 0.22)   # Active tab bg (slight blue tint)
-CLR_TAB_ACTIVE_TXT = (0.85, 0.92, 1.0)   # Active tab text (bright ice white-blue)
-CLR_TAB_INACTIVE = (0.07, 0.07, 0.10) # Inactive tab bg
-CLR_TAB_INACTIVE_TXT = (0.55, 0.52, 0.60)  # Inactive tab text
+CLR_TAB_ACTIVE = (0.22, 0.17, 0.06)   # Active tab bg (warm dark gold)
+CLR_TAB_ACTIVE_TXT = (1.0, 0.92, 0.55)   # Active tab text (bright gold, high contrast)
+CLR_TAB_INACTIVE = (0.10, 0.09, 0.14) # Inactive tab bg (matches button off)
+CLR_TAB_INACTIVE_TXT = (0.68, 0.65, 0.72)  # Inactive tab text (matches button off)
 CLR_PANEL_BG = (0.04, 0.04, 0.07)     # Content panel background
-CLR_BORDER = (0.15, 0.13, 0.20)       # Panel border
+CLR_BORDER = (0.35, 0.25, 0.12)       # Panel border (warm amber-bronze)
 CLR_BTN = (0.10, 0.09, 0.14)          # Inactive button bg
 CLR_BTN_TXT = (0.68, 0.65, 0.72)      # Inactive button text
 CLR_BTN_ON = (0.30, 0.24, 0.08)       # Active/on button bg (gold)
@@ -15191,7 +15206,7 @@ CLR_BIOME_ON_TXT = (0.60, 0.95, 0.60) # Biome active text
 CLR_EXTRA_ON = (0.15, 0.18, 0.35)     # Extra theme active bg
 CLR_EXTRA_ON_TXT = (0.60, 0.72, 0.95) # Extra theme active text
 HOVER_BOOST = 0.08                     # Brightness boost for hovered buttons
-CLR_TAB_UNDERLINE = (0.50, 0.65, 0.95) # Active tab underline (cool blue)
+CLR_TAB_UNDERLINE = (0.85, 0.65, 0.15) # Active tab underline (warm amber-gold)
 
 # Hover tracking - stores (x0, y0, x1, y1) hitboxes and their vertex ranges
 _overlay_btn_hitboxes = []  # list of (x0, y0, x1, y1, vi_start, vi_end)
@@ -15212,6 +15227,13 @@ _wipe_pending_tab = None    # The tab we're wiping TO
 _lwipe_active = False
 _lwipe_frame = 0
 _lwipe_pending_tab = None
+
+# Panel slide open/close animation (0.0 = fully closed, 1.0 = fully open)
+_right_slide_t = 0.0    # Right panel current slide position (start closed, animate open)
+_right_slide_target = 1.0  # Right panel target (0.0 or 1.0)
+_left_slide_t = 0.0
+_left_slide_target = 1.0
+SLIDE_SPEED = 0.45       # Lerp factor per frame (fast but smooth)
 
 # Tab definitions (right panel)
 OVERLAY_TABS = ['beetles', 'arena', 'world']
@@ -15374,7 +15396,7 @@ def _overlay_rebuild_all(state):
             aq(tx0 + 0.002, OVR_TAB_Y0 + 0.002, tx1 - 0.002, OVR_TAB_Y1 - 0.002, *CLR_TAB_ACTIVE)
             at(OVERLAY_TAB_LABELS[tab_id], (tx0+tx1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.7, *CLR_TAB_ACTIVE_TXT)
             # Underline bar for active tab
-            aq(tx0 + 0.004, OVR_TAB_Y0 + 0.002, tx1 - 0.004, OVR_TAB_Y0 + 0.005, *CLR_TAB_UNDERLINE)
+            aq(tx0 + 0.004, OVR_TAB_Y0 + 0.002, tx1 - 0.004, OVR_TAB_Y0 + 0.0053, *CLR_TAB_UNDERLINE)
         else:
             aq(tx0 + 0.002, OVR_TAB_Y0 + 0.002, tx1 - 0.002, OVR_TAB_Y1 - 0.002, *CLR_TAB_INACTIVE)
             at(OVERLAY_TAB_LABELS[tab_id], (tx0+tx1)/2, (OVR_TAB_Y0+OVR_TAB_Y1)/2, px*0.7, *CLR_TAB_INACTIVE_TXT)
@@ -15625,7 +15647,7 @@ def _overlay_rebuild_all(state):
             aq(ltx0 + 0.002, OVL_TAB_Y0 + 0.002, ltx1 - 0.002, OVL_TAB_Y1 - 0.002, *CLR_TAB_ACTIVE)
             at(OVERLAY_LEFT_TAB_LABELS[ltab_id], (ltx0+ltx1)/2, (OVL_TAB_Y0+OVL_TAB_Y1)/2, px*0.7, *CLR_TAB_ACTIVE_TXT)
             # Underline bar for active tab
-            aq(ltx0 + 0.004, OVL_TAB_Y0 + 0.002, ltx1 - 0.004, OVL_TAB_Y0 + 0.005, *CLR_TAB_UNDERLINE)
+            aq(ltx0 + 0.004, OVL_TAB_Y0 + 0.002, ltx1 - 0.004, OVL_TAB_Y0 + 0.0053, *CLR_TAB_UNDERLINE)
         else:
             aq(ltx0 + 0.002, OVL_TAB_Y0 + 0.002, ltx1 - 0.002, OVL_TAB_Y1 - 0.002, *CLR_TAB_INACTIVE)
             at(OVERLAY_LEFT_TAB_LABELS[ltab_id], (ltx0+ltx1)/2, (OVL_TAB_Y0+OVL_TAB_Y1)/2, px*0.7, *CLR_TAB_INACTIVE_TXT)
@@ -15837,6 +15859,27 @@ def overlay_draw(canvas):
     global _pulse_clock
     global _wipe_active, _wipe_frame, _wipe_pending_tab, overlay_active_tab
     global _lwipe_active, _lwipe_frame, _lwipe_pending_tab, overlay_left_active_tab
+    global _right_slide_t, _right_slide_target, _left_slide_t, _left_slide_target
+
+    # --- Panel slide open/close animation ---
+    _right_slide_t += (_right_slide_target - _right_slide_t) * SLIDE_SPEED
+    _left_slide_t += (_left_slide_target - _left_slide_t) * SLIDE_SPEED
+    # Snap when close enough to avoid infinite crawl
+    if abs(_right_slide_t - _right_slide_target) < 0.01:
+        _right_slide_t = _right_slide_target
+    if abs(_left_slide_t - _left_slide_target) < 0.01:
+        _left_slide_t = _left_slide_target
+    # When close animation finishes, actually set tab to None
+    if _right_slide_t == 0.0 and overlay_active_tab is not None and _right_slide_target == 0.0:
+        overlay_active_tab = None
+        _overlay_dirty = True
+    if _left_slide_t == 0.0 and overlay_left_active_tab is not None and _left_slide_target == 0.0:
+        overlay_left_active_tab = None
+        _overlay_dirty = True
+    # When opening and slide just started, force rebuild to show content
+    right_sliding = _right_slide_t != _right_slide_target
+    left_sliding = _left_slide_t != _left_slide_target
+
     state = _overlay_get_state()
     rebuilt = False
 
@@ -15891,6 +15934,31 @@ def overlay_draw(canvas):
         return
 
     colors_changed = rebuilt
+    positions_changed = False
+
+    # --- Panel slide animation: scale ALL content area vertices toward tab bar ---
+    if right_sliding or left_sliding:
+        pos_np = overlay_positions.to_numpy()
+        if right_sliding and overlay_active_tab is not None:
+            # Right panel: squeeze every vertex in content area (bg, borders, buttons, text)
+            mask = (pos_np[:, 0] > OVR_X0 - 0.005) & (pos_np[:, 0] < OVR_X1 + 0.005) & \
+                   (pos_np[:, 1] > OVR_CONTENT_Y0 - 0.01) & (pos_np[:, 1] < OVR_TAB_Y0 - 0.001)
+            if np.any(mask):
+                lerped_bottom = OVR_TAB_Y0 - _right_slide_t * (OVR_TAB_Y0 - OVR_CONTENT_Y0)
+                orig = pos_np[mask, 1]
+                t = (orig - OVR_CONTENT_Y0) / (OVR_TAB_Y0 - OVR_CONTENT_Y0)
+                pos_np[mask, 1] = lerped_bottom + t * (OVR_TAB_Y0 - lerped_bottom)
+        if left_sliding and overlay_left_active_tab is not None:
+            mask = (pos_np[:, 0] > OVL_X0 - 0.005) & (pos_np[:, 0] < OVL_X1 + 0.005) & \
+                   (pos_np[:, 1] > OVL_CONTENT_Y0 - 0.01) & (pos_np[:, 1] < OVL_TAB_Y0 - 0.001)
+            if np.any(mask):
+                lerped_bottom = OVL_TAB_Y0 - _left_slide_t * (OVL_TAB_Y0 - OVL_CONTENT_Y0)
+                orig = pos_np[mask, 1]
+                t = (orig - OVL_CONTENT_Y0) / (OVL_TAB_Y0 - OVL_CONTENT_Y0)
+                pos_np[mask, 1] = lerped_bottom + t * (OVL_TAB_Y0 - lerped_bottom)
+        overlay_positions.from_numpy(pos_np)
+        positions_changed = True
+        _overlay_dirty = True  # Force rebuild next frame to get fresh positions
 
     # --- Tab wipe: black out content area progressively top-to-bottom ---
     any_wipe = _wipe_active or _lwipe_active
@@ -15966,6 +16034,7 @@ def overlay_draw(canvas):
 # in the Taichi window using flat imgui drawing (no GPU kernels needed).
 def show_imgui_loading(status_text, progress=0.0):
     """Render an imgui-based loading screen with progress bar. Works before renderer warmup."""
+    pump_messages()  # Keep Windows happy between compilation steps
     canvas.set_background_color(LOADING_BG_COLOR)
     # Title
     window.GUI.begin("Loading", 0.22, 0.32, 0.56, 0.36)
@@ -16038,19 +16107,27 @@ auto_follow_enabled = False  # Start with 3rd person camera (press C to toggle)
 
 # 3rd person follow camera settings
 third_person_camera = True  # Toggle for 3rd person follow cam
-THIRD_PERSON_DISTANCE = 60.0  # Distance behind beetle (horizontal)
-fixed_camera_zoom = 1.0  # Multiplier for fixed camera distance (1.0 = default position)
 camera_distance_level = 5  # Unified distance 1-8, maps to both TP distance and fixed zoom
+_tp_distance_target = 35.0 + 5 * 5.0   # Target third-person distance
+_zoom_target = 0.7 + 5 * 0.1           # Target fixed camera zoom
+THIRD_PERSON_DISTANCE = _tp_distance_target  # Current (smoothed toward target)
+fixed_camera_zoom = _zoom_target              # Current (smoothed toward target)
+CAM_DIST_LERP = 0.08  # Lerp factor for smooth distance transitions
 
 def apply_camera_distance(level):
-    """Map unified distance level (1-8) to internal camera values. 1=close, 8=far."""
-    global THIRD_PERSON_DISTANCE, fixed_camera_zoom
-    # 3rd person: level 1=40, 8=75 (step 5)
-    THIRD_PERSON_DISTANCE = 35.0 + level * 5.0
-    # Fixed zoom: level 1=0.8 (close), 8=1.5 (far) — higher zoom = camera further out
-    fixed_camera_zoom = 0.7 + level * 0.1
+    """Map unified distance level (1-8) to target camera values (smoothed per frame)."""
+    global _tp_distance_target, _zoom_target
+    _tp_distance_target = 35.0 + level * 5.0
+    _zoom_target = 0.7 + level * 0.1
 
-apply_camera_distance(camera_distance_level)  # Set initial values from default level
+def update_camera_distance_smooth(dt):
+    """Lerp current camera distance toward targets. Call once per frame."""
+    global THIRD_PERSON_DISTANCE, fixed_camera_zoom
+    f = min(1.0, CAM_DIST_LERP * dt * 60.0)
+    THIRD_PERSON_DISTANCE += (_tp_distance_target - THIRD_PERSON_DISTANCE) * f
+    fixed_camera_zoom += (_zoom_target - fixed_camera_zoom) * f
+
+apply_camera_distance(camera_distance_level)  # Set initial targets from default level
 # Camera always uses opposite side view (beetles in foreground, edge in background)
 camera_edge_angle = None  # Previous edge angle for smooth transitions (None = not yet initialized)
 spotlight_strength = 0.443  # Spotlight intensity (adjustable via GUI slider)
@@ -16221,6 +16298,7 @@ print(f"[Timing] Phase 0a: Place temp voxels: {time.perf_counter() - _t0:.2f}s")
 
 # Explode them to warm up the kernel with actual particle spawning
 _t0 = time.perf_counter()
+pump_messages()
 explode_loading_screen()
 print(f"[Timing] Phase 0b: explode_loading_screen(): {time.perf_counter() - _t0:.2f}s")
 show_imgui_loading("Compiling voxel engine...", 0.10)
@@ -16228,15 +16306,18 @@ show_imgui_loading("Compiling voxel engine...", 0.10)
 # Warm up extract kernels individually to see compilation breakdown
 renderer.num_voxels[None] = 0
 _t0 = time.perf_counter()
+pump_messages()
 renderer.extract_voxels(simulation.voxel_type, 128, 1, 0)
 print(f"[Timing] Phase 0c-1: extract_voxels compile: {time.perf_counter() - _t0:.2f}s")
 show_imgui_loading("Compiling render pipeline...", 0.15)
 _t0 = time.perf_counter()
+pump_messages()
 renderer.extract_particles()
 print(f"[Timing] Phase 0c-2: extract_particles compile: {time.perf_counter() - _t0:.2f}s")
 show_imgui_loading("First render pass...", 0.20)
 # Now do full render (kernels already compiled, should be fast)
 _t0 = time.perf_counter()
+pump_messages()
 renderer.render(
     camera, canvas, scene, simulation.voxel_type, 128,
     dynamic_lighting=False,
@@ -16292,6 +16373,7 @@ _t_last_phase = time.perf_counter()
 def update_loading(phase):
     """Update loading screen with current progress."""
     global _t_last_phase
+    pump_messages()  # Keep Windows happy between compilation steps
     now = time.perf_counter()
     if phase > 0:
         print(f"[Timing] Warmup phase {phase} took {now - _t_last_phase:.2f}s")
@@ -16624,6 +16706,9 @@ try:
     actual_fps = 1.0 / frame_dt if frame_dt > 0 else 0
 
     frame_dt = min(frame_dt, 0.1)  # Cap at 100ms (allows catch-up down to ~10fps)
+
+    # Smooth camera distance transitions
+    update_camera_distance_smooth(frame_dt)
 
     # Add frame time to accumulator
     accumulator += frame_dt
@@ -21946,11 +22031,13 @@ try:
                 min_btn_w = 0.035
                 min_x0 = OVR_X1 - min_btn_w
                 if mx >= min_x0:
-                    # Min/max button clicked
+                    # Min/max button clicked — trigger slide animation
                     if overlay_active_tab is not None:
-                        overlay_active_tab = None  # Minimize
+                        _right_slide_target = 0.0  # Slide closed
                     else:
-                        overlay_active_tab = 'beetles'  # Restore to default tab
+                        overlay_active_tab = 'beetles'  # Restore tab immediately so content renders
+                        _right_slide_t = 0.0  # Start from closed
+                        _right_slide_target = 1.0  # Slide open
                 else:
                     # Tab button clicked
                     tab_w = (min_x0 - OVR_X0) / len(OVERLAY_TABS)
@@ -21958,9 +22045,12 @@ try:
                     tab_idx = min(tab_idx, len(OVERLAY_TABS) - 1)
                     clicked_tab = OVERLAY_TABS[tab_idx]
                     if overlay_active_tab == clicked_tab:
-                        overlay_active_tab = None  # Minimize
+                        _right_slide_target = 0.0  # Slide closed
                     else:
+                        if overlay_active_tab is None:
+                            _right_slide_t = 0.0  # Was closed, animate open
                         overlay_active_tab = clicked_tab
+                        _right_slide_target = 1.0
                 _overlay_dirty = True
 
             # --- Content clicks (only if tab is open) ---
@@ -22358,18 +22448,23 @@ try:
                 lmin_x0 = OVL_X1 - lmin_btn_w
                 if mx >= lmin_x0:
                     if overlay_left_active_tab is not None:
-                        overlay_left_active_tab = None
+                        _left_slide_target = 0.0  # Slide closed
                     else:
                         overlay_left_active_tab = 'display'
+                        _left_slide_t = 0.0  # Start from closed
+                        _left_slide_target = 1.0  # Slide open
                 else:
                     ltab_w = (lmin_x0 - OVL_X0) / len(OVERLAY_LEFT_TABS)
                     ltab_idx = int((mx - OVL_X0) / ltab_w)
                     ltab_idx = min(ltab_idx, len(OVERLAY_LEFT_TABS) - 1)
                     clicked_ltab = OVERLAY_LEFT_TABS[ltab_idx]
                     if overlay_left_active_tab == clicked_ltab:
-                        overlay_left_active_tab = None
+                        _left_slide_target = 0.0  # Slide closed
                     else:
+                        if overlay_left_active_tab is None:
+                            _left_slide_t = 0.0  # Was closed, animate open
                         overlay_left_active_tab = clicked_ltab
+                        _left_slide_target = 1.0
                 _overlay_dirty = True
 
             # Left panel content - display
