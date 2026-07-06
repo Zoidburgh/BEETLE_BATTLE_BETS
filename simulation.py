@@ -423,6 +423,87 @@ UFO_BEAM = 48       # UFO laser beam - bright green
 UFO_RIM = 49        # UFO middle belt/rim band
 ICE_PATCH = 50      # Ice patch floor overlay (slippery hazard zone)
 
+# ============================================================================
+# PLAYER 3 / PLAYER 4 BEETLE VOXEL TYPES (4-player support)
+# IDs 51+ (everything below 51 was already taken). Each player gets a
+# contiguous block in the same part order, and the voxel_owner/voxel_part
+# lookup tables below let kernels resolve any beetle voxel in O(1) instead
+# of enumerating colors.
+# ============================================================================
+BEETLE_P3 = 51             # Player 3 body (green)
+BEETLE_P3_LEGS = 52
+LEG_TIP_P3 = 53
+BEETLE_P3_STRIPE = 54
+BEETLE_P3_HORN_TIP = 55
+STAG_HOOK_INTERIOR_P3 = 56
+VENOM_TIP_P3 = 57
+BEETLE_P4 = 58             # Player 4 body (yellow)
+BEETLE_P4_LEGS = 59
+LEG_TIP_P4 = 60
+BEETLE_P4_STRIPE = 61
+BEETLE_P4_HORN_TIP = 62
+STAG_HOOK_INTERIOR_P4 = 63
+VENOM_TIP_P4 = 64
+
+MAX_VOXEL_TYPE = 64  # Highest voxel type id in use
+
+# Body-part codes for the voxel_part[] lookup
+PART_NONE = 0
+PART_BODY = 1
+PART_LEGS = 2
+PART_LEG_TIP = 3
+PART_STRIPE = 4
+PART_HORN_TIP = 5
+PART_HOOK = 6
+PART_VENOM_TIP = 7
+PART_STINGER = 8   # STINGER_TIP_BLACK - shared by all players (owner = -1)
+
+# O(1) kernel-side lookups: voxel type -> owning player slot (-1 = not a
+# player beetle voxel) and -> body part code (PART_*)
+voxel_owner = ti.field(dtype=ti.i32, shape=MAX_VOXEL_TYPE + 1)
+voxel_part = ti.field(dtype=ti.i32, shape=MAX_VOXEL_TYPE + 1)
+
+# Per-player voxel ids in part order (body, legs, leg_tip, stripe, horn_tip, hook, venom)
+PLAYER_VOXEL_IDS = [
+    (BEETLE_BLUE, BEETLE_BLUE_LEGS, LEG_TIP_BLUE, BEETLE_BLUE_STRIPE,
+     BEETLE_BLUE_HORN_TIP, STAG_HOOK_INTERIOR_BLUE, VENOM_TIP_BLUE),
+    (BEETLE_RED, BEETLE_RED_LEGS, LEG_TIP_RED, BEETLE_RED_STRIPE,
+     BEETLE_RED_HORN_TIP, STAG_HOOK_INTERIOR_RED, VENOM_TIP_RED),
+    (BEETLE_P3, BEETLE_P3_LEGS, LEG_TIP_P3, BEETLE_P3_STRIPE,
+     BEETLE_P3_HORN_TIP, STAG_HOOK_INTERIOR_P3, VENOM_TIP_P3),
+    (BEETLE_P4, BEETLE_P4_LEGS, LEG_TIP_P4, BEETLE_P4_STRIPE,
+     BEETLE_P4_HORN_TIP, STAG_HOOK_INTERIOR_P4, VENOM_TIP_P4),
+]
+_PART_ORDER = (PART_BODY, PART_LEGS, PART_LEG_TIP, PART_STRIPE,
+               PART_HORN_TIP, PART_HOOK, PART_VENOM_TIP)
+
+voxel_owner.fill(-1)
+voxel_part.fill(PART_NONE)
+for _slot, _ids in enumerate(PLAYER_VOXEL_IDS):
+    for _vt, _part in zip(_ids, _PART_ORDER):
+        voxel_owner[_vt] = _slot
+        voxel_part[_vt] = _part
+voxel_part[STINGER_TIP_BLACK] = PART_STINGER  # Shared part, no owner
+
+
+@ti.func
+def is_beetle_voxel(vt: ti.i32) -> ti.i32:
+    """1 if vt is any player's beetle voxel (any part), else 0."""
+    result = 0
+    if 0 <= vt <= MAX_VOXEL_TYPE:
+        if voxel_owner[vt] >= 0:
+            result = 1
+    return result
+
+
+@ti.func
+def beetle_owner(vt: ti.i32) -> ti.i32:
+    """Owning player slot (0-3) for a beetle voxel, -1 otherwise."""
+    owner = -1
+    if 0 <= vt <= MAX_VOXEL_TYPE:
+        owner = voxel_owner[vt]
+    return owner
+
 # UFO dome flash (1.0 = normal, >1.0 = bright flash for telegraph/fire)
 ufo_dome_flash = ti.field(dtype=ti.f32, shape=())
 
@@ -469,6 +550,34 @@ red_leg_tip_color[None] = ti.Vector([0.3, 0.0, 0.0])  # Very dark red
 red_stripe_color[None] = ti.Vector([0.85, 0.65, 0.2])  # Rich gold/bronze
 red_horn_tip_color[None] = ti.Vector([0.4, 0.1, 0.1])  # Deep crimson
 red_venom_tip_color[None] = ti.Vector([0.6, 0.2, 0.8])  # Bright purple (full venom)
+
+# Player 3 beetle colors (green)
+p3_body_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p3_leg_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p3_leg_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p3_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p3_horn_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p3_venom_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p3_body_color[None] = ti.Vector([0.2, 0.75, 0.3])   # Leaf green
+p3_leg_color[None] = ti.Vector([0.45, 0.95, 0.5])   # Lighter green
+p3_leg_tip_color[None] = ti.Vector([0.0, 0.25, 0.05])  # Very dark green
+p3_stripe_color[None] = ti.Vector([0.7, 1.0, 0.6])   # Bright mint
+p3_horn_tip_color[None] = ti.Vector([0.35, 1.0, 0.5])  # Vivid green
+p3_venom_tip_color[None] = ti.Vector([0.6, 0.2, 0.8])  # Bright purple (full venom)
+
+# Player 4 beetle colors (yellow)
+p4_body_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p4_leg_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p4_leg_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p4_stripe_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p4_horn_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p4_venom_tip_color = ti.Vector.field(3, dtype=ti.f32, shape=())
+p4_body_color[None] = ti.Vector([0.95, 0.8, 0.15])   # Warm yellow
+p4_leg_color[None] = ti.Vector([1.0, 0.9, 0.45])     # Light gold
+p4_leg_tip_color[None] = ti.Vector([0.3, 0.22, 0.0])  # Dark amber
+p4_stripe_color[None] = ti.Vector([1.0, 0.95, 0.7])   # Pale cream
+p4_horn_tip_color[None] = ti.Vector([1.0, 0.85, 0.3])  # Bright gold
+p4_venom_tip_color[None] = ti.Vector([0.6, 0.2, 0.8])  # Bright purple (full venom)
 
 # Ball colors (for future customization)
 ball_color = ti.Vector.field(3, dtype=ti.f32, shape=())

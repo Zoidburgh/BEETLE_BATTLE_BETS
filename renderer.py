@@ -353,8 +353,38 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
         color = ti.math.vec3(0.3, 1.0, 0.3)
     elif voxel_type == 49:  # UFO_RIM - bright purple belt
         color = ti.math.vec3(0.7, 0.15, 0.95)
+    # Player 3 beetle (green) - ids 51-57
+    elif voxel_type == 51:  # BEETLE_P3 body
+        color = simulation.p3_body_color[None]
+    elif voxel_type == 52:  # BEETLE_P3_LEGS
+        color = simulation.p3_leg_color[None]
+    elif voxel_type == 53:  # LEG_TIP_P3
+        color = simulation.p3_leg_tip_color[None]
+    elif voxel_type == 54:  # BEETLE_P3_STRIPE
+        color = simulation.p3_stripe_color[None]
+    elif voxel_type == 55:  # BEETLE_P3_HORN_TIP
+        color = simulation.p3_horn_tip_color[None]
+    elif voxel_type == 56:  # STAG_HOOK_INTERIOR_P3 - body color like blue/red hooks
+        color = simulation.p3_body_color[None]
+    elif voxel_type == 57:  # VENOM_TIP_P3
+        color = simulation.p3_venom_tip_color[None]
+    # Player 4 beetle (yellow) - ids 58-64
+    elif voxel_type == 58:  # BEETLE_P4 body
+        color = simulation.p4_body_color[None]
+    elif voxel_type == 59:  # BEETLE_P4_LEGS
+        color = simulation.p4_leg_color[None]
+    elif voxel_type == 60:  # LEG_TIP_P4
+        color = simulation.p4_leg_tip_color[None]
+    elif voxel_type == 61:  # BEETLE_P4_STRIPE
+        color = simulation.p4_stripe_color[None]
+    elif voxel_type == 62:  # BEETLE_P4_HORN_TIP
+        color = simulation.p4_horn_tip_color[None]
+    elif voxel_type == 63:  # STAG_HOOK_INTERIOR_P4 - body color like blue/red hooks
+        color = simulation.p4_body_color[None]
+    elif voxel_type == 64:  # VENOM_TIP_P4
+        color = simulation.p4_venom_tip_color[None]
     # OPTIMIZATION: Metallic sheen from lookup table instead of sin() (~8-12% speedup)
-    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34 or voxel_type == 35 or voxel_type == 45 or voxel_type == 49:  # All beetle/ladybug shell/UFO hull/rim parts
+    if (voxel_type >= 5 and voxel_type <= 15) or voxel_type == 18 or voxel_type == 19 or voxel_type == 33 or voxel_type == 34 or voxel_type == 35 or voxel_type == 45 or voxel_type == 49 or (voxel_type >= 51 and voxel_type <= 64):  # All beetle/ladybug shell/UFO hull/rim parts
         shimmer = get_shimmer_from_lut(world_x, world_z)
         color *= shimmer
 

@@ -4014,10 +4014,10 @@ def render_ball_assembly_fast(spawn_x, spawn_y, spawn_z, progress):
 
 @ti.kernel
 def clear_beetles():
-    """Remove all beetle voxels"""
+    """Remove all beetle body voxels (any player)"""
     for i, j, k in ti.ndrange(simulation.n_grid, simulation.n_grid, simulation.n_grid):
-        if simulation.voxel_type[i, j, k] == simulation.BEETLE_BLUE or \
-           simulation.voxel_type[i, j, k] == simulation.BEETLE_RED:
+        vt = simulation.voxel_type[i, j, k]
+        if simulation.is_beetle_voxel(vt) == 1 and simulation.voxel_part[vt] == simulation.PART_BODY:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 @ti.kernel
@@ -8333,14 +8333,8 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
         for j in range(min_y1, max_y1):
             for k in range(min_z1, max_z1):
                 vtype = simulation.voxel_type[i, j, k]
-                if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_RED or \
-                   vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS or \
-                   vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED or \
-                   vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
-                   vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
-                   vtype == simulation.STINGER_TIP_BLACK or \
-                   vtype == simulation.VENOM_TIP_BLUE or vtype == simulation.VENOM_TIP_RED or \
-                   vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                # Any player's beetle voxel (all parts) or the shared stinger tip
+                if simulation.is_beetle_voxel(vtype) == 1 or vtype == simulation.STINGER_TIP_BLACK:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
     # === BEETLE 2 BOUNDING BOX ===
@@ -8360,14 +8354,8 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
         for j in range(min_y2, max_y2):
             for k in range(min_z2, max_z2):
                 vtype = simulation.voxel_type[i, j, k]
-                if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_RED or \
-                   vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.BEETLE_RED_LEGS or \
-                   vtype == simulation.LEG_TIP_BLUE or vtype == simulation.LEG_TIP_RED or \
-                   vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_RED_STRIPE or \
-                   vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
-                   vtype == simulation.STINGER_TIP_BLACK or \
-                   vtype == simulation.VENOM_TIP_BLUE or vtype == simulation.VENOM_TIP_RED or \
-                   vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
+                # Any player's beetle voxel (all parts) or the shared stinger tip
+                if simulation.is_beetle_voxel(vtype) == 1 or vtype == simulation.STINGER_TIP_BLACK:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 @ti.kernel
@@ -8576,9 +8564,9 @@ def check_ball_beetle_collision_kernel(beetle_x: ti.f32, beetle_y: ti.f32, beetl
 
                                 if 0 <= vx < simulation.n_grid and 0 <= vy < simulation.n_grid and 0 <= vz < simulation.n_grid:
                                     voxel = simulation.voxel_type[vx, vy, vz]
-                                    # Check if this voxel contains a beetle (blue: 5-13, red: 6-14)
-                                    # Exclude both BALL and BALL_STRIPE voxels
-                                    if (5 <= voxel <= 14) and voxel != simulation.BALL and voxel != simulation.BALL_STRIPE:
+                                    # Any player's beetle body/legs/tips/stripe/horn
+                                    # (hooks, venom bulbs and stinger excluded, as before)
+                                    if simulation.is_beetle_voxel(voxel) == 1 and simulation.voxel_part[voxel] <= simulation.PART_HORN_TIP:
                                         collision = 1
 
     return collision
