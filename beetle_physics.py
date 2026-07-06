@@ -1814,7 +1814,6 @@ def reset_match():
     global match_winner, blue_celebrating, red_celebrating, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
     global blue_pulse_timer, red_pulse_timer, blue_confetti_timer, red_confetti_timer
     global blue_spawn_immunity, red_spawn_immunity
-    global prev_spider_aim_blue, prev_spider_aim_red
     global silk_charge_blue, silk_charge_red, silk_might_exist
     global floor_cache_blue, floor_cache_red, floor_cache_ball
     global ball_last_render, spray_might_exist
@@ -1884,8 +1883,8 @@ def reset_match():
     # Reset spider aim angles
     spider_aim[0] = 0.0
     spider_aim[1] = 0.0
-    prev_spider_aim_blue = 0.0
-    prev_spider_aim_red = 0.0
+    prev_spider_aim[0] = 0.0
+    prev_spider_aim[1] = 0.0
 
     # Reset spider silk charges
     silk_charge_blue = SILK_MAX_CHARGE
@@ -2542,8 +2541,7 @@ SPIDER_AIM_MAX = 0.52  # ~30 degrees in radians
 SPIDER_AIM_SPEED = 1.8  # How fast aim adjusts
 spider_aim[0] = 0.0   # Current aim angle (-1 to +1, 0 = level)
 spider_aim[1] = 0.0
-prev_spider_aim_blue = 0.0  # Previous frame aim (for interpolation)
-prev_spider_aim_red = 0.0
+prev_spider_aim = [0.0, 0.0, 0.0, 0.0]  # Previous frame spider aim (for interpolation)
 
 # Spider silk spray constants
 SILK_SPEED_SLOW = 17.0     # R key - lobbed arc
@@ -17223,8 +17221,8 @@ try:
         prev_spray_aim[0] = spray_aim[0]
         prev_spray_aim[1] = spray_aim[1]
         # Save spider aim for interpolation
-        prev_spider_aim_blue = spider_aim[0]
-        prev_spider_aim_red = spider_aim[1]
+        prev_spider_aim[0] = spider_aim[0]
+        prev_spider_aim[1] = spider_aim[1]
 
         # === INPUT/CONTROLS TIMING START ===
         _t_input_start = time.perf_counter()
@@ -20162,197 +20160,119 @@ try:
             diff -= TWO_PI
         return a + diff * t
 
-    # Interpolate blue beetle state for rendering
-    blue_render_x = beetles[0].prev_x + (beetles[0].x - beetles[0].prev_x) * alpha
-    blue_render_y = beetles[0].prev_y + (beetles[0].y - beetles[0].prev_y) * alpha
-    blue_render_z = beetles[0].prev_z + (beetles[0].z - beetles[0].prev_z) * alpha
-    blue_render_rotation = lerp_angle(beetles[0].prev_rotation, beetles[0].rotation, alpha)
-    blue_render_pitch = lerp_angle(beetles[0].prev_pitch, beetles[0].pitch, alpha)
-    blue_render_roll = lerp_angle(beetles[0].prev_roll, beetles[0].roll, alpha)
-    blue_render_horn_pitch = lerp_angle(beetles[0].prev_horn_pitch, beetles[0].horn_pitch, alpha)
-    blue_render_horn_yaw = lerp_angle(beetles[0].prev_horn_yaw, beetles[0].horn_yaw, alpha)
-    blue_render_tail_pitch = math.radians(15.0 + lerp_angle(beetles[0].prev_tail_rotation_angle, beetles[0].tail_rotation_angle, alpha))  # Smoothed tail rotation
-
-    # Interpolate red beetle state for rendering
-    red_render_x = beetles[1].prev_x + (beetles[1].x - beetles[1].prev_x) * alpha
-    red_render_y = beetles[1].prev_y + (beetles[1].y - beetles[1].prev_y) * alpha
-    red_render_z = beetles[1].prev_z + (beetles[1].z - beetles[1].prev_z) * alpha
-    red_render_rotation = lerp_angle(beetles[1].prev_rotation, beetles[1].rotation, alpha)
-    red_render_pitch = lerp_angle(beetles[1].prev_pitch, beetles[1].pitch, alpha)
-    red_render_roll = lerp_angle(beetles[1].prev_roll, beetles[1].roll, alpha)
-    red_render_tail_pitch = math.radians(15.0 + lerp_angle(beetles[1].prev_tail_rotation_angle, beetles[1].tail_rotation_angle, alpha))  # Smoothed tail rotation
-    red_render_horn_pitch = lerp_angle(beetles[1].prev_horn_pitch, beetles[1].horn_pitch, alpha)
-    red_render_horn_yaw = lerp_angle(beetles[1].prev_horn_yaw, beetles[1].horn_yaw, alpha)
-
-    # Interpolate spray aim for smooth bombardier butt-tilt
-    blue_render_spray_aim = prev_spray_aim[0] + (spray_aim[0] - prev_spray_aim[0]) * alpha
-    red_render_spray_aim = prev_spray_aim[1] + (spray_aim[1] - prev_spray_aim[1]) * alpha
-
-    # Interpolate spider aim for smooth abdomen tilt
-    blue_render_spider_aim = prev_spider_aim_blue + (spider_aim[0] - prev_spider_aim_blue) * alpha
-    red_render_spider_aim = prev_spider_aim_red + (spider_aim[1] - prev_spider_aim_red) * alpha
+    # Interpolate beetle state for rendering (per player slot)
+    render_x = [0.0] * 4
+    render_y = [0.0] * 4
+    render_z = [0.0] * 4
+    render_rotation = [0.0] * 4
+    render_pitch = [0.0] * 4
+    render_roll = [0.0] * 4
+    render_horn_pitch = [0.0] * 4
+    render_horn_yaw = [0.0] * 4
+    render_tail_pitch = [0.0] * 4
+    render_spray_aim = [0.0] * 4
+    render_spider_aim = [0.0] * 4
+    for slot in range(active_player_count):
+        b = beetles[slot]
+        render_x[slot] = b.prev_x + (b.x - b.prev_x) * alpha
+        render_y[slot] = b.prev_y + (b.y - b.prev_y) * alpha
+        render_z[slot] = b.prev_z + (b.z - b.prev_z) * alpha
+        render_rotation[slot] = lerp_angle(b.prev_rotation, b.rotation, alpha)
+        render_pitch[slot] = lerp_angle(b.prev_pitch, b.pitch, alpha)
+        render_roll[slot] = lerp_angle(b.prev_roll, b.roll, alpha)
+        render_horn_pitch[slot] = lerp_angle(b.prev_horn_pitch, b.horn_pitch, alpha)
+        render_horn_yaw[slot] = lerp_angle(b.prev_horn_yaw, b.horn_yaw, alpha)
+        render_tail_pitch[slot] = math.radians(15.0 + lerp_angle(b.prev_tail_rotation_angle, b.tail_rotation_angle, alpha))  # Smoothed tail rotation
+        # Interpolate spray aim (bombardier butt-tilt) and spider abdomen aim
+        render_spray_aim[slot] = prev_spray_aim[slot] + (spray_aim[slot] - prev_spray_aim[slot]) * alpha
+        render_spider_aim[slot] = prev_spider_aim[slot] + (spider_aim[slot] - prev_spider_aim[slot]) * alpha
 
     # === ANIMATION TIMING ===
     perf_monitor.start('animation')
 
     # Update walk animation based on velocity and rotation (uses real-time frame_dt)
-    # Detect blue beetle rotation-only input (using input flags from earlier in frame)
-    blue_rotating = (blue_inputs & INPUT_LEFT) or (blue_inputs & INPUT_RIGHT)
-    blue_moving = (blue_inputs & INPUT_FORWARD) or (blue_inputs & INPUT_BACKWARD)
-    blue_speed = math.sqrt(beetles[0].vx**2 + beetles[0].vz**2)
+    # Walk animation per player slot (uses input flags from earlier in frame)
+    for slot in range(active_player_count):
+        b = beetles[slot]
+        p_inputs = frame_inputs[slot]
+        # Detect beetle rotation-only input (using input flags from earlier in frame)
+        p_rotating = (p_inputs & INPUT_LEFT) or (p_inputs & INPUT_RIGHT)
+        p_moving = (p_inputs & INPUT_FORWARD) or (p_inputs & INPUT_BACKWARD)
+        p_speed = math.sqrt(b.vx**2 + b.vz**2)
 
-    # Check if rotating without moving forward/backward
-    if blue_rotating and not blue_moving:
-        # Rotation-only animation (use constant rotation speed)
-        # Cancel animation completion if player resumes input
-        beetles[0].is_completing_animation = False
-        # When in air: 15% faster than ground, on ground: normal turning speed
-        if beetles[0].is_lifted_high:
-            rotation_animation_speed = 16.875 * 1.15  # 15% faster than ground turning speed
-        else:
-            rotation_animation_speed = 16.875  # Normal ground turning speed
-        beetles[0].walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
-        beetles[0].walk_phase = beetles[0].walk_phase % TWO_PI
-        beetles[0].is_moving = True
-        beetles[0].is_rotating_only = True
-        # Detect rotation direction
-        if blue_inputs & INPUT_LEFT:
-            beetles[0].rotation_direction = -1  # Turning left
-        else:
-            beetles[0].rotation_direction = 1   # Turning right
-    elif blue_speed > 0.5:  # Normal forward/backward movement
-        # Cancel animation completion if player resumes input
-        beetles[0].is_completing_animation = False
-        # Check if moving forward or backward using dot product with facing direction
-        facing_x = math.cos(beetles[0].rotation)
-        facing_z = math.sin(beetles[0].rotation)
-        move_dot = beetles[0].vx * facing_x + beetles[0].vz * facing_z
-        if move_dot >= 0:  # Moving forward
-            beetles[0].walk_phase += blue_speed * WALK_CYCLE_SPEED * frame_dt
-            beetles[0].is_moving_backward = False
-        else:  # Moving backward - reverse animation
-            beetles[0].walk_phase -= blue_speed * WALK_CYCLE_SPEED * frame_dt
-            beetles[0].is_moving_backward = True
-        beetles[0].walk_phase = beetles[0].walk_phase % TWO_PI
-        beetles[0].is_moving = True
-        beetles[0].is_rotating_only = False
-        beetles[0].rotation_direction = 0
-    else:
-        # No input - check if we need to complete the animation cycle
-        current_phase_normalized = beetles[0].walk_phase % TWO_PI
-
-        # Find nearest neutral position (0 or π)
-        if current_phase_normalized < PI_HALF:
-            beetles[0].target_walk_phase = 0.0
-        elif current_phase_normalized < PI_ONE_HALF:
-            beetles[0].target_walk_phase = math.pi
-        else:
-            beetles[0].target_walk_phase = TWO_PI
-
-        # Calculate distance to target
-        phase_diff = abs(current_phase_normalized - (beetles[0].target_walk_phase % TWO_PI))
-
-        # If very close to neutral, snap immediately
-        if phase_diff < 0.3:  # Within ~17 degrees, just snap
-            beetles[0].walk_phase = beetles[0].target_walk_phase
-            beetles[0].is_completing_animation = False
-        elif phase_diff > 0.1:  # Far enough that we need to animate
-            # Advance toward target neutral position
-            advance_amount = beetles[0].completion_speed * WALK_CYCLE_SPEED * frame_dt
-            # Don't overshoot - clamp to remaining distance
-            if advance_amount > phase_diff:
-                beetles[0].walk_phase = beetles[0].target_walk_phase
-                beetles[0].is_completing_animation = False
+        # Check if rotating without moving forward/backward
+        if p_rotating and not p_moving:
+            # Rotation-only animation (use constant rotation speed)
+            # Cancel animation completion if player resumes input
+            b.is_completing_animation = False
+            # When in air: 15% faster than ground, on ground: normal turning speed
+            if b.is_lifted_high:
+                rotation_animation_speed = 16.875 * 1.15  # 15% faster than ground turning speed
             else:
-                beetles[0].walk_phase += advance_amount
-                beetles[0].is_completing_animation = True
-        else:
-            # Already at neutral
-            beetles[0].is_completing_animation = False
-
-        beetles[0].walk_phase = beetles[0].walk_phase % TWO_PI
-        beetles[0].is_moving = False
-        beetles[0].is_rotating_only = False
-        beetles[0].rotation_direction = 0
-
-    # Detect red beetle rotation-only input (using input flags from earlier in frame)
-    red_rotating = (red_inputs & INPUT_LEFT) or (red_inputs & INPUT_RIGHT)
-    red_moving = (red_inputs & INPUT_FORWARD) or (red_inputs & INPUT_BACKWARD)
-    red_speed = math.sqrt(beetles[1].vx**2 + beetles[1].vz**2)
-
-    # Check if rotating without moving forward/backward
-    if red_rotating and not red_moving:
-        # Rotation-only animation (use constant rotation speed)
-        # Cancel animation completion if player resumes input
-        beetles[1].is_completing_animation = False
-        # When in air: 15% faster than ground, on ground: normal turning speed
-        if beetles[1].is_lifted_high:
-            rotation_animation_speed = 16.875 * 1.15  # 15% faster than ground turning speed
-        else:
-            rotation_animation_speed = 16.875  # Normal ground turning speed
-        beetles[1].walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
-        beetles[1].walk_phase = beetles[1].walk_phase % TWO_PI
-        beetles[1].is_moving = True
-        beetles[1].is_rotating_only = True
-        # Detect rotation direction
-        if red_inputs & INPUT_LEFT:
-            beetles[1].rotation_direction = -1  # Turning left
-        else:
-            beetles[1].rotation_direction = 1   # Turning right
-    elif red_speed > 0.5:  # Normal forward/backward movement
-        # Cancel animation completion if player resumes input
-        beetles[1].is_completing_animation = False
-        # Check if moving forward or backward using dot product with facing direction
-        facing_x = math.cos(beetles[1].rotation)
-        facing_z = math.sin(beetles[1].rotation)
-        move_dot = beetles[1].vx * facing_x + beetles[1].vz * facing_z
-        if move_dot >= 0:  # Moving forward
-            beetles[1].walk_phase += red_speed * WALK_CYCLE_SPEED * frame_dt
-            beetles[1].is_moving_backward = False
-        else:  # Moving backward - reverse animation
-            beetles[1].walk_phase -= red_speed * WALK_CYCLE_SPEED * frame_dt
-            beetles[1].is_moving_backward = True
-        beetles[1].walk_phase = beetles[1].walk_phase % TWO_PI
-        beetles[1].is_moving = True
-        beetles[1].is_rotating_only = False
-        beetles[1].rotation_direction = 0
-    else:
-        # No input - check if we need to complete the animation cycle
-        current_phase_normalized = beetles[1].walk_phase % TWO_PI
-
-        # Find nearest neutral position (0 or π)
-        if current_phase_normalized < PI_HALF:
-            beetles[1].target_walk_phase = 0.0
-        elif current_phase_normalized < PI_ONE_HALF:
-            beetles[1].target_walk_phase = math.pi
-        else:
-            beetles[1].target_walk_phase = TWO_PI
-
-        # Calculate distance to target
-        phase_diff = abs(current_phase_normalized - (beetles[1].target_walk_phase % TWO_PI))
-
-        # If very close to neutral, snap immediately
-        if phase_diff < 0.3:  # Within ~17 degrees, just snap
-            beetles[1].walk_phase = beetles[1].target_walk_phase
-            beetles[1].is_completing_animation = False
-        elif phase_diff > 0.1:  # Far enough that we need to animate
-            # Advance toward target neutral position
-            advance_amount = beetles[1].completion_speed * WALK_CYCLE_SPEED * frame_dt
-            # Don't overshoot - clamp to remaining distance
-            if advance_amount > phase_diff:
-                beetles[1].walk_phase = beetles[1].target_walk_phase
-                beetles[1].is_completing_animation = False
+                rotation_animation_speed = 16.875  # Normal ground turning speed
+            b.walk_phase += rotation_animation_speed * WALK_CYCLE_SPEED * frame_dt
+            b.walk_phase = b.walk_phase % TWO_PI
+            b.is_moving = True
+            b.is_rotating_only = True
+            # Detect rotation direction
+            if p_inputs & INPUT_LEFT:
+                b.rotation_direction = -1  # Turning left
             else:
-                beetles[1].walk_phase += advance_amount
-                beetles[1].is_completing_animation = True
+                b.rotation_direction = 1   # Turning right
+        elif p_speed > 0.5:  # Normal forward/backward movement
+            # Cancel animation completion if player resumes input
+            b.is_completing_animation = False
+            # Check if moving forward or backward using dot product with facing direction
+            facing_x = math.cos(b.rotation)
+            facing_z = math.sin(b.rotation)
+            move_dot = b.vx * facing_x + b.vz * facing_z
+            if move_dot >= 0:  # Moving forward
+                b.walk_phase += p_speed * WALK_CYCLE_SPEED * frame_dt
+                b.is_moving_backward = False
+            else:  # Moving backward - reverse animation
+                b.walk_phase -= p_speed * WALK_CYCLE_SPEED * frame_dt
+                b.is_moving_backward = True
+            b.walk_phase = b.walk_phase % TWO_PI
+            b.is_moving = True
+            b.is_rotating_only = False
+            b.rotation_direction = 0
         else:
-            # Already at neutral
-            beetles[1].is_completing_animation = False
+            # No input - check if we need to complete the animation cycle
+            current_phase_normalized = b.walk_phase % TWO_PI
 
-        beetles[1].walk_phase = beetles[1].walk_phase % TWO_PI
-        beetles[1].is_moving = False
-        beetles[1].is_rotating_only = False
-        beetles[1].rotation_direction = 0
+            # Find nearest neutral position (0 or π)
+            if current_phase_normalized < PI_HALF:
+                b.target_walk_phase = 0.0
+            elif current_phase_normalized < PI_ONE_HALF:
+                b.target_walk_phase = math.pi
+            else:
+                b.target_walk_phase = TWO_PI
+
+            # Calculate distance to target
+            phase_diff = abs(current_phase_normalized - (b.target_walk_phase % TWO_PI))
+
+            # If very close to neutral, snap immediately
+            if phase_diff < 0.3:  # Within ~17 degrees, just snap
+                b.walk_phase = b.target_walk_phase
+                b.is_completing_animation = False
+            elif phase_diff > 0.1:  # Far enough that we need to animate
+                # Advance toward target neutral position
+                advance_amount = b.completion_speed * WALK_CYCLE_SPEED * frame_dt
+                # Don't overshoot - clamp to remaining distance
+                if advance_amount > phase_diff:
+                    b.walk_phase = b.target_walk_phase
+                    b.is_completing_animation = False
+                else:
+                    b.walk_phase += advance_amount
+                    b.is_completing_animation = True
+            else:
+                # Already at neutral
+                b.is_completing_animation = False
+
+            b.walk_phase = b.walk_phase % TWO_PI
+            b.is_moving = False
+            b.is_rotating_only = False
+            b.rotation_direction = 0
 
     # === LEG DUST KICK-UP EFFECT ===
     # Spawn dust particles when legs touch down during walking/turning
@@ -20370,213 +20290,117 @@ try:
         floor_y = floor_height_cache[grid_x, grid_z]
         return floor_y > -100.0  # -1000 means no floor
 
-    # OPTIMIZATION: Pre-calculate sin values for walk phases (avoid repeated math.sin calls)
-    blue_walk_sin = math.sin(beetles[0].walk_phase)
-    blue_prev_walk_sin = math.sin(beetles[0].prev_walk_phase)
-    blue_walk_sin_offset = math.sin(beetles[0].walk_phase + math.pi)  # For Group B legs
-    blue_prev_walk_sin_offset = math.sin(beetles[0].prev_walk_phase + math.pi)
+    # Leg dust kick-up per player slot
+    for slot in range(active_player_count):
+        b = beetles[slot]
+        # OPTIMIZATION: Pre-calculate sin values for walk phases (avoid repeated math.sin calls)
+        walk_sin = math.sin(b.walk_phase)
+        prev_walk_sin = math.sin(b.prev_walk_phase)
+        walk_sin_offset = math.sin(b.walk_phase + math.pi)  # For Group B legs
+        prev_walk_sin_offset = math.sin(b.prev_walk_phase + math.pi)
 
-    # Blue beetle leg dust
-    blue_leg_len = getattr(window, 'blue_leg_length_value', 8)  # Default 8 if not set yet
-    blue_stagger_scale = blue_leg_len / 6.0  # Scale stagger based on leg length (6 is min)
-    if beetles[0].active and beetles[0].y < 5.0:  # Only when on/near ground (within 5 voxels)
-        # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
-        if beetles[0].is_moving and not beetles[0].is_rotating_only:
-            # Scale dust particles with speed bonus (more dust when going faster)
-            active_bonus = beetles[0].backward_bonus if beetles[0].is_moving_backward else beetles[0].forward_bonus
-            # Spider has fewer base particles (slower base speed)
-            base_dust = 4 if beetles[0].horn_type_id == 6 else 8
-            blue_dust_count = int(base_dust * (1.0 + active_bonus))
-            # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
-            if beetles[0].is_moving_backward:
-                dust_legs = [0, 1]  # Front legs
-                kick_dir = 1.0  # Kick forward
-            else:
-                dust_legs = [4, 5]  # Back legs
-                if beetles[0].horn_type in ("scorpion", "spider"):
-                    dust_legs = [4, 5, 6, 7]  # Include extra back legs for 8-legged types
-                kick_dir = -1.0  # Kick backward
-            for leg_id in dust_legs:
-                # Use pre-calculated sin values based on leg group
-                # Scorpion quadrupod: Group A (0, 3, 4, 7), Group B (1, 2, 5, 6)
-                if leg_id in [0, 3, 4, 7]:  # Group A (no offset)
-                    sin_leg = blue_walk_sin
-                    sin_prev_leg = blue_prev_walk_sin
-                else:  # Group B (pi offset) - legs 1, 2, 5, 6
-                    sin_leg = blue_walk_sin_offset
-                    sin_prev_leg = blue_prev_walk_sin_offset
-                # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
-                # Triggers slightly later in cycle for better sync with animation
-                touchdown = sin_prev_leg > -0.2 and sin_leg <= -0.2
-                if touchdown:
-                    tip_x, tip_z = get_leg_tip_world_position(beetles[0], leg_id, blue_leg_len)
-                    # Nudge tip forward by velocity to compensate for movement lag
-                    tip_x += beetles[0].vx * 0.13
-                    tip_z += beetles[0].vz * 0.13
-                    # Only spawn dust if leg tip is on arena floor (works for all arena modes)
-                    if has_floor_at(tip_x, tip_z):
-                        # Kick direction: backward when forward, forward when backward
-                        dir_x = kick_dir * math.cos(beetles[0].rotation)
-                        dir_z = kick_dir * math.sin(beetles[0].rotation)
-                        # Per-leg random offset for variety
-                        rand_x = (random.random() - 0.5) * 1.5
-                        rand_z = (random.random() - 0.5) * 1.5
-                        # Height scales with speed bonus: 1.0 at base, 1.5 at max (50% higher)
-                        blue_height_mult = 1.0 + active_bonus * 8.57
-                        spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, blue_stagger_scale, blue_dust_count, blue_height_mult)
-
-        # Spinning: spawn dust from back leg on opposite side
-        # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
-        # Right turn (side=1): back LEFT leg (leg 4, and 6 for scorpion)
-        elif beetles[0].is_rotating_only:
-            beetles[0].spin_dust_timer += frame_dt
-            if beetles[0].spin_dust_timer >= 0.04:  # Every 0.04 seconds
-                beetles[0].spin_dust_timer = 0.0
-                side = beetles[0].rotation_direction  # -1 = left turn, 1 = right turn
-                if side != 0:
-                    # BACK legs on OPPOSITE side of turn
-                    # Left turn -> leg 5 (rear_right), and 7 for scorpion
-                    # Right turn -> leg 4 (rear_left), and 6 for scorpion
-                    back_legs = [5, 7] if side == 1 else [4, 6]
-                    if beetles[0].horn_type not in ("scorpion", "spider"):
-                        back_legs = back_legs[:1]  # Only first leg for 6-legged beetles
-                    for back_leg_id in back_legs:
-                        tip_x, tip_z = get_leg_tip_world_position(beetles[0], back_leg_id, blue_leg_len)
+        # Leg dust
+        leg_len = getattr(window, ('leg_length_value', 'red_leg_length_value')[slot], 8) if slot < 2 else 8
+        stagger_scale = leg_len / 6.0  # Scale stagger based on leg length (6 is min)
+        if b.active and b.y < 5.0:  # Only when on/near ground (within 5 voxels)
+            # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
+            if b.is_moving and not b.is_rotating_only:
+                # Scale dust particles with speed bonus (more dust when going faster)
+                active_bonus = b.backward_bonus if b.is_moving_backward else b.forward_bonus
+                # Spider has fewer base particles (slower base speed)
+                base_dust = 4 if b.horn_type_id == 6 else 8
+                dust_count = int(base_dust * (1.0 + active_bonus))
+                # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
+                if b.is_moving_backward:
+                    dust_legs = [0, 1]  # Front legs
+                    kick_dir = 1.0  # Kick forward
+                else:
+                    dust_legs = [4, 5]  # Back legs
+                    if b.horn_type in ("scorpion", "spider"):
+                        dust_legs = [4, 5, 6, 7]  # Include extra back legs for 8-legged types
+                    kick_dir = -1.0  # Kick backward
+                for leg_id in dust_legs:
+                    # Use pre-calculated sin values based on leg group
+                    # Scorpion quadrupod: Group A (0, 3, 4, 7), Group B (1, 2, 5, 6)
+                    if leg_id in [0, 3, 4, 7]:  # Group A (no offset)
+                        sin_leg = walk_sin
+                        sin_prev_leg = prev_walk_sin
+                    else:  # Group B (pi offset) - legs 1, 2, 5, 6
+                        sin_leg = walk_sin_offset
+                        sin_prev_leg = prev_walk_sin_offset
+                    # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
+                    # Triggers slightly later in cycle for better sync with animation
+                    touchdown = sin_prev_leg > -0.2 and sin_leg <= -0.2
+                    if touchdown:
+                        tip_x, tip_z = get_leg_tip_world_position(b, leg_id, leg_len)
+                        # Nudge tip forward by velocity to compensate for movement lag
+                        tip_x += b.vx * 0.13
+                        tip_z += b.vz * 0.13
+                        # Only spawn dust if leg tip is on arena floor (works for all arena modes)
                         if has_floor_at(tip_x, tip_z):
-                            dir_x = tip_x - beetles[0].x
-                            dir_z = tip_z - beetles[0].z
+                            # Kick direction: backward when forward, forward when backward
+                            dir_x = kick_dir * math.cos(b.rotation)
+                            dir_z = kick_dir * math.sin(b.rotation)
+                            # Per-leg random offset for variety
+                            rand_x = (random.random() - 0.5) * 1.5
+                            rand_z = (random.random() - 0.5) * 1.5
+                            # Height scales with speed bonus: 1.0 at base, 1.5 at max (50% higher)
+                            height_mult = 1.0 + active_bonus * 8.57
+                            spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
+                                                    DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, stagger_scale, dust_count, height_mult)
+
+            # Spinning: spawn dust from back leg on opposite side
+            # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
+            # Right turn (side=1): back LEFT leg (leg 4, and 6 for scorpion)
+            elif b.is_rotating_only:
+                b.spin_dust_timer += frame_dt
+                if b.spin_dust_timer >= 0.04:  # Every 0.04 seconds
+                    b.spin_dust_timer = 0.0
+                    side = b.rotation_direction  # -1 = left turn, 1 = right turn
+                    if side != 0:
+                        # BACK legs on OPPOSITE side of turn
+                        # Left turn -> leg 5 (rear_right), and 7 for scorpion
+                        # Right turn -> leg 4 (rear_left), and 6 for scorpion
+                        back_legs = [5, 7] if side == 1 else [4, 6]
+                        if b.horn_type not in ("scorpion", "spider"):
+                            back_legs = back_legs[:1]  # Only first leg for 6-legged beetles
+                        for back_leg_id in back_legs:
+                            tip_x, tip_z = get_leg_tip_world_position(b, back_leg_id, leg_len)
+                            if has_floor_at(tip_x, tip_z):
+                                dir_x = tip_x - b.x
+                                dir_z = tip_z - b.z
+                                dir_len = math.sqrt(dir_x**2 + dir_z**2)
+                                if dir_len > 0:
+                                    dir_x /= dir_len
+                                    dir_z /= dir_len
+                                spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
+                                                    DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], stagger_scale, 1)
+
+                        # FRONT leg on SAME side of turn
+                        # Left turn -> leg 0 (front_left)
+                        # Right turn -> leg 1 (front_right)
+                        front_leg_id = 0 if side == 1 else 1
+                        tip_x, tip_z = get_leg_tip_world_position(b, front_leg_id, leg_len)
+                        if has_floor_at(tip_x, tip_z):
+                            dir_x = tip_x - b.x
+                            dir_z = tip_z - b.z
                             dir_len = math.sqrt(dir_x**2 + dir_z**2)
                             if dir_len > 0:
                                 dir_x /= dir_len
                                 dir_z /= dir_len
                             spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], blue_stagger_scale, 1)
-
-                    # FRONT leg on SAME side of turn
-                    # Left turn -> leg 0 (front_left)
-                    # Right turn -> leg 1 (front_right)
-                    front_leg_id = 0 if side == 1 else 1
-                    tip_x, tip_z = get_leg_tip_world_position(beetles[0], front_leg_id, blue_leg_len)
-                    if has_floor_at(tip_x, tip_z):
-                        dir_x = tip_x - beetles[0].x
-                        dir_z = tip_z - beetles[0].z
-                        dir_len = math.sqrt(dir_x**2 + dir_z**2)
-                        if dir_len > 0:
-                            dir_x /= dir_len
-                            dir_z /= dir_len
-                        spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
-                                            DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], blue_stagger_scale, 1)
-        else:
-            beetles[0].spin_dust_timer = 0.0  # Reset timer when not spinning
-
-    # Red beetle leg dust - pre-calculate sin values
-    red_walk_sin = math.sin(beetles[1].walk_phase)
-    red_prev_walk_sin = math.sin(beetles[1].prev_walk_phase)
-    red_walk_sin_offset = math.sin(beetles[1].walk_phase + math.pi)  # For Group B legs
-    red_prev_walk_sin_offset = math.sin(beetles[1].prev_walk_phase + math.pi)
-
-    red_leg_len = getattr(window, 'red_leg_length_value', 8)  # Default 8 if not set yet
-    red_stagger_scale = red_leg_len / 6.0  # Scale stagger based on leg length (6 is min)
-    if beetles[1].active and beetles[1].y < 5.0:  # Only when on/near ground (within 5 voxels)
-        # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
-        if beetles[1].is_moving and not beetles[1].is_rotating_only:
-            # Scale dust particles with speed bonus (more dust when going faster)
-            active_bonus = beetles[1].backward_bonus if beetles[1].is_moving_backward else beetles[1].forward_bonus
-            # Spider has fewer base particles (slower base speed)
-            base_dust = 4 if beetles[1].horn_type_id == 6 else 8
-            red_dust_count = int(base_dust * (1.0 + active_bonus))
-            # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
-            if beetles[1].is_moving_backward:
-                dust_legs = [0, 1]  # Front legs
-                kick_dir = 1.0  # Kick forward
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], stagger_scale, 1)
             else:
-                dust_legs = [4, 5]  # Back legs
-                if beetles[1].horn_type in ("scorpion", "spider"):
-                    dust_legs = [4, 5, 6, 7]  # Include extra back legs for 8-legged types
-                kick_dir = -1.0  # Kick backward
-            for leg_id in dust_legs:
-                # Use pre-calculated sin values based on leg group
-                # Scorpion quadrupod: Group A (0, 3, 4, 7), Group B (1, 2, 5, 6)
-                if leg_id in [0, 3, 4, 7]:  # Group A (no offset)
-                    sin_leg = red_walk_sin
-                    sin_prev_leg = red_prev_walk_sin
-                else:  # Group B (pi offset) - legs 1, 2, 5, 6
-                    sin_leg = red_walk_sin_offset
-                    sin_prev_leg = red_prev_walk_sin_offset
-                # Detect touchdown: sin crossed below -0.2 (leg firmly on ground)
-                # Triggers slightly later in cycle for better sync with animation
-                touchdown = sin_prev_leg > -0.2 and sin_leg <= -0.2
-                if touchdown:
-                    tip_x, tip_z = get_leg_tip_world_position(beetles[1], leg_id, red_leg_len)
-                    # Nudge tip forward by velocity to compensate for movement lag
-                    tip_x += beetles[1].vx * 0.13
-                    tip_z += beetles[1].vz * 0.13
-                    # Only spawn dust if leg tip is on arena floor (works for all arena modes)
-                    if has_floor_at(tip_x, tip_z):
-                        # Kick direction: backward when forward, forward when backward
-                        dir_x = kick_dir * math.cos(beetles[1].rotation)
-                        dir_z = kick_dir * math.sin(beetles[1].rotation)
-                        # Per-leg random offset for variety
-                        rand_x = (random.random() - 0.5) * 1.5
-                        rand_z = (random.random() - 0.5) * 1.5
-                        # Height scales with speed bonus: 1.0 at base, 1.5 at max (50% higher)
-                        red_height_mult = 1.0 + active_bonus * 8.57
-                        spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, red_stagger_scale, red_dust_count, red_height_mult)
-
-        # Spinning: spawn dust from back leg on opposite side
-        # Left turn (side=-1): back RIGHT leg (leg 5, and 7 for scorpion)
-        # Right turn (side=1): back LEFT leg (leg 4, and 6 for scorpion)
-        elif beetles[1].is_rotating_only:
-            beetles[1].spin_dust_timer += frame_dt
-            if beetles[1].spin_dust_timer >= 0.04:  # Every 0.04 seconds
-                beetles[1].spin_dust_timer = 0.0
-                side = beetles[1].rotation_direction  # -1 = left turn, 1 = right turn
-                if side != 0:
-                    # BACK legs on OPPOSITE side of turn
-                    # Left turn -> leg 5 (rear_right), and 7 for scorpion
-                    # Right turn -> leg 4 (rear_left), and 6 for scorpion
-                    back_legs = [5, 7] if side == 1 else [4, 6]
-                    if beetles[1].horn_type not in ("scorpion", "spider"):
-                        back_legs = back_legs[:1]  # Only first leg for 6-legged beetles
-                    for back_leg_id in back_legs:
-                        tip_x, tip_z = get_leg_tip_world_position(beetles[1], back_leg_id, red_leg_len)
-                        if has_floor_at(tip_x, tip_z):
-                            dir_x = tip_x - beetles[1].x
-                            dir_z = tip_z - beetles[1].z
-                            dir_len = math.sqrt(dir_x**2 + dir_z**2)
-                            if dir_len > 0:
-                                dir_x /= dir_len
-                                dir_z /= dir_len
-                            spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], red_stagger_scale, 1)
-
-                    # FRONT leg on SAME side of turn
-                    # Left turn -> leg 0 (front_left)
-                    # Right turn -> leg 1 (front_right)
-                    front_leg_id = 0 if side == 1 else 1
-                    tip_x, tip_z = get_leg_tip_world_position(beetles[1], front_leg_id, red_leg_len)
-                    if has_floor_at(tip_x, tip_z):
-                        dir_x = tip_x - beetles[1].x
-                        dir_z = tip_z - beetles[1].z
-                        dir_len = math.sqrt(dir_x**2 + dir_z**2)
-                        if dir_len > 0:
-                            dir_x /= dir_len
-                            dir_z /= dir_len
-                        spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
-                                            DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], red_stagger_scale, 1)
-        else:
-            beetles[1].spin_dust_timer = 0.0  # Reset timer when not spinning
+                b.spin_dust_timer = 0.0  # Reset timer when not spinning
 
     # Update previous walk phase for next frame's touchdown detection
-    beetles[0].prev_walk_phase = beetles[0].walk_phase
-    beetles[1].prev_walk_phase = beetles[1].walk_phase
+    for slot in range(active_player_count):
+        beetles[slot].prev_walk_phase = beetles[slot].walk_phase
 
     # Detect if beetles are lifted high (for leg spaz animation)
     LIFT_THRESHOLD = 5.0  # 4 voxels above normal ground
-    beetles[0].is_lifted_high = (beetles[0].y > LIFT_THRESHOLD)
-    beetles[1].is_lifted_high = (beetles[1].y > LIFT_THRESHOLD)
+    for slot in range(active_player_count):
+        beetles[slot].is_lifted_high = (beetles[slot].y > LIFT_THRESHOLD)
 
     # Victory pulse effect - each beetle has independent celebration timer
     confetti_height = 50.0  # High above the arena
@@ -20693,58 +20517,37 @@ try:
     perf_monitor.stop('voxel_clear')
 
     # Shadow discs for airborne beetles (mesh-based, no voxel grid stamping)
-    blue_needs_shadow = beetles[0].active and blue_render_y > SHADOW_HEIGHT_THRESHOLD
-    red_needs_shadow = beetles[1].active and red_render_y > SHADOW_HEIGHT_THRESHOLD
-
     shadow_idx = 0
-    if blue_needs_shadow:
-        height_factor = min((blue_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
-        radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
-        # Offset shadow 2 voxels toward the butt (opposite of facing direction)
-        shadow_x = blue_render_x - 2 * math.cos(blue_render_rotation)
-        shadow_z = blue_render_z - 2 * math.sin(blue_render_rotation)
-        renderer.set_shadow_params(shadow_idx, shadow_x, shadow_z, radius_float)
-        shadow_idx += 1
-    if red_needs_shadow:
-        height_factor = min((red_render_y - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
-        radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
-        # Offset shadow 2 voxels toward the butt (opposite of facing direction)
-        shadow_x = red_render_x - 2 * math.cos(red_render_rotation)
-        shadow_z = red_render_z - 2 * math.sin(red_render_rotation)
-        renderer.set_shadow_params(shadow_idx, shadow_x, shadow_z, radius_float)
-        shadow_idx += 1
+    for slot in range(active_player_count):
+        if beetles[slot].active and render_y[slot] > SHADOW_HEIGHT_THRESHOLD:
+            height_factor = min((render_y[slot] - SHADOW_HEIGHT_THRESHOLD) / (SHADOW_MAX_HEIGHT - SHADOW_HEIGHT_THRESHOLD), 1.0)
+            radius_float = SHADOW_BASE_RADIUS + height_factor * (SHADOW_MAX_RADIUS - SHADOW_BASE_RADIUS)
+            # Offset shadow 2 voxels toward the butt (opposite of facing direction)
+            shadow_x = render_x[slot] - 2 * math.cos(render_rotation[slot])
+            shadow_z = render_z[slot] - 2 * math.sin(render_rotation[slot])
+            renderer.set_shadow_params(shadow_idx, shadow_x, shadow_z, radius_float)
+            shadow_idx += 1
 
     # Convert horn_type string to horn_type_id for each beetle: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 4=atlas, 5=bombardier, 6=spider
     blue_horn_type_id = HORN_TYPE_IDS.get(blue_horn_type, 0)
     red_horn_type_id = HORN_TYPE_IDS.get(red_horn_type, 0)
 
-    # Get default horn pitch for blue beetle type
-    if blue_horn_type == "scorpion":
-        blue_default_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-    elif blue_horn_type == "stag":
-        blue_default_horn_pitch = HORN_DEFAULT_PITCH_STAG
-    elif blue_horn_type == "hercules":
-        blue_default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-    elif blue_horn_type == "atlas":
-        blue_default_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-    elif blue_horn_type in ("bombardier", "spider"):
-        blue_default_horn_pitch = 0.0  # No rotating horn
-    else:
-        blue_default_horn_pitch = HORN_DEFAULT_PITCH
-
-    # Get default horn pitch for red beetle type
-    if red_horn_type == "scorpion":
-        red_default_horn_pitch = HORN_DEFAULT_PITCH_SCORPION
-    elif red_horn_type == "stag":
-        red_default_horn_pitch = HORN_DEFAULT_PITCH_STAG
-    elif red_horn_type == "hercules":
-        red_default_horn_pitch = HORN_DEFAULT_PITCH_HERCULES
-    elif red_horn_type == "atlas":
-        red_default_horn_pitch = HORN_DEFAULT_PITCH_ATLAS
-    elif red_horn_type in ("bombardier", "spider"):
-        red_default_horn_pitch = 0.0  # No rotating horn
-    else:
-        red_default_horn_pitch = HORN_DEFAULT_PITCH
+    # Default horn pitch per player slot (by beetle type)
+    default_horn_pitch_by_slot = [HORN_DEFAULT_PITCH] * 4
+    for slot in range(active_player_count):
+        ht = beetles[slot].horn_type
+        if ht == "scorpion":
+            default_horn_pitch_by_slot[slot] = HORN_DEFAULT_PITCH_SCORPION
+        elif ht == "stag":
+            default_horn_pitch_by_slot[slot] = HORN_DEFAULT_PITCH_STAG
+        elif ht == "hercules":
+            default_horn_pitch_by_slot[slot] = HORN_DEFAULT_PITCH_HERCULES
+        elif ht == "atlas":
+            default_horn_pitch_by_slot[slot] = HORN_DEFAULT_PITCH_ATLAS
+        elif ht in ("bombardier", "spider"):
+            default_horn_pitch_by_slot[slot] = 0.0  # No rotating horn
+    blue_default_horn_pitch = default_horn_pitch_by_slot[0]
+    red_default_horn_pitch = default_horn_pitch_by_slot[1]
 
     # Initialize persistent slider values (needed for kernel parameters) - separate for each beetle
     if not hasattr(window, 'blue_horn_shaft_value'):
@@ -20974,13 +20777,31 @@ try:
     # === BEETLE RENDER TIMING ===
     perf_monitor.start('beetle_render')
 
-    if beetles[0].active:
-        # Render blue beetle using its own cache
-        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetles[0].body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetles[0].walk_phase, 1 if beetles[0].is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetles[0].is_rotating_only else 0, beetles[0].rotation_direction, butt_wiggle[0], butt_wiggle_dir[0], blue_charge_glow, blue_render_spray_aim * SPRAY_AIM_MAX, blue_render_spider_aim * SPIDER_AIM_MAX)
+    # Per-slot charge glow (slots 2/3 get no glow effects yet - Phase 5)
+    charge_glow_by_slot = (blue_charge_glow, red_charge_glow, 0.0, 0.0)
+    # Per-slot body geometry UI values (slots 2/3 use defaults until they get UI)
+    _ui_body_len = (window.blue_body_length_value, window.red_body_length_value, 12, 12)
+    _ui_back_height = (window.blue_back_body_height_value, window.red_back_body_height_value, 6, 6)
 
-    if beetles[1].active:
-        # Render red beetle using its own cache
-        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetles[1].body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetles[1].walk_phase, 1 if beetles[1].is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetles[1].is_rotating_only else 0, beetles[1].rotation_direction, butt_wiggle[1], butt_wiggle_dir[1], red_charge_glow, red_render_spray_aim * SPRAY_AIM_MAX, red_render_spider_aim * SPIDER_AIM_MAX)
+    for slot in range(active_player_count):
+        b = beetles[slot]
+        if not b.active:
+            continue
+        _body_id, _legs_id, _leg_tip_id = simulation.PLAYER_VOXEL_IDS[slot][:3]
+        place_beetle_kernels[slot](
+            render_x[slot], render_y[slot], render_z[slot],
+            render_rotation[slot], render_pitch[slot], render_roll[slot],
+            render_horn_pitch[slot], render_horn_yaw[slot], render_tail_pitch[slot],
+            b.horn_type_id, b.body_pitch_offset,
+            _body_id, _legs_id, _leg_tip_id,
+            b.walk_phase, 1 if b.is_lifted_high else 0,
+            default_horn_pitch_by_slot[slot],
+            _ui_body_len[slot], _ui_back_height[slot],
+            1 if b.is_rotating_only else 0, b.rotation_direction,
+            butt_wiggle[slot], butt_wiggle_dir[slot],
+            charge_glow_by_slot[slot],
+            render_spray_aim[slot] * SPRAY_AIM_MAX,
+            render_spider_aim[slot] * SPIDER_AIM_MAX)
 
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
@@ -21087,18 +20908,18 @@ try:
         update_all_stuck_silk_positions(
             [
                 # Blue beetle state (use render values for smooth interpolation)
-                (blue_render_x, blue_render_y, blue_render_z,
-                 blue_render_rotation, blue_render_pitch, blue_render_roll,
-                 blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch,
+                (render_x[0], render_y[0], render_z[0],
+                 render_rotation[0], render_pitch[0], render_roll[0],
+                 render_horn_pitch[0], render_horn_yaw[0], render_tail_pitch[0],
                  blue_horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
-                 blue_render_spray_aim * SPRAY_AIM_MAX, blue_render_spider_aim * SPIDER_AIM_MAX,
+                 render_spray_aim[0] * SPRAY_AIM_MAX, render_spider_aim[0] * SPIDER_AIM_MAX,
                  blue_default_horn_pitch),
                 # Red beetle state
-                (red_render_x, red_render_y, red_render_z,
-                 red_render_rotation, red_render_pitch, red_render_roll,
-                 red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch,
+                (render_x[1], render_y[1], render_z[1],
+                 render_rotation[1], render_pitch[1], render_roll[1],
+                 render_horn_pitch[1], render_horn_yaw[1], render_tail_pitch[1],
                  red_horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
-                 red_render_spray_aim * SPRAY_AIM_MAX, red_render_spider_aim * SPIDER_AIM_MAX,
+                 render_spray_aim[1] * SPRAY_AIM_MAX, render_spider_aim[1] * SPIDER_AIM_MAX,
                  red_default_horn_pitch),
             ],
             (ball_silk_x, ball_silk_y, ball_silk_z,
@@ -21425,9 +21246,9 @@ try:
         else:
             light_factor = 1.0  # Full brightness after fade-in complete
 
-        spotlight_mid_x = (blue_render_x + red_render_x) / 2.0
-        spotlight_mid_y = max(blue_render_y, red_render_y) + spotlight_height
-        spotlight_mid_z = (blue_render_z + red_render_z) / 2.0
+        spotlight_mid_x = (render_x[0] + render_x[1]) / 2.0
+        spotlight_mid_y = max(render_y[0], render_y[1]) + spotlight_height
+        spotlight_mid_z = (render_z[0] + render_z[1]) / 2.0
         render_spotlight_pos = (spotlight_mid_x, spotlight_mid_y, spotlight_mid_z)
         render_spotlight_strength = spotlight_strength * light_factor  # Spotlight fades in from 0
         # Base brightness: start at 1.0 (same as end of title transition), fade to full gameplay brightness

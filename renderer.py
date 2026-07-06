@@ -55,7 +55,7 @@ SKIRT_DEPTH = 2.0
 SKIRT_SHADE = 0.55
 
 # Shadow disc mesh fields (perfect circles instead of grid-based blobs)
-MAX_SHADOW_DISCS = 4  # 2 beetles + 1 ball + 1 spare
+MAX_SHADOW_DISCS = 6  # 4 beetles + 1 ball + 1 spare
 SHADOW_DISC_SEGMENTS = 32
 SHADOW_VERTS_PER_DISC = SHADOW_DISC_SEGMENTS + 1  # center + ring
 SHADOW_TRIS_PER_DISC = SHADOW_DISC_SEGMENTS
