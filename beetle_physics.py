@@ -884,6 +884,11 @@ class InputBuffer:
         self.debug_total_frames = 0  # Total frames processed
         self.debug_last_report = 0  # Last frame we printed debug info
 
+        # Cumulative session counters for the net debug HUD
+        # (debug_* counters above reset every ~2s for the periodic console report)
+        self.total_waits = 0     # Total frames spent blocked on opponent input
+        self.total_predicts = 0  # Total frames simulated with predicted/stale input
+
         # State sync (host sends authoritative state periodically)
         self.last_state_sync_frame = 0
         self.state_sync_interval = 30  # Every 30 frames (~500ms)
@@ -938,6 +943,7 @@ class InputBuffer:
                     has_remote = True
                     used_prediction = True
                     self.debug_predict_count += 1
+                    self.total_predicts += 1
                     break
 
         if has_local and has_remote:
@@ -950,6 +956,7 @@ class InputBuffer:
                 self.waiting_for_remote = True
                 self.frames_waited += 1
                 self.debug_wait_count += 1
+                self.total_waits += 1
             return False
 
     def get_frame_inputs(self, frame):
@@ -16267,6 +16274,51 @@ def reset_network_stats():
     network_stats['last_frame_diff'] = 0
     network_stats['total_wait_time_ms'] = 0.0
 
+# Net debug HUD (toggle with N key while in an online session)
+show_net_debug = False
+net_hud = {
+    'last_sync_time': 0.0,   # When guest last received a state sync (time.time())
+    'corr_blue': 0.0,        # Last correction error for blue beetle (world units)
+    'corr_red': 0.0,         # Last correction error for red beetle
+    'corr_sum': 0.0,         # Rolling window accumulators for avg/peak
+    'corr_n': 0,
+    'corr_window_peak': 0.0,
+    'corr_window_start': 0.0,
+    'corr_avg': 0.0,         # Displayed: avg correction over last completed 5s window
+    'corr_peak': 0.0,        # Displayed: peak correction over last completed 5s window
+    'snap_count': 0,         # Times guest hard-snapped to host state
+    'stale_input_frames': 0, # Host: frames simulated reusing last-known guest input
+}
+
+def reset_net_hud():
+    """Reset per-match net debug HUD stats."""
+    net_hud['last_sync_time'] = 0.0
+    net_hud['corr_blue'] = 0.0
+    net_hud['corr_red'] = 0.0
+    net_hud['corr_sum'] = 0.0
+    net_hud['corr_n'] = 0
+    net_hud['corr_window_peak'] = 0.0
+    net_hud['corr_window_start'] = time.time()
+    net_hud['corr_avg'] = 0.0
+    net_hud['corr_peak'] = 0.0
+    net_hud['snap_count'] = 0
+    net_hud['stale_input_frames'] = 0
+
+def net_hud_record_correction(err):
+    """Feed one correction-magnitude sample into the rolling 5s window."""
+    now = time.time()
+    net_hud['corr_sum'] += err
+    net_hud['corr_n'] += 1
+    if err > net_hud['corr_window_peak']:
+        net_hud['corr_window_peak'] = err
+    if now - net_hud['corr_window_start'] >= 5.0:
+        net_hud['corr_avg'] = net_hud['corr_sum'] / max(1, net_hud['corr_n'])
+        net_hud['corr_peak'] = net_hud['corr_window_peak']
+        net_hud['corr_sum'] = 0.0
+        net_hud['corr_n'] = 0
+        net_hud['corr_window_peak'] = 0.0
+        net_hud['corr_window_start'] = now
+
 # Per-beetle animation state for scorpion tail
 blue_previous_stinger_curvature = 0.0  # Track blue beetle stinger curvature
 blue_previous_tail_rotation = 0.0      # Track blue beetle tail rotation
@@ -16824,6 +16876,16 @@ try:
         else:
             window.c_key_was_pressed = False
 
+        # Toggle net debug HUD with N key (online sessions only —
+        # N is a red-beetle horn key in local hotseat mode)
+        if network_manager is not None and window.is_pressed('n'):
+            if not hasattr(window, 'n_key_was_pressed') or not window.n_key_was_pressed:
+                show_net_debug = not show_net_debug
+                print(f"Net debug HUD: {'ON' if show_net_debug else 'OFF'}")
+            window.n_key_was_pressed = True
+        else:
+            window.n_key_was_pressed = False
+
     # Helper to determine which beetle to follow in 3rd person mode
     def get_follow_beetle():
         """Returns the beetle to follow based on game mode"""
@@ -17194,6 +17256,14 @@ try:
         if not network_manager.is_host and network_manager.pending_state_sync:
             sync = network_manager.pending_state_sync
             network_manager.pending_state_sync = None  # Consume it
+
+            # Net debug HUD: measure prediction error BEFORE corrections are applied
+            net_hud['last_sync_time'] = time.time()
+            _err_blue = math.sqrt((sync['blue_x'] - beetle_blue.x) ** 2 + (sync['blue_z'] - beetle_blue.z) ** 2)
+            _err_red = math.sqrt((sync['red_x'] - beetle_red.x) ** 2 + (sync['red_z'] - beetle_red.z) ** 2)
+            net_hud['corr_blue'] = _err_blue
+            net_hud['corr_red'] = _err_red
+            net_hud_record_correction(max(_err_blue, _err_red))
 
             # Always lerp toward host state - no more snapping
             # Larger lerp factor for faster convergence since syncing more often
@@ -22926,6 +22996,7 @@ try:
             if network_manager and network_manager.is_ready_to_simulate():
                 game_state = GAME_STATE_ONLINE_PLAY
                 reset_network_stats()  # Start tracking network performance
+                reset_net_hud()  # Reset net debug HUD stats for this match
                 print(f"[Game] Sync complete! Starting simulation.")
 
             if window.GUI.button("CANCEL"):
@@ -24745,6 +24816,34 @@ try:
                 f.write("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)\n")
             print("Performance log saved to perf_log.txt")
 
+        window.GUI.end()
+
+    # === NET DEBUG HUD (toggle with N key during online sessions) ===
+    if show_net_debug and network_manager is not None and not gui_skip_content:
+        window.GUI.begin("NET DEBUG", 0.78, 0.01, 0.21, 0.40)
+        role = "HOST" if network_manager.is_host else "GUEST"
+        window.GUI.text(f"{role}  ping {network_manager.ping_ms}ms")
+        window.GUI.text(f"fps {actual_fps:3.0f}  phys/frame {physics_iterations_this_frame}")
+        rates = network_manager.pkt_rates
+        window.GUI.text(f"in  {rates['in_pps']:5.0f} pkt/s {rates['in_bps'] / 1000:5.1f} KB/s")
+        window.GUI.text(f"out {rates['out_pps']:5.0f} pkt/s {rates['out_bps'] / 1000:5.1f} KB/s")
+        frame_diff = input_buffer.remote_frame_received - input_buffer.current_frame
+        window.GUI.text(f"frame {input_buffer.current_frame}  diff {frame_diff:+d}")
+        window.GUI.text(f"delay {input_buffer.delay}f  stalls {network_stats['accumulator_drains']}")
+        window.GUI.text(f"waits {input_buffer.total_waits}  predicts {input_buffer.total_predicts}")
+        if not network_manager.is_host:
+            if net_hud['last_sync_time'] > 0:
+                sync_age_ms = (time.time() - net_hud['last_sync_time']) * 1000.0
+                window.GUI.text(f"sync age {sync_age_ms:4.0f}ms")
+            else:
+                window.GUI.text("sync age --")
+            window.GUI.text(f"corr B {net_hud['corr_blue']:.2f}  R {net_hud['corr_red']:.2f}")
+            window.GUI.text(f"corr5s avg {net_hud['corr_avg']:.2f} pk {net_hud['corr_peak']:.2f}")
+            window.GUI.text(f"snaps {net_hud['snap_count']}")
+        else:
+            window.GUI.text(f"stale inputs {net_hud['stale_input_frames']}")
+        if network_manager.sim_lag_ms > 0 or network_manager.sim_loss_pct > 0:
+            window.GUI.text(f"SIM +{network_manager.sim_lag_ms:.0f}ms / {network_manager.sim_loss_pct:.0f}% loss")
         window.GUI.end()
 
     perf_monitor.stop('gui')

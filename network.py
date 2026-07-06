@@ -15,8 +15,10 @@ Requires:
 """
 
 import os
+import sys
 import struct
 import time
+import random
 import threading
 
 # Add current directory for DLL loading
@@ -54,6 +56,21 @@ MSG_RECONNECT_REQUEST = 0x0F  # Guest requests full state after reconnecting
 MSG_RECONNECT_STATE = 0x10    # Host sends full game state snapshot
 MSG_DISCONNECT = 0x11         # Player intentionally leaving (graceful exit)
 MSG_BALL_EXPLODE = 0x12       # Host tells guest ball has exploded (with position)
+
+# Messages sent on the unreliable channel (subject to real packet loss,
+# and the only ones dropped by the --simloss debug simulator)
+UNRELIABLE_MSG_TYPES = {MSG_INPUT, MSG_PING, MSG_PONG, MSG_STATE_SYNC, MSG_FRAME_SYNC}
+
+# Short names for the debug HUD / logging
+MSG_NAMES = {
+    MSG_INPUT: "INPUT", MSG_READY: "READY", MSG_START: "START",
+    MSG_HORN_SELECT: "HORN", MSG_REMATCH: "REMATCH", MSG_PING: "PING",
+    MSG_PONG: "PONG", MSG_STATE_SYNC: "SYNC", MSG_SYNC_READY: "SYNCRDY",
+    MSG_GO: "GO", MSG_FRAME_SYNC: "FRAME", MSG_BEETLE_CONFIG: "CONFIG",
+    MSG_SCORE: "SCORE", MSG_GAME_OPTIONS: "OPTIONS",
+    MSG_RECONNECT_REQUEST: "RECONREQ", MSG_RECONNECT_STATE: "RECONST",
+    MSG_DISCONNECT: "DISCON", MSG_BALL_EXPLODE: "BALLEXP",
+}
 
 # Steam message send flags
 SEND_RELIABLE = 2       # Reliable delivery (like TCP)
@@ -171,6 +188,38 @@ class NetworkManager:
 
         # Ball explosion sync (host-authoritative)
         self.pending_ball_explode = None  # Guest: ball explosion event from host
+
+        # Wall-clock disconnect detection (works without lockstep waits)
+        self.last_packet_received_time = time.time()
+
+        # Packet statistics for the net debug HUD (N key while online)
+        self.pkt_sent = {}       # msg_type -> total count
+        self.pkt_recv = {}       # msg_type -> total count
+        self.pkt_sent_bytes = 0
+        self.pkt_recv_bytes = 0
+        self.pkt_rates = {'in_pps': 0.0, 'out_pps': 0.0, 'in_bps': 0.0, 'out_bps': 0.0}
+        self._rate_window_start = time.time()
+        self._rate_snapshot = (0, 0, 0, 0)  # (sent_count, recv_count, sent_bytes, recv_bytes)
+
+        # Network condition simulator (debug): --simlag <ms> --simloss <pct>
+        # Lag delays ALL received packets; loss drops only unreliable ones
+        # (reliable messages survive real packet loss via retransmission).
+        self.sim_lag_ms = 0.0
+        self.sim_loss_pct = 0.0
+        self._sim_queue = []  # [(deliver_time, data, sender_id), ...]
+        for i, arg in enumerate(sys.argv):
+            if arg == '--simlag' and i + 1 < len(sys.argv):
+                try:
+                    self.sim_lag_ms = max(0.0, float(sys.argv[i + 1]))
+                except ValueError:
+                    pass
+            elif arg == '--simloss' and i + 1 < len(sys.argv):
+                try:
+                    self.sim_loss_pct = min(100.0, max(0.0, float(sys.argv[i + 1])))
+                except ValueError:
+                    pass
+        if self.sim_lag_ms > 0 or self.sim_loss_pct > 0:
+            print(f"[Network] SIMULATING degraded network: +{self.sim_lag_ms:.0f}ms lag, {self.sim_loss_pct:.0f}% loss on unreliable msgs")
 
     def init(self, app_id=3998620):
         """
@@ -462,7 +511,7 @@ class NetworkManager:
         if not self.connected:
             return
 
-        horn_ids = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5}
+        horn_ids = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "spider": 6, "giraffe": 7}
         horn_id = horn_ids.get(horn_type, 0)
         self._send_packet(struct.pack('>BB', MSG_HORN_SELECT, horn_id), reliable=True)
 
@@ -697,10 +746,12 @@ class NetworkManager:
             send_type = SEND_RELIABLE if reliable else SEND_UNRELIABLE
             # Only log non-INPUT messages (INPUT is too spammy at 60/sec)
             if data and data[0] != 0x01:  # Not INPUT
-                msg_names = {0x02: "READY", 0x03: "START", 0x04: "HORN", 0x05: "REMATCH", 0x06: "PING", 0x07: "PONG"}
-                msg_name = msg_names.get(data[0], f"0x{data[0]:02x}")
+                msg_name = MSG_NAMES.get(data[0], f"0x{data[0]:02x}")
                 print(f"[Network] Sending {msg_name}")
             self.client.send_message_to(self.peer_steam_id, send_type, GAME_CHANNEL, data)
+            if data:
+                self.pkt_sent[data[0]] = self.pkt_sent.get(data[0], 0) + 1
+                self.pkt_sent_bytes += len(data)
             return True
         except Exception as e:
             print(f"[Network] Send error: {e}")
@@ -727,6 +778,33 @@ class NetworkManager:
         if self.poll_count % 60 == 0:
             queue_len = len(self.message_queue)
             print(f"[Network] Poll #{self.poll_count}: in={self.inputs_received} out={self.inputs_sent} host={self.is_host}")
+
+        # Update packet in/out rates once per second (for debug HUD)
+        now = time.time()
+        if now - self._rate_window_start >= 1.0:
+            elapsed = now - self._rate_window_start
+            sent_count = sum(self.pkt_sent.values())
+            recv_count = sum(self.pkt_recv.values())
+            s0, r0, sb0, rb0 = self._rate_snapshot
+            self.pkt_rates = {
+                'out_pps': (sent_count - s0) / elapsed,
+                'in_pps': (recv_count - r0) / elapsed,
+                'out_bps': (self.pkt_sent_bytes - sb0) / elapsed,
+                'in_bps': (self.pkt_recv_bytes - rb0) / elapsed,
+            }
+            self._rate_snapshot = (sent_count, recv_count, self.pkt_sent_bytes, self.pkt_recv_bytes)
+            self._rate_window_start = now
+
+        # Deliver simulated-lag packets whose time has come (--simlag debug)
+        if self._sim_queue:
+            due = [m for m in self._sim_queue if m[0] <= now]
+            if due:
+                self._sim_queue = [m for m in self._sim_queue if m[0] > now]
+                for _, data, sender_id in due:
+                    try:
+                        self._handle_packet(data, sender_id, input_buffer)
+                    except Exception as e:
+                        print(f"[Network] Error handling delayed packet: {e}")
 
         # Run Steam callbacks (don't skip based on is_ready - always try)
         try:
@@ -763,12 +841,12 @@ class NetworkManager:
             if result and isinstance(result, list) and len(result) > 0:
                 for msg in result:
                     if hasattr(msg, 'data'):
-                        self._handle_packet(msg.data, getattr(msg, 'sender', None), input_buffer)
+                        self._receive_packet(msg.data, getattr(msg, 'sender', None), input_buffer)
                     elif isinstance(msg, tuple) and len(msg) >= 2:
                         sender_id, data = msg[0], msg[-1]
-                        self._handle_packet(bytes(data) if not isinstance(data, bytes) else data, sender_id, input_buffer)
+                        self._receive_packet(bytes(data) if not isinstance(data, bytes) else data, sender_id, input_buffer)
                     elif isinstance(msg, bytes):
-                        self._handle_packet(msg, None, input_buffer)
+                        self._receive_packet(msg, None, input_buffer)
         except Exception as e:
             print(f"[Network] receive_messages error: {e}")
 
@@ -780,9 +858,25 @@ class NetworkManager:
 
         for sender_id, channel, data in messages:
             try:
-                self._handle_packet(data, sender_id, input_buffer)
+                self._receive_packet(data, sender_id, input_buffer)
             except Exception as e:
                 print(f"[Network] Error handling packet: {e}")
+
+    def _receive_packet(self, data, sender_id, input_buffer):
+        """
+        Entry point for all received packets.
+        Applies the debug network-condition simulator (--simlag/--simloss),
+        then hands off to _handle_packet.
+        """
+        if not data:
+            return
+        if self.sim_loss_pct > 0 and data[0] in UNRELIABLE_MSG_TYPES:
+            if random.random() * 100.0 < self.sim_loss_pct:
+                return  # Simulated packet loss
+        if self.sim_lag_ms > 0:
+            self._sim_queue.append((time.time() + self.sim_lag_ms / 1000.0, data, sender_id))
+            return
+        self._handle_packet(data, sender_id, input_buffer)
 
     def _handle_packet(self, data, sender_id, input_buffer):
         """Process a received network packet."""
@@ -790,6 +884,9 @@ class NetworkManager:
             return
 
         msg_type = data[0]
+        self.last_packet_received_time = time.time()
+        self.pkt_recv[msg_type] = self.pkt_recv.get(msg_type, 0) + 1
+        self.pkt_recv_bytes += len(data)
 
         if msg_type == MSG_INPUT:
             # Input packet: [type (1)] [frame (4)] [inputs (1)]
@@ -824,7 +921,7 @@ class NetworkManager:
             # Horn select: [type (1)] [horn_id (1)]
             if len(data) >= 2:
                 horn_id = data[1]
-                horn_names = {0: "rhino", 1: "stag", 2: "hercules", 3: "scorpion", 4: "atlas", 5: "bombardier"}
+                horn_names = {0: "rhino", 1: "stag", 2: "hercules", 3: "scorpion", 4: "atlas", 5: "bombardier", 6: "spider", 7: "giraffe"}
                 self.remote_horn = horn_names.get(horn_id, "rhino")
                 print(f"[Network] Opponent selected {self.remote_horn}")
 
