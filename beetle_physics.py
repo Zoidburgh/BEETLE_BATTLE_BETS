@@ -961,6 +961,51 @@ def get_local_inputs(window, player='blue', network_mode=False, horn_type_id=0):
     return keyboard_inputs | controller_inputs
 
 
+def get_bot_inputs(slot):
+    """Simple bot input driver for slots 2/3 (--local4 testing, and later
+    host-side network bots). Modes: idle (nothing), random (wander),
+    seek (turn toward nearest beetle and charge)."""
+    b = beetles[slot]
+    if not b.active or b.is_falling or hovering[slot]:
+        return 0
+    if BOT_AI_MODE == "idle":
+        return 0
+    if BOT_AI_MODE == "random":
+        # Deterministic wander: direction flips every ~1.5s, per-slot phase
+        phase = int((time.time() * 0.66 + slot * 7.3)) % 4
+        return (INPUT_FORWARD,
+                INPUT_FORWARD | INPUT_LEFT,
+                INPUT_FORWARD,
+                INPUT_FORWARD | INPUT_RIGHT)[phase]
+    # seek: head for the nearest other active beetle
+    best = None
+    best_d = 1e18
+    for other in range(active_player_count):
+        if other == slot:
+            continue
+        ob = beetles[other]
+        if not ob.active or ob.is_falling:
+            continue
+        d = (ob.x - b.x) ** 2 + (ob.z - b.z) ** 2
+        if d < best_d:
+            best_d = d
+            best = ob
+    if best is None:
+        return 0
+    target_ang = math.atan2(best.z - b.z, best.x - b.x)
+    diff = (target_ang - b.rotation) % (2.0 * math.pi)
+    if diff > math.pi:
+        diff -= 2.0 * math.pi
+    inputs = 0
+    if abs(diff) < 1.2:
+        inputs |= INPUT_FORWARD  # Roughly facing target - charge
+    if diff > 0.15:
+        inputs |= INPUT_RIGHT
+    elif diff < -0.15:
+        inputs |= INPUT_LEFT
+    return inputs
+
+
 # Host-authoritative input delays (frames at 60Hz).
 # Host runs authoritative physics and applies its own input immediately.
 # Guest predicts locally with zero delay too; raise GUEST_INPUT_DELAY_FRAMES
@@ -6213,6 +6258,7 @@ def rebuild_blue_beetle(*args, **kwargs):
 
 def rebuild_red_beetle(*args, **kwargs):
     return rebuild_beetle(1, *args, **kwargs)
+
 
 # ============================================================================
 # GEOMETRY CHANGE SMOOTHING - Reset walk phase to prevent leg jitter
@@ -15964,6 +16010,13 @@ previous_tail_rotation = blue_previous_tail_rotation
 # ============== WARMUP WITH LOADING SCREEN ==============
 # Phase 0 uses imgui loading bar (no renderer needed).
 # Once renderer is warm, switches to the voxel loading bar for remaining phases.
+if LOCAL4_MODE:
+    # Fill slots 2/3 geometry caches at startup (local play never calls
+    # reset_match, which would otherwise do this)
+    rebuild_beetle(2, 12, 5)
+    rebuild_beetle(3, 12, 5)
+    print("[Local4] Slots 2/3 geometry built (default rhino)")
+
 print("Warming up kernels...")
 _t_warmup_start = time.perf_counter()
 
@@ -17232,9 +17285,12 @@ try:
                 input_buffer.debug_predict_count = 0
                 input_buffer.debug_total_frames = 0
         else:
-            # LOCAL MODE: keyboard drives slot 0, controller/hotseat drives slot 1
+            # LOCAL MODE: keyboard drives slot 0, controller/hotseat drives slot 1,
+            # bots drive slots 2/3 (--local4)
             input_buffer.add_local(frame_blue_inputs)
             input_buffer.add_remote(1, input_buffer.current_frame, frame_red_inputs)
+            for _bot_slot in range(2, active_player_count):
+                input_buffer.add_remote(_bot_slot, input_buffer.current_frame, get_bot_inputs(_bot_slot))
             frame_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame, active_player_count)
             blue_inputs, red_inputs = frame_inputs[0], frame_inputs[1]
             g['last_blue_inputs'] = blue_inputs
@@ -18794,6 +18850,10 @@ try:
                     downwash_dust_timer[slot] = 0.0
                     downwash_fade_timer[slot] = 0.0
                     print(f"Beetle {slot} respawned!")
+
+        # === RESPAWN TIMERS TIMING END ===
+        _t_respawn_end = time.perf_counter()
+        _physics_timing['respawn_timers'] += (_t_respawn_end - _t_death_end) * 1000
 
         # Downwash per player slot (respawn drop pushes ALL other nearby beetles)
         def _downwash_push_others(slot, strength):
