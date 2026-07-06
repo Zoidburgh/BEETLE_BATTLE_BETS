@@ -4111,47 +4111,38 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
                 for gy in range(y_start, y_end):
                     voxel = simulation.voxel_type[gx, gy, gz]
 
-                    # Check for hook interior voxels
-                    if voxel == simulation.STAG_HOOK_INTERIOR_BLUE or voxel == simulation.STAG_HOOK_INTERIOR_RED:
+                    voxel_owner_v = simulation.beetle_owner(voxel)
+                    voxel_part_v = simulation.voxel_part[voxel]
+
+                    # Check for hook interior voxels (any player)
+                    if voxel_part_v == simulation.PART_HOOK:
                         has_hook_interior = 1
 
                     # Check if voxel belongs to entity 1 (based on color1)
                     belongs_to_1 = 0
                     is_leg_tip_1 = 0
-                    if color1 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
-                        if voxel == 5 or voxel == 7 or voxel == 11 or voxel == 13 or voxel == 18:
-                            belongs_to_1 = 1
-                        elif voxel == 9:  # Leg tip - track separately
-                            belongs_to_1 = 1
-                            is_leg_tip_1 = 1
-                    elif color1 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
-                        if voxel == 6 or voxel == 8 or voxel == 12 or voxel == 14 or voxel == 19:
-                            belongs_to_1 = 1
-                        elif voxel == 10:  # Leg tip - track separately
-                            belongs_to_1 = 1
-                            is_leg_tip_1 = 1
-                    elif color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
+                    if color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
                             belongs_to_1 = 1
+                    elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color1) and voxel_part_v != simulation.PART_VENOM_TIP:
+                        # Any of this player's parts except the venom bulb
+                        # (body/legs/stripe/horn tip/hook; leg tips tracked separately)
+                        belongs_to_1 = 1
+                        if voxel_part_v == simulation.PART_LEG_TIP:
+                            is_leg_tip_1 = 1
 
                     # Check if voxel belongs to entity 2 (based on color2)
                     belongs_to_2 = 0
                     is_leg_tip_2 = 0
-                    if color2 == simulation.BEETLE_BLUE:  # Blue beetle (5, 7, 9, 11, 13, 18)
-                        if voxel == 5 or voxel == 7 or voxel == 11 or voxel == 13 or voxel == 18:
-                            belongs_to_2 = 1
-                        elif voxel == 9:  # Leg tip - track separately
-                            belongs_to_2 = 1
-                            is_leg_tip_2 = 1
-                    elif color2 == simulation.BEETLE_RED:  # Red beetle (6, 8, 10, 12, 14, 19)
-                        if voxel == 6 or voxel == 8 or voxel == 12 or voxel == 14 or voxel == 19:
-                            belongs_to_2 = 1
-                        elif voxel == 10:  # Leg tip - track separately
-                            belongs_to_2 = 1
-                            is_leg_tip_2 = 1
-                    elif color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
+                    if color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
                         if voxel == 16 or voxel == 17:
                             belongs_to_2 = 1
+                    elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color2) and voxel_part_v != simulation.PART_VENOM_TIP:
+                        # Any of this player's parts except the venom bulb
+                        # (body/legs/stripe/horn tip/hook; leg tips tracked separately)
+                        belongs_to_2 = 1
+                        if voxel_part_v == simulation.PART_LEG_TIP:
+                            is_leg_tip_2 = 1
 
                     # Update Y-ranges based on ownership
                     if belongs_to_1 == 1:
@@ -7790,15 +7781,15 @@ def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_co
             for j in range(y_min, y_max):
                 vtype = simulation.voxel_type[i, j, k]
                 # Check if voxel belongs to target beetle/ball
-                if beetle_color == simulation.BEETLE_BLUE:
-                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_BLUE:
-                        found_in_column = 1
-                elif beetle_color == simulation.BEETLE_RED:
-                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_RED:
-                        found_in_column = 1
-                elif beetle_color == simulation.BALL:  # Ball
+                if beetle_color == simulation.BALL:  # Ball
                     if vtype == simulation.BALL:
                         found_in_column = 1
+                # Any of the target player's parts except hook interiors,
+                # plus the shared stinger tip (matches the old per-color sets)
+                elif vtype == simulation.STINGER_TIP_BLACK:
+                    found_in_column = 1
+                elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color) and simulation.voxel_part[vtype] != simulation.PART_HOOK:
+                    found_in_column = 1
 
             # Add to occupied list if found (atomic increment to avoid race conditions)
             if found_in_column == 1:
@@ -7842,10 +7833,10 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
             for vy_grid in range(y_scan_start, y_scan_end):
                 vtype = simulation.voxel_type[vx2, vy_grid, vz2]
                 if vtype != 0:  # Non-empty voxel
-                    # Check if this is a horn tip voxel
-                    if vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.BEETLE_RED_HORN_TIP or \
-                       vtype == simulation.STINGER_TIP_BLACK or \
-                       vtype == simulation.VENOM_TIP_BLUE or vtype == simulation.VENOM_TIP_RED:
+                    # Check if this is a horn tip / stinger / venom voxel (any player)
+                    if (simulation.voxel_part[vtype] == simulation.PART_HORN_TIP or
+                            simulation.voxel_part[vtype] == simulation.PART_STINGER or
+                            simulation.voxel_part[vtype] == simulation.PART_VENOM_TIP):
                         collision_has_horn_tips[None] = 1
 
                     # Check if this is a hook interior voxel
@@ -9525,12 +9516,12 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                 vtype = simulation.voxel_type[i, j, k]
                 is_beetle = 0
 
-                if beetle_color == simulation.BEETLE_BLUE:
-                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_BLUE:
-                        is_beetle = 1
-                else:
-                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_RED:
-                        is_beetle = 1
+                # Any of the target player's parts except hook interiors,
+                # plus the shared stinger tip (matches the old per-color sets)
+                if vtype == simulation.STINGER_TIP_BLACK:
+                    is_beetle = 1
+                elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color) and simulation.voxel_part[vtype] != simulation.PART_HOOK:
+                    is_beetle = 1
 
                 if is_beetle == 1:
                     world_x_v = float(i) - simulation.n_grid / 2.0
@@ -9556,12 +9547,12 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                     vtype = simulation.voxel_type[i, j, k]
                     is_beetle = 0
 
-                    if beetle_color == simulation.BEETLE_BLUE:
-                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_BLUE:
-                            is_beetle = 1
-                    else:
-                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STINGER_TIP_BLACK or vtype == simulation.VENOM_TIP_RED:
-                            is_beetle = 1
+                    # Any of the target player's parts except hook interiors,
+                    # plus the shared stinger tip (matches the old per-color sets)
+                    if vtype == simulation.STINGER_TIP_BLACK:
+                        is_beetle = 1
+                    elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color) and simulation.voxel_part[vtype] != simulation.PART_HOOK:
+                        is_beetle = 1
 
                     if is_beetle == 1:
                         world_x_v = float(i) - simulation.n_grid / 2.0
@@ -11979,16 +11970,15 @@ def render_ufo_beam(beam_x: ti.f32, ufo_y: ti.f32, beam_z: ti.f32,
                             simulation.voxel_type[gx, gy, gz] = simulation.UFO_BEAM
 
 # UFO beam collision result fields
-ufo_beam_hit_blue = ti.field(ti.i32, shape=())
-ufo_beam_hit_red = ti.field(ti.i32, shape=())
+ufo_beam_hit = ti.field(ti.i32, shape=4)  # Per player slot
 
 @ti.kernel
 def check_ufo_beam_collision(target_x: ti.f32, target_z: ti.f32, beam_bottom_y: ti.f32):
     """Check beam voxels against beetle body parts (3x3x3 neighborhood).
     beam_bottom_y = how far above floor the beam head has descended (0 = floor level).
-    Sets ufo_beam_hit_blue/red = 1 if any beetle body part found near beam."""
-    ufo_beam_hit_blue[None] = 0
-    ufo_beam_hit_red[None] = 0
+    Sets ufo_beam_hit[slot] = 1 if any beetle body part found near beam."""
+    for s in range(4):
+        ufo_beam_hit[s] = 0
     beam_radius = 2
     cx = int(target_x + simulation.n_grid / 2.0)
     cz = int(target_z + simulation.n_grid / 2.0)
@@ -12012,31 +12002,21 @@ def check_ufo_beam_collision(target_x: ti.f32, target_z: ti.f32, beam_bottom_y: 
                                     check_z = gz + nz
                                     if 0 <= check_x < simulation.n_grid and 0 <= check_y < simulation.n_grid and 0 <= check_z < simulation.n_grid:
                                         vtype = simulation.voxel_type[check_x, check_y, check_z]
-                                        # Blue beetle parts
-                                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
-                                           vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
-                                           vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE or \
-                                           vtype == simulation.VENOM_TIP_BLUE:
-                                            ufo_beam_hit_blue[None] = 1
-                                        # Red beetle parts
-                                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
-                                           vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
-                                           vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
-                                           vtype == simulation.VENOM_TIP_RED:
-                                            ufo_beam_hit_red[None] = 1
+                                        # Any player's beetle part (all parts)
+                                        owner = simulation.beetle_owner(vtype)
+                                        if owner >= 0:
+                                            ufo_beam_hit[owner] = 1
 
 # Comet collision result fields (hit flags + exact hit position like spray system)
-comet_hit_blue = ti.field(ti.i32, shape=())
-comet_hit_red = ti.field(ti.i32, shape=())
-comet_hit_pos_blue = ti.Vector.field(3, dtype=ti.f32, shape=())
-comet_hit_pos_red = ti.Vector.field(3, dtype=ti.f32, shape=())
+comet_hit = ti.field(ti.i32, shape=4)                     # Per player slot
+comet_hit_pos = ti.Vector.field(3, dtype=ti.f32, shape=4)  # Per player slot
 
 @ti.kernel
 def check_comet_collision(comet_x: ti.f32, comet_z: ti.f32, comet_render_y: ti.f32):
     """Check voxels around comet position for beetle body parts (voxel-perfect like bombardier).
     Records the exact hit voxel position for accurate explosion + lever-arm torque."""
-    comet_hit_blue[None] = 0
-    comet_hit_red[None] = 0
+    for s in range(4):
+        comet_hit[s] = 0
     check_radius = 3
     n_half = simulation.n_grid / 2.0
     cx = int(comet_x + n_half)
@@ -12050,27 +12030,16 @@ def check_comet_collision(comet_x: ti.f32, comet_z: ti.f32, comet_render_y: ti.f
                 gz = cz + dz
                 if 0 <= gx < simulation.n_grid and 0 <= gy < simulation.n_grid and 0 <= gz < simulation.n_grid:
                     vtype = simulation.voxel_type[gx, gy, gz]
-                    if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
-                       vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
-                       vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE or \
-                       vtype == simulation.VENOM_TIP_BLUE:
-                        if comet_hit_blue[None] == 0:
-                            # Record exact hit position (grid → world coords)
-                            comet_hit_pos_blue[None] = ti.math.vec3(
+                    # Any player's beetle part (all parts)
+                    owner = simulation.beetle_owner(vtype)
+                    if owner >= 0:
+                        if comet_hit[owner] == 0:
+                            # Record exact hit position (grid -> world coords)
+                            comet_hit_pos[owner] = ti.math.vec3(
                                 float(gx) - n_half,
                                 float(gy),
                                 float(gz) - n_half)
-                        comet_hit_blue[None] = 1
-                    if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
-                       vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
-                       vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
-                       vtype == simulation.VENOM_TIP_RED:
-                        if comet_hit_red[None] == 0:
-                            comet_hit_pos_red[None] = ti.math.vec3(
-                                float(gx) - n_half,
-                                float(gy),
-                                float(gz) - n_half)
-                        comet_hit_red[None] = 1
+                        comet_hit[owner] = 1
 
 @ti.kernel
 def spawn_ufo_telegraph(target_x: ti.f32, target_z: ti.f32, phase: ti.f32):
@@ -13612,19 +13581,10 @@ def check_spray_voxel_collision_kernel(target_color: ti.i32, skip_owner: ti.i32)
                                 # Bounds check
                                 if 0 <= gx < n_grid and 0 <= gy < n_grid and 0 <= gz < n_grid:
                                     vtype = simulation.voxel_type[gx, gy, gz]
-                                    # Check if voxel belongs to target beetle
-                                    if target_color == 0:  # Target is BLUE
-                                        if vtype == simulation.BEETLE_BLUE or vtype == simulation.BEETLE_BLUE_LEGS or \
-                                           vtype == simulation.LEG_TIP_BLUE or vtype == simulation.BEETLE_BLUE_STRIPE or \
-                                           vtype == simulation.BEETLE_BLUE_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_BLUE or \
-                                           vtype == simulation.VENOM_TIP_BLUE:
-                                            hit = 1
-                                    else:  # Target is RED
-                                        if vtype == simulation.BEETLE_RED or vtype == simulation.BEETLE_RED_LEGS or \
-                                           vtype == simulation.LEG_TIP_RED or vtype == simulation.BEETLE_RED_STRIPE or \
-                                           vtype == simulation.BEETLE_RED_HORN_TIP or vtype == simulation.STAG_HOOK_INTERIOR_RED or \
-                                           vtype == simulation.VENOM_TIP_RED:
-                                            hit = 1
+                                    # Check if voxel belongs to the target
+                                    # player slot (target_color = slot, any part)
+                                    if simulation.beetle_owner(vtype) == target_color and simulation.beetle_owner(vtype) >= 0:
+                                        hit = 1
 
         if hit == 1:
             simulation.spray_hit[idx] = 1
@@ -19468,8 +19428,8 @@ try:
                 # Only check voxels from beam head down to floor (not above beam head)
                 check_ufo_beam_collision(ufo_x, ufo_z, beam_head_y)
 
-                hit_blue = ufo_beam_hit_blue[None]
-                hit_red = ufo_beam_hit_red[None]
+                hit_blue = ufo_beam_hit[0]
+                hit_red = ufo_beam_hit[1]
 
                 # Apply continuous force to hit beetles (like wind but stronger)
                 for beetle, was_hit in [(beetles[0], hit_blue), (beetles[1], hit_red)]:
@@ -19717,14 +19677,14 @@ try:
                     hit_beetle = False
                     if impact[2] > 0:
                         check_comet_collision(float(cx), float(cz), float(current_y))
-                        got_blue = comet_hit_blue[None]
-                        got_red = comet_hit_red[None]
+                        got_blue = comet_hit[0]
+                        got_red = comet_hit[1]
                         if got_blue or got_red:
                             hit_beetle = True
                             impact[3] = True
                             # Read exact hit positions from GPU
-                            hit_pos_blue = comet_hit_pos_blue[None] if got_blue else None
-                            hit_pos_red = comet_hit_pos_red[None] if got_red else None
+                            hit_pos_blue = comet_hit_pos[0] if got_blue else None
+                            hit_pos_red = comet_hit_pos[1] if got_red else None
                             # Apply force using exact hit point (like bombardier spray)
                             for beetle, was_hit, hit_pos in [
                                 (beetles[0], got_blue, hit_pos_blue),
