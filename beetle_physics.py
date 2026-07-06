@@ -974,18 +974,22 @@ class InputBuffer:
     # Legacy lockstep delay - kept for reference / fallback mode
     NETWORK_INPUT_DELAY = 8
 
+    # Storage slots (matches network MAX_PLAYERS; slots 2-3 used from Phase 4)
+    NUM_SLOTS = 4
+
     def __init__(self, delay_frames=0):
         self.delay = delay_frames
-        self.local_inputs = {}    # frame_num -> input_bits (our inputs)
-        self.remote_inputs = {}   # frame_num -> input_bits (opponent inputs)
+        # Per-slot input streams: player_inputs[slot] = {frame: input_bits}
+        self.player_inputs = {s: {} for s in range(self.NUM_SLOTS)}
+        self.last_known = {s: 0 for s in range(self.NUM_SLOTS)}     # Newest bits per slot
+        self.latest_frame = {s: -1 for s in range(self.NUM_SLOTS)}  # Newest frame per slot
         self.current_frame = 0    # The frame we're about to simulate
         self.is_network_mode = False  # Set True when connected to opponent
-        self.local_player_id = 0  # 0 = host (blue), 1 = guest (red)
+        self.local_player_id = 0  # Our slot (0 = host/blue, 1-3 = guests)
 
         # Host-authoritative mode: never block waiting for remote input.
         # Set False to restore legacy lockstep behavior.
         self.host_authoritative = True
-        self.remote_last_known = 0  # Most recent remote input bits received
         self.total_stale = 0        # Frames simulated reusing stale remote input
 
         # Lockstep state
@@ -1019,19 +1023,31 @@ class InputBuffer:
         self.delay_recalc_interval = 5.0  # Recalculate delay every 5 seconds
 
     def add_local(self, inputs):
-        """Store local player's inputs for current frame + delay."""
-        # Store at current_frame (we'll use it when we reach that frame)
-        self.local_inputs[self.current_frame] = inputs
+        """Store local player's inputs for the current frame."""
+        self.player_inputs[self.local_player_id][self.current_frame] = inputs
+        self.last_known[self.local_player_id] = inputs
+        if self.current_frame > self.latest_frame[self.local_player_id]:
+            self.latest_frame[self.local_player_id] = self.current_frame
 
-    def add_remote(self, frame, inputs):
-        """Store remote player's inputs (received from network)."""
-        self.remote_inputs[frame] = inputs
+    def add_remote(self, slot, frame, inputs):
+        """Store a remote player's inputs (received from network)."""
+        self.player_inputs[slot][frame] = inputs
 
-        # Track highest frame received for sync detection
-        # and remember its input as the last-known fallback
+        # Track newest frame/bits per slot (last-known fallback)
+        if frame > self.latest_frame[slot]:
+            self.latest_frame[slot] = frame
+            self.last_known[slot] = inputs
+        # Aggregate "highest remote frame" for sync diagnostics
         if frame > self.remote_frame_received:
             self.remote_frame_received = frame
-            self.remote_last_known = inputs
+
+    def clear_remote_inputs(self):
+        """Forget all remote input (e.g. on disconnect, to stop ghost beetles)."""
+        for s in range(self.NUM_SLOTS):
+            if s != self.local_player_id:
+                self.player_inputs[s].clear()
+                self.last_known[s] = 0
+                self.latest_frame[s] = -1
 
     def get_sim_frame(self):
         """Get the frame number we should be simulating (current - delay)."""
@@ -1054,22 +1070,27 @@ class InputBuffer:
             self.debug_total_frames += 1
             return True
 
+        # Legacy 2P lockstep path (host_authoritative=False fallback only)
         sim_frame = self.get_sim_frame()
+        local_slot = self.local_player_id
+        remote_slot = 1 - local_slot
+        local_stream = self.player_inputs[local_slot]
+        remote_stream = self.player_inputs[remote_slot]
 
         # Check if we have local input for this frame
-        has_local = sim_frame in self.local_inputs
+        has_local = sim_frame in local_stream
 
         # Check if we have remote input for this frame
         # Due to UDP packet loss, we might be missing exact frames
         # If we have a newer frame, use that instead (input prediction)
-        has_remote = sim_frame in self.remote_inputs
+        has_remote = sim_frame in remote_stream
         used_prediction = False
-        if not has_remote and self.remote_frame_received >= sim_frame:
+        if not has_remote and self.latest_frame[remote_slot] >= sim_frame:
             # We have newer inputs - find the closest one and use it
-            for f in range(sim_frame, self.remote_frame_received + 1):
-                if f in self.remote_inputs:
+            for f in range(sim_frame, self.latest_frame[remote_slot] + 1):
+                if f in remote_stream:
                     # Copy this input to the missing frame (assume same input)
-                    self.remote_inputs[sim_frame] = self.remote_inputs[f]
+                    remote_stream[sim_frame] = remote_stream[f]
                     has_remote = True
                     used_prediction = True
                     self.debug_predict_count += 1
@@ -1089,46 +1110,30 @@ class InputBuffer:
                 self.total_waits += 1
             return False
 
-    def get_frame_inputs(self, frame):
+    def get_input_for(self, slot, frame):
+        """Input bits for one slot at one frame: exact if present, else the
+        newest received (host-authoritative last-known fallback)."""
+        stream = self.player_inputs[slot]
+        if frame in stream:
+            return stream[frame]
+        if slot != self.local_player_id and self.is_network_mode:
+            self.total_stale += 1
+        return self.last_known[slot]
+
+    def get_frame_inputs(self, frame, count=2):
         """
         Get inputs for a physics frame.
 
-        Returns: (blue_inputs, red_inputs)
+        Returns: list of input bits indexed by player slot, length `count`.
         """
-        if not self.is_network_mode:
-            # Local mode: simple delay-based lookup
-            target = frame - self.delay
-            local = self.local_inputs.get(target, 0)
-            remote = self.remote_inputs.get(target, 0)
-            return local, remote
-
-        # Network mode
-        sim_frame = self.get_sim_frame()
-        local = self.local_inputs.get(sim_frame, 0)
-        if sim_frame in self.remote_inputs:
-            remote = self.remote_inputs[sim_frame]
-        else:
-            # Host-authoritative fallback: reuse the newest input we have
-            # rather than blocking (or zeroing) on a late/lost packet
-            remote = self.remote_last_known
-            self.total_stale += 1
-
-        if self.local_player_id == 0:
-            # We are host (blue): local=blue, remote=red
-            return local, remote
-        else:
-            # We are guest (red): local=red, remote=blue
-            return remote, local
+        target = frame - self.delay if not self.is_network_mode else self.get_sim_frame()
+        target = max(0, target)
+        return [self.get_input_for(slot, target) for slot in range(count)]
 
     def has_inputs_for_frame(self, frame):
-        """Check if we have all inputs needed to process a frame."""
+        """Check if we can process a frame (legacy lockstep helper)."""
         if not self.is_network_mode:
-            target = frame - self.delay
-            if target < 0:
-                return True
-            return target in self.local_inputs and target in self.remote_inputs
-
-        # In lockstep mode, use can_simulate()
+            return True
         return self.can_simulate()
 
     def advance_frame(self):
@@ -1137,10 +1142,9 @@ class InputBuffer:
 
         # Cleanup old inputs (keep last 120 frames = 2 seconds)
         cleanup_threshold = self.current_frame - 120
-        for k in [k for k in self.local_inputs if k <= cleanup_threshold]:
-            del self.local_inputs[k]
-        for k in [k for k in self.remote_inputs if k <= cleanup_threshold]:
-            del self.remote_inputs[k]
+        for stream in self.player_inputs.values():
+            for k in [k for k in stream if k <= cleanup_threshold]:
+                del stream[k]
 
     def _get_percentile_ping(self, percentile=90):
         """Get the Nth percentile ping from samples (jitter buffer technique).
@@ -1216,15 +1220,16 @@ class InputBuffer:
 
     def reset(self):
         """Reset buffer for new match."""
-        self.local_inputs.clear()
-        self.remote_inputs.clear()
+        for s in range(self.NUM_SLOTS):
+            self.player_inputs[s].clear()
+            self.last_known[s] = 0
+            self.latest_frame[s] = -1
         self.current_frame = 0
         self.waiting_for_remote = False
         self.frames_waited = 0
         self.remote_frame_received = -1
         self.frames_behind = 0
         self.last_state_sync_frame = 0
-        self.remote_last_known = 0
         self.total_stale = 0
         self.total_waits = 0
         self.total_predicts = 0
@@ -17758,8 +17763,7 @@ try:
                 opponent_disconnected = True
                 opponent_left_gracefully = True
                 # Stop the ghost: don't keep replaying their last-known input
-                input_buffer.remote_last_known = 0
-                input_buffer.remote_inputs.clear()
+                input_buffer.clear_remote_inputs()
                 print("[Network] Opponent left the game")
             network_manager.pending_disconnect = False  # Consume the flag
         # Fallback: If no packets of ANY kind for 3 seconds, connection lost.
@@ -17770,8 +17774,7 @@ try:
                 opponent_disconnected = True
                 opponent_left_gracefully = False
                 # Stop the ghost: don't keep replaying their last-known input
-                input_buffer.remote_last_known = 0
-                input_buffer.remote_inputs.clear()
+                input_buffer.clear_remote_inputs()
                 print("[Network] Connection lost...")
         elif opponent_disconnected and not opponent_left_gracefully:
             # A packet arrived within the last 3s - they're back!
@@ -17810,6 +17813,7 @@ try:
     # Get inputs for physics (updated inside loop for network mode)
     # Also track last known inputs for animation when network stalls
     blue_inputs, red_inputs = 0, 0
+    frame_inputs = [0, 0, 0, 0]
     network_stalled = False  # Track if we're waiting for opponent inputs
 
     MAX_PHYSICS_STEPS_PER_FRAME = 4  # Cap catch-up to prevent freeze during lag spikes
@@ -17859,8 +17863,9 @@ try:
                     accumulator += PHYSICS_TIMESTEP
                 network_manager.target_frame = None  # Consumed
 
-            # Get inputs for this frame
-            blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
+            # Get inputs for this frame (list indexed by player slot)
+            frame_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame, active_player_count)
+            blue_inputs, red_inputs = frame_inputs[0], frame_inputs[1]
             # Store for animation when network stalls
             g['last_blue_inputs'] = blue_inputs
             g['last_red_inputs'] = red_inputs
@@ -17879,10 +17884,11 @@ try:
                 input_buffer.debug_predict_count = 0
                 input_buffer.debug_total_frames = 0
         else:
-            # LOCAL MODE: Store inputs and get them
+            # LOCAL MODE: keyboard drives slot 0, controller/hotseat drives slot 1
             input_buffer.add_local(frame_blue_inputs)
-            input_buffer.add_remote(input_buffer.current_frame, frame_red_inputs)
-            blue_inputs, red_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame)
+            input_buffer.add_remote(1, input_buffer.current_frame, frame_red_inputs)
+            frame_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame, active_player_count)
+            blue_inputs, red_inputs = frame_inputs[0], frame_inputs[1]
             g['last_blue_inputs'] = blue_inputs
             g['last_red_inputs'] = red_inputs
         # Save previous state for interpolation
@@ -17909,7 +17915,7 @@ try:
         for slot in range(active_player_count):
             beetle = beetles[slot]
             opp = beetles[1 - slot]
-            p_inputs = (blue_inputs, red_inputs)[slot]
+            p_inputs = frame_inputs[slot]
             if beetle.active and not beetle.is_falling and not hovering[slot]:
                 # Rotation controls (F/H) - BLOCKED during horn collision
                 # 30% faster rotation when spinning in place (not moving forward/backward)

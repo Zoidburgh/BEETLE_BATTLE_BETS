@@ -1024,6 +1024,8 @@ class NetworkManager:
 
         if msg_type == MSG_INPUT:
             # Input packet: [type (1)] [frame (4)] [inputs (1)]
+            # Sender's player slot is resolved from its Steam ID (authoritative,
+            # unspoofable - the packet itself carries no slot byte)
             if len(data) >= 6:
                 _, frame, inputs = struct.unpack('>BIB', data[:6])
                 self.inputs_received += 1
@@ -1031,7 +1033,9 @@ class NetworkManager:
                     # Debug: log frame mismatch periodically
                     if self.inputs_received % 60 == 1:
                         print(f"[Network] Frame check: received={frame}, local={input_buffer.current_frame}, diff={input_buffer.current_frame - frame}")
-                    input_buffer.add_remote(frame, inputs)
+                    slot = self.slot_for_sender(sender_id)
+                    if slot is not None:
+                        input_buffer.add_remote(slot, frame, inputs)
 
         elif msg_type == MSG_READY:
             # [type:1][protocol_version:1] - old builds send just [type:1]
