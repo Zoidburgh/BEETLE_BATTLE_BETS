@@ -17917,595 +17917,308 @@ try:
 
         # NOTE: silk_counts fetched ONCE per frame before physics loop (GPU sync optimization)
 
-        # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
-        if beetle_blue.active and not beetle_blue.is_falling and not hovering[0]:
-            # Rotation controls (F/H) - BLOCKED during horn collision
-            # 30% faster rotation when spinning in place (not moving forward/backward)
-            if not beetle_blue.in_horn_collision:
-                # Check if rotating without moving (skill-based faster turning)
-                is_moving = (blue_inputs & INPUT_FORWARD) or (blue_inputs & INPUT_BACKWARD)
-                # Speed boost turn penalty: faster you go, harder to turn
-                # Normalize bonus so both forward (150%) and backward (80%) reach 50% turn at max
-                if beetle_blue.forward_bonus >= beetle_blue.backward_bonus:
-                    normalized_bonus = beetle_blue.forward_bonus / 1.50
+        # === BEETLE CONTROLS (per player slot) - TANK STYLE ===
+        # Merged from the formerly duplicated BLUE (TFGH) / RED (IJKL) blocks.
+        # Comments reference blue's local-play keys (F/H rotate, T/G move,
+        # R/Y/V/B horn) - red's are J/L, I/K, U/O/N/M respectively.
+        for slot in range(active_player_count):
+            beetle = beetles[slot]
+            opp = beetles[1 - slot]
+            p_inputs = (blue_inputs, red_inputs)[slot]
+            if beetle.active and not beetle.is_falling and not hovering[slot]:
+                # Rotation controls (F/H) - BLOCKED during horn collision
+                # 30% faster rotation when spinning in place (not moving forward/backward)
+                if not beetle.in_horn_collision:
+                    # Check if rotating without moving (skill-based faster turning)
+                    is_moving = (p_inputs & INPUT_FORWARD) or (p_inputs & INPUT_BACKWARD)
+                    # Speed boost turn penalty: faster you go, harder to turn
+                    # Normalize bonus so both forward (150%) and backward (80%) reach 50% turn at max
+                    if beetle.forward_bonus >= beetle.backward_bonus:
+                        normalized_bonus = beetle.forward_bonus / 1.50
+                    else:
+                        normalized_bonus = beetle.backward_bonus / 0.80
+                    turn_penalty = max(0.65, 1.0 - normalized_bonus * 0.35)  # Scales to 65% turn speed (35% penalty) over 3 sec
+                    rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
+                    # Spider gets 35% faster turning (agile hunter)
+                    if beetle.horn_type_id == 6:
+                        rotation_multiplier *= 1.35
+
+                    if p_inputs & INPUT_LEFT:
+                        beetle.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
+                    if p_inputs & INPUT_RIGHT:
+                        beetle.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
+
+                # Movement controls (T/G) - move in facing direction
+                # Silk slowdown: 1% slower per silk particle attached to body
+                # silk_counts fetched once per frame before physics loop (GPU sync optimization)
+                if silk_might_exist and silk_counts is not None:
+                    silk_slowdown[slot] = max(0.0, 1.0 - 0.01 * silk_counts[slot * 2])
+                    # Floor silk effect: spiders get boost, others get slowed
+                    floor_silk_count = silk_counts[slot * 2 + 1]
+                    if beetle.horn_type_id == 6:  # Spider
+                        floor_modifier[slot] = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
+                    else:
+                        floor_modifier[slot] = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
+                    speed_mult[slot] = silk_slowdown[slot] * floor_modifier[slot]
                 else:
-                    normalized_bonus = beetle_blue.backward_bonus / 0.80
-                turn_penalty = max(0.65, 1.0 - normalized_bonus * 0.35)  # Scales to 65% turn speed (35% penalty) over 3 sec
-                rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
-                # Spider gets 35% faster turning (agile hunter)
-                if beetle_blue.horn_type_id == 6:
-                    rotation_multiplier *= 1.35
+                    speed_mult[slot] = 1.0  # No silk = no slowdown
+                beetle.silk_speed_mult = speed_mult[slot]  # Set on beetle for max speed cap
 
-                if blue_inputs & INPUT_LEFT:
-                    beetle_blue.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
-                if blue_inputs & INPUT_RIGHT:
-                    beetle_blue.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
-
-            # Movement controls (T/G) - move in facing direction
-            # Silk slowdown: 1% slower per silk particle attached to body
-            # silk_counts fetched once per frame before physics loop (GPU sync optimization)
-            if silk_might_exist and silk_counts is not None:
-                silk_slowdown[0] = max(0.0, 1.0 - 0.01 * silk_counts[0])
-                # Floor silk effect: spiders get boost, others get slowed
-                floor_silk_count = silk_counts[1]
-                if beetle_blue.horn_type_id == 6:  # Spider
-                    floor_modifier[0] = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
+                # Speed boost system - track hold time and calculate bonus
+                if p_inputs & INPUT_FORWARD:
+                    beetle.forward_hold_time += PHYSICS_TIMESTEP
                 else:
-                    floor_modifier[0] = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
-                speed_mult[0] = silk_slowdown[0] * floor_modifier[0]
-            else:
-                speed_mult[0] = 1.0  # No silk = no slowdown
-            beetle_blue.silk_speed_mult = speed_mult[0]  # Set on beetle for max speed cap
-
-            # Speed boost system - track hold time and calculate bonus
-            if blue_inputs & INPUT_FORWARD:
-                beetle_blue.forward_hold_time += PHYSICS_TIMESTEP
-            else:
-                beetle_blue.forward_hold_time = 0.0
-            if blue_inputs & INPUT_BACKWARD:
-                beetle_blue.backward_hold_time += PHYSICS_TIMESTEP
-            else:
-                beetle_blue.backward_hold_time = 0.0
-            # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
-            beetle_blue.forward_bonus = min(1.50, beetle_blue.forward_hold_time / 3.0 * 1.50)
-            beetle_blue.backward_bonus = min(0.80, beetle_blue.backward_hold_time / 3.0 * 0.80)
-
-            if blue_inputs & INPUT_FORWARD:
-                # Move forward in facing direction
-                move_x = math.cos(beetle_blue.rotation)
-                move_z = math.sin(beetle_blue.rotation)
-                # Force scales with speed bonus to reach higher cap
-                forward_force_mult = speed_mult[0] * (1.0 + beetle_blue.forward_bonus)
-                beetle_blue.apply_force(move_x * MOVE_FORCE * forward_force_mult, move_z * MOVE_FORCE * forward_force_mult, PHYSICS_TIMESTEP)
-            if blue_inputs & INPUT_BACKWARD:
-                # Move backward in facing direction
-                move_x = -math.cos(beetle_blue.rotation)
-                move_z = -math.sin(beetle_blue.rotation)
-                # Force scales with speed bonus to reach higher cap
-                backward_force_mult = speed_mult[0] * (1.0 + beetle_blue.backward_bonus)
-                beetle_blue.apply_force(move_x * BACKWARD_MOVE_FORCE * backward_force_mult, move_z * BACKWARD_MOVE_FORCE * backward_force_mult, PHYSICS_TIMESTEP)
-
-            # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
-            if beetle_blue.horn_type_id == 5:  # bombardier
-                forward_x = math.cos(beetle_blue.rotation)
-                forward_z = math.sin(beetle_blue.rotation)
-
-                # Only fire if cooldown ready AND have charges
-                if spray_cooldown[0] <= 0 and spray_charges[0] > 0:
-                    if blue_inputs & INPUT_HORN_UP:  # Forward spray
-                        spray_burst_remaining[0] = SPRAY_BURST_PARTICLES
-                        spray_burst_dir[0] = (forward_x, forward_z)
-                        spray_burst_angle[0] = 0.0  # Straight ahead
-                        spray_cooldown[0] = SPRAY_COOLDOWN
-                        butt_wiggle[0] = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir[0] = 1.0  # Forward = contract
-                        spray_charges[0] -= 1  # Consume charge
-                        # Forward spray: positive aim = spray goes UP (matches tilt direction)
-                        spray_aim_y[0] = spray_aim[0] * 14.0
-                    elif blue_inputs & INPUT_HORN_DOWN:  # Backward spray
-                        spray_burst_remaining[0] = SPRAY_BURST_PARTICLES
-                        spray_burst_dir[0] = (-forward_x, -forward_z)
-                        spray_burst_angle[0] = 0.0  # Straight back
-                        spray_cooldown[0] = SPRAY_COOLDOWN
-                        butt_wiggle[0] = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir[0] = -1.0  # Backward = extend
-                        spray_charges[0] -= 1  # Consume charge
-                        # Backward spray: positive aim = spray goes DOWN (inverted)
-                        spray_aim_y[0] = -spray_aim[0] * 14.0
-
-                # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
-                # Direct adjustment - holds position when keys released
-                aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
-                if blue_inputs & INPUT_HORN_LEFT:
-                    spray_aim[0] = min(1.0, spray_aim[0] + aim_adjust_speed)
-                elif blue_inputs & INPUT_HORN_RIGHT:
-                    spray_aim[0] = max(-1.0, spray_aim[0] - aim_adjust_speed)
-                # No else - holds current position when no keys pressed
-
-                # Skip horn controls for bombardier
-                pitch_pressed = False
-                yaw_pressed = False
-            elif beetle_blue.horn_type_id == 6:  # spider
-                # Spider abdomen aim - V tilts butt UP, B returns to level
-                # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
-                aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
-                if blue_inputs & INPUT_HORN_LEFT:
-                    spider_aim[0] = max(-1.0, spider_aim[0] - aim_adjust_speed)
-                elif blue_inputs & INPUT_HORN_RIGHT:
-                    spider_aim[0] = min(0.0, spider_aim[0] + aim_adjust_speed)
-
-                # Silk firing - R for slow lob, Y for fast shot
-                if blue_inputs & INPUT_HORN_UP:  # R key
-                    silk_firing[0] = True
-                    silk_speed[0] = SILK_SPEED_SLOW
-                elif blue_inputs & INPUT_HORN_DOWN:  # Y key
-                    silk_firing[0] = True
-                    silk_speed[0] = SILK_SPEED_FAST
+                    beetle.forward_hold_time = 0.0
+                if p_inputs & INPUT_BACKWARD:
+                    beetle.backward_hold_time += PHYSICS_TIMESTEP
                 else:
-                    silk_firing[0] = False
+                    beetle.backward_hold_time = 0.0
+                # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
+                beetle.forward_bonus = min(1.50, beetle.forward_hold_time / 3.0 * 1.50)
+                beetle.backward_bonus = min(0.80, beetle.backward_hold_time / 3.0 * 0.80)
 
-                # Skip normal horn controls for spider
-                pitch_pressed = False
-                yaw_pressed = False
-            else:
-                # Horn controls - OPTIMIZED for combined pitch+yaw movements
-                # Calculate proposed pitch and yaw changes
-                pitch_pressed = (blue_inputs & INPUT_HORN_UP) or (blue_inputs & INPUT_HORN_DOWN)
-                yaw_pressed = (blue_inputs & INPUT_HORN_LEFT) or (blue_inputs & INPUT_HORN_RIGHT)
+                if p_inputs & INPUT_FORWARD:
+                    # Move forward in facing direction
+                    move_x = math.cos(beetle.rotation)
+                    move_z = math.sin(beetle.rotation)
+                    # Force scales with speed bonus to reach higher cap
+                    forward_force_mult = speed_mult[slot] * (1.0 + beetle.forward_bonus)
+                    beetle.apply_force(move_x * MOVE_FORCE * forward_force_mult, move_z * MOVE_FORCE * forward_force_mult, PHYSICS_TIMESTEP)
+                if p_inputs & INPUT_BACKWARD:
+                    # Move backward in facing direction
+                    move_x = -math.cos(beetle.rotation)
+                    move_z = -math.sin(beetle.rotation)
+                    # Force scales with speed bonus to reach higher cap
+                    backward_force_mult = speed_mult[slot] * (1.0 + beetle.backward_bonus)
+                    beetle.apply_force(move_x * BACKWARD_MOVE_FORCE * backward_force_mult, move_z * BACKWARD_MOVE_FORCE * backward_force_mult, PHYSICS_TIMESTEP)
 
-            new_pitch = beetle_blue.horn_pitch
-            new_yaw = beetle_blue.horn_yaw
-            pitch_speed = 0.0
-            yaw_speed = 0.0
+                # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
+                if beetle.horn_type_id == 5:  # bombardier
+                    forward_x = math.cos(beetle.rotation)
+                    forward_z = math.sin(beetle.rotation)
 
-            # Calculate new pitch if pitch keys pressed
-            # OPTIMIZATION: Use lookup table instead of string comparisons
-            max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_blue.horn_type_id]
+                    # Only fire if cooldown ready AND have charges
+                    if spray_cooldown[slot] <= 0 and spray_charges[slot] > 0:
+                        if p_inputs & INPUT_HORN_UP:  # Forward spray
+                            spray_burst_remaining[slot] = SPRAY_BURST_PARTICLES
+                            spray_burst_dir[slot] = (forward_x, forward_z)
+                            spray_burst_angle[slot] = 0.0  # Straight ahead
+                            spray_cooldown[slot] = SPRAY_COOLDOWN
+                            butt_wiggle[slot] = BUTT_WIGGLE_DURATION  # Start pucker animation
+                            butt_wiggle_dir[slot] = 1.0  # Forward = contract
+                            spray_charges[slot] -= 1  # Consume charge
+                            # Forward spray: positive aim = spray goes UP (matches tilt direction)
+                            spray_aim_y[slot] = spray_aim[slot] * 14.0
+                        elif p_inputs & INPUT_HORN_DOWN:  # Backward spray
+                            spray_burst_remaining[slot] = SPRAY_BURST_PARTICLES
+                            spray_burst_dir[slot] = (-forward_x, -forward_z)
+                            spray_burst_angle[slot] = 0.0  # Straight back
+                            spray_cooldown[slot] = SPRAY_COOLDOWN
+                            butt_wiggle[slot] = BUTT_WIGGLE_DURATION  # Start pucker animation
+                            butt_wiggle_dir[slot] = -1.0  # Backward = extend
+                            spray_charges[slot] -= 1  # Consume charge
+                            # Backward spray: positive aim = spray goes DOWN (inverted)
+                            spray_aim_y[slot] = -spray_aim[slot] * 14.0
 
-            # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle_blue.horn_type_id == 3 else (HORN_YAW_SPEED if beetle_blue.horn_type_id == 7 else HORN_TILT_SPEED)
+                    # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
+                    # Direct adjustment - holds position when keys released
+                    aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
+                    if p_inputs & INPUT_HORN_LEFT:
+                        spray_aim[slot] = min(1.0, spray_aim[slot] + aim_adjust_speed)
+                    elif p_inputs & INPUT_HORN_RIGHT:
+                        spray_aim[slot] = max(-1.0, spray_aim[slot] - aim_adjust_speed)
+                    # No else - holds current position when no keys pressed
 
-            if blue_inputs & INPUT_HORN_UP:
-                effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
-                new_pitch = beetle_blue.horn_pitch + effective_speed * PHYSICS_TIMESTEP
-                new_pitch = min(max_pitch_limit, new_pitch)
-                # Only set velocity if horn actually moved (not clamped at max)
-                if abs(new_pitch - beetle_blue.horn_pitch) > 0.001:
-                    pitch_speed = effective_speed
-            elif blue_inputs & INPUT_HORN_DOWN:
-                effective_speed = base_tilt_speed * (1.0 - beetle_blue.horn_pitch_damping)
-                new_pitch = beetle_blue.horn_pitch - effective_speed * PHYSICS_TIMESTEP
-                new_pitch = max(min_pitch_limit, new_pitch)
-                # Only set velocity if horn actually moved (not clamped at min)
-                if abs(new_pitch - beetle_blue.horn_pitch) > 0.001:
-                    pitch_speed = -effective_speed
+                    # Skip horn controls for bombardier
+                    pitch_pressed = False
+                    yaw_pressed = False
+                elif beetle.horn_type_id == 6:  # spider
+                    # Spider abdomen aim - V tilts butt UP, B returns to level
+                    # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
+                    aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
+                    if p_inputs & INPUT_HORN_LEFT:
+                        spider_aim[slot] = max(-1.0, spider_aim[slot] - aim_adjust_speed)
+                    elif p_inputs & INPUT_HORN_RIGHT:
+                        spider_aim[slot] = min(0.0, spider_aim[slot] + aim_adjust_speed)
 
-            # Calculate new yaw if yaw keys pressed
-            # For scorpion type, V/B control tail rotation angle instead of horn yaw
-            # OPTIMIZATION: Use horn_type_id == 3 instead of string comparison
-            if beetle_blue.horn_type_id == 3:  # scorpion
-                # SCORPION: V pushes tail down, release returns to max up (B reserved for venom)
-                TAIL_ROTATION_SPEED = 50.0  # Degrees per second (push down)
-                TAIL_RETURN_SPEED = 35.0    # Degrees per second (passive return)
-                TAIL_MAX_UP = 20.0          # Resting position (max up)
-                TAIL_MAX_DOWN = -25.0       # Fully pushed down
+                    # Silk firing - R for slow lob, Y for fast shot
+                    if p_inputs & INPUT_HORN_UP:  # R key
+                        silk_firing[slot] = True
+                        silk_speed[slot] = SILK_SPEED_SLOW
+                    elif p_inputs & INPUT_HORN_DOWN:  # Y key
+                        silk_firing[slot] = True
+                        silk_speed[slot] = SILK_SPEED_FAST
+                    else:
+                        silk_firing[slot] = False
 
-                if blue_inputs & INPUT_HORN_LEFT:
-                    # V = Push tail down (for striking)
-                    beetle_blue.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_blue.tail_rotation_angle = max(TAIL_MAX_DOWN, beetle_blue.tail_rotation_angle)
+                    # Skip normal horn controls for spider
+                    pitch_pressed = False
+                    yaw_pressed = False
                 else:
-                    # No key = passively return to max up position
-                    if beetle_blue.tail_rotation_angle < TAIL_MAX_UP:
-                        beetle_blue.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
-                        beetle_blue.tail_rotation_angle = min(TAIL_MAX_UP, beetle_blue.tail_rotation_angle)
+                    # Horn controls - OPTIMIZED for combined pitch+yaw movements
+                    # Calculate proposed pitch and yaw changes
+                    pitch_pressed = (p_inputs & INPUT_HORN_UP) or (p_inputs & INPUT_HORN_DOWN)
+                    yaw_pressed = (p_inputs & INPUT_HORN_LEFT) or (p_inputs & INPUT_HORN_RIGHT)
 
-                # B = Venom shot from tail tip
-                if (blue_inputs & INPUT_HORN_RIGHT) and venom_cooldown[0] <= 0 and venom_charges[0] > 0:
-                    # Get direction for venom shot
-                    dir_x, dir_z = get_scorpion_venom_direction(beetle_blue)
+                new_pitch = beetle.horn_pitch
+                new_yaw = beetle.horn_yaw
+                pitch_speed = 0.0
+                yaw_speed = 0.0
 
-                    # Start venom burst (position calculated when spawning particles)
-                    venom_burst_remaining[0] = VENOM_BURST_PARTICLES
-                    venom_burst_dir[0] = (dir_x, dir_z)
-                    venom_cooldown[0] = VENOM_COOLDOWN
-                    venom_charges[0] -= 1
-
-                # Don't set yaw_pressed for scorpion (skip horn collision checks)
-                yaw_pressed = False
-            else:
-                # OTHER TYPES: V/B control horn yaw (claws)
+                # Calculate new pitch if pitch keys pressed
                 # OPTIMIZATION: Use lookup table instead of string comparisons
-                max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_blue.horn_type_id]
+                max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle.horn_type_id]
 
-                if blue_inputs & INPUT_HORN_LEFT:
-                    # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
-                    base_yaw_speed = HORN_TILT_SPEED if beetle_blue.horn_type_id == 7 else HORN_YAW_SPEED
-                    effective_speed = base_yaw_speed * (1.0 - beetle_blue.horn_yaw_damping)
+                # Scorpion claws move slower (horn_type_id == 3)
+                base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle.horn_type_id == 3 else (HORN_YAW_SPEED if beetle.horn_type_id == 7 else HORN_TILT_SPEED)
 
-                    new_yaw = beetle_blue.horn_yaw - effective_speed * PHYSICS_TIMESTEP
-                    new_yaw = max(min_yaw_limit, new_yaw)
-                    # Only set velocity if horn actually moved (not clamped at min)
-                    if abs(new_yaw - beetle_blue.horn_yaw) > 0.001:
-                        yaw_speed = -effective_speed
-
-                        # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                        # Only apply if horn is actually moving
-                        if beetle_red.active:
-                            has_real_collision = check_collision_kernel(
-                                beetle_blue.x, beetle_blue.z, beetle_blue.y,
-                                beetle_red.x, beetle_red.z, beetle_red.y,
-                                beetle_blue.color, beetle_red.color
-                            )
-                            if has_real_collision:
-                                # Apply push force to opponent (forward + lift)
-                                forward_x = math.cos(beetle_blue.rotation)
-                                forward_z = math.sin(beetle_blue.rotation)
-                                push_force = 40.0 * PHYSICS_TIMESTEP
-                                beetle_red.vx += forward_x * push_force
-                                beetle_red.vz += forward_z * push_force
-                                beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                                beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-                elif blue_inputs & INPUT_HORN_RIGHT:
-                    # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
-                    base_yaw_speed = HORN_TILT_SPEED if beetle_blue.horn_type_id == 7 else HORN_YAW_SPEED
-                    effective_speed = base_yaw_speed * (1.0 - beetle_blue.horn_yaw_damping)
-
-                    new_yaw = beetle_blue.horn_yaw + effective_speed * PHYSICS_TIMESTEP
-                    new_yaw = min(max_yaw_limit, new_yaw)
+                if p_inputs & INPUT_HORN_UP:
+                    effective_speed = base_tilt_speed * (1.0 - beetle.horn_pitch_damping)
+                    new_pitch = beetle.horn_pitch + effective_speed * PHYSICS_TIMESTEP
+                    new_pitch = min(max_pitch_limit, new_pitch)
                     # Only set velocity if horn actually moved (not clamped at max)
-                    if abs(new_yaw - beetle_blue.horn_yaw) > 0.001:
-                        yaw_speed = effective_speed
-
-                        # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                        # Only apply if horn is actually moving
-                        if beetle_red.active:
-                            has_real_collision = check_collision_kernel(
-                                beetle_blue.x, beetle_blue.z, beetle_blue.y,
-                                beetle_red.x, beetle_red.z, beetle_red.y,
-                                beetle_blue.color, beetle_red.color
-                            )
-                            if has_real_collision:
-                                # Apply push force to opponent (forward + lift)
-                                forward_x = math.cos(beetle_blue.rotation)
-                                forward_z = math.sin(beetle_blue.rotation)
-                                push_force = 40.0 * PHYSICS_TIMESTEP
-                                beetle_red.vx += forward_x * push_force
-                                beetle_red.vz += forward_z * push_force
-                                beetle_red.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                                beetle_red.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-
-            # Predictive collision check (optimized for combined movements + dual-pincer tracking)
-            if (pitch_pressed or yaw_pressed) and beetle_red.active:
-                # Calculate minimum distance between horn tips (handles both stag and rhino)
-                distance = calculate_min_horn_distance(
-                    beetle_blue, beetle_red,
-                    new_pitch, new_yaw,
-                    beetle_red.horn_pitch, beetle_red.horn_yaw
-                )
-
-                # Determine minimum distance threshold (use smaller of the two for safety)
-                min_distance = min(HORN_PITCH_MIN_DISTANCE, HORN_YAW_MIN_DISTANCE) if (pitch_pressed and yaw_pressed) else (HORN_PITCH_MIN_DISTANCE if pitch_pressed else HORN_YAW_MIN_DISTANCE)
-
-                # Apply changes if safe, otherwise block
-                if distance >= min_distance:
-                    beetle_blue.horn_pitch = new_pitch
-                    beetle_blue.horn_yaw = new_yaw
-                    beetle_blue.horn_pitch_velocity = pitch_speed
-                    beetle_blue.horn_yaw_velocity = yaw_speed
-                else:
-                    # Blocked by collision
-                    beetle_blue.horn_pitch_velocity = 0.0
-                    beetle_blue.horn_yaw_velocity = 0.0
-            elif pitch_pressed or yaw_pressed:
-                # No other beetle - allow rotation freely
-                beetle_blue.horn_pitch = new_pitch
-                beetle_blue.horn_yaw = new_yaw
-                beetle_blue.horn_pitch_velocity = pitch_speed
-                beetle_blue.horn_yaw_velocity = yaw_speed
-            else:
-                # Not pressing horn keys - no velocity
-                beetle_blue.horn_pitch_velocity = 0.0
-                beetle_blue.horn_yaw_velocity = 0.0
-
-            # Always add physics-driven rotation from collisions
-            beetle_blue.rotation += beetle_blue.angular_velocity * PHYSICS_TIMESTEP
-            beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
-
-        # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
-        if beetle_red.active and not beetle_red.is_falling and not hovering[1]:
-            # Rotation controls (J/L) - BLOCKED during horn collision
-            # 30% faster rotation when spinning in place (not moving forward/backward)
-            if not beetle_red.in_horn_collision:
-                # Check if rotating without moving (skill-based faster turning)
-                is_moving = (red_inputs & INPUT_FORWARD) or (red_inputs & INPUT_BACKWARD)
-                # Speed boost turn penalty: faster you go, harder to turn
-                # Normalize bonus so both forward (150%) and backward (80%) reach 50% turn at max
-                if beetle_red.forward_bonus >= beetle_red.backward_bonus:
-                    normalized_bonus = beetle_red.forward_bonus / 1.50
-                else:
-                    normalized_bonus = beetle_red.backward_bonus / 0.80
-                turn_penalty = max(0.65, 1.0 - normalized_bonus * 0.35)  # Scales to 65% turn speed (35% penalty) over 3 sec
-                rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
-                # Spider gets 35% faster turning (agile hunter)
-                if beetle_red.horn_type_id == 6:
-                    rotation_multiplier *= 1.35
-
-                if red_inputs & INPUT_LEFT:
-                    beetle_red.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
-                if red_inputs & INPUT_RIGHT:
-                    beetle_red.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
-
-            # Movement controls (I/K) - move in facing direction
-            # Silk slowdown: 1% slower per silk particle attached to body
-            # silk_counts fetched once per frame before physics loop (GPU sync optimization)
-            if silk_might_exist and silk_counts is not None:
-                silk_slowdown[1] = max(0.0, 1.0 - 0.01 * silk_counts[2])
-                # Floor silk effect: spiders get boost, others get slowed
-                floor_silk_count = silk_counts[3]
-                if beetle_red.horn_type_id == 6:  # Spider
-                    floor_modifier[1] = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
-                else:
-                    floor_modifier[1] = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
-                speed_mult[1] = silk_slowdown[1] * floor_modifier[1]
-            else:
-                speed_mult[1] = 1.0  # No silk = no slowdown
-            beetle_red.silk_speed_mult = speed_mult[1]  # Set on beetle for max speed cap
-
-            # Speed boost system - track hold time and calculate bonus
-            if red_inputs & INPUT_FORWARD:
-                beetle_red.forward_hold_time += PHYSICS_TIMESTEP
-            else:
-                beetle_red.forward_hold_time = 0.0
-            if red_inputs & INPUT_BACKWARD:
-                beetle_red.backward_hold_time += PHYSICS_TIMESTEP
-            else:
-                beetle_red.backward_hold_time = 0.0
-            # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
-            beetle_red.forward_bonus = min(1.50, beetle_red.forward_hold_time / 3.0 * 1.50)
-            beetle_red.backward_bonus = min(0.80, beetle_red.backward_hold_time / 3.0 * 0.80)
-
-            if red_inputs & INPUT_FORWARD:
-                # Move forward in facing direction
-                move_x = math.cos(beetle_red.rotation)
-                move_z = math.sin(beetle_red.rotation)
-                # Force scales with speed bonus to reach higher cap
-                forward_force_mult = speed_mult[1] * (1.0 + beetle_red.forward_bonus)
-                beetle_red.apply_force(move_x * MOVE_FORCE * forward_force_mult, move_z * MOVE_FORCE * forward_force_mult, PHYSICS_TIMESTEP)
-            if red_inputs & INPUT_BACKWARD:
-                # Move backward in facing direction
-                move_x = -math.cos(beetle_red.rotation)
-                move_z = -math.sin(beetle_red.rotation)
-                # Force scales with speed bonus to reach higher cap
-                backward_force_mult = speed_mult[1] * (1.0 + beetle_red.backward_bonus)
-                beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE * backward_force_mult, move_z * BACKWARD_MOVE_FORCE * backward_force_mult, PHYSICS_TIMESTEP)
-
-            # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
-            if beetle_red.horn_type_id == 5:  # bombardier
-                forward_x = math.cos(beetle_red.rotation)
-                forward_z = math.sin(beetle_red.rotation)
-
-                # Only fire if cooldown ready AND have charges
-                if spray_cooldown[1] <= 0 and spray_charges[1] > 0:
-                    if red_inputs & INPUT_HORN_UP:  # Forward spray
-                        spray_burst_remaining[1] = SPRAY_BURST_PARTICLES
-                        spray_burst_dir[1] = (forward_x, forward_z)
-                        spray_burst_angle[1] = 0.0  # Straight ahead
-                        spray_cooldown[1] = SPRAY_COOLDOWN
-                        butt_wiggle[1] = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir[1] = 1.0  # Forward = contract
-                        spray_charges[1] -= 1  # Consume charge
-                        # Forward spray: positive aim = spray goes UP (matches tilt direction)
-                        spray_aim_y[1] = spray_aim[1] * 14.0
-                    elif red_inputs & INPUT_HORN_DOWN:  # Backward spray
-                        spray_burst_remaining[1] = SPRAY_BURST_PARTICLES
-                        spray_burst_dir[1] = (-forward_x, -forward_z)
-                        spray_burst_angle[1] = 0.0  # Straight back
-                        spray_cooldown[1] = SPRAY_COOLDOWN
-                        butt_wiggle[1] = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir[1] = -1.0  # Backward = extend
-                        spray_charges[1] -= 1  # Consume charge
-                        # Backward spray: positive aim = spray goes DOWN (inverted)
-                        spray_aim_y[1] = -spray_aim[1] * 14.0
-
-                # N/M aim controls - adjust spray angle (tilts beetle from butt pivot)
-                # Direct adjustment - holds position when keys released
-                aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
-                if red_inputs & INPUT_HORN_LEFT:
-                    spray_aim[1] = min(1.0, spray_aim[1] + aim_adjust_speed)
-                elif red_inputs & INPUT_HORN_RIGHT:
-                    spray_aim[1] = max(-1.0, spray_aim[1] - aim_adjust_speed)
-                # No else - holds current position when no keys pressed
-
-                # Skip horn controls for bombardier
-                pitch_pressed = False
-                yaw_pressed = False
-            elif beetle_red.horn_type_id == 6:  # spider
-                # Spider abdomen aim - N tilts butt UP, M returns to level
-                # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
-                aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
-                if red_inputs & INPUT_HORN_LEFT:
-                    spider_aim[1] = max(-1.0, spider_aim[1] - aim_adjust_speed)
-                elif red_inputs & INPUT_HORN_RIGHT:
-                    spider_aim[1] = min(0.0, spider_aim[1] + aim_adjust_speed)
-
-                # Silk firing - U for slow lob, O for fast shot
-                if red_inputs & INPUT_HORN_UP:  # U key
-                    silk_firing[1] = True
-                    silk_speed[1] = SILK_SPEED_SLOW
-                elif red_inputs & INPUT_HORN_DOWN:  # O key
-                    silk_firing[1] = True
-                    silk_speed[1] = SILK_SPEED_FAST
-                else:
-                    silk_firing[1] = False
-
-                # Skip normal horn controls for spider
-                pitch_pressed = False
-                yaw_pressed = False
-            else:
-                # Horn controls - OPTIMIZED for combined pitch+yaw movements
-                # Calculate proposed pitch and yaw changes
-                pitch_pressed = (red_inputs & INPUT_HORN_UP) or (red_inputs & INPUT_HORN_DOWN)
-                yaw_pressed = (red_inputs & INPUT_HORN_LEFT) or (red_inputs & INPUT_HORN_RIGHT)
-
-            new_pitch = beetle_red.horn_pitch
-            new_yaw = beetle_red.horn_yaw
-            pitch_speed = 0.0
-            yaw_speed = 0.0
-
-            # Calculate new pitch if pitch keys pressed
-            # OPTIMIZATION: Use lookup table instead of string comparisons
-            max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle_red.horn_type_id]
-
-            # Scorpion claws move slower (horn_type_id == 3)
-            base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle_red.horn_type_id == 3 else (HORN_YAW_SPEED if beetle_red.horn_type_id == 7 else HORN_TILT_SPEED)
-
-            if red_inputs & INPUT_HORN_UP:
-                effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
-                new_pitch = beetle_red.horn_pitch + effective_speed * PHYSICS_TIMESTEP
-                new_pitch = min(max_pitch_limit, new_pitch)
-                # Only set velocity if horn actually moved (not clamped at max)
-                if abs(new_pitch - beetle_red.horn_pitch) > 0.001:
-                    pitch_speed = effective_speed
-            elif red_inputs & INPUT_HORN_DOWN:
-                effective_speed = base_tilt_speed * (1.0 - beetle_red.horn_pitch_damping)
-                new_pitch = beetle_red.horn_pitch - effective_speed * PHYSICS_TIMESTEP
-                new_pitch = max(min_pitch_limit, new_pitch)
-                # Only set velocity if horn actually moved (not clamped at min)
-                if abs(new_pitch - beetle_red.horn_pitch) > 0.001:
-                    pitch_speed = -effective_speed
-
-            # Calculate new yaw if yaw keys pressed
-            # For scorpion type, N/M control tail rotation angle instead of horn yaw
-            # OPTIMIZATION: Use horn_type_id == 3 instead of string comparison
-            if beetle_red.horn_type_id == 3:  # scorpion
-                # SCORPION: N pushes tail down, release returns to max up (M reserved for venom)
-                TAIL_ROTATION_SPEED = 50.0  # Degrees per second (push down)
-                TAIL_RETURN_SPEED = 35.0    # Degrees per second (passive return)
-                TAIL_MAX_UP = 20.0          # Resting position (max up)
-                TAIL_MAX_DOWN = -25.0       # Fully pushed down
-
-                if red_inputs & INPUT_HORN_LEFT:
-                    # N = Push tail down (for striking)
-                    beetle_red.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
-                    beetle_red.tail_rotation_angle = max(TAIL_MAX_DOWN, beetle_red.tail_rotation_angle)
-                else:
-                    # No key = passively return to max up position
-                    if beetle_red.tail_rotation_angle < TAIL_MAX_UP:
-                        beetle_red.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
-                        beetle_red.tail_rotation_angle = min(TAIL_MAX_UP, beetle_red.tail_rotation_angle)
-
-                # M = Venom shot from tail tip
-                if (red_inputs & INPUT_HORN_RIGHT) and venom_cooldown[1] <= 0 and venom_charges[1] > 0:
-                    # Get direction for venom shot
-                    dir_x, dir_z = get_scorpion_venom_direction(beetle_red)
-
-                    # Start venom burst (position calculated when spawning particles)
-                    venom_burst_remaining[1] = VENOM_BURST_PARTICLES
-                    venom_burst_dir[1] = (dir_x, dir_z)
-                    venom_cooldown[1] = VENOM_COOLDOWN
-                    venom_charges[1] -= 1
-
-                # Don't set yaw_pressed for scorpion (skip horn collision checks)
-                yaw_pressed = False
-            else:
-                # OTHER TYPES: N/M control horn yaw (claws)
-                # OPTIMIZATION: Use lookup table instead of string comparisons
-                max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle_red.horn_type_id]
-
-                if red_inputs & INPUT_HORN_LEFT:
-                    # N key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
-                    base_yaw_speed = HORN_TILT_SPEED if beetle_red.horn_type_id == 7 else HORN_YAW_SPEED
-                    effective_speed = base_yaw_speed * (1.0 - beetle_red.horn_yaw_damping)
-
-                    new_yaw = beetle_red.horn_yaw - effective_speed * PHYSICS_TIMESTEP
-                    new_yaw = max(min_yaw_limit, new_yaw)
+                    if abs(new_pitch - beetle.horn_pitch) > 0.001:
+                        pitch_speed = effective_speed
+                elif p_inputs & INPUT_HORN_DOWN:
+                    effective_speed = base_tilt_speed * (1.0 - beetle.horn_pitch_damping)
+                    new_pitch = beetle.horn_pitch - effective_speed * PHYSICS_TIMESTEP
+                    new_pitch = max(min_pitch_limit, new_pitch)
                     # Only set velocity if horn actually moved (not clamped at min)
-                    if abs(new_yaw - beetle_red.horn_yaw) > 0.001:
-                        yaw_speed = -effective_speed
+                    if abs(new_pitch - beetle.horn_pitch) > 0.001:
+                        pitch_speed = -effective_speed
 
-                        # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                        # Only apply if horn is actually moving
-                        if beetle_blue.active:
-                            has_real_collision = check_collision_kernel(
-                                beetle_red.x, beetle_red.z, beetle_red.y,
-                                beetle_blue.x, beetle_blue.z, beetle_blue.y,
-                                beetle_red.color, beetle_blue.color
-                            )
-                            if has_real_collision:
-                                # Apply push force to opponent (forward + lift)
-                                forward_x = math.cos(beetle_red.rotation)
-                                forward_z = math.sin(beetle_red.rotation)
-                                push_force = 40.0 * PHYSICS_TIMESTEP
-                                beetle_blue.vx += forward_x * push_force
-                                beetle_blue.vz += forward_z * push_force
-                                beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                                beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
-                elif red_inputs & INPUT_HORN_RIGHT:
-                    # M key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
-                    base_yaw_speed = HORN_TILT_SPEED if beetle_red.horn_type_id == 7 else HORN_YAW_SPEED
-                    effective_speed = base_yaw_speed * (1.0 - beetle_red.horn_yaw_damping)
+                # Calculate new yaw if yaw keys pressed
+                # For scorpion type, V/B control tail rotation angle instead of horn yaw
+                # OPTIMIZATION: Use horn_type_id == 3 instead of string comparison
+                if beetle.horn_type_id == 3:  # scorpion
+                    # SCORPION: V pushes tail down, release returns to max up (B reserved for venom)
+                    TAIL_ROTATION_SPEED = 50.0  # Degrees per second (push down)
+                    TAIL_RETURN_SPEED = 35.0    # Degrees per second (passive return)
+                    TAIL_MAX_UP = 20.0          # Resting position (max up)
+                    TAIL_MAX_DOWN = -25.0       # Fully pushed down
 
-                    new_yaw = beetle_red.horn_yaw + effective_speed * PHYSICS_TIMESTEP
-                    new_yaw = min(max_yaw_limit, new_yaw)
-                    # Only set velocity if horn actually moved (not clamped at max)
-                    if abs(new_yaw - beetle_red.horn_yaw) > 0.001:
-                        yaw_speed = effective_speed
+                    if p_inputs & INPUT_HORN_LEFT:
+                        # V = Push tail down (for striking)
+                        beetle.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
+                        beetle.tail_rotation_angle = max(TAIL_MAX_DOWN, beetle.tail_rotation_angle)
+                    else:
+                        # No key = passively return to max up position
+                        if beetle.tail_rotation_angle < TAIL_MAX_UP:
+                            beetle.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
+                            beetle.tail_rotation_angle = min(TAIL_MAX_UP, beetle.tail_rotation_angle)
 
-                        # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                        # Only apply if horn is actually moving
-                        if beetle_blue.active:
-                            has_real_collision = check_collision_kernel(
-                                beetle_red.x, beetle_red.z, beetle_red.y,
-                                beetle_blue.x, beetle_blue.z, beetle_blue.y,
-                                beetle_red.color, beetle_blue.color
-                            )
-                            if has_real_collision:
-                                # Apply push force to opponent (forward + lift)
-                                forward_x = math.cos(beetle_red.rotation)
-                                forward_z = math.sin(beetle_red.rotation)
-                                push_force = 40.0 * PHYSICS_TIMESTEP
-                                beetle_blue.vx += forward_x * push_force
-                                beetle_blue.vz += forward_z * push_force
-                                beetle_blue.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                                beetle_blue.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+                    # B = Venom shot from tail tip
+                    if (p_inputs & INPUT_HORN_RIGHT) and venom_cooldown[slot] <= 0 and venom_charges[slot] > 0:
+                        # Get direction for venom shot
+                        dir_x, dir_z = get_scorpion_venom_direction(beetle)
 
-            # Predictive collision check (optimized for combined movements + dual-pincer tracking)
-            if (pitch_pressed or yaw_pressed) and beetle_blue.active:
-                # Calculate minimum distance between horn tips (handles both stag and rhino)
-                distance = calculate_min_horn_distance(
-                    beetle_red, beetle_blue,
-                    new_pitch, new_yaw,
-                    beetle_blue.horn_pitch, beetle_blue.horn_yaw
-                )
+                        # Start venom burst (position calculated when spawning particles)
+                        venom_burst_remaining[slot] = VENOM_BURST_PARTICLES
+                        venom_burst_dir[slot] = (dir_x, dir_z)
+                        venom_cooldown[slot] = VENOM_COOLDOWN
+                        venom_charges[slot] -= 1
 
-                # Determine minimum distance threshold (use smaller of the two for safety)
-                min_distance = min(HORN_PITCH_MIN_DISTANCE, HORN_YAW_MIN_DISTANCE) if (pitch_pressed and yaw_pressed) else (HORN_PITCH_MIN_DISTANCE if pitch_pressed else HORN_YAW_MIN_DISTANCE)
-
-                # Apply changes if safe, otherwise block
-                if distance >= min_distance:
-                    beetle_red.horn_pitch = new_pitch
-                    beetle_red.horn_yaw = new_yaw
-                    beetle_red.horn_pitch_velocity = pitch_speed
-                    beetle_red.horn_yaw_velocity = yaw_speed
+                    # Don't set yaw_pressed for scorpion (skip horn collision checks)
+                    yaw_pressed = False
                 else:
-                    # Blocked by collision
-                    beetle_red.horn_pitch_velocity = 0.0
-                    beetle_red.horn_yaw_velocity = 0.0
-            elif pitch_pressed or yaw_pressed:
-                # No other beetle - allow rotation freely
-                beetle_red.horn_pitch = new_pitch
-                beetle_red.horn_yaw = new_yaw
-                beetle_red.horn_pitch_velocity = pitch_speed
-                beetle_red.horn_yaw_velocity = yaw_speed
-            else:
-                # Not pressing horn keys - no velocity
-                beetle_red.horn_pitch_velocity = 0.0
-                beetle_red.horn_yaw_velocity = 0.0
+                    # OTHER TYPES: V/B control horn yaw (claws)
+                    # OPTIMIZATION: Use lookup table instead of string comparisons
+                    max_yaw_limit, min_yaw_limit = HORN_YAW_LIMITS[beetle.horn_type_id]
 
-            # Always add physics-driven rotation from collisions
-            beetle_red.rotation += beetle_red.angular_velocity * PHYSICS_TIMESTEP
-            beetle_red.rotation = normalize_angle(beetle_red.rotation)
+                    if p_inputs & INPUT_HORN_LEFT:
+                        # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
+                        base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else HORN_YAW_SPEED
+                        effective_speed = base_yaw_speed * (1.0 - beetle.horn_yaw_damping)
+
+                        new_yaw = beetle.horn_yaw - effective_speed * PHYSICS_TIMESTEP
+                        new_yaw = max(min_yaw_limit, new_yaw)
+                        # Only set velocity if horn actually moved (not clamped at min)
+                        if abs(new_yaw - beetle.horn_yaw) > 0.001:
+                            yaw_speed = -effective_speed
+
+                            # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                            # Only apply if horn is actually moving
+                            if opp.active:
+                                has_real_collision = check_collision_kernel(
+                                    beetle.x, beetle.z, beetle.y,
+                                    opp.x, opp.z, opp.y,
+                                    beetle.color, opp.color
+                                )
+                                if has_real_collision:
+                                    # Apply push force to opponent (forward + lift)
+                                    forward_x = math.cos(beetle.rotation)
+                                    forward_z = math.sin(beetle.rotation)
+                                    push_force = 40.0 * PHYSICS_TIMESTEP
+                                    opp.vx += forward_x * push_force
+                                    opp.vz += forward_z * push_force
+                                    opp.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                                    opp.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+                    elif p_inputs & INPUT_HORN_RIGHT:
+                        # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
+                        base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else HORN_YAW_SPEED
+                        effective_speed = base_yaw_speed * (1.0 - beetle.horn_yaw_damping)
+
+                        new_yaw = beetle.horn_yaw + effective_speed * PHYSICS_TIMESTEP
+                        new_yaw = min(max_yaw_limit, new_yaw)
+                        # Only set velocity if horn actually moved (not clamped at max)
+                        if abs(new_yaw - beetle.horn_yaw) > 0.001:
+                            yaw_speed = effective_speed
+
+                            # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
+                            # Only apply if horn is actually moving
+                            if opp.active:
+                                has_real_collision = check_collision_kernel(
+                                    beetle.x, beetle.z, beetle.y,
+                                    opp.x, opp.z, opp.y,
+                                    beetle.color, opp.color
+                                )
+                                if has_real_collision:
+                                    # Apply push force to opponent (forward + lift)
+                                    forward_x = math.cos(beetle.rotation)
+                                    forward_z = math.sin(beetle.rotation)
+                                    push_force = 40.0 * PHYSICS_TIMESTEP
+                                    opp.vx += forward_x * push_force
+                                    opp.vz += forward_z * push_force
+                                    opp.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                                    opp.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+
+                # Predictive collision check (optimized for combined movements + dual-pincer tracking)
+                if (pitch_pressed or yaw_pressed) and opp.active:
+                    # Calculate minimum distance between horn tips (handles both stag and rhino)
+                    distance = calculate_min_horn_distance(
+                        beetle, opp,
+                        new_pitch, new_yaw,
+                        opp.horn_pitch, opp.horn_yaw
+                    )
+
+                    # Determine minimum distance threshold (use smaller of the two for safety)
+                    min_distance = min(HORN_PITCH_MIN_DISTANCE, HORN_YAW_MIN_DISTANCE) if (pitch_pressed and yaw_pressed) else (HORN_PITCH_MIN_DISTANCE if pitch_pressed else HORN_YAW_MIN_DISTANCE)
+
+                    # Apply changes if safe, otherwise block
+                    if distance >= min_distance:
+                        beetle.horn_pitch = new_pitch
+                        beetle.horn_yaw = new_yaw
+                        beetle.horn_pitch_velocity = pitch_speed
+                        beetle.horn_yaw_velocity = yaw_speed
+                    else:
+                        # Blocked by collision
+                        beetle.horn_pitch_velocity = 0.0
+                        beetle.horn_yaw_velocity = 0.0
+                elif pitch_pressed or yaw_pressed:
+                    # No other beetle - allow rotation freely
+                    beetle.horn_pitch = new_pitch
+                    beetle.horn_yaw = new_yaw
+                    beetle.horn_pitch_velocity = pitch_speed
+                    beetle.horn_yaw_velocity = yaw_speed
+                else:
+                    # Not pressing horn keys - no velocity
+                    beetle.horn_pitch_velocity = 0.0
+                    beetle.horn_yaw_velocity = 0.0
+
+                # Always add physics-driven rotation from collisions
+                beetle.rotation += beetle.angular_velocity * PHYSICS_TIMESTEP
+                beetle.rotation = normalize_angle(beetle.rotation)
+
 
         # === INPUT/CONTROLS TIMING END, BEETLE PHYSICS START ===
         _t_input_end = time.perf_counter()
