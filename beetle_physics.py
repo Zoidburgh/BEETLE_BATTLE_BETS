@@ -18086,9 +18086,8 @@ try:
         # This ensures both computers score at the same time
         # Handles both fall deaths (beetle explosion) and ball goals
         if game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host:
-            if network_manager.pending_score is not None:
-                score_event = network_manager.pending_score
-                network_manager.pending_score = None  # Consume the event
+            while network_manager.pending_scores:
+                score_event = network_manager.pending_scores.pop(0)
                 scorer = score_event['scorer']
                 score_type = score_event['score_type']  # 0=beetle death, 1=ball goal
                 is_beetle_death = (score_type == 0)

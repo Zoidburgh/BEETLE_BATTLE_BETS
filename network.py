@@ -192,7 +192,9 @@ class NetworkManager:
         self.remote_beetle_config = None  # Opponent's beetle settings (horn_type_id, sizes)
 
         # Score sync (host-authoritative death/goal detection)
-        self.pending_score = None  # Guest: pending score event from host (0=blue scores, 1=red scores)
+        # Guest: QUEUE of score events from host. Must be a list - two events
+        # can arrive in one poll (simultaneous deaths) and a single slot drops one
+        self.pending_scores = []
 
         # Game options sync (referee, ball, etc.)
         self.pending_game_options = None  # Guest: pending options from host
@@ -1231,8 +1233,8 @@ class NetworkManager:
             # v4: [type][scorer:1][victim:1][score_type:1][death_x:4][death_z:4]
             if len(data) >= 12 and not self.is_host:
                 _, scorer, victim, score_type, death_x, death_z = struct.unpack('>BBBBff', data[:12])
-                self.pending_score = {'scorer': scorer, 'victim': victim, 'score_type': score_type,
-                                      'death_x': death_x, 'death_z': death_z}
+                self.pending_scores.append({'scorer': scorer, 'victim': victim, 'score_type': score_type,
+                                            'death_x': death_x, 'death_z': death_z})
                 type_str = "death" if score_type == 0 else "ball goal"
                 print(f"[Network] Received score event: slot {scorer} scores ({type_str}), victim slot {victim} at ({death_x:.1f}, {death_z:.1f})")
 
