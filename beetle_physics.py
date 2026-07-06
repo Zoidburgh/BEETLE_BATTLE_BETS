@@ -17543,14 +17543,11 @@ try:
             network_manager.send_state_sync(
                 physics_frame,
                 [
-                    {'x': beetle_blue.x, 'y': beetle_blue.y, 'z': beetle_blue.z,
-                     'rot': beetle_blue.rotation, 'pitch': beetle_blue.pitch, 'roll': beetle_blue.roll,
-                     'vx': beetle_blue.vx, 'vy': beetle_blue.vy, 'vz': beetle_blue.vz,
-                     'active': beetle_blue.active, 'is_falling': beetle_blue.is_falling},
-                    {'x': beetle_red.x, 'y': beetle_red.y, 'z': beetle_red.z,
-                     'rot': beetle_red.rotation, 'pitch': beetle_red.pitch, 'roll': beetle_red.roll,
-                     'vx': beetle_red.vx, 'vy': beetle_red.vy, 'vz': beetle_red.vz,
-                     'active': beetle_red.active, 'is_falling': beetle_red.is_falling},
+                    {'x': b.x, 'y': b.y, 'z': b.z,
+                     'rot': b.rotation, 'pitch': b.pitch, 'roll': b.roll,
+                     'vx': b.vx, 'vy': b.vy, 'vz': b.vz,
+                     'active': b.active, 'is_falling': b.is_falling}
+                    for b in beetles[:active_player_count]
                 ],
                 {'x': beetle_ball.x, 'y': beetle_ball.y, 'z': beetle_ball.z,
                  'vx': beetle_ball.vx, 'vy': beetle_ball.vy, 'vz': beetle_ball.vz,
@@ -17589,7 +17586,7 @@ try:
 
             # Net debug HUD: prediction error for both beetles at packet arrival
             sync_errors = [0.0, 0.0]
-            for i, b in enumerate((beetle_blue, beetle_red)):
+            for i, b in enumerate(beetles[:active_player_count]):
                 hb = sync['beetles'][i]
                 sync_errors[i] = math.sqrt((hb['x'] - b.x) ** 2 + (hb['y'] - b.y) ** 2 + (hb['z'] - b.z) ** 2)
             net_hud['corr_blue'] = sync_errors[0]
@@ -17601,7 +17598,7 @@ try:
             guest_opp_target['recv_time'] = time.time()
 
             # --- Own beetle (per-sync correction) ---
-            beetle = (beetle_blue, beetle_red)[own_idx]
+            beetle = beetles[own_idx]
             host_b = sync['beetles'][own_idx]
             err = sync_errors[own_idx]
             rot_diff = (host_b['rot'] - beetle.rotation) % TWO_PI
@@ -17693,7 +17690,7 @@ try:
         # instead of one firm lerp per sync packet - removes visible skipping
         if not network_manager.is_host and guest_opp_target is not None:
             tgt = guest_opp_target
-            opp = (beetle_blue, beetle_red)[1 - local_player_id]
+            opp = beetles[1 - local_player_id]
             if tgt['is_falling']:
                 pass  # host says falling - hands off, local fall plays out
             elif opp.is_falling and tgt['active']:
