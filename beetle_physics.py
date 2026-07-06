@@ -18384,27 +18384,22 @@ try:
             BALL_COLLISION_THRESHOLD_SQ = 30.0 * 30.0  # 900 = 30 units squared
 
             # Check distance from ball to each beetle (fast squared distance)
-            blue_dx = beetle_ball.x - beetle_blue.x
-            blue_dy = beetle_ball.y - beetle_blue.y
-            blue_dz = beetle_ball.z - beetle_blue.z
-            blue_dist_sq = blue_dx*blue_dx + blue_dy*blue_dy + blue_dz*blue_dz
-            blue_close_to_ball = beetle_blue.active and blue_dist_sq < BALL_COLLISION_THRESHOLD_SQ
-
-            red_dx = beetle_ball.x - beetle_red.x
-            red_dy = beetle_ball.y - beetle_red.y
-            red_dz = beetle_ball.z - beetle_red.z
-            red_dist_sq = red_dx*red_dx + red_dy*red_dy + red_dz*red_dz
-            red_close_to_ball = beetle_red.active and red_dist_sq < BALL_COLLISION_THRESHOLD_SQ
+            close_to_ball = [False] * active_player_count
+            for slot in range(active_player_count):
+                b = beetles[slot]
+                b_dx = beetle_ball.x - b.x
+                b_dy = beetle_ball.y - b.y
+                b_dz = beetle_ball.z - b.z
+                close_to_ball[slot] = b.active and (b_dx*b_dx + b_dy*b_dy + b_dz*b_dz) < BALL_COLLISION_THRESHOLD_SQ
 
             # Re-render ball only if any beetle is close (OPTIMIZATION)
-            if blue_close_to_ball or red_close_to_ball:
+            if any(close_to_ball):
                 if not g['ball_has_exploded']:
                     clear_and_render_ball_fast(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
                 # Run ball collision only for close beetles (skip if beetle is falling)
-                if blue_close_to_ball and not beetle_blue.is_falling:
-                    beetle_collision(beetle_blue, beetle_ball, physics_params)
-                if red_close_to_ball and not beetle_red.is_falling:
-                    beetle_collision(beetle_red, beetle_ball, physics_params)
+                for slot in range(active_player_count):
+                    if close_to_ball[slot] and not beetles[slot].is_falling:
+                        beetle_collision(beetles[slot], beetle_ball, physics_params)
 
         # === BALL PHYSICS TIMING END ===
         _t_ball_end = time.perf_counter()
@@ -20808,11 +20803,14 @@ try:
 
         # Beetle collision (voxel-perfect) - only if both beetles are active, not falling, and not hovering
         # Skip first 30 frames to let geometry fully initialize (prevents startup skipping)
-        if (beetle_blue.active and beetle_red.active and
-            not beetle_blue.is_falling and not beetle_red.is_falling and
-            not hovering[0] and not hovering[1] and
-            physics_frame > 30):
-            beetle_collision(beetle_blue, beetle_red, physics_params)
+        # Pairwise beetle-beetle collision (n*(n-1)/2 pairs; 1 pair for 2P)
+        if physics_frame > 30:
+            for i in range(active_player_count):
+                for j in range(i + 1, active_player_count):
+                    if (beetles[i].active and beetles[j].active and
+                        not beetles[i].is_falling and not beetles[j].is_falling and
+                        not hovering[i] and not hovering[j]):
+                        beetle_collision(beetles[i], beetles[j], physics_params)
 
         # === BEETLE COLLISION TIMING END ===
         _t_collision_end = time.perf_counter()
