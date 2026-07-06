@@ -61,6 +61,10 @@ MSG_RECONNECT_REQUEST = 0x0F  # Guest requests full state after reconnecting
 MSG_RECONNECT_STATE = 0x10    # Host sends full game state snapshot
 MSG_DISCONNECT = 0x11         # Player intentionally leaving (graceful exit)
 MSG_BALL_EXPLODE = 0x12       # Host tells guest ball has exploded (with position)
+MSG_SLOT_ASSIGN = 0x13        # Host sends player slot roster (N-player support)
+MSG_INPUTS_ALL = 0x14         # Host broadcasts all players' inputs for a frame
+
+MAX_PLAYERS = 4
 
 # Messages sent on the unreliable channel (subject to real packet loss,
 # and the only ones dropped by the --simloss debug simulator)
@@ -75,6 +79,7 @@ MSG_NAMES = {
     MSG_SCORE: "SCORE", MSG_GAME_OPTIONS: "OPTIONS",
     MSG_RECONNECT_REQUEST: "RECONREQ", MSG_RECONNECT_STATE: "RECONST",
     MSG_DISCONNECT: "DISCON", MSG_BALL_EXPLODE: "BALLEXP",
+    MSG_SLOT_ASSIGN: "SLOT", MSG_INPUTS_ALL: "INPUTSALL",
 }
 
 # Steam message send flags
@@ -128,8 +133,14 @@ class NetworkManager:
 
         # Steam IDs
         self.my_steam_id = None
-        self.peer_steam_id = None
+        self.peer_steam_id = None  # 2P transitional: the single opponent (host<->guest)
         self.lobby_id = None
+
+        # N-player peer tracking (slots: 0 = host, 1..3 = guests in join order)
+        self.peers = {}         # {steam_id: slot} - remote players only
+        self.slot_to_steam = {} # {slot: steam_id} - inverse mapping
+        self.my_slot = 0        # Our own slot (0 until host assigns otherwise)
+        self.player_count = 1   # Total players including us
 
         # Player info
         self.my_name = "Player"
@@ -369,7 +380,7 @@ class NetworkManager:
             print(f"[Network] Lobby members: {members}")
             for member in members:
                 if member != self.my_steam_id:
-                    self.peer_steam_id = member
+                    self._register_peer(member)
                     self.connected = True
                     print(f"[Network] Found opponent: {member}")
                     if self.on_peer_joined:
@@ -399,9 +410,81 @@ class NetworkManager:
         self.lobby_id = None
         self.connected = False
         self.peer_steam_id = None
+        self.peers = {}
+        self.slot_to_steam = {}
+        self.my_slot = 0
+        self.player_count = 1
         self.match_started = False
         self.local_ready = False
         self.remote_ready = False
+
+    # =========================================================================
+    # PEER / SLOT TRACKING (N-player support; slots: 0 = host, 1-3 = guests)
+    # =========================================================================
+
+    def _register_peer(self, steam_id):
+        """Track a remote player; the host assigns the next free slot."""
+        if steam_id in self.peers or steam_id == self.my_steam_id:
+            return
+        if self.is_host:
+            used = set(self.peers.values()) | {0}
+            free = [s for s in range(1, MAX_PLAYERS) if s not in used]
+            if not free:
+                print(f"[Network] Lobby full - ignoring peer {steam_id}")
+                return
+            slot = free[0]
+        else:
+            slot = 0  # From a guest's view the direct peer is the host
+        self.peers[steam_id] = slot
+        self.slot_to_steam[slot] = steam_id
+        self.player_count = len(self.peers) + 1
+        if self.peer_steam_id is None:
+            self.peer_steam_id = steam_id  # 2P transitional single-opponent field
+        print(f"[Network] Registered peer {steam_id} as slot {slot} ({self.player_count} players)")
+        if self.is_host:
+            self.send_slot_assign()
+
+    def _unregister_peer(self, steam_id):
+        """Remove a remote player (left/kicked/disconnected)."""
+        if steam_id not in self.peers:
+            return
+        slot = self.peers.pop(steam_id)
+        if self.slot_to_steam.get(slot) == steam_id:
+            del self.slot_to_steam[slot]
+        self.player_count = len(self.peers) + 1
+        if self.peer_steam_id == steam_id:
+            self.peer_steam_id = next(iter(self.peers), None)
+        print(f"[Network] Unregistered peer {steam_id} (slot {slot}, {self.player_count} players left)")
+        if self.is_host:
+            self.send_slot_assign()
+
+    def slot_for_sender(self, sender_id):
+        """Resolve a received packet's sender to a player slot (None if unknown)."""
+        if sender_id is not None and sender_id in self.peers:
+            return self.peers[sender_id]
+        if not self.is_host:
+            return 0  # Guests only ever hear from the host
+        if len(self.peers) == 1:
+            return next(iter(self.peers.values()))  # Sole guest (sender_id missing)
+        return None
+
+    def send_slot_assign(self):
+        """Host sends the full roster to every guest (each told its own slot).
+        Packet: [type:1][your_slot:1][player_count:1] + [slot:1][steam64:8] per player."""
+        if not self.is_host:
+            return
+        for steam_id, slot in self.peers.items():
+            data = struct.pack('>BBB', MSG_SLOT_ASSIGN, slot, self.player_count)
+            data += struct.pack('>BQ', 0, self.my_steam_id)  # Host is always slot 0
+            for other_id, other_slot in self.peers.items():
+                data += struct.pack('>BQ', other_slot, other_id)
+            try:
+                self.client.send_message_to(steam_id, SEND_RELIABLE, GAME_CHANNEL, data)
+                self.pkt_sent[MSG_SLOT_ASSIGN] = self.pkt_sent.get(MSG_SLOT_ASSIGN, 0) + 1
+                self.pkt_sent_bytes += len(data)
+            except Exception as e:
+                print(f"[Network] slot assign send error: {e}")
+        print(f"[Network] Sent slot roster to {len(self.peers)} guest(s)")
 
     def get_lobby_members(self):
         """Get list of Steam IDs in current lobby."""
@@ -431,7 +514,7 @@ class NetworkManager:
 
         if change_type in ["joined", "entered", 1]:  # 1 might be enum for joined
             if member_id and member_id != self.my_steam_id:
-                self.peer_steam_id = member_id
+                self._register_peer(member_id)
                 self.connected = True
                 if lobby_id:
                     self.lobby_id = lobby_id
@@ -446,9 +529,9 @@ class NetworkManager:
                     self.on_peer_joined()
 
         elif change_type in ["left", "disconnected", "kicked", "banned", 2, 3, 4]:
-            if member_id == self.peer_steam_id:
-                self.peer_steam_id = None
-                self.connected = False
+            if member_id in self.peers:
+                self._unregister_peer(member_id)
+                self.connected = bool(self.peers)
                 print(f"[Network] Opponent left")
                 if self.on_peer_left:
                     self.on_peer_left()
@@ -559,7 +642,7 @@ class NetworkManager:
                                  ball_state['x'], ball_state['y'], ball_state['z'],
                                  ball_state['vx'], ball_state['vy'], ball_state['vz'],
                                  1 if ball_state['active'] else 0))
-        self._send_packet(b''.join(parts), reliable=False)  # Unreliable is fine for periodic sync
+        self._broadcast(b''.join(parts), reliable=False)  # Unreliable is fine for periodic sync
 
     def send_sync_ready(self):
         """Guest sends SYNC_READY to host to confirm ready to start."""
@@ -573,7 +656,7 @@ class NetworkManager:
         print("[Network] Sending GO - all players start now!")
         # Send multiple times for reliability
         for _ in range(3):
-            self._send_packet(struct.pack('>B', MSG_GO), reliable=True)
+            self._broadcast(struct.pack('>B', MSG_GO), reliable=True)
         # Don't set sync_state = "go" yet - wait for one-way latency
         # so guest receives GO at approximately the same time we start
         self.go_sent_time = time.time()
@@ -600,7 +683,7 @@ class NetworkManager:
         if not self.is_host:
             return
         data = struct.pack('>BI', MSG_FRAME_SYNC, frame)
-        self._send_packet(data, reliable=False)
+        self._broadcast(data, reliable=False)
 
     def send_beetle_config(self, horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len,
                            body_color, leg_color, leg_tip_color, stripe_color, horn_tip_color):
@@ -634,7 +717,7 @@ class NetworkManager:
         if not self.is_host or not self.connected:
             return
         data = struct.pack('>BBBff', MSG_SCORE, scorer, score_type, death_x, death_z)
-        self._send_packet(data, reliable=True)
+        self._broadcast(data, reliable=True)
         type_str = "death" if score_type == 0 else "ball goal"
         print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str}) at ({death_x:.1f}, {death_z:.1f})")
 
@@ -665,7 +748,7 @@ class NetworkManager:
                           1 if cut_square_mode else 0,
                           1 if board_break_mode else 0,
                           1 if star_mode else 0)
-        self._send_packet(data, reliable=True)
+        self._broadcast(data, reliable=True)
 
     def send_ball_explode(self, pos_x, pos_y, pos_z):
         """
@@ -675,7 +758,7 @@ class NetworkManager:
         if not self.is_host or not self.connected:
             return
         data = struct.pack('>Bfff', MSG_BALL_EXPLODE, pos_x, pos_y, pos_z)
-        self._send_packet(data, reliable=True)
+        self._broadcast(data, reliable=True)
         print(f"[Network] Sent ball explode at ({pos_x:.1f}, {pos_y:.1f}, {pos_z:.1f})")
 
     def send_reconnect_request(self):
@@ -761,13 +844,30 @@ class NetworkManager:
 
         # Send multiple times to ensure delivery (P2P channel may still be establishing)
         for i in range(3):
-            self._send_packet(data, reliable=True)
+            self._broadcast(data, reliable=True)
             time.sleep(0.05)  # Small delay between sends
 
         # Don't start yet - wait for guest to confirm ready
         self.sync_state = "waiting_for_guest"
         self.match_started = True  # Match is "started" but not simulating yet
         print(f"[Network] START sent, waiting for guest SYNC_READY... Seed: {self.random_seed}")
+
+    def _broadcast(self, data, reliable=True):
+        """Send raw packet to ALL connected peers (host -> every guest)."""
+        if not self.peers:
+            return False
+        send_type = SEND_RELIABLE if reliable else SEND_UNRELIABLE
+        ok = True
+        for steam_id in self.peers:
+            try:
+                self.client.send_message_to(steam_id, send_type, GAME_CHANNEL, data)
+            except Exception as e:
+                print(f"[Network] Broadcast error to {steam_id}: {e}")
+                ok = False
+        if data:
+            self.pkt_sent[data[0]] = self.pkt_sent.get(data[0], 0) + len(self.peers)
+            self.pkt_sent_bytes += len(data) * len(self.peers)
+        return ok
 
     def _send_packet(self, data, reliable=True):
         """Send raw packet to peer via Steam P2P."""
@@ -846,13 +946,15 @@ class NetworkManager:
             print(f"[Network] run_callbacks error: {e}")
 
         # FALLBACK: If we're in a lobby but haven't detected opponent, check member list directly
-        # This handles cases where the lobby_changed callback doesn't fire
-        if self.in_lobby and not self.connected and self.lobby_id:
+        # This handles cases where the lobby_changed callback doesn't fire.
+        # The host also rescans every ~2s so late joiners (players 3/4) are caught.
+        if self.in_lobby and self.lobby_id and (
+                not self.connected or (self.is_host and self.poll_count % 120 == 0)):
             try:
                 members = self.client.get_lobby_members(self.lobby_id)
                 for member in members:
-                    if member != self.my_steam_id:
-                        self.peer_steam_id = member
+                    if member != self.my_steam_id and member not in self.peers:
+                        self._register_peer(member)
                         self.connected = True
                         print(f"[Network] Found opponent via polling: {member}")
 
@@ -863,7 +965,6 @@ class NetworkManager:
 
                         if self.on_peer_joined:
                             self.on_peer_joined()
-                        break
             except:
                 pass
 
@@ -1168,6 +1269,25 @@ class NetworkManager:
                 _, pos_x, pos_y, pos_z = struct.unpack('>Bfff', data[:13])
                 self.pending_ball_explode = {'x': pos_x, 'y': pos_y, 'z': pos_z}
                 print(f"[Network] Received ball explode at ({pos_x:.1f}, {pos_y:.1f}, {pos_z:.1f})")
+
+        elif msg_type == MSG_SLOT_ASSIGN:
+            # Host-assigned roster: [type][your_slot][player_count] + [slot][steam64] per player
+            if not self.is_host and len(data) >= 3:
+                self.my_slot = data[1]
+                self.player_count = data[2]
+                offset = 3
+                self.slot_to_steam = {}
+                roster_peers = {}
+                while offset + 9 <= len(data):
+                    slot, steam_id = struct.unpack('>BQ', data[offset:offset + 9])
+                    offset += 9
+                    self.slot_to_steam[slot] = steam_id
+                    if steam_id != self.my_steam_id:
+                        roster_peers[steam_id] = slot
+                self.peers = roster_peers
+                # Guests talk to the host directly (slot 0)
+                self.peer_steam_id = self.slot_to_steam.get(0, self.peer_steam_id)
+                print(f"[Network] Slot assigned: we are slot {self.my_slot} of {self.player_count} players")
 
     # =========================================================================
     # CONNECTION STATE
