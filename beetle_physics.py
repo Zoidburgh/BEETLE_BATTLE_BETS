@@ -1809,15 +1809,11 @@ def reset_match():
     global beetle_blue, beetle_red, match_winner, blue_celebrating, red_celebrating, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
     global blue_pulse_timer, red_pulse_timer, blue_confetti_timer, red_confetti_timer
     global blue_spawn_immunity, red_spawn_immunity
-    global spray_charges_blue, spray_charges_red, spray_recharge_timer_blue, spray_recharge_timer_red
-    global stripe_color_blue, stripe_color_red
-    global spray_aim_blue, spray_aim_red, spray_aim_y_blue, spray_aim_y_red, prev_spray_aim_blue, prev_spray_aim_red
-    global spider_aim_blue, spider_aim_red, prev_spider_aim_blue, prev_spider_aim_red
+    global prev_spider_aim_blue, prev_spider_aim_red
     global silk_charge_blue, silk_charge_red, silk_might_exist
     global floor_cache_blue, floor_cache_red, floor_cache_ball
     global ball_last_render, spray_might_exist
-    global venom_charges_blue, venom_charges_red, venom_recharge_timer_blue, venom_recharge_timer_red
-    global venom_cooldown_blue, venom_cooldown_red, venom_burst_remaining_blue, venom_burst_remaining_red
+    global venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
@@ -1870,24 +1866,24 @@ def reset_match():
     reconnect_banner_timer = 0.0
 
     # Reset spray charges for bombardier beetles
-    spray_charges_blue = SPRAY_MAX_CHARGES
-    spray_charges_red = SPRAY_MAX_CHARGES
-    spray_recharge_timer_blue = 0.0
-    spray_recharge_timer_red = 0.0
+    spray_charges[0] = SPRAY_MAX_CHARGES
+    spray_charges[1] = SPRAY_MAX_CHARGES
+    spray_recharge_timer[0] = 0.0
+    spray_recharge_timer[1] = 0.0
     # Reset stripe colors to full charge (neon green)
-    stripe_color_blue = [0.5, 1.0, 0.3]
-    stripe_color_red = [0.5, 1.0, 0.3]
+    stripe_color[0] = [0.5, 1.0, 0.3]
+    stripe_color[1] = [0.5, 1.0, 0.3]
     # Reset spray aim angles and Y velocity
-    spray_aim_blue = 0.0
-    spray_aim_red = 0.0
-    spray_aim_y_blue = 0.0
-    spray_aim_y_red = 0.0
-    prev_spray_aim_blue = 0.0
-    prev_spray_aim_red = 0.0
+    spray_aim[0] = 0.0
+    spray_aim[1] = 0.0
+    spray_aim_y[0] = 0.0
+    spray_aim_y[1] = 0.0
+    prev_spray_aim[0] = 0.0
+    prev_spray_aim[1] = 0.0
 
     # Reset spider aim angles
-    spider_aim_blue = 0.0
-    spider_aim_red = 0.0
+    spider_aim[0] = 0.0
+    spider_aim[1] = 0.0
     prev_spider_aim_blue = 0.0
     prev_spider_aim_red = 0.0
 
@@ -2010,14 +2006,14 @@ def reset_match():
     renderer.invalidate_floor_cache()
 
     # Reset venom charges for scorpion beetles
-    venom_charges_blue = VENOM_MAX_CHARGES
-    venom_charges_red = VENOM_MAX_CHARGES
+    venom_charges[0] = VENOM_MAX_CHARGES
+    venom_charges[1] = VENOM_MAX_CHARGES
     venom_recharge_timer_blue = 0.0
     venom_recharge_timer_red = 0.0
-    venom_cooldown_blue = 0.0
-    venom_cooldown_red = 0.0
-    venom_burst_remaining_blue = 0
-    venom_burst_remaining_red = 0
+    venom_cooldown[0] = 0.0
+    venom_cooldown[1] = 0.0
+    venom_burst_remaining[0] = 0
+    venom_burst_remaining[1] = 0
     # Reset venom tip colors to full charge (bright purple)
     venom_tip_color_blue = [0.6, 0.2, 0.8]
     venom_tip_color_red = [0.6, 0.2, 0.8]
@@ -2426,21 +2422,49 @@ opponent_left_gracefully = False  # True when opponent clicked Disconnect (vs ti
 disconnect_timer = 0.0  # How long opponent has been disconnected
 reconnect_banner_timer = 0.0  # Timer for "Reconnected!" banner display
 
+# ============================================================================
+# PER-PLAYER STATE (slot-indexed: 0=blue, 1=red; slots 2-3 arrive in Phase 4)
+# Converted from *_blue/*_red scalar pairs during the 4-player refactor.
+# Item assignment needs no `global` declaration.
+# ============================================================================
+spray_cooldown = [0.0, 0.0]
+spray_burst_remaining = [0, 0]
+spray_burst_dir = [(0.0, 0.0), (0.0, 0.0)]
+spray_burst_angle = [0.0, 0.0]
+butt_wiggle = [0.0, 0.0]
+butt_wiggle_dir = [1.0, 1.0]
+spray_charges = [3, 3]
+spray_recharge_timer = [0.0, 0.0]
+stripe_color = [[0.5, 1.0, 0.3], [0.5, 1.0, 0.3]]
+spray_aim = [0.0, 0.0]
+spray_aim_y = [0.0, 0.0]
+spider_aim = [0.0, 0.0]
+silk_firing = [False, False]
+silk_speed = [0.0, 0.0]
+venom_cooldown = [0.0, 0.0]
+venom_burst_remaining = [0, 0]
+venom_burst_dir = [(0.0, 0.0), (0.0, 0.0)]
+venom_charges = [3, 3]
+speed_mult = [1.0, 1.0]
+floor_modifier = [1.0, 1.0]
+silk_slowdown = [1.0, 1.0]
+hovering = [False, False]
+
 # Bombardier spray attack state
-spray_cooldown_blue = 0.0  # Time until blue beetle can spray again
-spray_cooldown_red = 0.0   # Time until red beetle can spray again
-spray_burst_remaining_blue = 0  # Particles left in blue's current burst
-spray_burst_remaining_red = 0   # Particles left in red's current burst
-spray_burst_dir_blue = (0.0, 0.0)  # Blue's current burst direction (x, z)
-spray_burst_dir_red = (0.0, 0.0)   # Red's current burst direction (x, z)
-spray_burst_angle_blue = 0.0  # Blue's current burst angle offset
-spray_burst_angle_red = 0.0   # Red's current burst angle offset
+spray_cooldown[0] = 0.0  # Time until blue beetle can spray again
+spray_cooldown[1] = 0.0   # Time until red beetle can spray again
+spray_burst_remaining[0] = 0  # Particles left in blue's current burst
+spray_burst_remaining[1] = 0   # Particles left in red's current burst
+spray_burst_dir[0] = (0.0, 0.0)  # Blue's current burst direction (x, z)
+spray_burst_dir[1] = (0.0, 0.0)   # Red's current burst direction (x, z)
+spray_burst_angle[0] = 0.0  # Blue's current burst angle offset
+spray_burst_angle[1] = 0.0   # Red's current burst angle offset
 
 # Butt wiggle animation state (pucker when firing)
-butt_wiggle_blue = 0.0  # Wiggle timer for blue (0 = no wiggle, >0 = animating)
-butt_wiggle_red = 0.0   # Wiggle timer for red
-butt_wiggle_dir_blue = 1.0  # 1.0 = forward spray (contract), -1.0 = backward spray (extend)
-butt_wiggle_dir_red = 1.0   # 1.0 = forward spray (contract), -1.0 = backward spray (extend)
+butt_wiggle[0] = 0.0  # Wiggle timer for blue (0 = no wiggle, >0 = animating)
+butt_wiggle[1] = 0.0   # Wiggle timer for red
+butt_wiggle_dir[0] = 1.0  # 1.0 = forward spray (contract), -1.0 = backward spray (extend)
+butt_wiggle_dir[1] = 1.0   # 1.0 = forward spray (contract), -1.0 = backward spray (extend)
 BUTT_WIGGLE_DURATION = 0.3  # How long the pucker animation lasts
 BUTT_WIGGLE_INTENSITY = 1.5  # How much the butt contracts (voxels inward)
 
@@ -2453,15 +2477,15 @@ SPRAY_PUSH_FORCE = 25.0  # Force applied to beetle when hit by spray
 # Bombardier charge system
 SPRAY_MAX_CHARGES = 3  # Maximum charges that can be stored
 SPRAY_RECHARGE_TIME = 4.0  # Seconds to recharge 1 charge
-spray_charges_blue = 3  # Current charges for blue (start full)
-spray_charges_red = 3   # Current charges for red (start full)
-spray_recharge_timer_blue = 0.0  # Time until next charge
-spray_recharge_timer_red = 0.0   # Time until next charge
+spray_charges[0] = 3  # Current charges for blue (start full)
+spray_charges[1] = 3   # Current charges for red (start full)
+spray_recharge_timer[0] = 0.0  # Time until next charge
+spray_recharge_timer[1] = 0.0   # Time until next charge
 
 # Stripe color interpolation for smooth transitions
 STRIPE_LERP_SPEED = 8.0  # How fast stripe color transitions (higher = faster)
-stripe_color_blue = [0.5, 1.0, 0.3]  # Current displayed stripe color (starts at full charge)
-stripe_color_red = [0.5, 1.0, 0.3]   # Current displayed stripe color (starts at full charge)
+stripe_color[0] = [0.5, 1.0, 0.3]  # Current displayed stripe color (starts at full charge)
+stripe_color[1] = [0.5, 1.0, 0.3]   # Current displayed stripe color (starts at full charge)
 
 # Venom tip color interpolation for smooth transitions (scorpion)
 venom_tip_color_blue = [0.6, 0.2, 0.8]  # Current displayed venom tip color (starts at full charge - bright purple)
@@ -2480,18 +2504,17 @@ def _set_color_field(field, r, g, b, key):
 # Bombardier spray aim angle (vertical tilt)
 SPRAY_AIM_MAX = 0.175  # ~10 degrees in radians
 SPRAY_AIM_SPEED = 2.0  # How fast aim adjusts (higher = snappier)
-spray_aim_blue = 0.0   # Current aim angle (-1 to +1, 0 = level)
-spray_aim_red = 0.0    # Current aim angle (-1 to +1, 0 = level)
-prev_spray_aim_blue = 0.0  # Previous frame aim (for interpolation)
-prev_spray_aim_red = 0.0   # Previous frame aim (for interpolation)
-spray_aim_y_blue = 0.0  # Y velocity component for current spray burst (set when spray triggered)
-spray_aim_y_red = 0.0   # Y velocity component for current spray burst (set when spray triggered)
+spray_aim[0] = 0.0   # Current aim angle (-1 to +1, 0 = level)
+spray_aim[1] = 0.0    # Current aim angle (-1 to +1, 0 = level)
+prev_spray_aim = [0.0, 0.0]  # Previous frame aim (for interpolation)
+spray_aim_y[0] = 0.0  # Y velocity component for current spray burst (set when spray triggered)
+spray_aim_y[1] = 0.0   # Y velocity component for current spray burst (set when spray triggered)
 
 # Spider abdomen aim (for web spray targeting - butt tilts up/down)
 SPIDER_AIM_MAX = 0.52  # ~30 degrees in radians
 SPIDER_AIM_SPEED = 1.8  # How fast aim adjusts
-spider_aim_blue = 0.0   # Current aim angle (-1 to +1, 0 = level)
-spider_aim_red = 0.0
+spider_aim[0] = 0.0   # Current aim angle (-1 to +1, 0 = level)
+spider_aim[1] = 0.0
 prev_spider_aim_blue = 0.0  # Previous frame aim (for interpolation)
 prev_spider_aim_red = 0.0
 
@@ -2504,10 +2527,10 @@ SILK_LIFETIME_STUCK = 12.0 # Seconds once stuck to floor
 SILK_FADE_TIME = 2.0       # Fade out over last 2 seconds
 
 # Spider silk state
-silk_firing_blue = False
-silk_firing_red = False
-silk_speed_blue = 0.0
-silk_speed_red = 0.0
+silk_firing[0] = False
+silk_firing[1] = False
+silk_speed[0] = 0.0
+silk_speed[1] = 0.0
 silk_spiral_phase_blue = 0.0  # For spiral pattern
 silk_spiral_phase_red = 0.0
 
@@ -2546,14 +2569,14 @@ VENOM_SPEED = 28.0  # Venom particle velocity (slow drip, not a spray)
 VENOM_MAX_CHARGES = 3  # Maximum venom charges
 VENOM_RECHARGE_TIME = 4.0  # Seconds to recharge 1 charge
 
-venom_cooldown_blue = 0.0  # Time until blue scorpion can shoot again
-venom_cooldown_red = 0.0   # Time until red scorpion can shoot again
-venom_burst_remaining_blue = 0  # Particles left in blue's current burst
-venom_burst_remaining_red = 0   # Particles left in red's current burst
-venom_burst_dir_blue = (0.0, 0.0)  # Blue's venom direction (x, z)
-venom_burst_dir_red = (0.0, 0.0)   # Red's venom direction (x, z)
-venom_charges_blue = 3  # Current venom charges for blue
-venom_charges_red = 3   # Current venom charges for red
+venom_cooldown[0] = 0.0  # Time until blue scorpion can shoot again
+venom_cooldown[1] = 0.0   # Time until red scorpion can shoot again
+venom_burst_remaining[0] = 0  # Particles left in blue's current burst
+venom_burst_remaining[1] = 0   # Particles left in red's current burst
+venom_burst_dir[0] = (0.0, 0.0)  # Blue's venom direction (x, z)
+venom_burst_dir[1] = (0.0, 0.0)   # Red's venom direction (x, z)
+venom_charges[0] = 3  # Current venom charges for blue
+venom_charges[1] = 3   # Current venom charges for red
 venom_recharge_timer_blue = 0.0  # Time until next charge
 venom_recharge_timer_red = 0.0   # Time until next charge
 
@@ -5968,7 +5991,6 @@ for leg_id, leg_tip_voxels in enumerate(RED_LEG_TIPS):
 def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild blue beetle geometry cache with new horn, body, and leg parameters"""
     global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS
-    global spray_aim_blue, spider_aim_blue
 
     # Generate new geometry
     BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
@@ -6089,8 +6111,8 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
         beetle_blue.horn_yaw_damping = 0.0
 
         # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
-        spider_aim_blue = 0.0
-        spray_aim_blue = 0.0
+        spider_aim[0] = 0.0
+        spray_aim[0] = 0.0
         beetle_blue.tail_rotation_angle = 20.0  # Tail rests at max up position
 
         # Reset speed boost state (prevents carryover from previous beetle type)
@@ -6106,7 +6128,6 @@ def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_hei
 def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
     """Rebuild red beetle geometry cache with new horn, body, and leg parameters"""
     global RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS
-    global spray_aim_red, spider_aim_red
 
     # Generate new geometry
     RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
@@ -6227,8 +6248,8 @@ def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_heig
         beetle_red.horn_yaw_damping = 0.0
 
         # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
-        spider_aim_red = 0.0
-        spray_aim_red = 0.0
+        spider_aim[1] = 0.0
+        spray_aim[1] = 0.0
         beetle_red.tail_rotation_angle = 20.0  # Tail rests at max up position
 
         # Reset speed boost state (prevents carryover from previous beetle type)
@@ -16967,14 +16988,14 @@ g = {
 }
 
 # Hover-to-spawn state (beetle flies from center to safe spawn point in donut mode)
-blue_hovering = False
+hovering[0] = False
 blue_hover_timer = 0.0
 blue_hover_start_x = 0.0
 blue_hover_start_z = 0.0
 blue_hover_target_x = 0.0
 blue_hover_target_z = 0.0
 blue_hover_target_rot = 0.0
-red_hovering = False
+hovering[1] = False
 red_hover_timer = 0.0
 red_hover_start_x = 0.0
 red_hover_start_z = 0.0
@@ -17885,11 +17906,11 @@ try:
         if beetle_ball.active:
             beetle_ball.save_previous_state()
         # Save spray aim for interpolation
-        prev_spray_aim_blue = spray_aim_blue
-        prev_spray_aim_red = spray_aim_red
+        prev_spray_aim[0] = spray_aim[0]
+        prev_spray_aim[1] = spray_aim[1]
         # Save spider aim for interpolation
-        prev_spider_aim_blue = spider_aim_blue
-        prev_spider_aim_red = spider_aim_red
+        prev_spider_aim_blue = spider_aim[0]
+        prev_spider_aim_red = spider_aim[1]
 
         # === INPUT/CONTROLS TIMING START ===
         _t_input_start = time.perf_counter()
@@ -17897,7 +17918,7 @@ try:
         # NOTE: silk_counts fetched ONCE per frame before physics loop (GPU sync optimization)
 
         # === BLUE BEETLE CONTROLS (TFGH) - TANK STYLE ===
-        if beetle_blue.active and not beetle_blue.is_falling and not blue_hovering:
+        if beetle_blue.active and not beetle_blue.is_falling and not hovering[0]:
             # Rotation controls (F/H) - BLOCKED during horn collision
             # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_blue.in_horn_collision:
@@ -17924,17 +17945,17 @@ try:
             # Silk slowdown: 1% slower per silk particle attached to body
             # silk_counts fetched once per frame before physics loop (GPU sync optimization)
             if silk_might_exist and silk_counts is not None:
-                blue_silk_slowdown = max(0.0, 1.0 - 0.01 * silk_counts[0])
+                silk_slowdown[0] = max(0.0, 1.0 - 0.01 * silk_counts[0])
                 # Floor silk effect: spiders get boost, others get slowed
                 floor_silk_count = silk_counts[1]
                 if beetle_blue.horn_type_id == 6:  # Spider
-                    blue_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
+                    floor_modifier[0] = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
                 else:
-                    blue_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
-                blue_speed_mult = blue_silk_slowdown * blue_floor_modifier
+                    floor_modifier[0] = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
+                speed_mult[0] = silk_slowdown[0] * floor_modifier[0]
             else:
-                blue_speed_mult = 1.0  # No silk = no slowdown
-            beetle_blue.silk_speed_mult = blue_speed_mult  # Set on beetle for max speed cap
+                speed_mult[0] = 1.0  # No silk = no slowdown
+            beetle_blue.silk_speed_mult = speed_mult[0]  # Set on beetle for max speed cap
 
             # Speed boost system - track hold time and calculate bonus
             if blue_inputs & INPUT_FORWARD:
@@ -17954,14 +17975,14 @@ try:
                 move_x = math.cos(beetle_blue.rotation)
                 move_z = math.sin(beetle_blue.rotation)
                 # Force scales with speed bonus to reach higher cap
-                forward_force_mult = blue_speed_mult * (1.0 + beetle_blue.forward_bonus)
+                forward_force_mult = speed_mult[0] * (1.0 + beetle_blue.forward_bonus)
                 beetle_blue.apply_force(move_x * MOVE_FORCE * forward_force_mult, move_z * MOVE_FORCE * forward_force_mult, PHYSICS_TIMESTEP)
             if blue_inputs & INPUT_BACKWARD:
                 # Move backward in facing direction
                 move_x = -math.cos(beetle_blue.rotation)
                 move_z = -math.sin(beetle_blue.rotation)
                 # Force scales with speed bonus to reach higher cap
-                backward_force_mult = blue_speed_mult * (1.0 + beetle_blue.backward_bonus)
+                backward_force_mult = speed_mult[0] * (1.0 + beetle_blue.backward_bonus)
                 beetle_blue.apply_force(move_x * BACKWARD_MOVE_FORCE * backward_force_mult, move_z * BACKWARD_MOVE_FORCE * backward_force_mult, PHYSICS_TIMESTEP)
 
             # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
@@ -17970,35 +17991,35 @@ try:
                 forward_z = math.sin(beetle_blue.rotation)
 
                 # Only fire if cooldown ready AND have charges
-                if spray_cooldown_blue <= 0 and spray_charges_blue > 0:
+                if spray_cooldown[0] <= 0 and spray_charges[0] > 0:
                     if blue_inputs & INPUT_HORN_UP:  # Forward spray
-                        spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
-                        spray_burst_dir_blue = (forward_x, forward_z)
-                        spray_burst_angle_blue = 0.0  # Straight ahead
-                        spray_cooldown_blue = SPRAY_COOLDOWN
-                        butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir_blue = 1.0  # Forward = contract
-                        spray_charges_blue -= 1  # Consume charge
+                        spray_burst_remaining[0] = SPRAY_BURST_PARTICLES
+                        spray_burst_dir[0] = (forward_x, forward_z)
+                        spray_burst_angle[0] = 0.0  # Straight ahead
+                        spray_cooldown[0] = SPRAY_COOLDOWN
+                        butt_wiggle[0] = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir[0] = 1.0  # Forward = contract
+                        spray_charges[0] -= 1  # Consume charge
                         # Forward spray: positive aim = spray goes UP (matches tilt direction)
-                        spray_aim_y_blue = spray_aim_blue * 14.0
+                        spray_aim_y[0] = spray_aim[0] * 14.0
                     elif blue_inputs & INPUT_HORN_DOWN:  # Backward spray
-                        spray_burst_remaining_blue = SPRAY_BURST_PARTICLES
-                        spray_burst_dir_blue = (-forward_x, -forward_z)
-                        spray_burst_angle_blue = 0.0  # Straight back
-                        spray_cooldown_blue = SPRAY_COOLDOWN
-                        butt_wiggle_blue = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir_blue = -1.0  # Backward = extend
-                        spray_charges_blue -= 1  # Consume charge
+                        spray_burst_remaining[0] = SPRAY_BURST_PARTICLES
+                        spray_burst_dir[0] = (-forward_x, -forward_z)
+                        spray_burst_angle[0] = 0.0  # Straight back
+                        spray_cooldown[0] = SPRAY_COOLDOWN
+                        butt_wiggle[0] = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir[0] = -1.0  # Backward = extend
+                        spray_charges[0] -= 1  # Consume charge
                         # Backward spray: positive aim = spray goes DOWN (inverted)
-                        spray_aim_y_blue = -spray_aim_blue * 14.0
+                        spray_aim_y[0] = -spray_aim[0] * 14.0
 
                 # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
                 # Direct adjustment - holds position when keys released
                 aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
                 if blue_inputs & INPUT_HORN_LEFT:
-                    spray_aim_blue = min(1.0, spray_aim_blue + aim_adjust_speed)
+                    spray_aim[0] = min(1.0, spray_aim[0] + aim_adjust_speed)
                 elif blue_inputs & INPUT_HORN_RIGHT:
-                    spray_aim_blue = max(-1.0, spray_aim_blue - aim_adjust_speed)
+                    spray_aim[0] = max(-1.0, spray_aim[0] - aim_adjust_speed)
                 # No else - holds current position when no keys pressed
 
                 # Skip horn controls for bombardier
@@ -18009,19 +18030,19 @@ try:
                 # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
                 aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
                 if blue_inputs & INPUT_HORN_LEFT:
-                    spider_aim_blue = max(-1.0, spider_aim_blue - aim_adjust_speed)
+                    spider_aim[0] = max(-1.0, spider_aim[0] - aim_adjust_speed)
                 elif blue_inputs & INPUT_HORN_RIGHT:
-                    spider_aim_blue = min(0.0, spider_aim_blue + aim_adjust_speed)
+                    spider_aim[0] = min(0.0, spider_aim[0] + aim_adjust_speed)
 
                 # Silk firing - R for slow lob, Y for fast shot
                 if blue_inputs & INPUT_HORN_UP:  # R key
-                    silk_firing_blue = True
-                    silk_speed_blue = SILK_SPEED_SLOW
+                    silk_firing[0] = True
+                    silk_speed[0] = SILK_SPEED_SLOW
                 elif blue_inputs & INPUT_HORN_DOWN:  # Y key
-                    silk_firing_blue = True
-                    silk_speed_blue = SILK_SPEED_FAST
+                    silk_firing[0] = True
+                    silk_speed[0] = SILK_SPEED_FAST
                 else:
-                    silk_firing_blue = False
+                    silk_firing[0] = False
 
                 # Skip normal horn controls for spider
                 pitch_pressed = False
@@ -18080,15 +18101,15 @@ try:
                         beetle_blue.tail_rotation_angle = min(TAIL_MAX_UP, beetle_blue.tail_rotation_angle)
 
                 # B = Venom shot from tail tip
-                if (blue_inputs & INPUT_HORN_RIGHT) and venom_cooldown_blue <= 0 and venom_charges_blue > 0:
+                if (blue_inputs & INPUT_HORN_RIGHT) and venom_cooldown[0] <= 0 and venom_charges[0] > 0:
                     # Get direction for venom shot
                     dir_x, dir_z = get_scorpion_venom_direction(beetle_blue)
 
                     # Start venom burst (position calculated when spawning particles)
-                    venom_burst_remaining_blue = VENOM_BURST_PARTICLES
-                    venom_burst_dir_blue = (dir_x, dir_z)
-                    venom_cooldown_blue = VENOM_COOLDOWN
-                    venom_charges_blue -= 1
+                    venom_burst_remaining[0] = VENOM_BURST_PARTICLES
+                    venom_burst_dir[0] = (dir_x, dir_z)
+                    venom_cooldown[0] = VENOM_COOLDOWN
+                    venom_charges[0] -= 1
 
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
@@ -18192,7 +18213,7 @@ try:
             beetle_blue.rotation = normalize_angle(beetle_blue.rotation)
 
         # === RED BEETLE CONTROLS (IJKL) - TANK STYLE ===
-        if beetle_red.active and not beetle_red.is_falling and not red_hovering:
+        if beetle_red.active and not beetle_red.is_falling and not hovering[1]:
             # Rotation controls (J/L) - BLOCKED during horn collision
             # 30% faster rotation when spinning in place (not moving forward/backward)
             if not beetle_red.in_horn_collision:
@@ -18219,17 +18240,17 @@ try:
             # Silk slowdown: 1% slower per silk particle attached to body
             # silk_counts fetched once per frame before physics loop (GPU sync optimization)
             if silk_might_exist and silk_counts is not None:
-                red_silk_slowdown = max(0.0, 1.0 - 0.01 * silk_counts[2])
+                silk_slowdown[1] = max(0.0, 1.0 - 0.01 * silk_counts[2])
                 # Floor silk effect: spiders get boost, others get slowed
                 floor_silk_count = silk_counts[3]
                 if beetle_red.horn_type_id == 6:  # Spider
-                    red_floor_modifier = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
+                    floor_modifier[1] = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
                 else:
-                    red_floor_modifier = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
-                red_speed_mult = red_silk_slowdown * red_floor_modifier
+                    floor_modifier[1] = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
+                speed_mult[1] = silk_slowdown[1] * floor_modifier[1]
             else:
-                red_speed_mult = 1.0  # No silk = no slowdown
-            beetle_red.silk_speed_mult = red_speed_mult  # Set on beetle for max speed cap
+                speed_mult[1] = 1.0  # No silk = no slowdown
+            beetle_red.silk_speed_mult = speed_mult[1]  # Set on beetle for max speed cap
 
             # Speed boost system - track hold time and calculate bonus
             if red_inputs & INPUT_FORWARD:
@@ -18249,14 +18270,14 @@ try:
                 move_x = math.cos(beetle_red.rotation)
                 move_z = math.sin(beetle_red.rotation)
                 # Force scales with speed bonus to reach higher cap
-                forward_force_mult = red_speed_mult * (1.0 + beetle_red.forward_bonus)
+                forward_force_mult = speed_mult[1] * (1.0 + beetle_red.forward_bonus)
                 beetle_red.apply_force(move_x * MOVE_FORCE * forward_force_mult, move_z * MOVE_FORCE * forward_force_mult, PHYSICS_TIMESTEP)
             if red_inputs & INPUT_BACKWARD:
                 # Move backward in facing direction
                 move_x = -math.cos(beetle_red.rotation)
                 move_z = -math.sin(beetle_red.rotation)
                 # Force scales with speed bonus to reach higher cap
-                backward_force_mult = red_speed_mult * (1.0 + beetle_red.backward_bonus)
+                backward_force_mult = speed_mult[1] * (1.0 + beetle_red.backward_bonus)
                 beetle_red.apply_force(move_x * BACKWARD_MOVE_FORCE * backward_force_mult, move_z * BACKWARD_MOVE_FORCE * backward_force_mult, PHYSICS_TIMESTEP)
 
             # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
@@ -18265,35 +18286,35 @@ try:
                 forward_z = math.sin(beetle_red.rotation)
 
                 # Only fire if cooldown ready AND have charges
-                if spray_cooldown_red <= 0 and spray_charges_red > 0:
+                if spray_cooldown[1] <= 0 and spray_charges[1] > 0:
                     if red_inputs & INPUT_HORN_UP:  # Forward spray
-                        spray_burst_remaining_red = SPRAY_BURST_PARTICLES
-                        spray_burst_dir_red = (forward_x, forward_z)
-                        spray_burst_angle_red = 0.0  # Straight ahead
-                        spray_cooldown_red = SPRAY_COOLDOWN
-                        butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir_red = 1.0  # Forward = contract
-                        spray_charges_red -= 1  # Consume charge
+                        spray_burst_remaining[1] = SPRAY_BURST_PARTICLES
+                        spray_burst_dir[1] = (forward_x, forward_z)
+                        spray_burst_angle[1] = 0.0  # Straight ahead
+                        spray_cooldown[1] = SPRAY_COOLDOWN
+                        butt_wiggle[1] = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir[1] = 1.0  # Forward = contract
+                        spray_charges[1] -= 1  # Consume charge
                         # Forward spray: positive aim = spray goes UP (matches tilt direction)
-                        spray_aim_y_red = spray_aim_red * 14.0
+                        spray_aim_y[1] = spray_aim[1] * 14.0
                     elif red_inputs & INPUT_HORN_DOWN:  # Backward spray
-                        spray_burst_remaining_red = SPRAY_BURST_PARTICLES
-                        spray_burst_dir_red = (-forward_x, -forward_z)
-                        spray_burst_angle_red = 0.0  # Straight back
-                        spray_cooldown_red = SPRAY_COOLDOWN
-                        butt_wiggle_red = BUTT_WIGGLE_DURATION  # Start pucker animation
-                        butt_wiggle_dir_red = -1.0  # Backward = extend
-                        spray_charges_red -= 1  # Consume charge
+                        spray_burst_remaining[1] = SPRAY_BURST_PARTICLES
+                        spray_burst_dir[1] = (-forward_x, -forward_z)
+                        spray_burst_angle[1] = 0.0  # Straight back
+                        spray_cooldown[1] = SPRAY_COOLDOWN
+                        butt_wiggle[1] = BUTT_WIGGLE_DURATION  # Start pucker animation
+                        butt_wiggle_dir[1] = -1.0  # Backward = extend
+                        spray_charges[1] -= 1  # Consume charge
                         # Backward spray: positive aim = spray goes DOWN (inverted)
-                        spray_aim_y_red = -spray_aim_red * 14.0
+                        spray_aim_y[1] = -spray_aim[1] * 14.0
 
                 # N/M aim controls - adjust spray angle (tilts beetle from butt pivot)
                 # Direct adjustment - holds position when keys released
                 aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
                 if red_inputs & INPUT_HORN_LEFT:
-                    spray_aim_red = min(1.0, spray_aim_red + aim_adjust_speed)
+                    spray_aim[1] = min(1.0, spray_aim[1] + aim_adjust_speed)
                 elif red_inputs & INPUT_HORN_RIGHT:
-                    spray_aim_red = max(-1.0, spray_aim_red - aim_adjust_speed)
+                    spray_aim[1] = max(-1.0, spray_aim[1] - aim_adjust_speed)
                 # No else - holds current position when no keys pressed
 
                 # Skip horn controls for bombardier
@@ -18304,19 +18325,19 @@ try:
                 # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
                 aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
                 if red_inputs & INPUT_HORN_LEFT:
-                    spider_aim_red = max(-1.0, spider_aim_red - aim_adjust_speed)
+                    spider_aim[1] = max(-1.0, spider_aim[1] - aim_adjust_speed)
                 elif red_inputs & INPUT_HORN_RIGHT:
-                    spider_aim_red = min(0.0, spider_aim_red + aim_adjust_speed)
+                    spider_aim[1] = min(0.0, spider_aim[1] + aim_adjust_speed)
 
                 # Silk firing - U for slow lob, O for fast shot
                 if red_inputs & INPUT_HORN_UP:  # U key
-                    silk_firing_red = True
-                    silk_speed_red = SILK_SPEED_SLOW
+                    silk_firing[1] = True
+                    silk_speed[1] = SILK_SPEED_SLOW
                 elif red_inputs & INPUT_HORN_DOWN:  # O key
-                    silk_firing_red = True
-                    silk_speed_red = SILK_SPEED_FAST
+                    silk_firing[1] = True
+                    silk_speed[1] = SILK_SPEED_FAST
                 else:
-                    silk_firing_red = False
+                    silk_firing[1] = False
 
                 # Skip normal horn controls for spider
                 pitch_pressed = False
@@ -18375,15 +18396,15 @@ try:
                         beetle_red.tail_rotation_angle = min(TAIL_MAX_UP, beetle_red.tail_rotation_angle)
 
                 # M = Venom shot from tail tip
-                if (red_inputs & INPUT_HORN_RIGHT) and venom_cooldown_red <= 0 and venom_charges_red > 0:
+                if (red_inputs & INPUT_HORN_RIGHT) and venom_cooldown[1] <= 0 and venom_charges[1] > 0:
                     # Get direction for venom shot
                     dir_x, dir_z = get_scorpion_venom_direction(beetle_red)
 
                     # Start venom burst (position calculated when spawning particles)
-                    venom_burst_remaining_red = VENOM_BURST_PARTICLES
-                    venom_burst_dir_red = (dir_x, dir_z)
-                    venom_cooldown_red = VENOM_COOLDOWN
-                    venom_charges_red -= 1
+                    venom_burst_remaining[1] = VENOM_BURST_PARTICLES
+                    venom_burst_dir[1] = (dir_x, dir_z)
+                    venom_cooldown[1] = VENOM_COOLDOWN
+                    venom_charges[1] -= 1
 
                 # Don't set yaw_pressed for scorpion (skip horn collision checks)
                 yaw_pressed = False
@@ -18518,9 +18539,9 @@ try:
                     ball_on_ice = True
 
         # Physics update (skip if hovering to spawn point)
-        if not blue_hovering:
+        if not hovering[0]:
             beetle_blue.update_physics(PHYSICS_TIMESTEP, on_ice=blue_on_ice)
-        if not red_hovering:
+        if not hovering[1]:
             beetle_red.update_physics(PHYSICS_TIMESTEP, on_ice=red_on_ice)
 
         # Apply bowl slide physics when ball mode is active (slippery perimeter)
@@ -18703,118 +18724,118 @@ try:
 
         # === SPRAY PARTICLE SYSTEM (BOMBARDIER BEETLE) ===
         # Decrement spray cooldowns
-        spray_cooldown_blue = max(0.0, spray_cooldown_blue - PHYSICS_TIMESTEP)
-        spray_cooldown_red = max(0.0, spray_cooldown_red - PHYSICS_TIMESTEP)
+        spray_cooldown[0] = max(0.0, spray_cooldown[0] - PHYSICS_TIMESTEP)
+        spray_cooldown[1] = max(0.0, spray_cooldown[1] - PHYSICS_TIMESTEP)
 
         # Decrement butt wiggle timers
-        butt_wiggle_blue = max(0.0, butt_wiggle_blue - PHYSICS_TIMESTEP)
-        butt_wiggle_red = max(0.0, butt_wiggle_red - PHYSICS_TIMESTEP)
+        butt_wiggle[0] = max(0.0, butt_wiggle[0] - PHYSICS_TIMESTEP)
+        butt_wiggle[1] = max(0.0, butt_wiggle[1] - PHYSICS_TIMESTEP)
 
         # Recharge spray charges over time (1 charge every SPRAY_RECHARGE_TIME seconds)
-        if spray_charges_blue < SPRAY_MAX_CHARGES:
-            spray_recharge_timer_blue += PHYSICS_TIMESTEP
-            if spray_recharge_timer_blue >= SPRAY_RECHARGE_TIME:
-                spray_charges_blue += 1
-                spray_recharge_timer_blue = 0.0
+        if spray_charges[0] < SPRAY_MAX_CHARGES:
+            spray_recharge_timer[0] += PHYSICS_TIMESTEP
+            if spray_recharge_timer[0] >= SPRAY_RECHARGE_TIME:
+                spray_charges[0] += 1
+                spray_recharge_timer[0] = 0.0
         else:
-            spray_recharge_timer_blue = 0.0  # Reset timer when full
+            spray_recharge_timer[0] = 0.0  # Reset timer when full
 
-        if spray_charges_red < SPRAY_MAX_CHARGES:
-            spray_recharge_timer_red += PHYSICS_TIMESTEP
-            if spray_recharge_timer_red >= SPRAY_RECHARGE_TIME:
-                spray_charges_red += 1
-                spray_recharge_timer_red = 0.0
+        if spray_charges[1] < SPRAY_MAX_CHARGES:
+            spray_recharge_timer[1] += PHYSICS_TIMESTEP
+            if spray_recharge_timer[1] >= SPRAY_RECHARGE_TIME:
+                spray_charges[1] += 1
+                spray_recharge_timer[1] = 0.0
         else:
-            spray_recharge_timer_red = 0.0  # Reset timer when full
+            spray_recharge_timer[1] = 0.0  # Reset timer when full
 
         # Spawn spray burst particles for blue beetle
-        if spray_burst_remaining_blue > 0 and beetle_blue.active and beetle_blue.horn_type_id == 5:
-            particles_this_frame = min(SPRAY_PARTICLES_PER_FRAME, spray_burst_remaining_blue)
+        if spray_burst_remaining[0] > 0 and beetle_blue.active and beetle_blue.horn_type_id == 5:
+            particles_this_frame = min(SPRAY_PARTICLES_PER_FRAME, spray_burst_remaining[0])
             rear_x, rear_y, rear_z = get_bombardier_rear_position(beetle_blue)
             spawn_spray_burst(rear_x, rear_y, rear_z,
-                              spray_burst_dir_blue[0], spray_burst_dir_blue[1],
-                              spray_burst_angle_blue,
-                              SPRAY_SPEED, 0, particles_this_frame, spray_aim_y_blue, 0.6,
+                              spray_burst_dir[0][0], spray_burst_dir[0][1],
+                              spray_burst_angle[0],
+                              SPRAY_SPEED, 0, particles_this_frame, spray_aim_y[0], 0.6,
                               0.2, 1.0, 0.3)  # Green
-            spray_burst_remaining_blue -= particles_this_frame
+            spray_burst_remaining[0] -= particles_this_frame
             spray_might_exist = True  # CPU optimization flag
 
         # Spawn spray burst particles for red beetle
-        if spray_burst_remaining_red > 0 and beetle_red.active and beetle_red.horn_type_id == 5:
-            particles_this_frame = min(SPRAY_PARTICLES_PER_FRAME, spray_burst_remaining_red)
+        if spray_burst_remaining[1] > 0 and beetle_red.active and beetle_red.horn_type_id == 5:
+            particles_this_frame = min(SPRAY_PARTICLES_PER_FRAME, spray_burst_remaining[1])
             rear_x, rear_y, rear_z = get_bombardier_rear_position(beetle_red)
             spawn_spray_burst(rear_x, rear_y, rear_z,
-                              spray_burst_dir_red[0], spray_burst_dir_red[1],
-                              spray_burst_angle_red,
-                              SPRAY_SPEED, 1, particles_this_frame, spray_aim_y_red, 0.6,
+                              spray_burst_dir[1][0], spray_burst_dir[1][1],
+                              spray_burst_angle[1],
+                              SPRAY_SPEED, 1, particles_this_frame, spray_aim_y[1], 0.6,
                               0.2, 1.0, 0.3)  # Green
-            spray_burst_remaining_red -= particles_this_frame
+            spray_burst_remaining[1] -= particles_this_frame
             spray_might_exist = True  # CPU optimization flag
 
         # === SPIDER SILK EMISSION ===
         # Blue spider silk (continuous while firing) - fires BACKWARDS from spinneret
         # Fast shot (Y key) costs half as much as slow lob (R key)
-        blue_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed_blue == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
-        if silk_firing_blue and beetle_blue.active and beetle_blue.horn_type_id == 6 and silk_charge_blue >= blue_silk_cost:
-            spin_x, spin_y, spin_z = get_spinneret_position(beetle_blue, spider_aim_blue, window.blue_body_length_value)
+        blue_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed[0] == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
+        if silk_firing[0] and beetle_blue.active and beetle_blue.horn_type_id == 6 and silk_charge_blue >= blue_silk_cost:
+            spin_x, spin_y, spin_z = get_spinneret_position(beetle_blue, spider_aim[0], window.blue_body_length_value)
             # Direction is BACKWARDS (opposite of beetle facing)
             dir_x = -math.cos(beetle_blue.rotation)
             dir_z = -math.sin(beetle_blue.rotation)
             # Aim affects vertical velocity (negative spider_aim = up = more vertical)
-            aim_y = -spider_aim_blue * 15.0
+            aim_y = -spider_aim[0] * 15.0
             # Spawn 2 particles per frame for overlapping stream
             for _ in range(2):
                 spawn_silk(spin_x, spin_y, spin_z, dir_x, dir_z,
-                           silk_speed_blue, aim_y, 0, silk_spiral_phase_blue)
+                           silk_speed[0], aim_y, 0, silk_spiral_phase_blue)
                 silk_spiral_phase_blue += 0.4  # Tighter spiral rotation
                 silk_charge_blue -= blue_silk_cost
             silk_might_exist = True  # Flag for GPU sync optimization
 
         # Red spider silk - fires BACKWARDS
-        red_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed_red == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
-        if silk_firing_red and beetle_red.active and beetle_red.horn_type_id == 6 and silk_charge_red >= red_silk_cost:
-            spin_x, spin_y, spin_z = get_spinneret_position(beetle_red, spider_aim_red, window.red_body_length_value)
+        red_silk_cost = SILK_COST_PER_SPAWN * 0.5 if silk_speed[1] == SILK_SPEED_FAST else SILK_COST_PER_SPAWN
+        if silk_firing[1] and beetle_red.active and beetle_red.horn_type_id == 6 and silk_charge_red >= red_silk_cost:
+            spin_x, spin_y, spin_z = get_spinneret_position(beetle_red, spider_aim[1], window.red_body_length_value)
             dir_x = -math.cos(beetle_red.rotation)
             dir_z = -math.sin(beetle_red.rotation)
-            aim_y = -spider_aim_red * 15.0
+            aim_y = -spider_aim[1] * 15.0
             for _ in range(2):
                 spawn_silk(spin_x, spin_y, spin_z, dir_x, dir_z,
-                           silk_speed_red, aim_y, 1, silk_spiral_phase_red)
+                           silk_speed[1], aim_y, 1, silk_spiral_phase_red)
                 silk_spiral_phase_red += 0.4
                 silk_charge_red -= red_silk_cost
             silk_might_exist = True  # Flag for GPU sync optimization
 
         # Regenerate silk charge over time (only when not firing)
-        if not silk_firing_blue:
+        if not silk_firing[0]:
             silk_charge_blue = min(SILK_MAX_CHARGE, silk_charge_blue + SILK_REGEN_RATE * PHYSICS_TIMESTEP)
-        if not silk_firing_red:
+        if not silk_firing[1]:
             silk_charge_red = min(SILK_MAX_CHARGE, silk_charge_red + SILK_REGEN_RATE * PHYSICS_TIMESTEP)
 
         # === VENOM PARTICLE SYSTEM (SCORPION) ===
         # Decrement venom cooldowns
-        venom_cooldown_blue = max(0.0, venom_cooldown_blue - PHYSICS_TIMESTEP)
-        venom_cooldown_red = max(0.0, venom_cooldown_red - PHYSICS_TIMESTEP)
+        venom_cooldown[0] = max(0.0, venom_cooldown[0] - PHYSICS_TIMESTEP)
+        venom_cooldown[1] = max(0.0, venom_cooldown[1] - PHYSICS_TIMESTEP)
 
         # Recharge venom charges over time
-        if venom_charges_blue < VENOM_MAX_CHARGES:
+        if venom_charges[0] < VENOM_MAX_CHARGES:
             venom_recharge_timer_blue += PHYSICS_TIMESTEP
             if venom_recharge_timer_blue >= VENOM_RECHARGE_TIME:
-                venom_charges_blue += 1
+                venom_charges[0] += 1
                 venom_recharge_timer_blue = 0.0
         else:
             venom_recharge_timer_blue = 0.0
 
-        if venom_charges_red < VENOM_MAX_CHARGES:
+        if venom_charges[1] < VENOM_MAX_CHARGES:
             venom_recharge_timer_red += PHYSICS_TIMESTEP
             if venom_recharge_timer_red >= VENOM_RECHARGE_TIME:
-                venom_charges_red += 1
+                venom_charges[1] += 1
                 venom_recharge_timer_red = 0.0
         else:
             venom_recharge_timer_red = 0.0
 
         # Spawn venom burst particles for blue scorpion
-        if venom_burst_remaining_blue > 0 and beetle_blue.active and beetle_blue.horn_type_id == 3:
-            particles_this_frame = min(VENOM_PARTICLES_PER_FRAME, venom_burst_remaining_blue)
+        if venom_burst_remaining[0] > 0 and beetle_blue.active and beetle_blue.horn_type_id == 3:
+            particles_this_frame = min(VENOM_PARTICLES_PER_FRAME, venom_burst_remaining[0])
             tip_x, tip_y, tip_z = get_scorpion_tail_tip_position(
                 beetle_blue,
                 window.blue_body_length_value,
@@ -18824,16 +18845,16 @@ try:
             for _vi in range(particles_this_frame):
                 fan_angle = (random.random() - 0.5) * 1.2  # ±35° fan spread
                 spawn_spray_burst(tip_x, tip_y, tip_z,
-                                  venom_burst_dir_blue[0], venom_burst_dir_blue[1],
+                                  venom_burst_dir[0][0], venom_burst_dir[0][1],
                                   fan_angle,
                                   VENOM_SPEED, 0, 1, -28.0, 1.5,
                                   1.0, 0.9, 0.1)  # Bright yellow
-            venom_burst_remaining_blue -= particles_this_frame
+            venom_burst_remaining[0] -= particles_this_frame
             spray_might_exist = True  # CPU optimization flag
 
         # Spawn venom burst particles for red scorpion
-        if venom_burst_remaining_red > 0 and beetle_red.active and beetle_red.horn_type_id == 3:
-            particles_this_frame = min(VENOM_PARTICLES_PER_FRAME, venom_burst_remaining_red)
+        if venom_burst_remaining[1] > 0 and beetle_red.active and beetle_red.horn_type_id == 3:
+            particles_this_frame = min(VENOM_PARTICLES_PER_FRAME, venom_burst_remaining[1])
             tip_x, tip_y, tip_z = get_scorpion_tail_tip_position(
                 beetle_red,
                 window.red_body_length_value,
@@ -18843,11 +18864,11 @@ try:
             for _vi in range(particles_this_frame):
                 fan_angle = (random.random() - 0.5) * 1.2  # ±35° fan spread
                 spawn_spray_burst(tip_x, tip_y, tip_z,
-                                  venom_burst_dir_red[0], venom_burst_dir_red[1],
+                                  venom_burst_dir[1][0], venom_burst_dir[1][1],
                                   fan_angle,
                                   VENOM_SPEED, 1, 1, -28.0, 1.5,
                                   1.0, 0.9, 0.1)  # Bright yellow
-            venom_burst_remaining_red -= particles_this_frame
+            venom_burst_remaining[1] -= particles_this_frame
             spray_might_exist = True  # CPU optimization flag
 
         # Update spray particles (physics, aging)
@@ -18912,14 +18933,14 @@ try:
                     beetle_blue.rotation, beetle_blue.pitch, beetle_blue.roll,
                     beetle_blue.horn_pitch, beetle_blue.horn_yaw, blue_tail_pitch_rad,
                     beetle_blue.horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
-                    spray_aim_blue * SPRAY_AIM_MAX, spider_aim_blue * SPIDER_AIM_MAX, blue_def_pitch,
+                    spray_aim[0] * SPRAY_AIM_MAX, spider_aim[0] * SPIDER_AIM_MAX, blue_def_pitch,
                     1 if beetle_blue.active else 0,
                     # Red beetle state
                     beetle_red.x, beetle_red.y, beetle_red.z,
                     beetle_red.rotation, beetle_red.pitch, beetle_red.roll,
                     beetle_red.horn_pitch, beetle_red.horn_yaw, red_tail_pitch_rad,
                     beetle_red.horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
-                    spray_aim_red * SPRAY_AIM_MAX, spider_aim_red * SPRAY_AIM_MAX, red_def_pitch,
+                    spray_aim[1] * SPRAY_AIM_MAX, spider_aim[1] * SPRAY_AIM_MAX, red_def_pitch,
                     1 if beetle_red.active else 0
                 )
 
@@ -19627,7 +19648,7 @@ try:
             if g['blue_assembling']:
                 g['blue_assembly_timer'] += PHYSICS_TIMESTEP
             # Complete respawn when timer hits 0 - start hover phase in donut mode
-            if g['blue_respawn_timer'] <= 0 and not blue_hovering:
+            if g['blue_respawn_timer'] <= 0 and not hovering[0]:
                 g['blue_respawn_timer'] = 0
                 g['blue_assembling'] = False
                 g['blue_assembly_timer'] = 0.0
@@ -19637,7 +19658,7 @@ try:
 
                 if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode or cut_square_mode:
                     # Start hover phase - beetle flies from center to spawn point
-                    blue_hovering = True
+                    hovering[0] = True
                     blue_hover_timer = 0.0
                     blue_hover_start_x = 0.0
                     blue_hover_start_z = 0.0
@@ -19701,7 +19722,7 @@ try:
                     print("Blue beetle respawned!")
 
         # Blue beetle hover phase (flying to spawn point with goofy spinning)
-        if blue_hovering:
+        if hovering[0]:
             blue_hover_timer += PHYSICS_TIMESTEP
             progress = min(1.0, blue_hover_timer / HOVER_DURATION)
 
@@ -19736,7 +19757,7 @@ try:
 
             # Complete hover when done
             if progress >= 1.0:
-                blue_hovering = False
+                hovering[0] = False
                 blue_hover_timer = 0.0
                 # Now drop the beetle - rotation already blended, just finalize
                 beetle_blue.x = blue_hover_target_x
@@ -19782,7 +19803,7 @@ try:
             if g['red_assembling']:
                 g['red_assembly_timer'] += PHYSICS_TIMESTEP
             # Complete respawn when timer hits 0 - start hover phase in donut mode
-            if g['red_respawn_timer'] <= 0 and not red_hovering:
+            if g['red_respawn_timer'] <= 0 and not hovering[1]:
                 g['red_respawn_timer'] = 0
                 g['red_assembling'] = False
                 g['red_assembly_timer'] = 0.0
@@ -19792,7 +19813,7 @@ try:
 
                 if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode or cut_square_mode:
                     # Start hover phase - beetle flies from center to spawn point
-                    red_hovering = True
+                    hovering[1] = True
                     red_hover_timer = 0.0
                     red_hover_start_x = 0.0
                     red_hover_start_z = 0.0
@@ -19856,7 +19877,7 @@ try:
                     print("Red beetle respawned!")
 
         # Red beetle hover phase (flying to spawn point with goofy spinning)
-        if red_hovering:
+        if hovering[1]:
             red_hover_timer += PHYSICS_TIMESTEP
             progress = min(1.0, red_hover_timer / HOVER_DURATION)
 
@@ -19891,7 +19912,7 @@ try:
 
             # Complete hover when done
             if progress >= 1.0:
-                red_hovering = False
+                hovering[1] = False
                 red_hover_timer = 0.0
                 # Now drop the beetle - rotation already blended, just finalize
                 beetle_red.x = red_hover_target_x
@@ -20837,7 +20858,7 @@ try:
         # CPU OPTIMIZATION: Cache floor heights to skip kernel calls if entity hasn't moved much
         floor_y_blue = -1000.0
         floor_y_red = -1000.0
-        if beetle_blue.active and not beetle_blue.is_falling and not blue_hovering:
+        if beetle_blue.active and not beetle_blue.is_falling and not hovering[0]:
             # Check if we can reuse cached floor height
             cache_x, cache_z, cache_y = floor_cache_blue
             if cache_x is not None:
@@ -20889,7 +20910,7 @@ try:
                 elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
                     beetle_blue.on_ground = True
 
-        if beetle_red.active and not beetle_red.is_falling and not red_hovering:
+        if beetle_red.active and not beetle_red.is_falling and not hovering[1]:
             # Check if we can reuse cached floor height
             cache_x, cache_z, cache_y = floor_cache_red
             if cache_x is not None:
@@ -21076,7 +21097,7 @@ try:
         # Skip first 30 frames to let geometry fully initialize (prevents startup skipping)
         if (beetle_blue.active and beetle_red.active and
             not beetle_blue.is_falling and not beetle_red.is_falling and
-            not blue_hovering and not red_hovering and
+            not hovering[0] and not hovering[1] and
             physics_frame > 30):
             beetle_collision(beetle_blue, beetle_red, physics_params)
 
@@ -21143,12 +21164,12 @@ try:
     red_render_horn_yaw = lerp_angle(beetle_red.prev_horn_yaw, beetle_red.horn_yaw, alpha)
 
     # Interpolate spray aim for smooth bombardier butt-tilt
-    blue_render_spray_aim = prev_spray_aim_blue + (spray_aim_blue - prev_spray_aim_blue) * alpha
-    red_render_spray_aim = prev_spray_aim_red + (spray_aim_red - prev_spray_aim_red) * alpha
+    blue_render_spray_aim = prev_spray_aim[0] + (spray_aim[0] - prev_spray_aim[0]) * alpha
+    red_render_spray_aim = prev_spray_aim[1] + (spray_aim[1] - prev_spray_aim[1]) * alpha
 
     # Interpolate spider aim for smooth abdomen tilt
-    blue_render_spider_aim = prev_spider_aim_blue + (spider_aim_blue - prev_spider_aim_blue) * alpha
-    red_render_spider_aim = prev_spider_aim_red + (spider_aim_red - prev_spider_aim_red) * alpha
+    blue_render_spider_aim = prev_spider_aim_blue + (spider_aim[0] - prev_spider_aim_blue) * alpha
+    red_render_spider_aim = prev_spider_aim_red + (spider_aim[1] - prev_spider_aim_red) * alpha
 
     # === ANIMATION TIMING ===
     perf_monitor.start('animation')
@@ -21769,22 +21790,22 @@ try:
 
         # Smooth lerp toward target color
         lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
-        stripe_color_blue[0] += (target_r - stripe_color_blue[0]) * lerp_factor
-        stripe_color_blue[1] += (target_g - stripe_color_blue[1]) * lerp_factor
-        stripe_color_blue[2] += (target_b - stripe_color_blue[2]) * lerp_factor
+        stripe_color[0][0] += (target_r - stripe_color[0][0]) * lerp_factor
+        stripe_color[0][1] += (target_g - stripe_color[0][1]) * lerp_factor
+        stripe_color[0][2] += (target_b - stripe_color[0][2]) * lerp_factor
 
         if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
-            _set_color_field(simulation.blue_stripe_color, stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2], 'bs')
+            _set_color_field(simulation.blue_stripe_color, stripe_color[0][0], stripe_color[0][1], stripe_color[0][2], 'bs')
             b = window.blue_body_color
             _set_color_field(simulation.blue_body_color, b[0], b[1], b[2], 'bb')
 
     elif blue_horn_type_id == 5:  # Blue is bombardier
         # Determine target stripe color based on charge level
-        if spray_charges_blue == 0:
+        if spray_charges[0] == 0:
             target_r, target_g, target_b = 0.4, 0.4, 0.4  # Gray - depleted
-        elif spray_charges_blue == 1:
+        elif spray_charges[0] == 1:
             target_r, target_g, target_b = 0.2, 0.5, 0.2  # Dark green
-        elif spray_charges_blue == 2:
+        elif spray_charges[0] == 2:
             target_r, target_g, target_b = 0.3, 0.8, 0.2  # Bright green
         else:
             # Full charge: pulse effect (no lerp, direct pulse)
@@ -21795,16 +21816,16 @@ try:
 
         # Smooth lerp toward target color
         lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
-        stripe_color_blue[0] += (target_r - stripe_color_blue[0]) * lerp_factor
-        stripe_color_blue[1] += (target_g - stripe_color_blue[1]) * lerp_factor
-        stripe_color_blue[2] += (target_b - stripe_color_blue[2]) * lerp_factor
+        stripe_color[0][0] += (target_r - stripe_color[0][0]) * lerp_factor
+        stripe_color[0][1] += (target_g - stripe_color[0][1]) * lerp_factor
+        stripe_color[0][2] += (target_b - stripe_color[0][2]) * lerp_factor
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
         if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
-            _set_color_field(simulation.blue_stripe_color, stripe_color_blue[0], stripe_color_blue[1], stripe_color_blue[2], 'bs')
+            _set_color_field(simulation.blue_stripe_color, stripe_color[0][0], stripe_color[0][1], stripe_color[0][2], 'bs')
             b = window.blue_body_color
             _set_color_field(simulation.blue_body_color, b[0], b[1], b[2], 'bb')
-        blue_charge_glow = spray_charges_blue / float(SPRAY_MAX_CHARGES)
+        blue_charge_glow = spray_charges[0] / float(SPRAY_MAX_CHARGES)
     else:
         # Non-bombardier: use normal colors (skip during victory pulse)
         if not blue_celebrating or blue_pulse_timer >= VICTORY_PULSE_DURATION:
@@ -21833,22 +21854,22 @@ try:
 
         # Smooth lerp toward target color
         lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
-        stripe_color_red[0] += (target_r - stripe_color_red[0]) * lerp_factor
-        stripe_color_red[1] += (target_g - stripe_color_red[1]) * lerp_factor
-        stripe_color_red[2] += (target_b - stripe_color_red[2]) * lerp_factor
+        stripe_color[1][0] += (target_r - stripe_color[1][0]) * lerp_factor
+        stripe_color[1][1] += (target_g - stripe_color[1][1]) * lerp_factor
+        stripe_color[1][2] += (target_b - stripe_color[1][2]) * lerp_factor
 
         if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
-            _set_color_field(simulation.red_stripe_color, stripe_color_red[0], stripe_color_red[1], stripe_color_red[2], 'rs')
+            _set_color_field(simulation.red_stripe_color, stripe_color[1][0], stripe_color[1][1], stripe_color[1][2], 'rs')
             r = window.red_body_color
             _set_color_field(simulation.red_body_color, r[0], r[1], r[2], 'rb')
 
     elif red_horn_type_id == 5:  # Red is bombardier
         # Determine target stripe color based on charge level
-        if spray_charges_red == 0:
+        if spray_charges[1] == 0:
             target_r, target_g, target_b = 0.4, 0.4, 0.4  # Gray - depleted
-        elif spray_charges_red == 1:
+        elif spray_charges[1] == 1:
             target_r, target_g, target_b = 0.2, 0.5, 0.2  # Dark green
-        elif spray_charges_red == 2:
+        elif spray_charges[1] == 2:
             target_r, target_g, target_b = 0.3, 0.8, 0.2  # Bright green
         else:
             # Full charge: pulse effect (no lerp, direct pulse)
@@ -21859,16 +21880,16 @@ try:
 
         # Smooth lerp toward target color
         lerp_factor = min(1.0, STRIPE_LERP_SPEED * frame_dt)
-        stripe_color_red[0] += (target_r - stripe_color_red[0]) * lerp_factor
-        stripe_color_red[1] += (target_g - stripe_color_red[1]) * lerp_factor
-        stripe_color_red[2] += (target_b - stripe_color_red[2]) * lerp_factor
+        stripe_color[1][0] += (target_r - stripe_color[1][0]) * lerp_factor
+        stripe_color[1][1] += (target_g - stripe_color[1][1]) * lerp_factor
+        stripe_color[1][2] += (target_b - stripe_color[1][2]) * lerp_factor
 
         # Only update colors if not in victory pulse (victory pulse controls colors)
         if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
-            _set_color_field(simulation.red_stripe_color, stripe_color_red[0], stripe_color_red[1], stripe_color_red[2], 'rs')
+            _set_color_field(simulation.red_stripe_color, stripe_color[1][0], stripe_color[1][1], stripe_color[1][2], 'rs')
             r = window.red_body_color
             _set_color_field(simulation.red_body_color, r[0], r[1], r[2], 'rb')
-        red_charge_glow = spray_charges_red / float(SPRAY_MAX_CHARGES)
+        red_charge_glow = spray_charges[1] / float(SPRAY_MAX_CHARGES)
     else:
         # Non-bombardier: use normal colors (skip during victory pulse)
         if not red_celebrating or red_pulse_timer >= VICTORY_PULSE_DURATION:
@@ -21881,11 +21902,11 @@ try:
     # Update venom tip color based on charges (smooth lerp like bombardier stripes)
     if blue_horn_type_id == 3:  # Blue is scorpion
         # Determine target venom tip color based on charge level (dark purple shades)
-        if venom_charges_blue == 0:
+        if venom_charges[0] == 0:
             target_r, target_g, target_b = 0.2, 0.15, 0.2  # Dark gray-purple - depleted
-        elif venom_charges_blue == 1:
+        elif venom_charges[0] == 1:
             target_r, target_g, target_b = 0.3, 0.1, 0.4  # Dark purple
-        elif venom_charges_blue == 2:
+        elif venom_charges[0] == 2:
             target_r, target_g, target_b = 0.5, 0.15, 0.65  # Medium purple
         else:
             # Full charge: pulse effect (intense like bombardier)
@@ -21906,11 +21927,11 @@ try:
 
     if red_horn_type_id == 3:  # Red is scorpion
         # Determine target venom tip color based on charge level (dark purple shades)
-        if venom_charges_red == 0:
+        if venom_charges[1] == 0:
             target_r, target_g, target_b = 0.2, 0.15, 0.2  # Dark gray-purple - depleted
-        elif venom_charges_red == 1:
+        elif venom_charges[1] == 1:
             target_r, target_g, target_b = 0.3, 0.1, 0.4  # Dark purple
-        elif venom_charges_red == 2:
+        elif venom_charges[1] == 2:
             target_r, target_g, target_b = 0.5, 0.15, 0.65  # Medium purple
         else:
             # Full charge: pulse effect (intense like bombardier)
@@ -21934,11 +21955,11 @@ try:
 
     if beetle_blue.active:
         # Render blue beetle using its own cache
-        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle_blue, butt_wiggle_dir_blue, blue_charge_glow, blue_render_spray_aim * SPRAY_AIM_MAX, blue_render_spider_aim * SPIDER_AIM_MAX)
+        place_animated_beetle_blue(blue_render_x, blue_render_y, blue_render_z, blue_render_rotation, blue_render_pitch, blue_render_roll, blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch, blue_horn_type_id, beetle_blue.body_pitch_offset, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, beetle_blue.walk_phase, 1 if beetle_blue.is_lifted_high else 0, blue_default_horn_pitch, window.blue_body_length_value, window.blue_back_body_height_value, 1 if beetle_blue.is_rotating_only else 0, beetle_blue.rotation_direction, butt_wiggle[0], butt_wiggle_dir[0], blue_charge_glow, blue_render_spray_aim * SPRAY_AIM_MAX, blue_render_spider_aim * SPIDER_AIM_MAX)
 
     if beetle_red.active:
         # Render red beetle using its own cache
-        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle_red, butt_wiggle_dir_red, red_charge_glow, red_render_spray_aim * SPRAY_AIM_MAX, red_render_spider_aim * SPIDER_AIM_MAX)
+        place_animated_beetle_red(red_render_x, red_render_y, red_render_z, red_render_rotation, red_render_pitch, red_render_roll, red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch, red_horn_type_id, beetle_red.body_pitch_offset, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, beetle_red.walk_phase, 1 if beetle_red.is_lifted_high else 0, red_default_horn_pitch, window.red_body_length_value, window.red_back_body_height_value, 1 if beetle_red.is_rotating_only else 0, beetle_red.rotation_direction, butt_wiggle[1], butt_wiggle_dir[1], red_charge_glow, red_render_spray_aim * SPRAY_AIM_MAX, red_render_spider_aim * SPIDER_AIM_MAX)
 
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
