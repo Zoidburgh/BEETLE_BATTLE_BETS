@@ -1817,7 +1817,7 @@ def reset_match():
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
-    global blue_score, red_score, donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, square_bridge_mode, square_mode, cut_square_mode, squiggle_mode, star_mode
+    global donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, square_bridge_mode, square_mode, cut_square_mode, squiggle_mode, star_mode
     global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
     global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
@@ -1832,8 +1832,8 @@ def reset_match():
     ti.sync()
 
     # Reset scores for new match (ensures host and guest start at 0-0)
-    blue_score = 0
-    red_score = 0
+    scores[0] = 0
+    scores[1] = 0
 
     # Reset input buffer and physics frame for new match (important for network sync)
     input_buffer.reset()
@@ -2216,6 +2216,7 @@ beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (t
 # MUST always point at the same objects - reset_match() refreshes both.
 beetles = [beetle_blue, beetle_red]
 active_player_count = 2
+scores = [0, 0]  # Kill/goal score per player slot (was blue_score/red_score)
 
 beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of arena, no rotation matters)
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
@@ -2224,8 +2225,8 @@ beetle_ball.radius = 4.0  # Default ball radius
 ball_cache_initialized = False  # Will be initialized when ball is first activated
 
 # Ball mode scoring
-blue_score = 0
-red_score = 0
+scores[0] = 0
+scores[1] = 0
 ball_scored_this_fall = False  # Prevent multiple scores while ball falling
 
 # Ball explosion state
@@ -11218,7 +11219,7 @@ def set_network_ball_mode(active):
     Called from BOTH the MSG_GAME_OPTIONS handler and the state-sync fallback;
     whichever arrives first wins, the other sees no change and returns.
     """
-    global ball_cache_initialized, blue_score, red_score
+    global ball_cache_initialized
     if active == beetle_ball.active:
         return
     if active:
@@ -11243,8 +11244,8 @@ def set_network_ball_mode(active):
         beetle_ball.prev_rotation = beetle_ball.rotation
         beetle_ball.prev_pitch = beetle_ball.pitch
         beetle_ball.prev_roll = beetle_ball.roll
-        blue_score = 0
-        red_score = 0
+        scores[0] = 0
+        scores[1] = 0
         g['blue_score'] = 0
         g['red_score'] = 0
         g['ball_scored_this_fall'] = False
@@ -11264,8 +11265,8 @@ def set_network_ball_mode(active):
             clear_ball()
         simulation.clear_bowl_perimeter()
         beetle_ball.active = False
-        blue_score = 0
-        red_score = 0
+        scores[0] = 0
+        scores[1] = 0
         g['blue_score'] = 0
         g['red_score'] = 0
         queue_arena_switch('ball_off')
@@ -21872,9 +21873,9 @@ try:
     # Score explosion triggers when beam hits the digit (not on fixed timer)
     if referee_beam_hit_target and referee_beam_target == 'blue':
         if blue_score_pending > 0:
-            blue_score += blue_score_pending
+            scores[0] += blue_score_pending
             blue_score_pending = 0
-            print(f"Blue {blue_score} - {red_score} Red")
+            print(f"Blue {scores[0]} - {scores[1]} Red")
         blue_score_bounce_timer = SCORE_BOUNCE_DURATION
         blue_burst_timer = SCORE_BURST_DURATION
         blue_burst_spawned = 0
@@ -21882,9 +21883,9 @@ try:
 
     if referee_beam_hit_target and referee_beam_target == 'red':
         if red_score_pending > 0:
-            red_score += red_score_pending
+            scores[1] += red_score_pending
             red_score_pending = 0
-            print(f"Blue {blue_score} - {red_score} Red")
+            print(f"Blue {scores[0]} - {scores[1]} Red")
         red_score_bounce_timer = SCORE_BOUNCE_DURATION
         red_burst_timer = SCORE_BURST_DURATION
         red_burst_spawned = 0
@@ -21894,18 +21895,18 @@ try:
     # This handles: referee disabled, multiple simultaneous deaths, beam targeting other team
     if blue_score_pending > 0 and blue_score_delay_timer <= 0:
         # Beam didn't process this score (maybe targeting red or referee disabled)
-        blue_score += blue_score_pending
+        scores[0] += blue_score_pending
         blue_score_pending = 0
-        print(f"Blue {blue_score} - {red_score} Red (fallback)")
+        print(f"Blue {scores[0]} - {scores[1]} Red (fallback)")
         blue_score_bounce_timer = SCORE_BOUNCE_DURATION
         blue_burst_timer = SCORE_BURST_DURATION
         blue_burst_spawned = 0
 
     if red_score_pending > 0 and red_score_delay_timer <= 0:
         # Beam didn't process this score (maybe targeting blue or referee disabled)
-        red_score += red_score_pending
+        scores[1] += red_score_pending
         red_score_pending = 0
-        print(f"Blue {blue_score} - {red_score} Red (fallback)")
+        print(f"Blue {scores[0]} - {scores[1]} Red (fallback)")
         red_score_bounce_timer = SCORE_BOUNCE_DURATION
         red_burst_timer = SCORE_BURST_DURATION
         red_burst_spawned = 0
@@ -22051,13 +22052,13 @@ try:
 
     # Blue score digit above red goal (east)
     blue_digit_x = 96.0  # Center over red goal pit
-    render_score_digit(blue_score % 10, blue_digit_x, float(digit_y), 64.0,
+    render_score_digit(scores[0] % 10, blue_digit_x, float(digit_y), 64.0,
                       simulation.SCORE_DIGIT_BLUE,
                       blue_scale_x, blue_scale_y, camera.pos_x, camera.pos_z, blue_reveal)
 
     # Red score digit above blue goal (west)
     red_digit_x = 32.0  # Center over blue goal pit
-    render_score_digit(red_score % 10, red_digit_x, float(digit_y), 64.0,
+    render_score_digit(scores[1] % 10, red_digit_x, float(digit_y), 64.0,
                       simulation.SCORE_DIGIT_RED,
                       red_scale_x, red_scale_y, camera.pos_x, camera.pos_z, red_reveal)
 
@@ -22357,8 +22358,8 @@ try:
                                 clear_ball()
                             simulation.clear_bowl_perimeter()
                             beetle_ball.active = False
-                            blue_score = 0
-                            red_score = 0
+                            scores[0] = 0
+                            scores[1] = 0
                         donut_mode = False; donut_mode_active[None] = 0
                         x_stage_mode = False; x_stage_mode_active[None] = 0
                         barbell_mode = False; barbell_mode_active[None] = 0
@@ -22386,7 +22387,7 @@ try:
                             beetle_ball.prev_x = beetle_ball.x; beetle_ball.prev_y = beetle_ball.y; beetle_ball.prev_z = beetle_ball.z
                             beetle_ball.prev_rotation = beetle_ball.rotation
                             beetle_ball.prev_pitch = beetle_ball.pitch; beetle_ball.prev_roll = beetle_ball.roll
-                            blue_score = 0; red_score = 0
+                            scores[0] = 0; scores[1] = 0
                             g['ball_scored_this_fall'] = False; g['ball_has_exploded'] = False
                             g['ball_explosion_delay'] = 0.0; g['ball_explosion_timer'] = 0.0
                             beetle_ball.active = True
@@ -23224,8 +23225,8 @@ try:
                         clear_ball()
                     simulation.clear_bowl_perimeter()
                     beetle_ball.active = False
-                    blue_score = 0
-                    red_score = 0
+                    scores[0] = 0
+                    scores[1] = 0
                 if donut_mode:
                     donut_mode = False
                     donut_mode_active[None] = 0
@@ -23278,8 +23279,8 @@ try:
                     else:
                         clear_ball()
                     simulation.clear_bowl_perimeter()
-                    blue_score = 0
-                    red_score = 0
+                    scores[0] = 0
+                    scores[1] = 0
                     beetle_ball.active = False
                     queue_arena_switch('ball_off')
                 else:
@@ -23327,8 +23328,8 @@ try:
                     beetle_ball.prev_rotation = beetle_ball.rotation
                     beetle_ball.prev_pitch = beetle_ball.pitch
                     beetle_ball.prev_roll = beetle_ball.roll
-                    blue_score = 0
-                    red_score = 0
+                    scores[0] = 0
+                    scores[1] = 0
                     g['ball_scored_this_fall'] = False
                     g['ball_has_exploded'] = False
                     g['ball_explosion_delay'] = 0.0
@@ -23360,8 +23361,8 @@ try:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
                         beetle_ball.active = False
-                        blue_score = 0
-                        red_score = 0
+                        scores[0] = 0
+                        scores[1] = 0
                     if x_stage_mode:
                         x_stage_mode = False
                         x_stage_mode_active[None] = 0
@@ -23418,8 +23419,8 @@ try:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
                         beetle_ball.active = False
-                        blue_score = 0
-                        red_score = 0
+                        scores[0] = 0
+                        scores[1] = 0
                     if donut_mode:
                         donut_mode = False
                         donut_mode_active[None] = 0
@@ -23476,8 +23477,8 @@ try:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
                         beetle_ball.active = False
-                        blue_score = 0
-                        red_score = 0
+                        scores[0] = 0
+                        scores[1] = 0
                     if donut_mode:
                         donut_mode = False
                         donut_mode_active[None] = 0
@@ -23534,8 +23535,8 @@ try:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
                         beetle_ball.active = False
-                        blue_score = 0
-                        red_score = 0
+                        scores[0] = 0
+                        scores[1] = 0
                     if donut_mode:
                         donut_mode = False
                         donut_mode_active[None] = 0
@@ -23592,8 +23593,8 @@ try:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
                         beetle_ball.active = False
-                        blue_score = 0
-                        red_score = 0
+                        scores[0] = 0
+                        scores[1] = 0
                     if donut_mode:
                         donut_mode = False
                         donut_mode_active[None] = 0
@@ -23650,8 +23651,8 @@ try:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
                         beetle_ball.active = False
-                        blue_score = 0
-                        red_score = 0
+                        scores[0] = 0
+                        scores[1] = 0
                     if donut_mode:
                         donut_mode = False
                         donut_mode_active[None] = 0
