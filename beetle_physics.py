@@ -1873,7 +1873,7 @@ def reset_match():
     global match_winner, blue_celebrating, red_celebrating, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
     global blue_pulse_timer, red_pulse_timer, blue_confetti_timer, red_confetti_timer
     global silk_charge_blue, silk_charge_red, silk_might_exist
-    global floor_cache_blue, floor_cache_red, floor_cache_ball
+    global floor_cache_ball
     global ball_last_render, spray_might_exist
     global venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_tip_color_blue, venom_tip_color_red
@@ -1959,8 +1959,8 @@ def reset_match():
     silk_might_exist = False  # GPU sync optimization flag
 
     # Reset floor collision cache (CPU optimization)
-    floor_cache_blue = (None, None, -1000.0)
-    floor_cache_red = (None, None, -1000.0)
+    for _s in range(4):
+        floor_cache[_s] = (None, None, -1000.0)
     floor_cache_ball = (None, None, -1000.0)
 
     # Reset ball render cache (CPU optimization)
@@ -2637,8 +2637,7 @@ silk_might_exist = False  # Set True on spawn, False when count confirmed 0
 # Floor collision cache - skip kernel calls if entity hasn't moved much
 # Each entry: (last_x, last_z, cached_floor_y)
 FLOOR_CACHE_THRESHOLD = 1.0  # Only re-check if moved more than 1 unit
-floor_cache_blue = (None, None, -1000.0)
-floor_cache_red = (None, None, -1000.0)
+floor_cache = [(None, None, -1000.0)] * 4  # Per player slot
 floor_cache_ball = (None, None, -1000.0)
 
 # Ball render cache - skip re-render if ball hasn't moved (CPU optimization)
@@ -3913,13 +3912,13 @@ def build_floor_height_cache_kernel():
 
 def build_floor_height_cache():
     """Build/rebuild the floor height cache (call after arena init or ball mode toggle)"""
-    global floor_cache_blue, floor_cache_red, floor_cache_ball
+    global floor_cache_ball
     build_floor_height_cache_kernel()
     # Invalidate Python-level position caches so they re-query the new Taichi cache.
     # Without this, a stale cached -1000 (no floor) can persist after arena rebuild,
     # causing entities to fall through the floor.
-    floor_cache_blue = (None, None, -1000.0)
-    floor_cache_red = (None, None, -1000.0)
+    for _s in range(4):
+        floor_cache[_s] = (None, None, -1000.0)
     floor_cache_ball = (None, None, -1000.0)
     print("Floor height cache built")
 
@@ -17296,8 +17295,8 @@ try:
             g['last_blue_inputs'] = blue_inputs
             g['last_red_inputs'] = red_inputs
         # Save previous state for interpolation
-        beetles[0].save_previous_state()
-        beetles[1].save_previous_state()
+        for _slot in range(active_player_count):
+            beetles[_slot].save_previous_state()
         if beetle_ball.active:
             beetle_ball.save_previous_state()
         # Save spray aim for interpolation
@@ -17620,8 +17619,7 @@ try:
         _physics_timing['input_controls'] += (_t_input_end - _t_input_start) * 1000
 
         # Ice circle detection (before physics so friction changes apply this frame)
-        blue_on_ice = False
-        red_on_ice = False
+        on_ice = [False] * 4
         ball_on_ice = False
         if ice_mode:
             # Two circles on independent Lissajous paths
@@ -17631,14 +17629,12 @@ try:
             ice2_x = ICE_CIRCLE_BOUNDS * math.sin(t * 1.3 + math.pi)
             ice2_z = ICE_CIRCLE_BOUNDS * math.cos(t * 0.53 + math.pi)
             r2 = ICE_CIRCLE_RADIUS * ICE_CIRCLE_RADIUS
-            for beetle, label in [(beetles[0], 'blue'), (beetles[1], 'red')]:
+            for _slot in range(active_player_count):
+                beetle = beetles[_slot]
                 d1 = (beetle.x - ice1_x)**2 + (beetle.z - ice1_z)**2
                 d2 = (beetle.x - ice2_x)**2 + (beetle.z - ice2_z)**2
                 if d1 < r2 or d2 < r2:
-                    if label == 'blue':
-                        blue_on_ice = True
-                    else:
-                        red_on_ice = True
+                    on_ice[_slot] = True
             # Ball ice detection
             if beetle_ball.active:
                 d1 = (beetle_ball.x - ice1_x)**2 + (beetle_ball.z - ice1_z)**2
@@ -17647,15 +17643,14 @@ try:
                     ball_on_ice = True
 
         # Physics update (skip if hovering to spawn point)
-        if not hovering[0]:
-            beetles[0].update_physics(PHYSICS_TIMESTEP, on_ice=blue_on_ice)
-        if not hovering[1]:
-            beetles[1].update_physics(PHYSICS_TIMESTEP, on_ice=red_on_ice)
+        for _slot in range(active_player_count):
+            if not hovering[_slot]:
+                beetles[_slot].update_physics(PHYSICS_TIMESTEP, on_ice=on_ice[_slot])
 
         # Apply bowl slide physics when ball mode is active (slippery perimeter)
         if beetle_ball.active:
-            apply_bowl_slide(beetles[0], physics_params)
-            apply_bowl_slide(beetles[1], physics_params)
+            for _slot in range(active_player_count):
+                apply_bowl_slide(beetles[_slot], physics_params)
 
         # === BEETLE PHYSICS TIMING END ===
         _t_beetle_phys_end = time.perf_counter()
@@ -18656,30 +18651,23 @@ try:
         # IMPORTANT: Only host detects deaths - guest relies on MSG_SCORE from host
         # This prevents desync where guest sees death that host doesn't
         if is_host_or_local:
-            blue_dying = beetles[0].active and beetles[0].y < FALL_DEATH_Y
-            red_dying = beetles[1].active and beetles[1].y < FALL_DEATH_Y
-
-            if blue_dying:
-                beetles[0].active = False
-                print("BLUE BEETLE FELL INTO THE ABYSS!")
-                # Red scores when blue dies
-                simulation.trigger_stadium_excitement()
-                if not red_celebrating:
-                    red_celebrating = True
-                    if not beetle_ball.active:
-                        red_pulse_timer = 0.001  # Start red's independent celebration
-                    print("RED SCORES!")
-
-            if red_dying:
-                beetles[1].active = False
-                print("RED BEETLE FELL INTO THE ABYSS!")
-                # Blue scores when red dies
-                simulation.trigger_stadium_excitement()
-                if not blue_celebrating:
-                    blue_celebrating = True
-                    if not beetle_ball.active:
-                        blue_pulse_timer = 0.001  # Start blue's independent celebration
-                    print("BLUE SCORES!")
+            for slot in range(active_player_count):
+                if beetles[slot].active and beetles[slot].y < FALL_DEATH_Y:
+                    beetles[slot].active = False
+                    print(f"BEETLE {slot} FELL INTO THE ABYSS!")
+                    simulation.trigger_stadium_excitement()
+                    if active_player_count == 2:
+                        # 2P: the other player celebrates (FFA credit = Phase 5)
+                        if slot == 0 and not red_celebrating:
+                            red_celebrating = True
+                            if not beetle_ball.active:
+                                red_pulse_timer = 0.001
+                            print("RED SCORES!")
+                        elif slot == 1 and not blue_celebrating:
+                            blue_celebrating = True
+                            if not beetle_ball.active:
+                                blue_pulse_timer = 0.001
+                            print("BLUE SCORES!")
 
         # Beetle respawn timers (works in both normal and ball mode)
         # Beetle respawn + hover per player slot
@@ -19682,117 +19670,62 @@ try:
                         spawn_board_break_debris(float(wx), float(wz), 1.0)
             # else: COOLDOWN — nothing happens
 
-        # Floor collision - prevent penetration by pushing beetles upward
-        # Don't check floor collision if beetle is falling or hovering
-        # CPU OPTIMIZATION: Cache floor heights to skip kernel calls if entity hasn't moved much
-        floor_y_blue = -1000.0
-        floor_y_red = -1000.0
-        if beetles[0].active and not beetles[0].is_falling and not hovering[0]:
-            # Check if we can reuse cached floor height
-            cache_x, cache_z, cache_y = floor_cache_blue
-            if cache_x is not None:
-                dx = beetles[0].x - cache_x
-                dz = beetles[0].z - cache_z
-                if dx*dx + dz*dz < FLOOR_CACHE_THRESHOLD * FLOOR_CACHE_THRESHOLD:
-                    floor_y_blue = cache_y  # Reuse cached value
+        # Floor collision per player slot - prevent penetration by pushing
+        # beetles upward. CPU OPTIMIZATION: cached floor heights skip kernel
+        # calls if the beetle hasn't moved much
+        floor_y_by_slot = [-1000.0] * 4
+        for slot in range(active_player_count):
+            if beetles[slot].active and not beetles[slot].is_falling and not hovering[slot]:
+                # Check if we can reuse cached floor height
+                cache_x, cache_z, cache_y = floor_cache[slot]
+                if cache_x is not None:
+                    dx = beetles[slot].x - cache_x
+                    dz = beetles[slot].z - cache_z
+                    if dx*dx + dz*dz < FLOOR_CACHE_THRESHOLD * FLOOR_CACHE_THRESHOLD:
+                        floor_y_by_slot[slot] = cache_y  # Reuse cached value
+                    else:
+                        floor_y_by_slot[slot] = check_floor_collision(beetles[slot].x, beetles[slot].z)
+                        floor_cache[slot] = (beetles[slot].x, beetles[slot].z, floor_y_by_slot[slot])
                 else:
-                    floor_y_blue = check_floor_collision(beetles[0].x, beetles[0].z)
-                    floor_cache_blue = (beetles[0].x, beetles[0].z, floor_y_blue)
-            else:
-                floor_y_blue = check_floor_collision(beetles[0].x, beetles[0].z)
-                floor_cache_blue = (beetles[0].x, beetles[0].z, floor_y_blue)
-            # Moving hole override: only drop floor when beetle center is well inside hole
-            if hole_mode and not beetle_ball.active:
-                hdx = beetles[0].x - hole_x
-                hdz = beetles[0].z - hole_z
-                if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
-                    floor_y_blue = -1000.0
-            # Board break override: drop floor when beetle center is over a broken cell
-            if board_break_active and not beetle_ball.active and spawn_immunity[0] <= 0 and floor_y_blue > -100.0:
-                bb_gi = int(beetles[0].x + 64.0)
-                bb_gk = int(beetles[0].z + 64.0)
-                if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
-                    if renderer.board_break_mask[bb_gi, bb_gk] == 1:
-                        floor_y_blue = -1000.0
-            if floor_y_blue > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
-                # Calculate lowest point of beetle geometry after rotation
-                lowest_point_blue = lowest_point_kernels[0](
-                    beetles[0].y, beetles[0].rotation, beetles[0].pitch,
-                    beetles[0].roll, beetles[0].horn_pitch
-                )
+                    floor_y_by_slot[slot] = check_floor_collision(beetles[slot].x, beetles[slot].z)
+                    floor_cache[slot] = (beetles[slot].x, beetles[slot].z, floor_y_by_slot[slot])
+                # Moving hole override: only drop floor when beetle center is well inside hole
+                if hole_mode and not beetle_ball.active:
+                    hdx = beetles[slot].x - hole_x
+                    hdz = beetles[slot].z - hole_z
+                    if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
+                        floor_y_by_slot[slot] = -1000.0
+                # Board break override: drop floor when beetle center is over a broken cell
+                if board_break_active and not beetle_ball.active and spawn_immunity[slot] <= 0 and floor_y_by_slot[slot] > -100.0:
+                    bb_gi = int(beetles[slot].x + 64.0)
+                    bb_gk = int(beetles[slot].z + 64.0)
+                    if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
+                        if renderer.board_break_mask[bb_gi, bb_gk] == 1:
+                            floor_y_by_slot[slot] = -1000.0
+                if floor_y_by_slot[slot] > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
+                    # Calculate lowest point of beetle geometry after rotation
+                    lowest_point = lowest_point_kernels[slot](
+                        beetles[slot].y, beetles[slot].rotation, beetles[slot].pitch,
+                        beetles[slot].roll, beetles[slot].horn_pitch
+                    )
 
-                # Check if beetle penetrates floor (lowest point goes into or below floor)
-                floor_surface = floor_y_blue + 0.5  # Top of floor voxel surface
-                if lowest_point_blue < floor_surface:
-                    # Penetration detected - use small instant correction to prevent sinking
-                    penetration_depth = floor_surface - lowest_point_blue
+                    # Check if beetle penetrates floor (lowest point goes into or below floor)
+                    floor_surface = floor_y_by_slot[slot] + 0.5  # Top of floor voxel surface
+                    if lowest_point < floor_surface:
+                        # Penetration detected - use small instant correction to prevent sinking
+                        penetration_depth = floor_surface - lowest_point
 
-                    # Clamp correction to prevent jumps from pitch changes
-                    MAX_FLOOR_CORRECTION = 1.2  # Raised from 0.5 — smoothed rotation reduces jump risk
-                    beetles[0].y += min(penetration_depth, MAX_FLOOR_CORRECTION)
+                        # Clamp correction to prevent jumps from pitch changes
+                        MAX_FLOOR_CORRECTION = 1.2  # Raised from 0.5 — smoothed rotation reduces jump risk
+                        beetles[slot].y += min(penetration_depth, MAX_FLOOR_CORRECTION)
 
-                    # Stop downward motion but don't add upward velocity (prevents bouncing)
-                    if beetles[0].vy < 0:
-                        beetles[0].vy = 0.0
+                        # Stop downward motion but don't add upward velocity (prevents bouncing)
+                        if beetles[slot].vy < 0:
+                            beetles[slot].vy = 0.0
 
-                    beetles[0].on_ground = True
-                elif lowest_point_blue < floor_surface + 0.5:  # Close to ground
-                    beetles[0].on_ground = True
-
-        if beetles[1].active and not beetles[1].is_falling and not hovering[1]:
-            # Check if we can reuse cached floor height
-            cache_x, cache_z, cache_y = floor_cache_red
-            if cache_x is not None:
-                dx = beetles[1].x - cache_x
-                dz = beetles[1].z - cache_z
-                if dx*dx + dz*dz < FLOOR_CACHE_THRESHOLD * FLOOR_CACHE_THRESHOLD:
-                    floor_y_red = cache_y  # Reuse cached value
-                else:
-                    floor_y_red = check_floor_collision(beetles[1].x, beetles[1].z)
-                    floor_cache_red = (beetles[1].x, beetles[1].z, floor_y_red)
-            else:
-                floor_y_red = check_floor_collision(beetles[1].x, beetles[1].z)
-                floor_cache_red = (beetles[1].x, beetles[1].z, floor_y_red)
-            # Moving hole override: only drop floor when beetle center is well inside hole
-            if hole_mode and not beetle_ball.active:
-                hdx = beetles[1].x - hole_x
-                hdz = beetles[1].z - hole_z
-                if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
-                    floor_y_red = -1000.0
-            # Board break override: drop floor when beetle center is over a broken cell
-            if board_break_active and not beetle_ball.active and spawn_immunity[1] <= 0 and floor_y_red > -100.0:
-                bb_gi = int(beetles[1].x + 64.0)
-                bb_gk = int(beetles[1].z + 64.0)
-                if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
-                    if renderer.board_break_mask[bb_gi, bb_gk] == 1:
-                        floor_y_red = -1000.0
-            if floor_y_red > -100.0:  # Floor detected under beetle
-                lowest_point_red = lowest_point_kernels[1](
-                    beetles[1].y, beetles[1].rotation, beetles[1].pitch,
-                    beetles[1].roll, beetles[1].horn_pitch
-                )
-
-                floor_surface = floor_y_red + 0.5  # Top of floor voxel surface
-                if lowest_point_red < floor_surface:
-                    # Penetration detected - use small instant correction to prevent sinking
-                    penetration_depth = floor_surface - lowest_point_red
-
-                    # Clamp correction to prevent jumps from pitch changes
-                    MAX_FLOOR_CORRECTION = 1.2  # Raised from 0.5 — smoothed rotation reduces jump risk
-                    beetles[1].y += min(penetration_depth, MAX_FLOOR_CORRECTION)
-
-                    # Stop downward motion but don't add upward velocity (prevents bouncing)
-                    if beetles[1].vy < 0:
-                        beetles[1].vy = 0.0
-
-                    beetles[1].on_ground = True
-                elif lowest_point_red < floor_surface + 0.5:
-                    beetles[1].on_ground = True
-
-        # Decrement ball dust cooldown
-        if g['ball_dust_cooldown'] > 0.0:
-            g['ball_dust_cooldown'] -= PHYSICS_TIMESTEP
-
+                        beetles[slot].on_ground = True
+                    elif lowest_point < floor_surface + 0.5:  # Close to ground
+                        beetles[slot].on_ground = True
         # Ball floor collision (same as beetles, but skip in goal pit areas)
         if beetle_ball.active:
             # Check if ball is in goal pit area (no floor there) — with rounded corners
@@ -19895,28 +19828,20 @@ try:
         # Apply edge tipping physics (GPU-accelerated)
         # Reuse cached floor_y values from penetration check above
         # Tick spawn immunity timers
-        if spawn_immunity[0] > 0:
-            spawn_immunity[0] -= PHYSICS_TIMESTEP
-        if spawn_immunity[1] > 0:
-            spawn_immunity[1] -= PHYSICS_TIMESTEP
+        for _slot in range(active_player_count):
+            if spawn_immunity[_slot] > 0:
+                spawn_immunity[_slot] -= PHYSICS_TIMESTEP
 
-        if beetles[0].active and not beetles[0].is_falling:
-            if floor_y_blue <= -100.0:  # No floor support (use cached value)
-                bb_tip_immune[None] = 1 if spawn_immunity[0] > 0 else 0
-                calculate_edge_tipping_kernel(beetles[0].x, beetles[0].z, simulation.BEETLE_BLUE,
-                                              PHYSICS_TIMESTEP, beetles[0].pitch_inertia, beetles[0].roll_inertia)
-                beetles[0].vy += edge_tipping_vy[None]
-                beetles[0].pitch_velocity += edge_tipping_pitch_vel[None]
-                beetles[0].roll_velocity += edge_tipping_roll_vel[None]
-
-        if beetles[1].active and not beetles[1].is_falling:
-            if floor_y_red <= -100.0:  # No floor support (use cached value)
-                bb_tip_immune[None] = 1 if spawn_immunity[1] > 0 else 0
-                calculate_edge_tipping_kernel(beetles[1].x, beetles[1].z, simulation.BEETLE_RED,
-                                              PHYSICS_TIMESTEP, beetles[1].pitch_inertia, beetles[1].roll_inertia)
-                beetles[1].vy += edge_tipping_vy[None]
-                beetles[1].pitch_velocity += edge_tipping_pitch_vel[None]
-                beetles[1].roll_velocity += edge_tipping_roll_vel[None]
+        for slot in range(active_player_count):
+            b = beetles[slot]
+            if b.active and not b.is_falling:
+                if floor_y_by_slot[slot] <= -100.0:  # No floor support (use cached value)
+                    bb_tip_immune[None] = 1 if spawn_immunity[slot] > 0 else 0
+                    calculate_edge_tipping_kernel(float(b.x), float(b.z), simulation.PLAYER_VOXEL_IDS[slot][0],
+                                                  PHYSICS_TIMESTEP, float(b.pitch_inertia), float(b.roll_inertia))
+                    b.vy += edge_tipping_vy[None]
+                    b.pitch_velocity += edge_tipping_pitch_vel[None]
+                    b.roll_velocity += edge_tipping_roll_vel[None]
 
         # === FLOOR COLLISION TIMING END ===
         _t_floor_end = time.perf_counter()
