@@ -844,21 +844,31 @@ def get_local_inputs(window, player='blue', network_mode=False, horn_type_id=0):
     return keyboard_inputs | controller_inputs
 
 
+# Host-authoritative input delays (frames at 60Hz).
+# Host runs authoritative physics and applies its own input immediately.
+# Guest predicts locally with zero delay too; raise GUEST_INPUT_DELAY_FRAMES
+# to 2-3 if guest rubber-banding feels bad in testing (shrinks the window
+# between local prediction and the host's authoritative result).
+HOST_INPUT_DELAY_FRAMES = 0
+GUEST_INPUT_DELAY_FRAMES = 0
+
+
 class InputBuffer:
     """
-    Delay-based lockstep input buffer for P2P networking.
+    Input buffer for P2P networking.
 
-    Key features:
-    - Symmetric input delay: Both players have same delay for fairness
-    - Lockstep: Won't simulate a frame until we have BOTH inputs
-    - Frame synchronization: Both clients process same inputs at same frame
+    Host-authoritative mode (default): the simulation NEVER blocks waiting
+    for the opponent. If the exact remote input for a frame hasn't arrived,
+    the last-known remote input is used instead. The host's simulation is
+    authoritative; the guest predicts locally and is corrected by state sync.
 
-    For local play, delay can be set to 0.
-    For network play, delay is fixed at 8 frames (~133ms at 60Hz).
+    Legacy lockstep mode (host_authoritative=False): won't simulate a frame
+    until BOTH players' inputs exist for it, with a fixed symmetric delay.
+
+    For local play, delay is 0 and can_simulate() is always True.
     """
 
-    # Input delay in frames - fixed for consistent sync between clients
-    # 8 frames = ~133ms at 60Hz - covers most connections without desyncs
+    # Legacy lockstep delay - kept for reference / fallback mode
     NETWORK_INPUT_DELAY = 8
 
     def __init__(self, delay_frames=0):
@@ -868,6 +878,12 @@ class InputBuffer:
         self.current_frame = 0    # The frame we're about to simulate
         self.is_network_mode = False  # Set True when connected to opponent
         self.local_player_id = 0  # 0 = host (blue), 1 = guest (red)
+
+        # Host-authoritative mode: never block waiting for remote input.
+        # Set False to restore legacy lockstep behavior.
+        self.host_authoritative = True
+        self.remote_last_known = 0  # Most recent remote input bits received
+        self.total_stale = 0        # Frames simulated reusing stale remote input
 
         # Lockstep state
         self.waiting_for_remote = False  # True when blocked waiting for opponent
@@ -909,8 +925,10 @@ class InputBuffer:
         self.remote_inputs[frame] = inputs
 
         # Track highest frame received for sync detection
+        # and remember its input as the last-known fallback
         if frame > self.remote_frame_received:
             self.remote_frame_received = frame
+            self.remote_last_known = inputs
 
     def get_sim_frame(self):
         """Get the frame number we should be simulating (current - delay)."""
@@ -919,10 +937,19 @@ class InputBuffer:
     def can_simulate(self):
         """
         Check if we can simulate the next physics frame.
-        In lockstep, we need BOTH players' inputs for the frame.
+
+        Host-authoritative mode: ALWAYS True - missing remote input falls
+        back to last-known input in get_frame_inputs(). No freezes, ever.
+        Legacy lockstep mode: requires BOTH players' inputs for the frame.
         """
         if not self.is_network_mode:
             return True  # Local mode: always can simulate
+
+        if self.host_authoritative:
+            self.waiting_for_remote = False
+            self.frames_waited = 0
+            self.debug_total_frames += 1
+            return True
 
         sim_frame = self.get_sim_frame()
 
@@ -972,10 +999,16 @@ class InputBuffer:
             remote = self.remote_inputs.get(target, 0)
             return local, remote
 
-        # Network lockstep mode
+        # Network mode
         sim_frame = self.get_sim_frame()
         local = self.local_inputs.get(sim_frame, 0)
-        remote = self.remote_inputs.get(sim_frame, 0)
+        if sim_frame in self.remote_inputs:
+            remote = self.remote_inputs[sim_frame]
+        else:
+            # Host-authoritative fallback: reuse the newest input we have
+            # rather than blocking (or zeroing) on a late/lost packet
+            remote = self.remote_last_known
+            self.total_stale += 1
 
         if self.local_player_id == 0:
             # We are host (blue): local=blue, remote=red
@@ -1088,6 +1121,10 @@ class InputBuffer:
         self.remote_frame_received = -1
         self.frames_behind = 0
         self.last_state_sync_frame = 0
+        self.remote_last_known = 0
+        self.total_stale = 0
+        self.total_waits = 0
+        self.total_predicts = 0
         # Reset jitter buffer state for fresh match
         self.ping_samples.clear()
         self.last_delay_recalc_time = time.time()
@@ -16287,7 +16324,6 @@ net_hud = {
     'corr_avg': 0.0,         # Displayed: avg correction over last completed 5s window
     'corr_peak': 0.0,        # Displayed: peak correction over last completed 5s window
     'snap_count': 0,         # Times guest hard-snapped to host state
-    'stale_input_frames': 0, # Host: frames simulated reusing last-known guest input
 }
 
 def reset_net_hud():
@@ -16302,7 +16338,6 @@ def reset_net_hud():
     net_hud['corr_avg'] = 0.0
     net_hud['corr_peak'] = 0.0
     net_hud['snap_count'] = 0
-    net_hud['stale_input_frames'] = 0
 
 def net_hud_record_correction(err):
     """Feed one correction-magnitude sample into the rolling 5s window."""
@@ -17381,14 +17416,17 @@ try:
                 opponent_left_gracefully = True
                 print("[Network] Opponent left the game")
             network_manager.pending_disconnect = False  # Consume the flag
-        # Fallback: If opponent hasn't sent inputs for 3 seconds, connection lost
-        elif input_buffer.frames_waited > 180:  # 3 seconds at 60fps
+        # Fallback: If no packets of ANY kind for 3 seconds, connection lost.
+        # (Wall-clock based - the old frames_waited counter only advanced while
+        # blocked in lockstep, which host-authoritative mode never does.)
+        elif time.time() - network_manager.last_packet_received_time > 3.0:
             if not opponent_disconnected:
                 opponent_disconnected = True
                 opponent_left_gracefully = False
                 print("[Network] Connection lost...")
-        elif input_buffer.frames_waited == 0 and opponent_disconnected and not opponent_left_gracefully:
-            # They're back! (only possible for timeout, not graceful leave)
+        elif opponent_disconnected and not opponent_left_gracefully:
+            # A packet arrived within the last 3s - they're back!
+            # (only possible for timeout, not graceful leave)
             opponent_disconnected = False
             print("[Network] Opponent reconnected!")
 
@@ -17458,14 +17496,16 @@ try:
                 break
 
             # === GUEST FRAME ADJUSTMENT (keep frame counter aligned with host) ===
+            # Soft alignment only under host-authoritative netcode (state sync
+            # handles correctness) - wide +/-5 tolerance so it rarely fires
             if not network_manager.is_host and network_manager.target_frame is not None:
                 frame_diff = network_manager.target_frame - input_buffer.current_frame
-                if frame_diff < -2:
+                if frame_diff < -5:
                     # Guest is AHEAD of host - skip this physics step to slow down
                     accumulator -= PHYSICS_TIMESTEP
                     network_manager.target_frame = None
                     continue
-                elif frame_diff > 2:
+                elif frame_diff > 5:
                     # Guest is BEHIND host - run extra step by adding to accumulator
                     accumulator += PHYSICS_TIMESTEP
                 network_manager.target_frame = None  # Consumed
@@ -22639,7 +22679,7 @@ try:
                         if lbtn_x0 <= mx <= lbtn_x1 and sy0 <= my <= sy1:
                             game_state = GAME_STATE_SYNCING
                             input_buffer.is_network_mode = True
-                            input_buffer.delay = 8
+                            input_buffer.delay = HOST_INPUT_DELAY_FRAMES
                             input_buffer.local_player_id = 0
                             input_buffer.reset()
                             local_player_id = 0
@@ -22800,8 +22840,8 @@ try:
                     # Go to syncing state - wait for guest to confirm ready
                     game_state = GAME_STATE_SYNCING
                     input_buffer.is_network_mode = True
-                    # Fixed 8 frame delay for consistent sync between host and guest
-                    input_buffer.delay = 8
+                    # Host-authoritative: host input applies immediately
+                    input_buffer.delay = HOST_INPUT_DELAY_FRAMES
                     input_buffer.local_player_id = 0  # Host is blue
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
@@ -22931,8 +22971,8 @@ try:
                 # Go to syncing state and send SYNC_READY to host
                 game_state = GAME_STATE_SYNCING
                 input_buffer.is_network_mode = True
-                # Fixed 8 frame delay for consistent sync between host and guest
-                input_buffer.delay = 8
+                # Host-authoritative: guest predicts locally with zero delay
+                input_buffer.delay = GUEST_INPUT_DELAY_FRAMES
                 input_buffer.local_player_id = 1  # Guest is red
                 input_buffer.reset()
                 local_player_id = 1  # Guest is red
@@ -22977,7 +23017,7 @@ try:
                 reset_match()
                 # Tell host we're ready to sync
                 network_manager.send_sync_ready()
-                print(f"[Game] Guest received START, sent SYNC_READY. Delay: 8 frames")
+                print(f"[Game] Guest received START, sent SYNC_READY. Delay: {GUEST_INPUT_DELAY_FRAMES} frames")
 
             if window.GUI.button("LEAVE"):
                 if network_manager:
@@ -24830,7 +24870,7 @@ try:
         frame_diff = input_buffer.remote_frame_received - input_buffer.current_frame
         window.GUI.text(f"frame {input_buffer.current_frame}  diff {frame_diff:+d}")
         window.GUI.text(f"delay {input_buffer.delay}f  stalls {network_stats['accumulator_drains']}")
-        window.GUI.text(f"waits {input_buffer.total_waits}  predicts {input_buffer.total_predicts}")
+        window.GUI.text(f"waits {input_buffer.total_waits}  stale {input_buffer.total_stale}")
         if not network_manager.is_host:
             if net_hud['last_sync_time'] > 0:
                 sync_age_ms = (time.time() - net_hud['last_sync_time']) * 1000.0
@@ -24840,8 +24880,6 @@ try:
             window.GUI.text(f"corr B {net_hud['corr_blue']:.2f}  R {net_hud['corr_red']:.2f}")
             window.GUI.text(f"corr5s avg {net_hud['corr_avg']:.2f} pk {net_hud['corr_peak']:.2f}")
             window.GUI.text(f"snaps {net_hud['snap_count']}")
-        else:
-            window.GUI.text(f"stale inputs {net_hud['stale_input_frames']}")
         if network_manager.sim_lag_ms > 0 or network_manager.sim_loss_pct > 0:
             window.GUI.text(f"SIM +{network_manager.sim_lag_ms:.0f}ms / {network_manager.sim_loss_pct:.0f}% loss")
         window.GUI.end()
