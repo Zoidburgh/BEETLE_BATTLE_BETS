@@ -317,6 +317,20 @@ def install_modifier_keyshield():
 defuse_crt_asserts()
 _keyshield_proc = install_modifier_keyshield()
 
+def get_local4_from_args():
+    """--local4 runs a 4-beetle offline brawl (slots 2/3 are bots).
+    --bot-ai idle|random|seek picks the bot behavior (default seek)."""
+    enabled = '--local4' in sys.argv
+    mode = 'seek'
+    for i, arg in enumerate(sys.argv):
+        if arg == '--bot-ai' and i + 1 < len(sys.argv):
+            mode = sys.argv[i + 1].lower()
+    if enabled:
+        print(f"[Local4] 4-beetle local mode enabled (bot AI: {mode})")
+    return enabled, mode
+
+LOCAL4_MODE, BOT_AI_MODE = get_local4_from_args()
+
 FULLSCREEN_ENABLED, FULLSCREEN_RES = get_fullscreen_from_args()
 if FULLSCREEN_ENABLED:
     WINDOW_RESOLUTION = FULLSCREEN_RES
@@ -1813,7 +1827,6 @@ def reset_match():
     """Reset beetles to starting positions for new match"""
     global match_winner, blue_celebrating, red_celebrating, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
     global blue_pulse_timer, red_pulse_timer, blue_confetti_timer, red_confetti_timer
-    global blue_spawn_immunity, red_spawn_immunity
     global silk_charge_blue, silk_charge_red, silk_might_exist
     global floor_cache_blue, floor_cache_red, floor_cache_ball
     global ball_last_render, spray_might_exist
@@ -1822,8 +1835,6 @@ def reset_match():
     global physics_frame
     global opponent_disconnected, opponent_left_gracefully, disconnect_timer, reconnect_banner_timer
     global donut_mode, x_stage_mode, barbell_mode, figure8_mode, yinyang_mode, square_bridge_mode, square_mode, cut_square_mode, squiggle_mode, star_mode
-    global blue_downwash_active, blue_downwash_strength, blue_downwash_x, blue_downwash_z, blue_downwash_dust_timer, blue_downwash_fade_timer
-    global red_downwash_active, red_downwash_strength, red_downwash_x, red_downwash_z, red_downwash_dust_timer, red_downwash_fade_timer
     global tornado_mode, tornado_time, tornado_x, tornado_z, tornado_dust_timer, tornado_phase
     global sandstorm_mode, sandstorm_time, sandstorm_dust_timer, sandstorm_force_intensity, debris_cleanup_was_high
     global ufo_mode, ufo_time, ufo_phase, ufo_x, ufo_z, ufo_target_x, ufo_target_z, ufo_dust_timer, ufo_prev_x, ufo_prev_z
@@ -1848,6 +1859,10 @@ def reset_match():
     red_x, red_z, red_rot = get_spawn_position(1, is_initial=True)
     beetles[0] = Beetle(blue_x, blue_z, blue_rot, simulation.BEETLE_BLUE)
     beetles[1] = Beetle(red_x, red_z, red_rot, simulation.BEETLE_RED)
+    for _slot in range(2, active_player_count):
+        _sx, _sz, _srot = get_spawn_position(_slot, is_initial=True)
+        beetles[_slot] = Beetle(_sx, _sz, _srot, simulation.PLAYER_VOXEL_IDS[_slot][0])
+        rebuild_beetle(_slot, 12, 5)  # Default rhino geometry for slots 2/3
     match_winner = None
     blue_celebrating = False
     red_celebrating = False
@@ -1910,18 +1925,18 @@ def reset_match():
     spray_might_exist = False
 
     # Reset downwash state
-    blue_downwash_active = False
-    blue_downwash_strength = 0.0
-    blue_downwash_x = 0.0
-    blue_downwash_z = 0.0
-    blue_downwash_dust_timer = 0.0
-    blue_downwash_fade_timer = 0.0
-    red_downwash_active = False
-    red_downwash_strength = 0.0
-    red_downwash_x = 0.0
-    red_downwash_z = 0.0
-    red_downwash_dust_timer = 0.0
-    red_downwash_fade_timer = 0.0
+    downwash_active[0] = False
+    downwash_strength[0] = 0.0
+    downwash_x[0] = 0.0
+    downwash_z[0] = 0.0
+    downwash_dust_timer[0] = 0.0
+    downwash_fade_timer[0] = 0.0
+    downwash_active[1] = False
+    downwash_strength[1] = 0.0
+    downwash_x[1] = 0.0
+    downwash_z[1] = 0.0
+    downwash_dust_timer[1] = 0.0
+    downwash_fade_timer[1] = 0.0
 
     # Reset tornado hazard state
     tornado_mode = False
@@ -2212,7 +2227,11 @@ beetles = [
     Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED),  # Slot 1: facing left (toward blue)
 ]
 active_player_count = 2
-scores = [0, 0]  # Kill/goal score per player slot (was blue_score/red_score)
+if LOCAL4_MODE:
+    active_player_count = 4
+    beetles.append(Beetle(0.0, -16.0, math.pi / 2.0, simulation.BEETLE_P3))   # Slot 2 (green)
+    beetles.append(Beetle(0.0, 16.0, -math.pi / 2.0, simulation.BEETLE_P4))   # Slot 3 (yellow)
+scores = [0, 0, 0, 0]  # Kill/goal score per player slot
 
 beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of arena, no rotation matters)
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
@@ -2453,28 +2472,28 @@ reconnect_banner_timer = 0.0  # Timer for "Reconnected!" banner display
 # Converted from *_blue/*_red scalar pairs during the 4-player refactor.
 # Item assignment needs no `global` declaration.
 # ============================================================================
-spray_cooldown = [0.0, 0.0]
-spray_burst_remaining = [0, 0]
-spray_burst_dir = [(0.0, 0.0), (0.0, 0.0)]
-spray_burst_angle = [0.0, 0.0]
-butt_wiggle = [0.0, 0.0]
-butt_wiggle_dir = [1.0, 1.0]
-spray_charges = [3, 3]
-spray_recharge_timer = [0.0, 0.0]
-stripe_color = [[0.5, 1.0, 0.3], [0.5, 1.0, 0.3]]
-spray_aim = [0.0, 0.0]
-spray_aim_y = [0.0, 0.0]
-spider_aim = [0.0, 0.0]
-silk_firing = [False, False]
-silk_speed = [0.0, 0.0]
-venom_cooldown = [0.0, 0.0]
-venom_burst_remaining = [0, 0]
-venom_burst_dir = [(0.0, 0.0), (0.0, 0.0)]
-venom_charges = [3, 3]
-speed_mult = [1.0, 1.0]
-floor_modifier = [1.0, 1.0]
-silk_slowdown = [1.0, 1.0]
-hovering = [False, False]
+spray_cooldown = [0.0, 0.0, 0.0, 0.0]
+spray_burst_remaining = [0, 0, 0, 0]
+spray_burst_dir = [(0.0, 0.0)] * 4
+spray_burst_angle = [0.0, 0.0, 0.0, 0.0]
+butt_wiggle = [0.0, 0.0, 0.0, 0.0]
+butt_wiggle_dir = [1.0, 1.0, 1.0, 1.0]
+spray_charges = [3, 3, 3, 3]
+spray_recharge_timer = [0.0, 0.0, 0.0, 0.0]
+stripe_color = [[0.5, 1.0, 0.3], [0.5, 1.0, 0.3], [0.5, 1.0, 0.3], [0.5, 1.0, 0.3]]
+spray_aim = [0.0, 0.0, 0.0, 0.0]
+spray_aim_y = [0.0, 0.0, 0.0, 0.0]
+spider_aim = [0.0, 0.0, 0.0, 0.0]
+silk_firing = [False, False, False, False]
+silk_speed = [0.0, 0.0, 0.0, 0.0]
+venom_cooldown = [0.0, 0.0, 0.0, 0.0]
+venom_burst_remaining = [0, 0, 0, 0]
+venom_burst_dir = [(0.0, 0.0)] * 4
+venom_charges = [3, 3, 3, 3]
+speed_mult = [1.0, 1.0, 1.0, 1.0]
+floor_modifier = [1.0, 1.0, 1.0, 1.0]
+silk_slowdown = [1.0, 1.0, 1.0, 1.0]
+hovering = [False, False, False, False]
 
 # Bombardier spray attack state
 spray_cooldown[0] = 0.0  # Time until blue beetle can spray again
@@ -2532,7 +2551,7 @@ SPRAY_AIM_MAX = 0.175  # ~10 degrees in radians
 SPRAY_AIM_SPEED = 2.0  # How fast aim adjusts (higher = snappier)
 spray_aim[0] = 0.0   # Current aim angle (-1 to +1, 0 = level)
 spray_aim[1] = 0.0    # Current aim angle (-1 to +1, 0 = level)
-prev_spray_aim = [0.0, 0.0]  # Previous frame aim (for interpolation)
+prev_spray_aim = [0.0, 0.0, 0.0, 0.0]  # Previous frame aim (for interpolation)
 spray_aim_y[0] = 0.0  # Y velocity component for current spray burst (set when spray triggered)
 spray_aim_y[1] = 0.0   # Y velocity component for current spray burst (set when spray triggered)
 
@@ -2994,26 +3013,40 @@ red_burst_spawned = 0         # Particles spawned so far for red
 BASE_DIGIT_SCALE = 2.0  # Base size multiplier for score digits (1.0 = 5x7 voxels)
 
 # Beetle respawn state
-blue_respawn_timer = 0.0  # Timer for blue beetle respawn
-red_respawn_timer = 0.0   # Timer for red beetle respawn
-blue_spawn_immunity = 0.0  # Seconds of board break tipping immunity after spawn
-red_spawn_immunity = 0.0
+respawn_timers = [0.0, 0.0, 0.0, 0.0]  # Respawn timer per player slot
+assembling = [False, False, False, False]        # Assembly animation running per slot
+assembly_timers = [0.0, 0.0, 0.0, 0.0]           # Assembly animation timer per slot
+hover_timer = [0.0, 0.0, 0.0, 0.0]
+hover_start_x = [0.0, 0.0, 0.0, 0.0]
+hover_start_z = [0.0, 0.0, 0.0, 0.0]
+hover_target_x = [0.0, 0.0, 0.0, 0.0]
+hover_target_z = [0.0, 0.0, 0.0, 0.0]
+hover_target_rot = [0.0, 0.0, 0.0, 0.0]
+spawn_immunity = [0.0, 0.0, 0.0, 0.0]
+downwash_active = [False, False, False, False]
+downwash_strength = [0.0, 0.0, 0.0, 0.0]
+downwash_x = [0.0, 0.0, 0.0, 0.0]
+downwash_z = [0.0, 0.0, 0.0, 0.0]
+downwash_dust_timer = [0.0, 0.0, 0.0, 0.0]
+downwash_fade_timer = [0.0, 0.0, 0.0, 0.0]
+spawn_immunity[0] = 0.0  # Seconds of board break tipping immunity after spawn
+spawn_immunity[1] = 0.0
 SPAWN_IMMUNITY_DURATION = 3.0
 BEETLE_RESPAWN_DELAY = 4.0  # Same timing as ball celebration
 
 # Spawn downwash state (dust stream + push during beetle drop)
-blue_downwash_active = False
-blue_downwash_strength = 0.0
-blue_downwash_x = 0.0
-blue_downwash_z = 0.0
-blue_downwash_dust_timer = 0.0
-blue_downwash_fade_timer = 0.0
-red_downwash_active = False
-red_downwash_strength = 0.0
-red_downwash_x = 0.0
-red_downwash_z = 0.0
-red_downwash_dust_timer = 0.0
-red_downwash_fade_timer = 0.0
+downwash_active[0] = False
+downwash_strength[0] = 0.0
+downwash_x[0] = 0.0
+downwash_z[0] = 0.0
+downwash_dust_timer[0] = 0.0
+downwash_fade_timer[0] = 0.0
+downwash_active[1] = False
+downwash_strength[1] = 0.0
+downwash_x[1] = 0.0
+downwash_z[1] = 0.0
+downwash_dust_timer[1] = 0.0
+downwash_fade_timer[1] = 0.0
 
 # Arena tornado hazard state
 tornado_mode = False              # Toggle state
@@ -3091,10 +3124,6 @@ board_break_edge_idx = 0          # cycling index for even perimeter distributio
 board_break_saws_exploded = False  # True once saws have exploded before break
 
 # Beetle assembly animation state (voxel rain effect)
-blue_assembling = False
-red_assembling = False
-blue_assembly_timer = 0.0
-red_assembly_timer = 0.0
 ASSEMBLY_DURATION = 3.0  # Time for voxels to assemble (slower, more dramatic)
 ASSEMBLY_START_TIME = 1.0  # When assembly starts during respawn delay (earlier to compensate)
 
@@ -16295,25 +16324,23 @@ g = {
     'ball_explosion_pos_y': 0.0,
     'ball_explosion_pos_z': 0.0,
     'ball_has_exploded': False,
-    'blue_respawn_timer': 0.0,
-    'red_respawn_timer': 0.0,
 }
 
 # Hover-to-spawn state (beetle flies from center to safe spawn point in donut mode)
 hovering[0] = False
-blue_hover_timer = 0.0
-blue_hover_start_x = 0.0
-blue_hover_start_z = 0.0
-blue_hover_target_x = 0.0
-blue_hover_target_z = 0.0
-blue_hover_target_rot = 0.0
+hover_timer[0] = 0.0
+hover_start_x[0] = 0.0
+hover_start_z[0] = 0.0
+hover_target_x[0] = 0.0
+hover_target_z[0] = 0.0
+hover_target_rot[0] = 0.0
 hovering[1] = False
-red_hover_timer = 0.0
-red_hover_start_x = 0.0
-red_hover_start_z = 0.0
-red_hover_target_x = 0.0
-red_hover_target_z = 0.0
-red_hover_target_rot = 0.0
+hover_timer[1] = 0.0
+hover_start_x[1] = 0.0
+hover_start_z[1] = 0.0
+hover_target_x[1] = 0.0
+hover_target_z[1] = 0.0
+hover_target_rot[1] = 0.0
 
 # === AUTO-JOIN FROM STEAM FRIEND INVITE ===
 # When friend clicks "Join Game" in Steam, game launches with +connect_lobby <id>
@@ -16505,9 +16532,9 @@ try:
         # Check if tracked beetle is respawning
         respawn_timer = 0.0
         if target_beetle == beetles[0]:
-            respawn_timer = g['blue_respawn_timer']
+            respawn_timer = respawn_timers[0]
         elif target_beetle == beetles[1]:
-            respawn_timer = g['red_respawn_timer']
+            respawn_timer = respawn_timers[1]
 
         # Height scales with distance (dampened) so camera pulls back at an angle
         tp_zoom = THIRD_PERSON_DISTANCE / 60.0  # Ratio vs default distance
@@ -17993,12 +18020,10 @@ try:
 
         # Stage 1: Point of no return - disable controls but keep rendering
         # (Both host and guest detect this for visual feedback)
-        if beetles[0].active and not beetles[0].is_falling and beetles[0].y < POINT_OF_NO_RETURN:
-            beetles[0].is_falling = True
-            print("BLUE BEETLE IS FALLING!")
-        if beetles[1].active and not beetles[1].is_falling and beetles[1].y < POINT_OF_NO_RETURN:
-            beetles[1].is_falling = True
-            print("RED BEETLE IS FALLING!")
+        for slot in range(active_player_count):
+            if beetles[slot].active and not beetles[slot].is_falling and beetles[slot].y < POINT_OF_NO_RETURN:
+                beetles[slot].is_falling = True
+                print(f"BEETLE {slot} IS FALLING!")
 
         # Stage 1.5: Death explosion - gradual particle burst over 0.7 seconds
         EXPLOSION_TRIGGER_Y = -16.0  # Trigger explosion after falling 16 voxels
@@ -18031,8 +18056,8 @@ try:
                         beetles[0].on_ground = False
                         beetles[0].vy = -40.0  # Fast fall to minimize host/guest timing gap
                         # Start respawn timer
-                        if g['blue_respawn_timer'] <= 0:
-                            g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                        if respawn_timers[0] <= 0:
+                            respawn_timers[0] = BEETLE_RESPAWN_DELAY
                         # Trigger winner celebration (confetti + flash) for beetle death
                         if not red_celebrating:
                             red_celebrating = True
@@ -18064,8 +18089,8 @@ try:
                         beetles[1].on_ground = False
                         beetles[1].vy = -40.0  # Fast fall to minimize host/guest timing gap
                         # Start respawn timer
-                        if g['red_respawn_timer'] <= 0:
-                            g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
+                        if respawn_timers[1] <= 0:
+                            respawn_timers[1] = BEETLE_RESPAWN_DELAY
                         # Trigger winner celebration (confetti + flash) for beetle death
                         if not blue_celebrating:
                             blue_celebrating = True
@@ -18377,125 +18402,75 @@ try:
         # Local mode: always detect locally
         is_host_or_local = game_state != GAME_STATE_ONLINE_PLAY or (network_manager and network_manager.is_host)
 
-        # Blue beetle explosion
-        if is_host_or_local and beetles[0].is_falling and not beetles[0].has_exploded and beetles[0].y < EXPLOSION_TRIGGER_Y:
-            # Start explosion - store position
-            beetles[0].explosion_pos_x = beetles[0].x
-            beetles[0].explosion_pos_y = beetles[0].y + 30.0
-            beetles[0].explosion_pos_z = beetles[0].z
-            beetles[0].explosion_delay = EXPLOSION_DELAY  # Delay before particles
-            beetles[0].explosion_timer = EXPLOSION_DURATION
-            beetles[0].has_exploded = True
-            # Opponent scores and we start respawn timer (works in both normal and ball mode)
-            if g['red_score_delay_timer'] <= 0:
-                g['red_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer only if not already running
-            g['red_score_pending'] += 1  # Score will be added after delay
-            g['blue_respawn_timer'] = BEETLE_RESPAWN_DELAY
-            # Network mode: host sends score event to guest with death position
-            if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
-                network_manager.send_score(1, score_type=0, death_x=beetles[0].x, death_z=beetles[0].z)  # Red scores, blue died
-            print(f"RED SCORES!")
-            simulation.trigger_stadium_excitement()
-            print(f"BLUE BEETLE EXPLOSION STARTED! (debris: {simulation.num_debris[None]})")
+        # Beetle death explosion per player slot
+        # (score credit is 2P-only here; FFA attribution arrives in Phase 5)
+        for slot in range(active_player_count):
+            b = beetles[slot]
+            if is_host_or_local and b.is_falling and not b.has_exploded and b.y < EXPLOSION_TRIGGER_Y:
+                # Start explosion - store position
+                b.explosion_pos_x = b.x
+                b.explosion_pos_y = b.y + 30.0
+                b.explosion_pos_z = b.z
+                b.explosion_delay = EXPLOSION_DELAY  # Delay before particles
+                b.explosion_timer = EXPLOSION_DURATION
+                b.has_exploded = True
+                respawn_timers[slot] = BEETLE_RESPAWN_DELAY
+                if active_player_count == 2:
+                    # Opponent scores (works in both normal and ball mode)
+                    other = 1 - slot
+                    delay_key = ('blue_score_delay_timer', 'red_score_delay_timer')[other]
+                    pend_key = ('blue_score_pending', 'red_score_pending')[other]
+                    if g[delay_key] <= 0:
+                        g[delay_key] = SCORE_ANIMATION_DELAY  # Start delay timer only if not already running
+                    g[pend_key] += 1  # Score will be added after delay
+                    # Network mode: host sends score event to guest with death position
+                    if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
+                        network_manager.send_score(other, score_type=0, death_x=b.x, death_z=b.z, victim=slot)
+                    print(f"{('BLUE', 'RED')[other]} SCORES!")
+                simulation.trigger_stadium_excitement()
+                print(f"BEETLE {slot} EXPLOSION STARTED! (debris: {simulation.num_debris[None]})")
 
-        # Guest-side blue beetle explosion (triggered after receiving death event from host)
-        if beetles[0].guest_death_falling and not beetles[0].has_exploded and beetles[0].y < EXPLOSION_TRIGGER_Y:
-            # Start explosion at current position (after falling from death position)
-            beetles[0].explosion_pos_x = beetles[0].x
-            beetles[0].explosion_pos_y = beetles[0].y + 30.0
-            beetles[0].explosion_pos_z = beetles[0].z
-            beetles[0].explosion_delay = EXPLOSION_DELAY
-            beetles[0].explosion_timer = EXPLOSION_DURATION
-            beetles[0].has_exploded = True
-            beetles[0].active = False  # Deactivate beetle (stops rendering)
-            beetles[0].guest_death_falling = False  # Clear the flag
-            print("BLUE BEETLE EXPLOSION (GUEST) STARTED!")
+            # Guest-side explosion (triggered after receiving death event from host)
+            if b.guest_death_falling and not b.has_exploded and b.y < EXPLOSION_TRIGGER_Y:
+                b.explosion_pos_x = b.x
+                b.explosion_pos_y = b.y + 30.0
+                b.explosion_pos_z = b.z
+                b.explosion_delay = EXPLOSION_DELAY
+                b.explosion_timer = EXPLOSION_DURATION
+                b.has_exploded = True
+                b.active = False  # Deactivate beetle (stops rendering)
+                b.guest_death_falling = False  # Clear the flag
+                print(f"BEETLE {slot} EXPLOSION (GUEST) STARTED!")
 
-        # Continue spawning particles during explosion (after delay)
-        if beetles[0].has_exploded:
-            if beetles[0].explosion_delay > 0.0:
-                beetles[0].explosion_delay -= PHYSICS_TIMESTEP
-            elif beetles[0].explosion_timer > 0.0:
-                beetles[0].explosion_timer -= PHYSICS_TIMESTEP
-                # Calculate which batch to spawn
-                progress = 1.0 - (beetles[0].explosion_timer / EXPLOSION_DURATION)
-                particles_spawned = int(progress * TOTAL_PARTICLES)
-                batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
-                batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
+            # Continue spawning particles during explosion (after delay)
+            if b.has_exploded:
+                if b.explosion_delay > 0.0:
+                    b.explosion_delay -= PHYSICS_TIMESTEP
+                elif b.explosion_timer > 0.0:
+                    b.explosion_timer -= PHYSICS_TIMESTEP
+                    # Calculate which batch to spawn
+                    progress = 1.0 - (b.explosion_timer / EXPLOSION_DURATION)
+                    particles_spawned = int(progress * TOTAL_PARTICLES)
+                    batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
+                    batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
 
-                if batch_size > 0:
-                    # Get blue beetle colors from window
-                    blue_body = window.blue_body_color
-                    blue_leg = window.blue_leg_color
-                    blue_stripe = window.blue_stripe_color
-                    blue_tip = window.blue_leg_tip_color
-                    spawn_death_explosion_batch(beetles[0].explosion_pos_x, beetles[0].explosion_pos_y,
-                                               beetles[0].explosion_pos_z,
-                                               blue_body[0], blue_body[1], blue_body[2],
-                                               blue_leg[0], blue_leg[1], blue_leg[2],
-                                               blue_stripe[0], blue_stripe[1], blue_stripe[2],
-                                               blue_tip[0], blue_tip[1], blue_tip[2],
-                                               batch_offset, batch_size, TOTAL_PARTICLES)
-
-        # Red beetle explosion
-        if is_host_or_local and beetles[1].is_falling and not beetles[1].has_exploded and beetles[1].y < EXPLOSION_TRIGGER_Y:
-            # Start explosion - store position
-            beetles[1].explosion_pos_x = beetles[1].x
-            beetles[1].explosion_pos_y = beetles[1].y + 30.0
-            beetles[1].explosion_pos_z = beetles[1].z
-            beetles[1].explosion_delay = EXPLOSION_DELAY  # Delay before particles
-            beetles[1].explosion_timer = EXPLOSION_DURATION
-            beetles[1].has_exploded = True
-            # Opponent scores and we start respawn timer (works in both normal and ball mode)
-            if g['blue_score_delay_timer'] <= 0:
-                g['blue_score_delay_timer'] = SCORE_ANIMATION_DELAY  # Start delay timer only if not already running
-            g['blue_score_pending'] += 1  # Score will be added after delay
-            g['red_respawn_timer'] = BEETLE_RESPAWN_DELAY
-            # Network mode: host sends score event to guest with death position
-            if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
-                network_manager.send_score(0, score_type=0, death_x=beetles[1].x, death_z=beetles[1].z)  # Blue scores, red died
-            print(f"BLUE SCORES!")
-            simulation.trigger_stadium_excitement()
-            print(f"RED BEETLE EXPLOSION STARTED! (debris: {simulation.num_debris[None]})")
-
-        # Guest-side red beetle explosion (triggered after receiving death event from host)
-        if beetles[1].guest_death_falling and not beetles[1].has_exploded and beetles[1].y < EXPLOSION_TRIGGER_Y:
-            # Start explosion at current position (after falling from death position)
-            beetles[1].explosion_pos_x = beetles[1].x
-            beetles[1].explosion_pos_y = beetles[1].y + 30.0
-            beetles[1].explosion_pos_z = beetles[1].z
-            beetles[1].explosion_delay = EXPLOSION_DELAY
-            beetles[1].explosion_timer = EXPLOSION_DURATION
-            beetles[1].has_exploded = True
-            beetles[1].active = False  # Deactivate beetle (stops rendering)
-            beetles[1].guest_death_falling = False  # Clear the flag
-            print("RED BEETLE EXPLOSION (GUEST) STARTED!")
-
-        # Continue spawning particles during explosion (after delay)
-        if beetles[1].has_exploded:
-            if beetles[1].explosion_delay > 0.0:
-                beetles[1].explosion_delay -= PHYSICS_TIMESTEP
-            elif beetles[1].explosion_timer > 0.0:
-                beetles[1].explosion_timer -= PHYSICS_TIMESTEP
-                # Calculate which batch to spawn
-                progress = 1.0 - (beetles[1].explosion_timer / EXPLOSION_DURATION)
-                particles_spawned = int(progress * TOTAL_PARTICLES)
-                batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
-                batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
-
-                if batch_size > 0:
-                    # Get red beetle colors from window
-                    red_body = window.red_body_color
-                    red_leg = window.red_leg_color
-                    red_stripe = window.red_stripe_color
-                    red_tip = window.red_leg_tip_color
-                    spawn_death_explosion_batch(beetles[1].explosion_pos_x, beetles[1].explosion_pos_y,
-                                               beetles[1].explosion_pos_z,
-                                               red_body[0], red_body[1], red_body[2],
-                                               red_leg[0], red_leg[1], red_leg[2],
-                                               red_stripe[0], red_stripe[1], red_stripe[2],
-                                               red_tip[0], red_tip[1], red_tip[2],
-                                               batch_offset, batch_size, TOTAL_PARTICLES)
+                    if batch_size > 0:
+                        # Per-slot death explosion colors (slots 2/3: static green/yellow)
+                        if slot == 0:
+                            body_c, leg_c, stripe_c, tip_c = window.blue_body_color, window.blue_leg_color, window.blue_stripe_color, window.blue_leg_tip_color
+                        elif slot == 1:
+                            body_c, leg_c, stripe_c, tip_c = window.red_body_color, window.red_leg_color, window.red_stripe_color, window.red_leg_tip_color
+                        elif slot == 2:
+                            body_c, leg_c, stripe_c, tip_c = (0.2, 0.75, 0.3), (0.45, 0.95, 0.5), (0.7, 1.0, 0.6), (0.0, 0.25, 0.05)
+                        else:
+                            body_c, leg_c, stripe_c, tip_c = (0.95, 0.8, 0.15), (1.0, 0.9, 0.45), (1.0, 0.95, 0.7), (0.3, 0.22, 0.0)
+                        spawn_death_explosion_batch(b.explosion_pos_x, b.explosion_pos_y,
+                                                   b.explosion_pos_z,
+                                                   body_c[0], body_c[1], body_c[2],
+                                                   leg_c[0], leg_c[1], leg_c[2],
+                                                   stripe_c[0], stripe_c[1], stripe_c[2],
+                                                   tip_c[0], tip_c[1], tip_c[2],
+                                                   batch_offset, batch_size, TOTAL_PARTICLES)
 
         # Ball explosion - trigger when ball falls to same level as beetles
         # Host-authoritative: only host detects, then sends to guest
@@ -18651,459 +18626,237 @@ try:
                     print("BLUE SCORES!")
 
         # Beetle respawn timers (works in both normal and ball mode)
-        # Blue beetle respawn with assembly animation
-        if g['blue_respawn_timer'] > 0:
-            g['blue_respawn_timer'] -= PHYSICS_TIMESTEP
-            # Start assembly animation when 1.5s remains
-            remaining = g['blue_respawn_timer']
-            if remaining <= ASSEMBLY_DURATION and not g['blue_assembling']:
-                g['blue_assembling'] = True
-                g['blue_assembly_timer'] = 0.0
-                print("Blue beetle assembly started!")
-            # Update assembly timer
-            if g['blue_assembling']:
-                g['blue_assembly_timer'] += PHYSICS_TIMESTEP
-            # Complete respawn when timer hits 0 - start hover phase in donut mode
-            if g['blue_respawn_timer'] <= 0 and not hovering[0]:
-                g['blue_respawn_timer'] = 0
-                g['blue_assembling'] = False
-                g['blue_assembly_timer'] = 0.0
+        # Beetle respawn + hover per player slot
+        for slot in range(active_player_count):
+            hover_spin_dir = 1.0 if slot % 2 == 0 else -1.0
+            hover_wobble_phase = slot * 1.5
+            # Respawn with assembly animation
+            if respawn_timers[slot] > 0:
+                respawn_timers[slot] -= PHYSICS_TIMESTEP
+                # Start assembly animation when 1.5s remains
+                remaining = respawn_timers[slot]
+                if remaining <= ASSEMBLY_DURATION and not assembling[slot]:
+                    assembling[slot] = True
+                    assembly_timers[slot] = 0.0
+                    print(f"Beetle {slot} assembly started!")
+                # Update assembly timer
+                if assembling[slot]:
+                    assembly_timers[slot] += PHYSICS_TIMESTEP
+                # Complete respawn when timer hits 0 - start hover phase in donut mode
+                if respawn_timers[slot] <= 0 and not hovering[slot]:
+                    respawn_timers[slot] = 0
+                    assembling[slot] = False
+                    assembly_timers[slot] = 0.0
 
-                # Get spawn position
-                spawn_x, spawn_z, spawn_rot = get_spawn_position(0)
+                    # Get spawn position
+                    spawn_x, spawn_z, spawn_rot = get_spawn_position(slot)
 
-                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode or cut_square_mode:
-                    # Start hover phase - beetle flies from center to spawn point
-                    hovering[0] = True
-                    blue_hover_timer = 0.0
-                    blue_hover_start_x = 0.0
-                    blue_hover_start_z = 0.0
-                    blue_hover_target_x = spawn_x
-                    blue_hover_target_z = spawn_z
-                    blue_hover_target_rot = spawn_rot
-                    # Place beetle at center, hovering
-                    beetles[0].x = 0.0
-                    beetles[0].y = HOVER_HEIGHT
-                    beetles[0].z = 0.0
-                    beetles[0].vx = 0.0
-                    beetles[0].vy = 0.0
-                    beetles[0].vz = 0.0
-                    beetles[0].rotation = 0.0
-                    beetles[0].pitch = 0.0
-                    beetles[0].roll = 0.0
-                    beetles[0].angular_velocity = 0.0  # Manual spin in hover section
-                    beetles[0].pitch_velocity = 0.0
-                    beetles[0].roll_velocity = 0.0
-                    beetles[0].active = True
-                    beetles[0].has_exploded = False
-                    beetles[0].is_falling = False
-                    beetles[0].on_ground = False
-                    blue_spawn_immunity = SPAWN_IMMUNITY_DURATION
-                    print("Blue beetle hovering to spawn point!")
-                else:
-                    # Normal mode - spawn directly
-                    beetles[0].x = spawn_x
-                    beetles[0].y = 16.5  # Drop from above
-                    beetles[0].z = spawn_z
-                    beetles[0].vx = 0.0
-                    beetles[0].vy = 0.0
-                    beetles[0].vz = 0.0
-                    beetles[0].rotation = spawn_rot
-                    beetles[0].pitch = 0.0
-                    beetles[0].roll = 0.0
-                    beetles[0].angular_velocity = 0.0
-                    beetles[0].pitch_velocity = 0.0
-                    beetles[0].roll_velocity = 0.0
-                    beetles[0].active = True
-                    beetles[0].has_exploded = False
-                    beetles[0].is_falling = False
-                    beetles[0].guest_death_falling = False
-                    beetles[0].on_ground = False
-                    beetles[0].forward_hold_time = 0.0
-                    beetles[0].backward_hold_time = 0.0
-                    beetles[0].forward_bonus = 0.0
-                    beetles[0].backward_bonus = 0.0
-                    beetles[0].silk_speed_mult = 1.0
-                    blue_spawn_immunity = SPAWN_IMMUNITY_DURATION
-                    red_celebrating = False
-                    red_pulse_timer = 0.0
-                    red_confetti_timer = 0.0
+                    if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode or cut_square_mode:
+                        # Start hover phase - beetle flies from center to spawn point
+                        hovering[slot] = True
+                        hover_timer[slot] = 0.0
+                        hover_start_x[slot] = 0.0
+                        hover_start_z[slot] = 0.0
+                        hover_target_x[slot] = spawn_x
+                        hover_target_z[slot] = spawn_z
+                        hover_target_rot[slot] = spawn_rot
+                        # Place beetle at center, hovering
+                        beetles[slot].x = 0.0
+                        beetles[slot].y = HOVER_HEIGHT
+                        beetles[slot].z = 0.0
+                        beetles[slot].vx = 0.0
+                        beetles[slot].vy = 0.0
+                        beetles[slot].vz = 0.0
+                        beetles[slot].rotation = 0.0
+                        beetles[slot].pitch = 0.0
+                        beetles[slot].roll = 0.0
+                        beetles[slot].angular_velocity = 0.0  # Manual spin in hover section
+                        beetles[slot].pitch_velocity = 0.0
+                        beetles[slot].roll_velocity = 0.0
+                        beetles[slot].active = True
+                        beetles[slot].has_exploded = False
+                        beetles[slot].is_falling = False
+                        beetles[slot].on_ground = False
+                        spawn_immunity[slot] = SPAWN_IMMUNITY_DURATION
+                        print(f"Beetle {slot} hovering to spawn point!")
+                    else:
+                        # Normal mode - spawn directly
+                        beetles[slot].x = spawn_x
+                        beetles[slot].y = 16.5  # Drop from above
+                        beetles[slot].z = spawn_z
+                        beetles[slot].vx = 0.0
+                        beetles[slot].vy = 0.0
+                        beetles[slot].vz = 0.0
+                        beetles[slot].rotation = spawn_rot
+                        beetles[slot].pitch = 0.0
+                        beetles[slot].roll = 0.0
+                        beetles[slot].angular_velocity = 0.0
+                        beetles[slot].pitch_velocity = 0.0
+                        beetles[slot].roll_velocity = 0.0
+                        beetles[slot].active = True
+                        beetles[slot].has_exploded = False
+                        beetles[slot].is_falling = False
+                        beetles[slot].guest_death_falling = False
+                        beetles[slot].on_ground = False
+                        beetles[slot].forward_hold_time = 0.0
+                        beetles[slot].backward_hold_time = 0.0
+                        beetles[slot].forward_bonus = 0.0
+                        beetles[slot].backward_bonus = 0.0
+                        beetles[slot].silk_speed_mult = 1.0
+                        spawn_immunity[slot] = SPAWN_IMMUNITY_DURATION
+                        if active_player_count == 2 and slot == 0:
+                            red_celebrating = False
+                            red_pulse_timer = 0.0
+                            red_confetti_timer = 0.0
+                        elif active_player_count == 2 and slot == 1:
+                            blue_celebrating = False
+                            blue_pulse_timer = 0.0
+                            blue_confetti_timer = 0.0
+                        # Activate downwash effect (beetle dropping from y=15)
+                        downwash_active[slot] = True
+                        downwash_strength[slot] = 0.0
+                        downwash_x[slot] = spawn_x
+                        downwash_z[slot] = spawn_z
+                        downwash_dust_timer[slot] = 0.0
+                        downwash_fade_timer[slot] = 0.0
+                        print(f"Beetle {slot} respawned!")
+
+            # Hover phase (flying to spawn point with goofy spinning)
+            if hovering[slot]:
+                hover_timer[slot] += PHYSICS_TIMESTEP
+                progress = min(1.0, hover_timer[slot] / HOVER_DURATION)
+
+                # Smooth easing (ease-in-out)
+                smooth_progress = progress * progress * (3.0 - 2.0 * progress)
+
+                # Lerp position from center to target
+                beetles[slot].x = hover_start_x[slot] + (hover_target_x[slot] - hover_start_x[slot]) * smooth_progress
+                beetles[slot].z = hover_start_z[slot] + (hover_target_z[slot] - hover_start_z[slot]) * smooth_progress
+                beetles[slot].y = HOVER_HEIGHT  # Stay at hover height
+
+                # Goofy spinning - slow down and blend toward target rotation
+                spin_factor = 1.0 - smooth_progress
+                beetles[slot].rotation += hover_spin_dir * HOVER_SPIN_SPEED * spin_factor * PHYSICS_TIMESTEP
+                # Blend rotation toward target as we approach (prevents snap at end)
+                rotation_blend = smooth_progress * smooth_progress  # Accelerating blend
+                beetles[slot].rotation = beetles[slot].rotation * (1.0 - rotation_blend) + hover_target_rot[slot] * rotation_blend
+
+                # Add some wobble that fades out
+                wobble = math.sin(hover_timer[slot] * 10.0 + hover_wobble_phase) * 0.15 * spin_factor
+                beetles[slot].pitch = wobble
+                beetles[slot].roll = math.cos(hover_timer[slot] * 8.0 + hover_wobble_phase * 1.33) * 0.1 * spin_factor
+
+                # Start downwash push 0.3s before hover ends (anti-camp)
+                if hover_timer[slot] >= HOVER_DURATION - 0.3 and not downwash_active[slot]:
+                    downwash_active[slot] = True
+                    downwash_strength[slot] = DOWNWASH_MIN_STRENGTH
+                    downwash_x[slot] = hover_target_x[slot]
+                    downwash_z[slot] = hover_target_z[slot]
+                    downwash_dust_timer[slot] = 0.0
+                    downwash_fade_timer[slot] = 0.0
+
+                # Complete hover when done
+                if progress >= 1.0:
+                    hovering[slot] = False
+                    hover_timer[slot] = 0.0
+                    # Now drop the beetle - rotation already blended, just finalize
+                    beetles[slot].x = hover_target_x[slot]
+                    beetles[slot].z = hover_target_z[slot]
+                    beetles[slot].y = 15.0  # Drop height
+                    # Rotation is already at target from blending
+                    beetles[slot].pitch = 0.0
+                    beetles[slot].roll = 0.0
+                    beetles[slot].angular_velocity = 0.0
+                    beetles[slot].pitch_velocity = 0.0
+                    beetles[slot].roll_velocity = 0.0
+                    beetles[slot].guest_death_falling = False
+                    beetles[slot].on_ground = False
+                    # Reset speed boost state
+                    beetles[slot].forward_hold_time = 0.0
+                    beetles[slot].backward_hold_time = 0.0
+                    beetles[slot].forward_bonus = 0.0
+                    beetles[slot].backward_bonus = 0.0
+                    beetles[slot].silk_speed_mult = 1.0
+                    # Only reset red's celebration (they scored on blue)
+                    if active_player_count == 2 and slot == 0:
+                        red_celebrating = False
+                        red_pulse_timer = 0.0
+                        red_confetti_timer = 0.0
+                    elif active_player_count == 2 and slot == 1:
+                        blue_celebrating = False
+                        blue_pulse_timer = 0.0
+                        blue_confetti_timer = 0.0
                     # Activate downwash effect (beetle dropping from y=15)
-                    blue_downwash_active = True
-                    blue_downwash_strength = 0.0
-                    blue_downwash_x = spawn_x
-                    blue_downwash_z = spawn_z
-                    blue_downwash_dust_timer = 0.0
-                    blue_downwash_fade_timer = 0.0
-                    print("Blue beetle respawned!")
+                    downwash_active[slot] = True
+                    downwash_strength[slot] = 0.0
+                    downwash_x[slot] = hover_target_x[slot]
+                    downwash_z[slot] = hover_target_z[slot]
+                    downwash_dust_timer[slot] = 0.0
+                    downwash_fade_timer[slot] = 0.0
+                    print(f"Beetle {slot} respawned!")
 
-        # Blue beetle hover phase (flying to spawn point with goofy spinning)
-        if hovering[0]:
-            blue_hover_timer += PHYSICS_TIMESTEP
-            progress = min(1.0, blue_hover_timer / HOVER_DURATION)
+        # Downwash per player slot (respawn drop pushes ALL other nearby beetles)
+        def _downwash_push_others(slot, strength):
+            """Push/tip/lift every other beetle caught in slot's downwash."""
+            for other in range(active_player_count):
+                if other == slot:
+                    continue
+                ob = beetles[other]
+                dx_o = ob.x - downwash_x[slot]
+                dz_o = ob.z - downwash_z[slot]
+                dist_o = math.sqrt(dx_o * dx_o + dz_o * dz_o)
+                if ob.active and not ob.is_falling and dist_o < DOWNWASH_RADIUS and dist_o > 0.1:
+                    falloff = 1.0 - dist_o / DOWNWASH_RADIUS
+                    push_mag = DOWNWASH_PUSH_FORCE * strength * falloff * PHYSICS_TIMESTEP
+                    ob.vx += (dx_o / dist_o) * push_mag
+                    ob.vz += (dz_o / dist_o) * push_mag
+                    # Pop off ground so tip torque isn't fought by floor correction
+                    ob.vy += DOWNWASH_LIFT_FORCE * strength * falloff * PHYSICS_TIMESTEP
+                    # Tipping torque: lift the side facing spawn point
+                    tip_mag = DOWNWASH_TIP_STRENGTH * strength * falloff * PHYSICS_TIMESTEP
+                    cos_o = math.cos(ob.rotation)
+                    sin_o = math.sin(ob.rotation)
+                    dir_x = dx_o / dist_o
+                    dir_z = dz_o / dist_o
+                    local_x = dir_x * cos_o + dir_z * sin_o
+                    local_z = -dir_x * sin_o + dir_z * cos_o
+                    ob.roll_velocity += local_x * tip_mag / max(ob.roll_inertia, 0.1)
+                    ob.pitch_velocity += local_z * tip_mag / max(ob.pitch_inertia, 0.1)
 
-            # Smooth easing (ease-in-out)
-            smooth_progress = progress * progress * (3.0 - 2.0 * progress)
-
-            # Lerp position from center to target
-            beetles[0].x = blue_hover_start_x + (blue_hover_target_x - blue_hover_start_x) * smooth_progress
-            beetles[0].z = blue_hover_start_z + (blue_hover_target_z - blue_hover_start_z) * smooth_progress
-            beetles[0].y = HOVER_HEIGHT  # Stay at hover height
-
-            # Goofy spinning - slow down and blend toward target rotation
-            spin_factor = 1.0 - smooth_progress
-            beetles[0].rotation += HOVER_SPIN_SPEED * spin_factor * PHYSICS_TIMESTEP
-            # Blend rotation toward target as we approach (prevents snap at end)
-            rotation_blend = smooth_progress * smooth_progress  # Accelerating blend
-            beetles[0].rotation = beetles[0].rotation * (1.0 - rotation_blend) + blue_hover_target_rot * rotation_blend
-
-            # Add some wobble that fades out
-            wobble = math.sin(blue_hover_timer * 10.0) * 0.15 * spin_factor
-            beetles[0].pitch = wobble
-            beetles[0].roll = math.cos(blue_hover_timer * 8.0) * 0.1 * spin_factor
-
-            # Start downwash push 0.3s before hover ends (anti-camp)
-            if blue_hover_timer >= HOVER_DURATION - 0.3 and not blue_downwash_active:
-                blue_downwash_active = True
-                blue_downwash_strength = DOWNWASH_MIN_STRENGTH
-                blue_downwash_x = blue_hover_target_x
-                blue_downwash_z = blue_hover_target_z
-                blue_downwash_dust_timer = 0.0
-                blue_downwash_fade_timer = 0.0
-
-            # Complete hover when done
-            if progress >= 1.0:
-                hovering[0] = False
-                blue_hover_timer = 0.0
-                # Now drop the beetle - rotation already blended, just finalize
-                beetles[0].x = blue_hover_target_x
-                beetles[0].z = blue_hover_target_z
-                beetles[0].y = 15.0  # Drop height
-                # Rotation is already at target from blending
-                beetles[0].pitch = 0.0
-                beetles[0].roll = 0.0
-                beetles[0].angular_velocity = 0.0
-                beetles[0].pitch_velocity = 0.0
-                beetles[0].roll_velocity = 0.0
-                beetles[0].guest_death_falling = False
-                beetles[0].on_ground = False
-                # Reset speed boost state
-                beetles[0].forward_hold_time = 0.0
-                beetles[0].backward_hold_time = 0.0
-                beetles[0].forward_bonus = 0.0
-                beetles[0].backward_bonus = 0.0
-                beetles[0].silk_speed_mult = 1.0
-                # Only reset red's celebration (they scored on blue)
-                red_celebrating = False
-                red_pulse_timer = 0.0
-                red_confetti_timer = 0.0
-                # Activate downwash effect (beetle dropping from y=15)
-                blue_downwash_active = True
-                blue_downwash_strength = 0.0
-                blue_downwash_x = blue_hover_target_x
-                blue_downwash_z = blue_hover_target_z
-                blue_downwash_dust_timer = 0.0
-                blue_downwash_fade_timer = 0.0
-                print("Blue beetle respawned!")
-
-        # Red beetle respawn with assembly animation
-        if g['red_respawn_timer'] > 0:
-            g['red_respawn_timer'] -= PHYSICS_TIMESTEP
-            # Start assembly animation when 1.5s remains
-            remaining = g['red_respawn_timer']
-            if remaining <= ASSEMBLY_DURATION and not g['red_assembling']:
-                g['red_assembling'] = True
-                g['red_assembly_timer'] = 0.0
-                print("Red beetle assembly started!")
-            # Update assembly timer
-            if g['red_assembling']:
-                g['red_assembly_timer'] += PHYSICS_TIMESTEP
-            # Complete respawn when timer hits 0 - start hover phase in donut mode
-            if g['red_respawn_timer'] <= 0 and not hovering[1]:
-                g['red_respawn_timer'] = 0
-                g['red_assembling'] = False
-                g['red_assembly_timer'] = 0.0
-
-                # Get spawn position
-                spawn_x, spawn_z, spawn_rot = get_spawn_position(1)
-
-                if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode or cut_square_mode:
-                    # Start hover phase - beetle flies from center to spawn point
-                    hovering[1] = True
-                    red_hover_timer = 0.0
-                    red_hover_start_x = 0.0
-                    red_hover_start_z = 0.0
-                    red_hover_target_x = spawn_x
-                    red_hover_target_z = spawn_z
-                    red_hover_target_rot = spawn_rot
-                    # Place beetle at center, hovering
-                    beetles[1].x = 0.0
-                    beetles[1].y = HOVER_HEIGHT
-                    beetles[1].z = 0.0
-                    beetles[1].vx = 0.0
-                    beetles[1].vy = 0.0
-                    beetles[1].vz = 0.0
-                    beetles[1].rotation = 0.0
-                    beetles[1].pitch = 0.0
-                    beetles[1].roll = 0.0
-                    beetles[1].angular_velocity = 0.0  # Manual spin in hover section
-                    beetles[1].pitch_velocity = 0.0
-                    beetles[1].roll_velocity = 0.0
-                    beetles[1].active = True
-                    beetles[1].has_exploded = False
-                    beetles[1].is_falling = False
-                    beetles[1].on_ground = False
-                    red_spawn_immunity = SPAWN_IMMUNITY_DURATION
-                    print("Red beetle hovering to spawn point!")
-                else:
-                    # Normal mode - spawn directly
-                    beetles[1].x = spawn_x
-                    beetles[1].y = 16.5  # Drop from above
-                    beetles[1].z = spawn_z
-                    beetles[1].vx = 0.0
-                    beetles[1].vy = 0.0
-                    beetles[1].vz = 0.0
-                    beetles[1].rotation = spawn_rot
-                    beetles[1].pitch = 0.0
-                    beetles[1].roll = 0.0
-                    beetles[1].angular_velocity = 0.0
-                    beetles[1].pitch_velocity = 0.0
-                    beetles[1].roll_velocity = 0.0
-                    beetles[1].active = True
-                    beetles[1].has_exploded = False
-                    beetles[1].is_falling = False
-                    beetles[1].guest_death_falling = False
-                    beetles[1].on_ground = False
-                    beetles[1].forward_hold_time = 0.0
-                    beetles[1].backward_hold_time = 0.0
-                    beetles[1].forward_bonus = 0.0
-                    beetles[1].backward_bonus = 0.0
-                    beetles[1].silk_speed_mult = 1.0
-                    red_spawn_immunity = SPAWN_IMMUNITY_DURATION
-                    blue_celebrating = False
-                    blue_pulse_timer = 0.0
-                    blue_confetti_timer = 0.0
-                    # Activate downwash effect (beetle dropping from y=15)
-                    red_downwash_active = True
-                    red_downwash_strength = 0.0
-                    red_downwash_x = spawn_x
-                    red_downwash_z = spawn_z
-                    red_downwash_dust_timer = 0.0
-                    red_downwash_fade_timer = 0.0
-                    print("Red beetle respawned!")
-
-        # Red beetle hover phase (flying to spawn point with goofy spinning)
-        if hovering[1]:
-            red_hover_timer += PHYSICS_TIMESTEP
-            progress = min(1.0, red_hover_timer / HOVER_DURATION)
-
-            # Smooth easing (ease-in-out)
-            smooth_progress = progress * progress * (3.0 - 2.0 * progress)
-
-            # Lerp position from center to target
-            beetles[1].x = red_hover_start_x + (red_hover_target_x - red_hover_start_x) * smooth_progress
-            beetles[1].z = red_hover_start_z + (red_hover_target_z - red_hover_start_z) * smooth_progress
-            beetles[1].y = HOVER_HEIGHT  # Stay at hover height
-
-            # Goofy spinning - slow down and blend toward target rotation (opposite direction)
-            spin_factor = 1.0 - smooth_progress
-            beetles[1].rotation -= HOVER_SPIN_SPEED * spin_factor * PHYSICS_TIMESTEP
-            # Blend rotation toward target as we approach (prevents snap at end)
-            rotation_blend = smooth_progress * smooth_progress  # Accelerating blend
-            beetles[1].rotation = beetles[1].rotation * (1.0 - rotation_blend) + red_hover_target_rot * rotation_blend
-
-            # Add some wobble that fades out (different phase than blue)
-            wobble = math.sin(red_hover_timer * 10.0 + 1.5) * 0.15 * spin_factor
-            beetles[1].pitch = wobble
-            beetles[1].roll = math.cos(red_hover_timer * 8.0 + 2.0) * 0.1 * spin_factor
-
-            # Start downwash push 0.3s before hover ends (anti-camp)
-            if red_hover_timer >= HOVER_DURATION - 0.3 and not red_downwash_active:
-                red_downwash_active = True
-                red_downwash_strength = DOWNWASH_MIN_STRENGTH
-                red_downwash_x = red_hover_target_x
-                red_downwash_z = red_hover_target_z
-                red_downwash_dust_timer = 0.0
-                red_downwash_fade_timer = 0.0
-
-            # Complete hover when done
-            if progress >= 1.0:
-                hovering[1] = False
-                red_hover_timer = 0.0
-                # Now drop the beetle - rotation already blended, just finalize
-                beetles[1].x = red_hover_target_x
-                beetles[1].z = red_hover_target_z
-                beetles[1].y = 15.0  # Drop height
-                # Rotation is already at target from blending
-                beetles[1].pitch = 0.0
-                beetles[1].roll = 0.0
-                beetles[1].angular_velocity = 0.0
-                beetles[1].pitch_velocity = 0.0
-                beetles[1].roll_velocity = 0.0
-                beetles[1].guest_death_falling = False
-                beetles[1].on_ground = False
-                # Reset speed boost state
-                beetles[1].forward_hold_time = 0.0
-                beetles[1].backward_hold_time = 0.0
-                beetles[1].forward_bonus = 0.0
-                beetles[1].backward_bonus = 0.0
-                beetles[1].silk_speed_mult = 1.0
-                # Only reset blue's celebration (they scored on red)
-                blue_celebrating = False
-                blue_pulse_timer = 0.0
-                blue_confetti_timer = 0.0
-                # Activate downwash effect (beetle dropping from y=15)
-                red_downwash_active = True
-                red_downwash_strength = 0.0
-                red_downwash_x = red_hover_target_x
-                red_downwash_z = red_hover_target_z
-                red_downwash_dust_timer = 0.0
-                red_downwash_fade_timer = 0.0
-                print("Red beetle respawned!")
-
-        # === RESPAWN TIMERS TIMING END ===
-        _t_respawn_end = time.perf_counter()
-        _physics_timing['respawn_timers'] += (_t_respawn_end - _t_death_end) * 1000
-
-        # === SPAWN DOWNWASH EFFECTS (dust stream + push/tip during beetle drop) ===
-        # Blue downwash
-        if blue_downwash_active:
-            if blue_downwash_fade_timer > 0:
+        for slot in range(active_player_count):
+            if not downwash_active[slot]:
+                continue
+            if downwash_fade_timer[slot] > 0:
                 # Post-landing fade: ramp down push strength then deactivate
-                blue_downwash_fade_timer -= PHYSICS_TIMESTEP
-                if blue_downwash_fade_timer <= 0:
-                    blue_downwash_active = False
+                downwash_fade_timer[slot] -= PHYSICS_TIMESTEP
+                if downwash_fade_timer[slot] <= 0:
+                    downwash_active[slot] = False
                 else:
-                    fade_strength = blue_downwash_fade_timer / DOWNWASH_FADE_TIME
-                    # Push/tip enemy during fade
-                    dx_r = beetles[1].x - blue_downwash_x
-                    dz_r = beetles[1].z - blue_downwash_z
-                    dist_r = math.sqrt(dx_r * dx_r + dz_r * dz_r)
-                    if beetles[1].active and not beetles[1].is_falling and dist_r < DOWNWASH_RADIUS and dist_r > 0.1:
-                        falloff = 1.0 - dist_r / DOWNWASH_RADIUS
-                        push_mag = DOWNWASH_PUSH_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
-                        beetles[1].vx += (dx_r / dist_r) * push_mag
-                        beetles[1].vz += (dz_r / dist_r) * push_mag
-                        # Pop enemy off ground so tip torque isn't fought by floor correction
-                        beetles[1].vy += DOWNWASH_LIFT_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
-                        # Tipping torque: lift the side facing spawn point
-                        tip_mag = DOWNWASH_TIP_STRENGTH * fade_strength * falloff * PHYSICS_TIMESTEP
-                        cos_r = math.cos(beetles[1].rotation)
-                        sin_r = math.sin(beetles[1].rotation)
-                        # Normalize direction before local-frame conversion
-                        dir_x = dx_r / dist_r
-                        dir_z = dz_r / dist_r
-                        local_x = dir_x * cos_r + dir_z * sin_r
-                        local_z = -dir_x * sin_r + dir_z * cos_r
-                        beetles[1].roll_velocity += local_x * tip_mag / max(beetles[1].roll_inertia, 0.1)
-                        beetles[1].pitch_velocity += local_z * tip_mag / max(beetles[1].pitch_inertia, 0.1)
-            elif beetles[0].active and not beetles[0].on_ground:
-                # Beetle still airborne — stream dust and apply push
-                blue_downwash_x = beetles[0].x
-                blue_downwash_z = beetles[0].z
+                    _downwash_push_others(slot, downwash_fade_timer[slot] / DOWNWASH_FADE_TIME)
+            elif beetles[slot].active and not beetles[slot].on_ground:
+                # Beetle still airborne - stream dust and apply push
+                downwash_x[slot] = beetles[slot].x
+                downwash_z[slot] = beetles[slot].z
                 # Visual strength: raw 0-1 from height (starts small, grows)
-                visual_strength = max(0.0, min(1.0, 1.0 - (beetles[0].y - 0.5) / 14.5))
+                visual_strength = max(0.0, min(1.0, 1.0 - (beetles[slot].y - 0.5) / 14.5))
                 # Physics strength: floored for push/tip/lift
-                blue_downwash_strength = max(DOWNWASH_MIN_STRENGTH, visual_strength)
+                downwash_strength[slot] = max(DOWNWASH_MIN_STRENGTH, visual_strength)
                 # Fire landing burst early (at y<2.0, ~0.1s before on_ground)
-                if beetles[0].y < 2.0 and blue_downwash_fade_timer <= 0:
-                    spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
-                    blue_downwash_fade_timer = DOWNWASH_FADE_TIME
+                if beetles[slot].y < 2.0 and downwash_fade_timer[slot] <= 0:
+                    spawn_downwash_landing_burst(downwash_x[slot], downwash_z[slot])
+                    downwash_fade_timer[slot] = DOWNWASH_FADE_TIME
                 # Spawn dust at interval (uses visual strength so it starts concentrated)
-                if blue_downwash_fade_timer <= 0:
-                    blue_downwash_dust_timer += PHYSICS_TIMESTEP
-                    if blue_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
-                        blue_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
-                        spawn_downwash_dust(blue_downwash_x, blue_downwash_z, visual_strength)
-                # Push/tip enemy if nearby
-                dx_r = beetles[1].x - blue_downwash_x
-                dz_r = beetles[1].z - blue_downwash_z
-                dist_r = math.sqrt(dx_r * dx_r + dz_r * dz_r)
-                if beetles[1].active and not beetles[1].is_falling and dist_r < DOWNWASH_RADIUS and dist_r > 0.1:
-                    falloff = 1.0 - dist_r / DOWNWASH_RADIUS
-                    push_mag = DOWNWASH_PUSH_FORCE * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
-                    beetles[1].vx += (dx_r / dist_r) * push_mag
-                    beetles[1].vz += (dz_r / dist_r) * push_mag
-                    beetles[1].vy += DOWNWASH_LIFT_FORCE * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
-                    tip_mag = DOWNWASH_TIP_STRENGTH * blue_downwash_strength * falloff * PHYSICS_TIMESTEP
-                    cos_r = math.cos(beetles[1].rotation)
-                    sin_r = math.sin(beetles[1].rotation)
-                    dir_x = dx_r / dist_r
-                    dir_z = dz_r / dist_r
-                    local_x = dir_x * cos_r + dir_z * sin_r
-                    local_z = -dir_x * sin_r + dir_z * cos_r
-                    beetles[1].roll_velocity += local_x * tip_mag / max(beetles[1].roll_inertia, 0.1)
-                    beetles[1].pitch_velocity += local_z * tip_mag / max(beetles[1].pitch_inertia, 0.1)
+                if downwash_fade_timer[slot] <= 0:
+                    downwash_dust_timer[slot] += PHYSICS_TIMESTEP
+                    if downwash_dust_timer[slot] >= DOWNWASH_DUST_INTERVAL:
+                        downwash_dust_timer[slot] -= DOWNWASH_DUST_INTERVAL
+                        spawn_downwash_dust(downwash_x[slot], downwash_z[slot], visual_strength)
+                _downwash_push_others(slot, downwash_strength[slot])
             else:
-                # Beetle landed — fire burst if not already fired early
-                if blue_downwash_fade_timer <= 0:
-                    spawn_downwash_landing_burst(blue_downwash_x, blue_downwash_z)
-                    blue_downwash_fade_timer = DOWNWASH_FADE_TIME
-
-        # Red downwash
-        if red_downwash_active:
-            if red_downwash_fade_timer > 0:
-                red_downwash_fade_timer -= PHYSICS_TIMESTEP
-                if red_downwash_fade_timer <= 0:
-                    red_downwash_active = False
-                else:
-                    fade_strength = red_downwash_fade_timer / DOWNWASH_FADE_TIME
-                    dx_b = beetles[0].x - red_downwash_x
-                    dz_b = beetles[0].z - red_downwash_z
-                    dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
-                    if beetles[0].active and not beetles[0].is_falling and dist_b < DOWNWASH_RADIUS and dist_b > 0.1:
-                        falloff = 1.0 - dist_b / DOWNWASH_RADIUS
-                        push_mag = DOWNWASH_PUSH_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
-                        beetles[0].vx += (dx_b / dist_b) * push_mag
-                        beetles[0].vz += (dz_b / dist_b) * push_mag
-                        beetles[0].vy += DOWNWASH_LIFT_FORCE * fade_strength * falloff * PHYSICS_TIMESTEP
-                        tip_mag = DOWNWASH_TIP_STRENGTH * fade_strength * falloff * PHYSICS_TIMESTEP
-                        cos_b = math.cos(beetles[0].rotation)
-                        sin_b = math.sin(beetles[0].rotation)
-                        dir_x = dx_b / dist_b
-                        dir_z = dz_b / dist_b
-                        local_x = dir_x * cos_b + dir_z * sin_b
-                        local_z = -dir_x * sin_b + dir_z * cos_b
-                        beetles[0].roll_velocity += local_x * tip_mag / max(beetles[0].roll_inertia, 0.1)
-                        beetles[0].pitch_velocity += local_z * tip_mag / max(beetles[0].pitch_inertia, 0.1)
-            elif beetles[1].active and not beetles[1].on_ground:
-                red_downwash_x = beetles[1].x
-                red_downwash_z = beetles[1].z
-                visual_strength = max(0.0, min(1.0, 1.0 - (beetles[1].y - 0.5) / 14.5))
-                red_downwash_strength = max(DOWNWASH_MIN_STRENGTH, visual_strength)
-                # Fire landing burst early (at y<2.0, ~0.1s before on_ground)
-                if beetles[1].y < 2.0 and red_downwash_fade_timer <= 0:
-                    spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
-                    red_downwash_fade_timer = DOWNWASH_FADE_TIME
-                # Spawn dust (stop once burst has fired)
-                if red_downwash_fade_timer <= 0:
-                    red_downwash_dust_timer += PHYSICS_TIMESTEP
-                    if red_downwash_dust_timer >= DOWNWASH_DUST_INTERVAL:
-                        red_downwash_dust_timer -= DOWNWASH_DUST_INTERVAL
-                        spawn_downwash_dust(red_downwash_x, red_downwash_z, visual_strength)
-                dx_b = beetles[0].x - red_downwash_x
-                dz_b = beetles[0].z - red_downwash_z
-                dist_b = math.sqrt(dx_b * dx_b + dz_b * dz_b)
-                if beetles[0].active and not beetles[0].is_falling and dist_b < DOWNWASH_RADIUS and dist_b > 0.1:
-                    falloff = 1.0 - dist_b / DOWNWASH_RADIUS
-                    push_mag = DOWNWASH_PUSH_FORCE * red_downwash_strength * falloff * PHYSICS_TIMESTEP
-                    beetles[0].vx += (dx_b / dist_b) * push_mag
-                    beetles[0].vz += (dz_b / dist_b) * push_mag
-                    beetles[0].vy += DOWNWASH_LIFT_FORCE * red_downwash_strength * falloff * PHYSICS_TIMESTEP
-                    tip_mag = DOWNWASH_TIP_STRENGTH * red_downwash_strength * falloff * PHYSICS_TIMESTEP
-                    cos_b = math.cos(beetles[0].rotation)
-                    sin_b = math.sin(beetles[0].rotation)
-                    dir_x = dx_b / dist_b
-                    dir_z = dz_b / dist_b
-                    local_x = dir_x * cos_b + dir_z * sin_b
-                    local_z = -dir_x * sin_b + dir_z * cos_b
-                    beetles[0].roll_velocity += local_x * tip_mag / max(beetles[0].roll_inertia, 0.1)
-                    beetles[0].pitch_velocity += local_z * tip_mag / max(beetles[0].pitch_inertia, 0.1)
-            else:
-                # Beetle landed — fire burst if not already fired early
-                if red_downwash_fade_timer <= 0:
-                    spawn_downwash_landing_burst(red_downwash_x, red_downwash_z)
-                    red_downwash_fade_timer = DOWNWASH_FADE_TIME
+                # Beetle landed - fire burst if not already fired early
+                if downwash_fade_timer[slot] <= 0:
+                    spawn_downwash_landing_burst(downwash_x[slot], downwash_z[slot])
+                    downwash_fade_timer[slot] = DOWNWASH_FADE_TIME
 
         # === ARENA TORNADO HAZARD ===
         if tornado_mode:
@@ -19895,7 +19648,7 @@ try:
                 if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_blue = -1000.0
             # Board break override: drop floor when beetle center is over a broken cell
-            if board_break_active and not beetle_ball.active and blue_spawn_immunity <= 0 and floor_y_blue > -100.0:
+            if board_break_active and not beetle_ball.active and spawn_immunity[0] <= 0 and floor_y_blue > -100.0:
                 bb_gi = int(beetles[0].x + 64.0)
                 bb_gk = int(beetles[0].z + 64.0)
                 if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
@@ -19947,7 +19700,7 @@ try:
                 if hdx * hdx + hdz * hdz < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS:
                     floor_y_red = -1000.0
             # Board break override: drop floor when beetle center is over a broken cell
-            if board_break_active and not beetle_ball.active and red_spawn_immunity <= 0 and floor_y_red > -100.0:
+            if board_break_active and not beetle_ball.active and spawn_immunity[1] <= 0 and floor_y_red > -100.0:
                 bb_gi = int(beetles[1].x + 64.0)
                 bb_gk = int(beetles[1].z + 64.0)
                 if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
@@ -20082,14 +19835,14 @@ try:
         # Apply edge tipping physics (GPU-accelerated)
         # Reuse cached floor_y values from penetration check above
         # Tick spawn immunity timers
-        if blue_spawn_immunity > 0:
-            blue_spawn_immunity -= PHYSICS_TIMESTEP
-        if red_spawn_immunity > 0:
-            red_spawn_immunity -= PHYSICS_TIMESTEP
+        if spawn_immunity[0] > 0:
+            spawn_immunity[0] -= PHYSICS_TIMESTEP
+        if spawn_immunity[1] > 0:
+            spawn_immunity[1] -= PHYSICS_TIMESTEP
 
         if beetles[0].active and not beetles[0].is_falling:
             if floor_y_blue <= -100.0:  # No floor support (use cached value)
-                bb_tip_immune[None] = 1 if blue_spawn_immunity > 0 else 0
+                bb_tip_immune[None] = 1 if spawn_immunity[0] > 0 else 0
                 calculate_edge_tipping_kernel(beetles[0].x, beetles[0].z, simulation.BEETLE_BLUE,
                                               PHYSICS_TIMESTEP, beetles[0].pitch_inertia, beetles[0].roll_inertia)
                 beetles[0].vy += edge_tipping_vy[None]
@@ -20098,7 +19851,7 @@ try:
 
         if beetles[1].active and not beetles[1].is_falling:
             if floor_y_red <= -100.0:  # No floor support (use cached value)
-                bb_tip_immune[None] = 1 if red_spawn_immunity > 0 else 0
+                bb_tip_immune[None] = 1 if spawn_immunity[1] > 0 else 0
                 calculate_edge_tipping_kernel(beetles[1].x, beetles[1].z, simulation.BEETLE_RED,
                                               PHYSICS_TIMESTEP, beetles[1].pitch_inertia, beetles[1].roll_inertia)
                 beetles[1].vy += edge_tipping_vy[None]
@@ -20806,20 +20559,16 @@ try:
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
     # Track if any assembly is happening this frame
-    any_assembling = g['blue_assembling'] or g['red_assembling'] or g['ball_assembling']
+    any_assembling = any(assembling) or g['ball_assembling']
     # Only clear assembly voxels if assembly is happening OR we need one final clear (OPTIMIZATION)
     if any_assembling or g['assembly_needs_final_clear']:
         clear_assembly_voxels()  # Clear previous frame's assembly voxels
         g['assembly_needs_final_clear'] = any_assembling  # Set flag for next frame if still assembling
-    if g['blue_assembling']:
-        progress = min(g['blue_assembly_timer'] / ASSEMBLY_DURATION, 1.0)
-        # Assemble high above arena (y=50), beetle will drop from y=15 after assembly
-        render_beetle_assembly_fast(True, 0.0, 50.0, 0.0, progress)
-
-    if g['red_assembling']:
-        progress = min(g['red_assembly_timer'] / ASSEMBLY_DURATION, 1.0)
-        # Assemble high above arena (y=50), beetle will drop from y=15 after assembly
-        render_beetle_assembly_fast(False, 0.0, 50.0, 0.0, progress)
+    for slot in range(active_player_count):
+        if assembling[slot]:
+            progress = min(assembly_timers[slot] / ASSEMBLY_DURATION, 1.0)
+            # Assemble high above arena (y=50), beetle will drop from y=15 after assembly
+            render_beetle_assembly_fast(slot, 0.0, 50.0, 0.0, progress)
 
     # Render ball assembly animation (voxel rain effect)
     if g['ball_assembling'] and ball_cache_size[None] > 0:
