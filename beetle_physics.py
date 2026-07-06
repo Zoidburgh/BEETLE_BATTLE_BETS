@@ -3758,6 +3758,20 @@ ASSEMBLY_VOXEL_BLUE_STRIPE = 29
 ASSEMBLY_VOXEL_RED_STRIPE = 30
 ASSEMBLY_VOXEL_BLUE_HORN_TIP = 31
 ASSEMBLY_VOXEL_RED_HORN_TIP = 32
+# Player 3/4 assembly voxel ids (65+; 51-64 are the real P3/P4 beetle voxels)
+ASSEMBLY_VOXEL_P3 = 65
+ASSEMBLY_VOXEL_P3_STRIPE = 66
+ASSEMBLY_VOXEL_P3_HORN_TIP = 67
+ASSEMBLY_VOXEL_P4 = 68
+ASSEMBLY_VOXEL_P4_STRIPE = 69
+ASSEMBLY_VOXEL_P4_HORN_TIP = 70
+# (body_id, stripe_id, horn_tip_id) per player slot for assembly animation
+ASSEMBLY_IDS = [
+    (ASSEMBLY_VOXEL_BLUE, ASSEMBLY_VOXEL_BLUE_STRIPE, ASSEMBLY_VOXEL_BLUE_HORN_TIP),
+    (ASSEMBLY_VOXEL_RED, ASSEMBLY_VOXEL_RED_STRIPE, ASSEMBLY_VOXEL_RED_HORN_TIP),
+    (ASSEMBLY_VOXEL_P3, ASSEMBLY_VOXEL_P3_STRIPE, ASSEMBLY_VOXEL_P3_HORN_TIP),
+    (ASSEMBLY_VOXEL_P4, ASSEMBLY_VOXEL_P4_STRIPE, ASSEMBLY_VOXEL_P4_HORN_TIP),
+]
 
 # Pre-computed scatter offsets for assembly animation (computed once at startup)
 MAX_ASSEMBLY_VOXELS = 2000  # Same as MAX_BODY_VOXELS
@@ -3789,10 +3803,9 @@ def clear_assembly_voxels():
     """Clear all assembly animation voxels"""
     for i, j, k in ti.ndrange(128, 128, 128):
         vtype = simulation.voxel_type[i, j, k]
-        if vtype == ASSEMBLY_VOXEL_BLUE or vtype == ASSEMBLY_VOXEL_RED or \
-           vtype == ASSEMBLY_VOXEL_BALL or vtype == ASSEMBLY_VOXEL_BALL_STRIPE or \
-           vtype == ASSEMBLY_VOXEL_BLUE_STRIPE or vtype == ASSEMBLY_VOXEL_RED_STRIPE or \
-           vtype == ASSEMBLY_VOXEL_BLUE_HORN_TIP or vtype == ASSEMBLY_VOXEL_RED_HORN_TIP:
+        # All assembly ids: blue/red/ball block (25-32) + P3/P4 block (65-70)
+        if (ASSEMBLY_VOXEL_BLUE <= vtype <= ASSEMBLY_VOXEL_RED_HORN_TIP
+                or ASSEMBLY_VOXEL_P3 <= vtype <= ASSEMBLY_VOXEL_P4_HORN_TIP):
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 # Ball voxel cache for assembly animation (pre-computed sphere voxels)
@@ -3861,82 +3874,66 @@ def init_ball_cache(radius: float):
     ball_last_rendered[None] = 0  # No ball rendered yet
     print(f"Ball cache initialized with {idx} voxels (radius={radius})")
 
-@ti.kernel
-def render_assembly_kernel_blue(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
-                                 t: ti.f32, num_voxels: ti.i32):
-    """GPU-accelerated assembly rendering for blue beetle with proper colors"""
-    for i in range(num_voxels):
-        # Get cached voxel offset
-        lx = blue_body_cache_x[i]
-        ly = blue_body_cache_y[i]
-        lz = blue_body_cache_z[i]
+def make_render_assembly_kernel(slot):
+    """Per-slot GPU assembly-animation kernel (slot 1 flips X/Z to face 180)."""
+    geo = beetle_geo[slot]
+    body_cache_x = geo['body_cache_x']
+    body_cache_y = geo['body_cache_y']
+    body_cache_z = geo['body_cache_z']
+    horn_tip_flags = geo['body_horn_tip_flags']
+    stripe_flags = geo['body_stripe_flags']
+    _asm_body, _asm_stripe, _asm_horn = ASSEMBLY_IDS[slot]
+    _flip = -1 if slot == 1 else 1
 
-        # Target position
-        target_x = center_x + lx
-        target_y = center_y + ly
-        target_z = center_z + lz
+    @ti.kernel
+    def render_assembly(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
+                        t: ti.f32, num_voxels: ti.i32):
+        for i in range(num_voxels):
+            # Cached voxel offset (slot 1 flips X/Z for 180-degree facing)
+            lx = body_cache_x[i] * _flip
+            ly = body_cache_y[i]
+            lz = body_cache_z[i] * _flip
 
-        # Start position (scattered above)
-        start_x = target_x + assembly_scatter_x[i]
-        start_y = target_y + assembly_scatter_y[i]
-        start_z = target_z + assembly_scatter_z[i]
+            # Target position
+            target_x = center_x + lx
+            target_y = center_y + ly
+            target_z = center_z + lz
 
-        # Interpolate
-        current_x = ti.cast(start_x + (target_x - start_x) * t, ti.i32)
-        current_y = ti.cast(start_y + (target_y - start_y) * t, ti.i32)
-        current_z = ti.cast(start_z + (target_z - start_z) * t, ti.i32)
+            # Start position (scattered above)
+            start_x = target_x + assembly_scatter_x[i]
+            start_y = target_y + assembly_scatter_y[i]
+            start_z = target_z + assembly_scatter_z[i]
 
-        # Bounds check and place only in empty space
-        if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
-            existing = simulation.voxel_type[current_x, current_y, current_z]
-            if existing == 0 or existing >= ASSEMBLY_VOXEL_BLUE:
-                # Determine voxel type based on cached flags
-                voxel_type = ASSEMBLY_VOXEL_BLUE  # Default body color
-                if blue_body_horn_tip_flags[i] == 1:
-                    voxel_type = ASSEMBLY_VOXEL_BLUE_HORN_TIP
-                elif blue_body_stripe_flags[i] == 1:
-                    voxel_type = ASSEMBLY_VOXEL_BLUE_STRIPE
-                simulation.voxel_type[current_x, current_y, current_z] = voxel_type
+            # Interpolate
+            current_x = ti.cast(start_x + (target_x - start_x) * t, ti.i32)
+            current_y = ti.cast(start_y + (target_y - start_y) * t, ti.i32)
+            current_z = ti.cast(start_z + (target_z - start_z) * t, ti.i32)
 
-@ti.kernel
-def render_assembly_kernel_red(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
-                                t: ti.f32, num_voxels: ti.i32):
-    """GPU-accelerated assembly rendering for red beetle with proper colors"""
-    for i in range(num_voxels):
-        # Get cached voxel offset - flip X to face opposite direction (180° rotation)
-        lx = -red_body_cache_x[i]  # Flip X for 180° rotation
-        ly = red_body_cache_y[i]
-        lz = -red_body_cache_z[i]  # Flip Z for 180° rotation
+            # Bounds check; only place over empty space or other assembly/fx
+            # voxels - never over real beetle voxels (any player)
+            if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
+                existing = simulation.voxel_type[current_x, current_y, current_z]
+                if existing == 0 or (existing >= ASSEMBLY_VOXEL_BLUE and simulation.is_beetle_voxel(existing) == 0):
+                    voxel_type = _asm_body
+                    if horn_tip_flags[i] == 1:
+                        voxel_type = _asm_horn
+                    elif stripe_flags[i] == 1:
+                        voxel_type = _asm_stripe
+                    simulation.voxel_type[current_x, current_y, current_z] = voxel_type
 
-        # Target position
-        target_x = center_x + lx
-        target_y = center_y + ly
-        target_z = center_z + lz
+    return render_assembly
 
-        # Start position (scattered above)
-        start_x = target_x + assembly_scatter_x[i]
-        start_y = target_y + assembly_scatter_y[i]
-        start_z = target_z + assembly_scatter_z[i]
 
-        # Interpolate
-        current_x = ti.cast(start_x + (target_x - start_x) * t, ti.i32)
-        current_y = ti.cast(start_y + (target_y - start_y) * t, ti.i32)
-        current_z = ti.cast(start_z + (target_z - start_z) * t, ti.i32)
+# render_assembly_kernels is populated after beetle_geo is defined (below)
+render_assembly_kernels = []
 
-        # Bounds check and place only in empty space
-        if 0 <= current_x < 128 and 0 <= current_y < 128 and 0 <= current_z < 128:
-            existing = simulation.voxel_type[current_x, current_y, current_z]
-            if existing == 0 or existing >= ASSEMBLY_VOXEL_BLUE:
-                # Determine voxel type based on cached flags
-                voxel_type = ASSEMBLY_VOXEL_RED  # Default body color
-                if red_body_horn_tip_flags[i] == 1:
-                    voxel_type = ASSEMBLY_VOXEL_RED_HORN_TIP
-                elif red_body_stripe_flags[i] == 1:
-                    voxel_type = ASSEMBLY_VOXEL_RED_STRIPE
-                simulation.voxel_type[current_x, current_y, current_z] = voxel_type
-
-def render_beetle_assembly_fast(is_blue, spawn_x, spawn_y, spawn_z, progress):
-    """Fast assembly rendering using GPU kernel"""
+def render_beetle_assembly_fast(slot, spawn_x, spawn_y, spawn_z, progress):
+    """Fast assembly rendering using GPU kernel. slot: 0-3 (True/False legacy
+    values map to blue/red)."""
+    if slot is True:
+        slot = 0
+    elif slot is False:
+        slot = 1
     # Cubic ease-in
     t = progress * progress * progress
 
@@ -3945,12 +3942,8 @@ def render_beetle_assembly_fast(is_blue, spawn_x, spawn_y, spawn_z, progress):
     center_y = int(spawn_y)
     center_z = int(spawn_z) + 64
 
-    if is_blue:
-        num_voxels = blue_body_cache_size[None]
-        render_assembly_kernel_blue(center_x, center_y, center_z, t, num_voxels)
-    else:
-        num_voxels = red_body_cache_size[None]
-        render_assembly_kernel_red(center_x, center_y, center_z, t, num_voxels)
+    num_voxels = beetle_geo[slot]['body_cache_size'][None]
+    render_assembly_kernels[slot](center_x, center_y, center_z, t, num_voxels)
 
 @ti.kernel
 def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
@@ -5827,6 +5820,9 @@ leg_tip_cache_z = beetle_geo[0]['leg_tip_cache_z']
 leg_tip_start_idx = beetle_geo[0]['leg_tip_start_idx']
 leg_tip_end_idx = beetle_geo[0]['leg_tip_end_idx']
 
+# Instantiate the per-slot assembly kernels now that beetle_geo exists
+render_assembly_kernels.extend(make_render_assembly_kernel(_s) for _s in range(4))
+
 # Collision detection fields - store occupied voxels for each beetle (GPU-resident)
 # Each beetle can occupy up to ~1600 voxels in a 40x40 area
 MAX_OCCUPIED_VOXELS = 1600
@@ -6026,278 +6022,181 @@ for leg_id, leg_tip_voxels in enumerate(RED_LEG_TIPS):
     red_leg_tip_end_idx[leg_id] = offset
 
 # Function to rebuild blue beetle geometry with new parameters
-def rebuild_blue_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
+# Per-slot geometry lists (Python side). Slots 0/1 also mirror into the
+# legacy BLUE_*/RED_* globals for existing consumers.
+beetle_geo_lists = [None, None, None, None]
+
+def rebuild_beetle(slot, shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
+    """Rebuild one player slot's beetle geometry into its GPU caches."""
+    geo = beetle_geo[slot]
+    body_cache_size = geo['body_cache_size']
+    body_cache_x = geo['body_cache_x']
+    body_cache_y = geo['body_cache_y']
+    body_cache_z = geo['body_cache_z']
+    body_hook_flags = geo['body_hook_flags']
+    body_stripe_flags = geo['body_stripe_flags']
+    body_horn_tip_flags = geo['body_horn_tip_flags']
+    body_very_tip_flags = geo['body_very_tip_flags']
+    leg_cache_x = geo['leg_cache_x']
+    leg_cache_y = geo['leg_cache_y']
+    leg_cache_z = geo['leg_cache_z']
+    leg_start_idx = geo['leg_start_idx']
+    leg_end_idx = geo['leg_end_idx']
+    leg_tip_cache_x = geo['leg_tip_cache_x']
+    leg_tip_cache_y = geo['leg_tip_cache_y']
+    leg_tip_cache_z = geo['leg_tip_cache_z']
+    leg_tip_start_idx = geo['leg_tip_start_idx']
+    leg_tip_end_idx = geo['leg_tip_end_idx']
+    giraffe_pivot_x = geo['giraffe_pivot_x']
+    giraffe_pivot_y = geo['giraffe_pivot_y']
     """Rebuild blue beetle geometry cache with new horn, body, and leg parameters"""
-    global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS
 
     # Generate new geometry
-    BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+    g_body, g_legs, g_leg_tips, g_hook, g_stripe, g_horn_tip, g_very_tip = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+    beetle_geo_lists[slot] = (g_body, g_legs, g_leg_tips, g_hook, g_stripe, g_horn_tip, g_very_tip)
+    # Legacy globals still read by other systems (silk transform, dust, UI)
+    if slot == 0:
+        global BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS
+        BLUE_BODY, BLUE_LEGS, BLUE_LEG_TIPS, BLUE_HOOK_FLAGS, BLUE_STRIPE_FLAGS, BLUE_HORN_TIP_FLAGS, BLUE_VERY_TIP_FLAGS = g_body, g_legs, g_leg_tips, g_hook, g_stripe, g_horn_tip, g_very_tip
+    elif slot == 1:
+        global RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS
+        RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS = g_body, g_legs, g_leg_tips, g_hook, g_stripe, g_horn_tip, g_very_tip
 
     # Update beetle's hook interior flags
-    beetles[0].body_hook_interior_flags = list(BLUE_HOOK_FLAGS)
+    beetles[slot].body_hook_interior_flags = list(g_hook)
 
     # Update body cache
-    if len(BLUE_BODY) > MAX_BODY_VOXELS:
-        print(f"WARNING: Blue beetle body voxels ({len(BLUE_BODY)}) exceeds max ({MAX_BODY_VOXELS})!")
+    if len(g_body) > MAX_BODY_VOXELS:
+        print(f"WARNING: Blue beetle body voxels ({len(g_body)}) exceeds max ({MAX_BODY_VOXELS})!")
         return
 
     # Clear old cache entries to prevent voxel pollution when switching beetle types
-    old_size = blue_body_cache_size[None]
-    new_size = len(BLUE_BODY)
+    old_size = body_cache_size[None]
+    new_size = len(g_body)
 
     # Write new geometry
-    for i, (dx, dy, dz) in enumerate(BLUE_BODY):
-        blue_body_cache_x[i] = dx
-        blue_body_cache_y[i] = dy
-        blue_body_cache_z[i] = dz
+    for i, (dx, dy, dz) in enumerate(g_body):
+        body_cache_x[i] = dx
+        body_cache_y[i] = dy
+        body_cache_z[i] = dz
         # Copy pre-computed metadata flags
-        if i < len(BLUE_STRIPE_FLAGS):
-            blue_body_stripe_flags[i] = BLUE_STRIPE_FLAGS[i]
-            blue_body_horn_tip_flags[i] = BLUE_HORN_TIP_FLAGS[i]
-            blue_body_very_tip_flags[i] = BLUE_VERY_TIP_FLAGS[i]
-            blue_body_hook_flags[i] = BLUE_HOOK_FLAGS[i]
+        if i < len(g_stripe):
+            body_stripe_flags[i] = g_stripe[i]
+            body_horn_tip_flags[i] = g_horn_tip[i]
+            body_very_tip_flags[i] = g_very_tip[i]
+            body_hook_flags[i] = g_hook[i]
         else:
-            blue_body_stripe_flags[i] = 0
-            blue_body_horn_tip_flags[i] = 0
-            blue_body_very_tip_flags[i] = 0
-            blue_body_hook_flags[i] = 0
+            body_stripe_flags[i] = 0
+            body_horn_tip_flags[i] = 0
+            body_very_tip_flags[i] = 0
+            body_hook_flags[i] = 0
 
     # Zero out any leftover voxels from previous geometry
     for i in range(new_size, old_size):
-        blue_body_cache_x[i] = 0
-        blue_body_cache_y[i] = 0
-        blue_body_cache_z[i] = 0
-        blue_body_stripe_flags[i] = 0
-        blue_body_horn_tip_flags[i] = 0
-        blue_body_very_tip_flags[i] = 0
-        blue_body_hook_flags[i] = 0
+        body_cache_x[i] = 0
+        body_cache_y[i] = 0
+        body_cache_z[i] = 0
+        body_stripe_flags[i] = 0
+        body_horn_tip_flags[i] = 0
+        body_very_tip_flags[i] = 0
+        body_hook_flags[i] = 0
 
     # Update size LAST to prevent race conditions
-    blue_body_cache_size[None] = new_size
+    body_cache_size[None] = new_size
 
     # Update leg cache
     offset = 0
-    for leg_id, leg_voxels in enumerate(BLUE_LEGS):
-        blue_leg_start_idx[leg_id] = offset
+    for leg_id, leg_voxels in enumerate(g_legs):
+        leg_start_idx[leg_id] = offset
         for i, (dx, dy, dz) in enumerate(leg_voxels):
-            blue_leg_cache_x[offset + i] = dx
-            blue_leg_cache_y[offset + i] = dy
-            blue_leg_cache_z[offset + i] = dz
+            leg_cache_x[offset + i] = dx
+            leg_cache_y[offset + i] = dy
+            leg_cache_z[offset + i] = dz
         offset += len(leg_voxels)
-        blue_leg_end_idx[leg_id] = offset
+        leg_end_idx[leg_id] = offset
 
     # Clear extra legs (6 & 7) when switching from scorpion to 6-legged beetles
-    num_legs = len(BLUE_LEGS)
+    num_legs = len(g_legs)
     for leg_id in range(num_legs, 8):
-        blue_leg_start_idx[leg_id] = 0
-        blue_leg_end_idx[leg_id] = 0
+        leg_start_idx[leg_id] = 0
+        leg_end_idx[leg_id] = 0
 
     # Zero out any leftover leg voxels from previous geometry (offset = total new leg voxels)
     for i in range(offset, MAX_LEG_VOXELS):
-        blue_leg_cache_x[i] = 0
-        blue_leg_cache_y[i] = 0
-        blue_leg_cache_z[i] = 0
+        leg_cache_x[i] = 0
+        leg_cache_y[i] = 0
+        leg_cache_z[i] = 0
 
     # Update leg tip cache
     offset = 0
-    for leg_id, leg_tip_voxels in enumerate(BLUE_LEG_TIPS):
-        blue_leg_tip_start_idx[leg_id] = offset
+    for leg_id, leg_tip_voxels in enumerate(g_leg_tips):
+        leg_tip_start_idx[leg_id] = offset
         for i, (dx, dy, dz) in enumerate(leg_tip_voxels):
-            blue_leg_tip_cache_x[offset + i] = dx
-            blue_leg_tip_cache_y[offset + i] = dy
-            blue_leg_tip_cache_z[offset + i] = dz
+            leg_tip_cache_x[offset + i] = dx
+            leg_tip_cache_y[offset + i] = dy
+            leg_tip_cache_z[offset + i] = dz
         offset += len(leg_tip_voxels)
-        blue_leg_tip_end_idx[leg_id] = offset
+        leg_tip_end_idx[leg_id] = offset
 
     # Clear extra leg tips (6 & 7) when switching from scorpion to 6-legged beetles
     for leg_id in range(num_legs, 8):
-        blue_leg_tip_start_idx[leg_id] = 0
-        blue_leg_tip_end_idx[leg_id] = 0
+        leg_tip_start_idx[leg_id] = 0
+        leg_tip_end_idx[leg_id] = 0
 
     # Zero out any leftover leg tip voxels from previous geometry (offset = total new leg tip voxels)
     for i in range(offset, MAX_LEG_TIP_VOXELS):
-        blue_leg_tip_cache_x[i] = 0
-        blue_leg_tip_cache_y[i] = 0
-        blue_leg_tip_cache_z[i] = 0
+        leg_tip_cache_x[i] = 0
+        leg_tip_cache_y[i] = 0
+        leg_tip_cache_z[i] = 0
 
     # Update blue beetle horn dimensions for accurate collision detection
     horn_length = calculate_horn_length(shaft_len, prong_len, horn_type)
 
-    beetles[0].horn_shaft_len = shaft_len
-    beetles[0].horn_prong_len = prong_len
-    beetles[0].horn_length = horn_length
-    beetles[0].horn_type = horn_type
-    beetles[0].horn_type_id = HORN_TYPE_IDS.get(horn_type, 0)
+    beetles[slot].horn_shaft_len = shaft_len
+    beetles[slot].horn_prong_len = prong_len
+    beetles[slot].horn_length = horn_length
+    beetles[slot].horn_type = horn_type
+    beetles[slot].horn_type_id = HORN_TYPE_IDS.get(horn_type, 0)
 
     # Giraffe weevil: set pivot point for prong rotation
     if horn_type == "giraffe" and hasattr(generate_beetle_geometry, '_giraffe_pivot'):
-        giraffe_blue_pivot_x[None] = float(generate_beetle_geometry._giraffe_pivot[0])
-        giraffe_blue_pivot_y[None] = float(generate_beetle_geometry._giraffe_pivot[1])
+        giraffe_pivot_x[None] = float(generate_beetle_geometry._giraffe_pivot[0])
+        giraffe_pivot_y[None] = float(generate_beetle_geometry._giraffe_pivot[1])
 
     # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
-    beetles[0].body_pitch_offset = 0.0
+    beetles[slot].body_pitch_offset = 0.0
 
     # Reset horn state to neutral only when switching beetle types
     old_type = getattr(rebuild_blue_beetle, '_last_type', None)
     rebuild_blue_beetle._last_type = horn_type
     if old_type != horn_type:
-        beetles[0].horn_pitch = HORN_DEFAULT_PITCH
-        beetles[0].horn_yaw = 0.0
-        beetles[0].horn_pitch_velocity = 0.0
-        beetles[0].horn_yaw_velocity = 0.0
-        beetles[0].horn_pitch_damping = 0.0
-        beetles[0].horn_yaw_damping = 0.0
+        beetles[slot].horn_pitch = HORN_DEFAULT_PITCH
+        beetles[slot].horn_yaw = 0.0
+        beetles[slot].horn_pitch_velocity = 0.0
+        beetles[slot].horn_yaw_velocity = 0.0
+        beetles[slot].horn_pitch_damping = 0.0
+        beetles[slot].horn_yaw_damping = 0.0
 
         # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
-        spider_aim[0] = 0.0
-        spray_aim[0] = 0.0
-        beetles[0].tail_rotation_angle = 20.0  # Tail rests at max up position
+        spider_aim[slot] = 0.0
+        spray_aim[slot] = 0.0
+        beetles[slot].tail_rotation_angle = 20.0  # Tail rests at max up position
 
         # Reset speed boost state (prevents carryover from previous beetle type)
-        beetles[0].forward_hold_time = 0.0
-        beetles[0].backward_hold_time = 0.0
-        beetles[0].forward_bonus = 0.0
-        beetles[0].backward_bonus = 0.0
-        beetles[0].silk_speed_mult = 1.0
+        beetles[slot].forward_hold_time = 0.0
+        beetles[slot].backward_hold_time = 0.0
+        beetles[slot].forward_bonus = 0.0
+        beetles[slot].backward_bonus = 0.0
+        beetles[slot].silk_speed_mult = 1.0
 
-    print(f"Rebuilt blue beetle: {len(BLUE_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
+    print(f"Rebuilt blue beetle: {len(g_body)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
 
-# Function to rebuild red beetle geometry with new parameters
-def rebuild_red_beetle(shaft_len, prong_len, front_body_height=4, back_body_height=6, body_length=12, body_width=7, leg_length=8, horn_type="rhino", stinger_curvature=0.0, tail_rotation_angle=0.0):
-    """Rebuild red beetle geometry cache with new horn, body, and leg parameters"""
-    global RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS
 
-    # Generate new geometry
-    RED_BODY, RED_LEGS, RED_LEG_TIPS, RED_HOOK_FLAGS, RED_STRIPE_FLAGS, RED_HORN_TIP_FLAGS, RED_VERY_TIP_FLAGS = generate_beetle_geometry(shaft_len, prong_len, front_body_height, back_body_height, body_length, body_width, leg_length, horn_type, stinger_curvature, tail_rotation_angle)
+def rebuild_blue_beetle(*args, **kwargs):
+    return rebuild_beetle(0, *args, **kwargs)
 
-    # Update beetle's hook interior flags
-    beetles[1].body_hook_interior_flags = list(RED_HOOK_FLAGS)
-
-    # Update body cache
-    if len(RED_BODY) > MAX_BODY_VOXELS:
-        print(f"WARNING: Red beetle body voxels ({len(RED_BODY)}) exceeds max ({MAX_BODY_VOXELS})!")
-        return
-
-    # Clear old cache entries to prevent voxel pollution when switching beetle types
-    old_size = red_body_cache_size[None]
-    new_size = len(RED_BODY)
-
-    # Write new geometry
-    for i, (dx, dy, dz) in enumerate(RED_BODY):
-        red_body_cache_x[i] = dx
-        red_body_cache_y[i] = dy
-        red_body_cache_z[i] = dz
-        # Copy pre-computed metadata flags
-        if i < len(RED_STRIPE_FLAGS):
-            red_body_stripe_flags[i] = RED_STRIPE_FLAGS[i]
-            red_body_horn_tip_flags[i] = RED_HORN_TIP_FLAGS[i]
-            red_body_very_tip_flags[i] = RED_VERY_TIP_FLAGS[i]
-            red_body_hook_flags[i] = RED_HOOK_FLAGS[i]
-        else:
-            red_body_stripe_flags[i] = 0
-            red_body_horn_tip_flags[i] = 0
-            red_body_very_tip_flags[i] = 0
-            red_body_hook_flags[i] = 0
-
-    # Zero out any leftover voxels from previous geometry
-    for i in range(new_size, old_size):
-        red_body_cache_x[i] = 0
-        red_body_cache_y[i] = 0
-        red_body_cache_z[i] = 0
-        red_body_stripe_flags[i] = 0
-        red_body_horn_tip_flags[i] = 0
-        red_body_very_tip_flags[i] = 0
-        red_body_hook_flags[i] = 0
-
-    # Update size LAST to prevent race conditions
-    red_body_cache_size[None] = new_size
-
-    # Update leg cache
-    offset = 0
-    for leg_id, leg_voxels in enumerate(RED_LEGS):
-        red_leg_start_idx[leg_id] = offset
-        for i, (dx, dy, dz) in enumerate(leg_voxels):
-            red_leg_cache_x[offset + i] = dx
-            red_leg_cache_y[offset + i] = dy
-            red_leg_cache_z[offset + i] = dz
-        offset += len(leg_voxels)
-        red_leg_end_idx[leg_id] = offset
-
-    # Clear extra legs (6 & 7) when switching from scorpion to 6-legged beetles
-    num_legs = len(RED_LEGS)
-    for leg_id in range(num_legs, 8):
-        red_leg_start_idx[leg_id] = 0
-        red_leg_end_idx[leg_id] = 0
-
-    # Zero out any leftover leg voxels from previous geometry (offset = total new leg voxels)
-    for i in range(offset, MAX_LEG_VOXELS):
-        red_leg_cache_x[i] = 0
-        red_leg_cache_y[i] = 0
-        red_leg_cache_z[i] = 0
-
-    # Update leg tip cache
-    offset = 0
-    for leg_id, leg_tip_voxels in enumerate(RED_LEG_TIPS):
-        red_leg_tip_start_idx[leg_id] = offset
-        for i, (dx, dy, dz) in enumerate(leg_tip_voxels):
-            red_leg_tip_cache_x[offset + i] = dx
-            red_leg_tip_cache_y[offset + i] = dy
-            red_leg_tip_cache_z[offset + i] = dz
-        offset += len(leg_tip_voxels)
-        red_leg_tip_end_idx[leg_id] = offset
-
-    # Clear extra leg tips (6 & 7) when switching from scorpion to 6-legged beetles
-    for leg_id in range(num_legs, 8):
-        red_leg_tip_start_idx[leg_id] = 0
-        red_leg_tip_end_idx[leg_id] = 0
-
-    # Zero out any leftover leg tip voxels from previous geometry (offset = total new leg tip voxels)
-    for i in range(offset, MAX_LEG_TIP_VOXELS):
-        red_leg_tip_cache_x[i] = 0
-        red_leg_tip_cache_y[i] = 0
-        red_leg_tip_cache_z[i] = 0
-
-    # Update red beetle horn dimensions for accurate collision detection
-    horn_length = calculate_horn_length(shaft_len, prong_len, horn_type)
-
-    beetles[1].horn_shaft_len = shaft_len
-    beetles[1].horn_prong_len = prong_len
-    beetles[1].horn_length = horn_length
-    beetles[1].horn_type = horn_type
-    beetles[1].horn_type_id = HORN_TYPE_IDS.get(horn_type, 0)
-
-    # Giraffe weevil: set pivot point for prong rotation
-    if horn_type == "giraffe" and hasattr(generate_beetle_geometry, '_giraffe_pivot'):
-        giraffe_red_pivot_x[None] = float(generate_beetle_geometry._giraffe_pivot[0])
-        giraffe_red_pivot_y[None] = float(generate_beetle_geometry._giraffe_pivot[1])
-
-    # Scorpion doesn't use body_pitch_offset - its tilt is built into the geometry
-    beetles[1].body_pitch_offset = 0.0
-
-    # Reset horn state to neutral only when switching beetle types
-    old_type = getattr(rebuild_red_beetle, '_last_type', None)
-    rebuild_red_beetle._last_type = horn_type
-    if old_type != horn_type:
-        beetles[1].horn_pitch = HORN_DEFAULT_PITCH
-        beetles[1].horn_yaw = 0.0
-        beetles[1].horn_pitch_velocity = 0.0
-        beetles[1].horn_yaw_velocity = 0.0
-        beetles[1].horn_pitch_damping = 0.0
-        beetles[1].horn_yaw_damping = 0.0
-
-        # Reset type-specific aim states (spider butt, bombardier body, scorpion tail)
-        spider_aim[1] = 0.0
-        spray_aim[1] = 0.0
-        beetles[1].tail_rotation_angle = 20.0  # Tail rests at max up position
-
-        # Reset speed boost state (prevents carryover from previous beetle type)
-        beetles[1].forward_hold_time = 0.0
-        beetles[1].backward_hold_time = 0.0
-        beetles[1].forward_bonus = 0.0
-        beetles[1].backward_bonus = 0.0
-        beetles[1].silk_speed_mult = 1.0
-
-    print(f"Rebuilt red beetle: {len(RED_BODY)} body voxels (shaft={shaft_len:.0f}, prong={prong_len:.0f}, front={front_body_height:.0f}, back={back_body_height:.0f}, legs={leg_length:.0f})")
+def rebuild_red_beetle(*args, **kwargs):
+    return rebuild_beetle(1, *args, **kwargs)
 
 # ============================================================================
 # GEOMETRY CHANGE SMOOTHING - Reset walk phase to prevent leg jitter
@@ -7033,64 +6932,53 @@ def apply_bowl_tilt(beetle):
         beetle.roll *= (1.0 - blend_speed)
 
 
-@ti.kernel
-def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32) -> ti.f32:
-    """Calculate the lowest Y coordinate the beetle's geometry would occupy after rotation"""
-    base_y = int(world_y)
+def make_lowest_point_kernel(slot):
+    """Per-slot lowest-point kernel (uses that slot's geometry caches -
+    previously ALL beetles used blue's geometry here)."""
+    geo = beetle_geo[slot]
+    body_cache_size = geo['body_cache_size']
+    body_cache_x = geo['body_cache_x']
+    body_cache_y = geo['body_cache_y']
+    body_cache_z = geo['body_cache_z']
+    leg_cache_x = geo['leg_cache_x']
+    leg_cache_y = geo['leg_cache_y']
+    leg_cache_z = geo['leg_cache_z']
+    leg_start_idx = geo['leg_start_idx']
+    leg_end_idx = geo['leg_end_idx']
+    leg_tip_cache_x = geo['leg_tip_cache_x']
+    leg_tip_cache_y = geo['leg_tip_cache_y']
+    leg_tip_cache_z = geo['leg_tip_cache_z']
+    leg_tip_start_idx = geo['leg_tip_start_idx']
+    leg_tip_end_idx = geo['leg_tip_end_idx']
 
-    # Rotation matrices
-    cos_yaw = ti.cos(rotation)
-    sin_yaw = ti.sin(rotation)
-    cos_pitch_body = ti.cos(pitch)
-    sin_pitch_body = ti.sin(pitch)
-    cos_roll = ti.cos(roll)
-    sin_roll = ti.sin(roll)
+    @ti.kernel
+    def lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32) -> ti.f32:
+        """Calculate the lowest Y coordinate the beetle's geometry would occupy after rotation"""
+        base_y = int(world_y)
 
-    # NOTE: horn_pitch parameter kept for API compatibility but no longer used
-    # Ground collision is now based on body/legs only, not horn position
+        # Rotation matrices
+        cos_yaw = ti.cos(rotation)
+        sin_yaw = ti.sin(rotation)
+        cos_pitch_body = ti.cos(pitch)
+        sin_pitch_body = ti.sin(pitch)
+        cos_roll = ti.cos(roll)
+        sin_roll = ti.sin(roll)
 
-    lowest_y = 9999.0  # Start with very high value
+        # NOTE: horn_pitch parameter kept for API compatibility but no longer used
+        # Ground collision is now based on body/legs only, not horn position
 
-    # Check all body voxels
-    # NOTE: Horn pitch rotation removed - ground collision should be based on body/legs only,
-    # not horn position. This fixes Atlas beetle floating when horn pitched down.
-    for i in range(body_cache_size[None]):
-        local_x = float(body_cache_x[i])
-        local_y = body_cache_y[i]
-        local_z = float(body_cache_z[i])
+        lowest_y = 9999.0  # Start with very high value
 
-        # Apply 3D rotation (yaw -> pitch -> roll)
-        ly = float(local_y)
+        # Check all body voxels
+        # NOTE: Horn pitch rotation removed - ground collision should be based on body/legs only,
+        # not horn position. This fixes Atlas beetle floating when horn pitched down.
+        for i in range(body_cache_size[None]):
+            local_x = float(body_cache_x[i])
+            local_y = body_cache_y[i]
+            local_z = float(body_cache_z[i])
 
-        # Yaw
-        temp_x = local_x * cos_yaw - local_z * sin_yaw
-        temp_z = local_x * sin_yaw + local_z * cos_yaw
-        temp_y = ly
-
-        # Pitch
-        temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
-        temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
-        temp2_z = temp_z
-
-        # Roll
-        final_y = temp2_y * cos_roll - temp2_z * sin_roll
-
-        grid_y = float(base_y) + final_y
-        if grid_y < lowest_y:
-            lowest_y = grid_y
-
-    # Check all leg voxels (up to 8 for scorpion, 6 for others)
-    for leg_id in range(8):
-        start_idx = leg_start_idx[leg_id]
-        end_idx = leg_end_idx[leg_id]
-
-        for i in range(start_idx, end_idx):
-            local_x = float(leg_cache_x[i])
-            local_y = float(leg_cache_y[i])
-            local_z = float(leg_cache_z[i])
-
-            # Apply 3D rotation (same as body)
-            ly = local_y
+            # Apply 3D rotation (yaw -> pitch -> roll)
+            ly = float(local_y)
 
             # Yaw
             temp_x = local_x * cos_yaw - local_z * sin_yaw
@@ -7109,37 +6997,74 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
             if grid_y < lowest_y:
                 lowest_y = grid_y
 
-    # Check all leg tip voxels (these are typically the lowest points) (up to 8 for scorpion)
-    for leg_id in range(8):
-        tip_start_idx = leg_tip_start_idx[leg_id]
-        tip_end_idx = leg_tip_end_idx[leg_id]
+        # Check all leg voxels (up to 8 for scorpion, 6 for others)
+        for leg_id in range(8):
+            start_idx = leg_start_idx[leg_id]
+            end_idx = leg_end_idx[leg_id]
 
-        for i in range(tip_start_idx, tip_end_idx):
-            local_x = float(leg_tip_cache_x[i])
-            local_y = float(leg_tip_cache_y[i])
-            local_z = float(leg_tip_cache_z[i])
+            for i in range(start_idx, end_idx):
+                local_x = float(leg_cache_x[i])
+                local_y = float(leg_cache_y[i])
+                local_z = float(leg_cache_z[i])
 
-            # Apply 3D rotation (same as legs)
-            ly = local_y
+                # Apply 3D rotation (same as body)
+                ly = local_y
 
-            # Yaw
-            temp_x = local_x * cos_yaw - local_z * sin_yaw
-            temp_z = local_x * sin_yaw + local_z * cos_yaw
-            temp_y = ly
+                # Yaw
+                temp_x = local_x * cos_yaw - local_z * sin_yaw
+                temp_z = local_x * sin_yaw + local_z * cos_yaw
+                temp_y = ly
 
-            # Pitch
-            temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
-            temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
-            temp2_z = temp_z
+                # Pitch
+                temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+                temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+                temp2_z = temp_z
 
-            # Roll
-            final_y = temp2_y * cos_roll - temp2_z * sin_roll
+                # Roll
+                final_y = temp2_y * cos_roll - temp2_z * sin_roll
 
-            grid_y = float(base_y) + final_y
-            if grid_y < lowest_y:
-                lowest_y = grid_y
+                grid_y = float(base_y) + final_y
+                if grid_y < lowest_y:
+                    lowest_y = grid_y
 
-    return lowest_y
+        # Check all leg tip voxels (these are typically the lowest points) (up to 8 for scorpion)
+        for leg_id in range(8):
+            tip_start_idx = leg_tip_start_idx[leg_id]
+            tip_end_idx = leg_tip_end_idx[leg_id]
+
+            for i in range(tip_start_idx, tip_end_idx):
+                local_x = float(leg_tip_cache_x[i])
+                local_y = float(leg_tip_cache_y[i])
+                local_z = float(leg_tip_cache_z[i])
+
+                # Apply 3D rotation (same as legs)
+                ly = local_y
+
+                # Yaw
+                temp_x = local_x * cos_yaw - local_z * sin_yaw
+                temp_z = local_x * sin_yaw + local_z * cos_yaw
+                temp_y = ly
+
+                # Pitch
+                temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+                temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+                temp2_z = temp_z
+
+                # Roll
+                final_y = temp2_y * cos_roll - temp2_z * sin_roll
+
+                grid_y = float(base_y) + final_y
+                if grid_y < lowest_y:
+                    lowest_y = grid_y
+
+        return lowest_y
+
+    return lowest_point
+
+
+lowest_point_kernels = [make_lowest_point_kernel(_s) for _s in range(4)]
+# Legacy alias (historically blue geometry for everyone)
+calculate_beetle_lowest_point = lowest_point_kernels[0]
 
 def make_place_beetle_kernel(slot):
     """
@@ -20094,7 +20019,7 @@ try:
                         floor_y_blue = -1000.0
             if floor_y_blue > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
                 # Calculate lowest point of beetle geometry after rotation
-                lowest_point_blue = calculate_beetle_lowest_point(
+                lowest_point_blue = lowest_point_kernels[0](
                     beetles[0].y, beetles[0].rotation, beetles[0].pitch,
                     beetles[0].roll, beetles[0].horn_pitch
                 )
@@ -20145,7 +20070,7 @@ try:
                     if renderer.board_break_mask[bb_gi, bb_gk] == 1:
                         floor_y_red = -1000.0
             if floor_y_red > -100.0:  # Floor detected under beetle
-                lowest_point_red = calculate_beetle_lowest_point(
+                lowest_point_red = lowest_point_kernels[1](
                     beetles[1].y, beetles[1].rotation, beetles[1].pitch,
                     beetles[1].roll, beetles[1].horn_pitch
                 )

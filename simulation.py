@@ -445,7 +445,7 @@ BEETLE_P4_HORN_TIP = 62
 STAG_HOOK_INTERIOR_P4 = 63
 VENOM_TIP_P4 = 64
 
-MAX_VOXEL_TYPE = 64  # Highest voxel type id in use
+MAX_VOXEL_TYPE = 70  # Highest voxel type id in use (65-70 = P3/P4 assembly anim)
 
 # Body-part codes for the voxel_part[] lookup
 PART_NONE = 0
