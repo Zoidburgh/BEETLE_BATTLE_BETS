@@ -37,6 +37,11 @@ except Exception as e:
     print(f"[Network] Steam error: {e}")
 
 
+# Protocol version - bump whenever a packet format changes incompatibly.
+# Carried in MSG_READY (guest->host) and MSG_START (host->guest); a mismatch
+# refuses the match with a clear message instead of desyncing silently.
+PROTOCOL_VERSION = 2
+
 # Network message types
 MSG_INPUT = 0x01        # Frame input data
 MSG_READY = 0x02        # Player ready signal
@@ -188,6 +193,9 @@ class NetworkManager:
 
         # Ball explosion sync (host-authoritative)
         self.pending_ball_explode = None  # Guest: ball explosion event from host
+
+        # Protocol version check (set when peer runs an incompatible build)
+        self.version_mismatch = False
 
         # Wall-clock disconnect detection (works without lockstep waits)
         self.last_packet_received_time = time.time()
@@ -367,8 +375,9 @@ class NetworkManager:
                     if self.on_peer_joined:
                         self.on_peer_joined()
                     # Guest sends MSG_READY immediately to establish bidirectional P2P channel
+                    # (carries our protocol version so the host can detect old builds)
                     if not self.is_host:
-                        self._send_packet(struct.pack('>B', MSG_READY), reliable=True)
+                        self._send_packet(struct.pack('>BB', MSG_READY, PROTOCOL_VERSION), reliable=True)
                         print(f"[Network] Sent MSG_READY to establish P2P channel with host")
         else:
             print(f"[Network] Failed to join lobby - no lobby_id returned")
@@ -492,7 +501,7 @@ class NetworkManager:
     def send_ready(self):
         """Signal that local player is ready to start."""
         self.local_ready = True
-        self._send_packet(struct.pack('>B', MSG_READY), reliable=True)
+        self._send_packet(struct.pack('>BB', MSG_READY, PROTOCOL_VERSION), reliable=True)
         print("[Network] Sent ready signal")
 
         # If both ready and we're host, start the match
@@ -733,11 +742,11 @@ class NetworkManager:
 
     def _send_start(self):
         """Host sends match start signal - waits for guest SYNC_READY before GO."""
-        import random
         self.random_seed = random.randint(0, 2**32 - 1)
         self.start_frame = 0
 
-        data = struct.pack('>BII', MSG_START, self.start_frame, self.random_seed)
+        # [type:1][start_frame:4][seed:4][protocol_version:1]
+        data = struct.pack('>BIIB', MSG_START, self.start_frame, self.random_seed, PROTOCOL_VERSION)
 
         # Send multiple times to ensure delivery (P2P channel may still be establishing)
         for i in range(3):
@@ -913,16 +922,27 @@ class NetworkManager:
                     input_buffer.add_remote(frame, inputs)
 
         elif msg_type == MSG_READY:
+            # [type:1][protocol_version:1] - old builds send just [type:1]
+            peer_version = data[1] if len(data) >= 2 else 0
+            if peer_version != PROTOCOL_VERSION:
+                self.version_mismatch = True
+                print(f"[Network] PROTOCOL VERSION MISMATCH: ours={PROTOCOL_VERSION}, peer={peer_version} - update both builds!")
             self.remote_ready = True
             print(f"[Network] Opponent is ready")
 
             # If both ready and we're host, start the match
-            if self.is_host and self.local_ready and self.remote_ready:
+            if self.is_host and self.local_ready and self.remote_ready and not self.version_mismatch:
                 self._send_start()
 
         elif msg_type == MSG_START:
-            # Start packet: [type (1)] [frame (4)] [seed (4)]
+            # Start packet: [type:1][frame:4][seed:4][protocol_version:1]
+            # (old builds send 9 bytes without the version byte)
             if len(data) >= 9:
+                host_version = data[9] if len(data) >= 10 else 0
+                if host_version != PROTOCOL_VERSION:
+                    self.version_mismatch = True
+                    print(f"[Network] PROTOCOL VERSION MISMATCH: ours={PROTOCOL_VERSION}, host={host_version} - refusing match. Update both builds!")
+                    return
                 _, self.start_frame, self.random_seed = struct.unpack('>BII', data[:9])
                 self.match_started = True
                 print(f"[Network] Match starting! Frame: {self.start_frame}, Seed: {self.random_seed}")
@@ -1090,385 +1110,6 @@ class NetworkManager:
                     'star_mode': star_mode == 1
                 }
                 print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}, figure8={figure8_mode}, squiggle={squiggle_mode}, hole={hole_mode}, comet={comet_mode}, square={square_mode}, cut_square={cut_square_mode}, board_break={board_break_mode}, star={star_mode}")
-            elif len(data) >= 19 and not self.is_host:
-                # Backwards compatibility with 19-byte format (no star)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, cut_square_mode, board_break_mode = struct.unpack('>BBBBBBBBBBBBBBBBBBB', data[:19])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': ice_mode == 1,
-                    'figure8_mode': figure8_mode == 1,
-                    'squiggle_mode': squiggle_mode == 1,
-                    'hole_mode': hole_mode == 1,
-                    'comet_mode': comet_mode == 1,
-                    'square_mode': square_mode == 1,
-                    'cut_square_mode': cut_square_mode == 1,
-                    'board_break_mode': board_break_mode == 1,
-                    'star_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}, figure8={figure8_mode}, squiggle={squiggle_mode}, hole={hole_mode}, comet={comet_mode}, square={square_mode}, cut_square={cut_square_mode}, board_break={board_break_mode}")
-            elif len(data) >= 18 and not self.is_host:
-                # Backwards compatibility with 18-byte format (no cut_square)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, board_break_mode = struct.unpack('>BBBBBBBBBBBBBBBBBB', data[:18])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': ice_mode == 1,
-                    'figure8_mode': figure8_mode == 1,
-                    'squiggle_mode': squiggle_mode == 1,
-                    'hole_mode': hole_mode == 1,
-                    'comet_mode': comet_mode == 1,
-                    'square_mode': square_mode == 1,
-                    'cut_square_mode': False,
-                    'board_break_mode': board_break_mode == 1,
-                    'star_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}, figure8={figure8_mode}, squiggle={squiggle_mode}, hole={hole_mode}, comet={comet_mode}, square={square_mode}, board_break={board_break_mode}")
-            elif len(data) >= 17 and not self.is_host:
-                # Backwards compatibility with 17-byte format (no square, no cut_square, no board_break)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode = struct.unpack('>BBBBBBBBBBBBBBBBB', data[:17])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': ice_mode == 1,
-                    'figure8_mode': figure8_mode == 1,
-                    'squiggle_mode': squiggle_mode == 1,
-                    'hole_mode': hole_mode == 1,
-                    'comet_mode': comet_mode == 1,
-                    'square_mode': square_mode == 1,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}, figure8={figure8_mode}, squiggle={squiggle_mode}, hole={hole_mode}, comet={comet_mode}, square={square_mode}")
-            elif len(data) >= 16 and not self.is_host:
-                # Backwards compatibility with 16-byte format (no square, no cut_square, no board_break)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode = struct.unpack('>BBBBBBBBBBBBBBBB', data[:16])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': ice_mode == 1,
-                    'figure8_mode': figure8_mode == 1,
-                    'squiggle_mode': squiggle_mode == 1,
-                    'hole_mode': hole_mode == 1,
-                    'comet_mode': comet_mode == 1,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}, figure8={figure8_mode}, squiggle={squiggle_mode}, hole={hole_mode}, comet={comet_mode}")
-            elif len(data) >= 15 and not self.is_host:
-                # Backwards compatibility with 15-byte format (no comet)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode = struct.unpack('>BBBBBBBBBBBBBBB', data[:15])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': ice_mode == 1,
-                    'figure8_mode': figure8_mode == 1,
-                    'squiggle_mode': squiggle_mode == 1,
-                    'hole_mode': hole_mode == 1,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}, figure8={figure8_mode}, squiggle={squiggle_mode}, hole={hole_mode}")
-            elif len(data) >= 14 and not self.is_host:
-                # Backwards compatibility with 14-byte format (no hole)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode = struct.unpack('>BBBBBBBBBBBBBB', data[:14])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': ice_mode == 1,
-                    'figure8_mode': figure8_mode == 1,
-                    'squiggle_mode': squiggle_mode == 1,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}, figure8={figure8_mode}, squiggle={squiggle_mode}")
-            elif len(data) >= 13 and not self.is_host:
-                # Backwards compatibility with 13-byte format (no squiggle)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode = struct.unpack('>BBBBBBBBBBBBB', data[:13])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': ice_mode == 1,
-                    'figure8_mode': figure8_mode == 1,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}, figure8={figure8_mode}")
-            elif len(data) >= 12 and not self.is_host:
-                # Backwards compatibility with 12-byte format (no figure8)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode = struct.unpack('>BBBBBBBBBBBB', data[:12])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': ice_mode == 1,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}, ice={ice_mode}")
-            elif len(data) >= 11 and not self.is_host:
-                # Backwards compatibility with 11-byte format (no ice)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode = struct.unpack('>BBBBBBBBBBB', data[:11])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': ufo_mode == 1,
-                    'ice_mode': False,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}, ufo={ufo_mode}")
-            elif len(data) >= 10 and not self.is_host:
-                # Backwards compatibility with 10-byte format (no ufo)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode = struct.unpack('>BBBBBBBBBB', data[:10])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': sandstorm_mode == 1,
-                    'ufo_mode': False,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}, sandstorm={sandstorm_mode}")
-            elif len(data) >= 9 and not self.is_host:
-                # Backwards compatibility with 9-byte format (no sandstorm)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode = struct.unpack('>BBBBBBBBB', data[:9])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': tornado_mode == 1,
-                    'sandstorm_mode': False,
-                    'ufo_mode': False,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}, tornado={tornado_mode}")
-            elif len(data) >= 8 and not self.is_host:
-                # Backwards compatibility with 8-byte format (no tornado)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode = struct.unpack('>BBBBBBBB', data[:8])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': hourglass_mode == 1,
-                    'tornado_mode': False,
-                    'sandstorm_mode': False,
-                    'ufo_mode': False,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}, hourglass={hourglass_mode}")
-            elif len(data) >= 7 and not self.is_host:
-                # Backwards compatibility with 7-byte format (no hourglass)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode = struct.unpack('>BBBBBBB', data[:7])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': yinyang_mode == 1,
-                    'hourglass_mode': False,
-                    'tornado_mode': False,
-                    'sandstorm_mode': False,
-                    'ufo_mode': False,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}, yinyang={yinyang_mode}")
-            elif len(data) >= 6 and not self.is_host:
-                # Backwards compatibility with 6-byte format (no yinyang or hourglass)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode = struct.unpack('>BBBBBB', data[:6])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': barbell_mode == 1,
-                    'yinyang_mode': False,
-                    'hourglass_mode': False,
-                    'tornado_mode': False,
-                    'sandstorm_mode': False,
-                    'ufo_mode': False,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}, barbell={barbell_mode}")
-            elif len(data) >= 5 and not self.is_host:
-                # Backwards compatibility with 5-byte format (no barbell, yinyang, or hourglass)
-                _, referee_enabled, ball_active, donut_mode, x_stage_mode = struct.unpack('>BBBBB', data[:5])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': x_stage_mode == 1,
-                    'barbell_mode': False,
-                    'yinyang_mode': False,
-                    'hourglass_mode': False,
-                    'tornado_mode': False,
-                    'sandstorm_mode': False,
-                    'ufo_mode': False,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options: referee={referee_enabled}, ball={ball_active}, donut={donut_mode}, x_stage={x_stage_mode}")
-            elif len(data) >= 4 and not self.is_host:
-                # Backwards compatibility with old 4-byte format (no x_stage, barbell, yinyang, or hourglass)
-                _, referee_enabled, ball_active, donut_mode = struct.unpack('>BBBB', data[:4])
-                self.pending_game_options = {
-                    'referee_enabled': referee_enabled == 1,
-                    'ball_active': ball_active == 1,
-                    'donut_mode': donut_mode == 1,
-                    'x_stage_mode': False,
-                    'barbell_mode': False,
-                    'yinyang_mode': False,
-                    'hourglass_mode': False,
-                    'tornado_mode': False,
-                    'sandstorm_mode': False,
-                    'ufo_mode': False,
-                    'figure8_mode': False,
-                    'squiggle_mode': False,
-                    'hole_mode': False,
-                    'comet_mode': False,
-                    'square_mode': False,
-                    'cut_square_mode': False,
-                    'board_break_mode': False
-                }
-                print(f"[Network] Received game options (legacy): referee={referee_enabled}, ball={ball_active}, donut={donut_mode}")
 
         elif msg_type == MSG_RECONNECT_REQUEST:
             # Guest is reconnecting and requesting full state (host receives)
@@ -1540,6 +1181,8 @@ class NetworkManager:
         """Get connection status string for UI."""
         if not self.initialized:
             return "Steam not initialized"
+        if self.version_mismatch:
+            return "VERSION MISMATCH - update both builds!"
         if not self.in_lobby:
             return "Not in lobby"
         if not self.connected:
