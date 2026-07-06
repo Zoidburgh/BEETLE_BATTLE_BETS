@@ -17502,11 +17502,11 @@ try:
                 physics_frame,
                 [
                     {'x': beetle_blue.x, 'y': beetle_blue.y, 'z': beetle_blue.z,
-                     'rot': beetle_blue.rotation,
+                     'rot': beetle_blue.rotation, 'pitch': beetle_blue.pitch, 'roll': beetle_blue.roll,
                      'vx': beetle_blue.vx, 'vy': beetle_blue.vy, 'vz': beetle_blue.vz,
                      'active': beetle_blue.active, 'is_falling': beetle_blue.is_falling},
                     {'x': beetle_red.x, 'y': beetle_red.y, 'z': beetle_red.z,
-                     'rot': beetle_red.rotation,
+                     'rot': beetle_red.rotation, 'pitch': beetle_red.pitch, 'roll': beetle_red.roll,
                      'vx': beetle_red.vx, 'vy': beetle_red.vy, 'vz': beetle_red.vz,
                      'active': beetle_red.active, 'is_falling': beetle_red.is_falling},
                 ],
@@ -17580,6 +17580,8 @@ try:
                 beetle.vy = host_b['vy']
                 beetle.vz = host_b['vz']
                 beetle.rotation = host_b['rot']
+                beetle.pitch = host_b['pitch']
+                beetle.roll = host_b['roll']
                 net_hud['snap_count'] += 1
             elif err > SYNC_SNAP_DIST:
                 # Hard snap on large divergence
@@ -17590,6 +17592,8 @@ try:
                 beetle.vy = host_b['vy']
                 beetle.vz = host_b['vz']
                 beetle.rotation = host_b['rot']
+                beetle.pitch = host_b['pitch']
+                beetle.roll = host_b['roll']
                 net_hud['snap_count'] += 1
             else:
                 # Soft correction with deadzone
@@ -17660,6 +17664,8 @@ try:
                 opp.vy = tgt['vy']
                 opp.vz = tgt['vz']
                 opp.rotation = tgt['rot']
+                opp.pitch = tgt['pitch']
+                opp.roll = tgt['roll']
                 net_hud['snap_count'] += 1
             else:
                 # Dead-reckon the target forward by packet age
@@ -17672,38 +17678,52 @@ try:
                 if rot_diff > math.pi:
                     rot_diff -= TWO_PI
 
+                # Grounded vs airborne changes who owns the vertical axis:
+                # grounded -> local floor contact owns small y (blending fights
+                # it and shakes); airborne -> host trajectory owns y fully
+                floor_y = check_floor_collision(float(opp.x), float(opp.z))
+                floor_surface = floor_y + 0.5 if floor_y > -100.0 else None
+                airborne = floor_surface is None or opp.y > floor_surface + 0.75 or tgt['y'] > floor_surface + 0.75
+
                 if err > SYNC_SNAP_DIST:
                     opp.x = pred_x
                     opp.y = pred_y
                     opp.z = pred_z
                     opp.rotation = tgt['rot']
+                    opp.pitch = tgt['pitch']
+                    opp.roll = tgt['roll']
                     net_hud['snap_count'] += 1
-                elif err >= SYNC_OPP_DEADZONE:
-                    opp.x += (pred_x - opp.x) * SYNC_OPP_RATE
-                    opp.z += (pred_z - opp.z) * SYNC_OPP_RATE
-                    # Y corrects gently and only on real divergence - a tilted
-                    # beetle's floor contact otherwise fights the blend (shake)
-                    if abs(pred_y - opp.y) > SYNC_OPP_Y_DEADZONE:
-                        opp.y += (pred_y - opp.y) * SYNC_OPP_RATE_Y
+                else:
+                    if err >= SYNC_OPP_DEADZONE:
+                        opp.x += (pred_x - opp.x) * SYNC_OPP_RATE
+                        opp.z += (pred_z - opp.z) * SYNC_OPP_RATE
+                        if airborne:
+                            # Full-rate Y in the air - nothing to fight with,
+                            # and lag here reads as skipping on launches
+                            opp.y += (pred_y - opp.y) * SYNC_OPP_RATE
+                        elif abs(pred_y - opp.y) > SYNC_OPP_Y_DEADZONE:
+                            opp.y += (pred_y - opp.y) * SYNC_OPP_RATE_Y
                     if abs(rot_diff) > SYNC_SNAP_ANGLE:
                         opp.rotation = tgt['rot']
                     else:
                         opp.rotation += rot_diff * SYNC_OPP_ROT_RATE
+                    # Tilt tracks the host directly (pitch/roll now synced) -
+                    # local collision-driven tilt diverging is what made
+                    # airborne beetles look like they skip
+                    opp.pitch += (tgt['pitch'] - opp.pitch) * SYNC_OPP_ROT_RATE
+                    opp.roll += (tgt['roll'] - opp.roll) * SYNC_OPP_ROT_RATE
+
                 # Adopt host horizontal velocities so the local sim carries the
-                # target's motion; vertical velocity stays local unless the host
-                # shows real vertical motion (jump/launch) - floor contact owns it
+                # target's motion; vertical velocity follows the host when
+                # airborne, else stays local so floor contact resolves cleanly
                 opp.vx = tgt['vx']
                 opp.vz = tgt['vz']
-                if abs(tgt['vy']) > 1.0:
+                if airborne or abs(tgt['vy']) > 1.0:
                     opp.vy = tgt['vy']
 
                 # Clamp to floor so corrections never leave the opponent under the arena
-                if opp.active:
-                    floor_y = check_floor_collision(float(opp.x), float(opp.z))
-                    if floor_y > -100.0:
-                        floor_surface = floor_y + 0.5
-                        if opp.y < floor_surface:
-                            opp.y = floor_surface
+                if opp.active and floor_surface is not None and opp.y < floor_surface:
+                    opp.y = floor_surface
 
         # === DISCONNECT DETECTION ===
         # Check for graceful disconnect first (opponent clicked Disconnect button)
@@ -23000,10 +23020,18 @@ try:
                     dy0 = dy1 - lbtn_h
                     if lbtn_x0 <= mx <= lbtn_x1 and dy0 <= my <= dy1:
                         if network_manager:
-                            network_manager.disconnect()
+                            try:
+                                network_manager.send_disconnect()
+                            except Exception:
+                                pass
+                            network_manager.shutdown()
                             network_manager = None
                         game_state = GAME_STATE_LOCAL_PLAY
                         input_buffer.is_network_mode = False
+                        input_buffer.delay = 0
+                        input_buffer.reset()
+                        opponent_disconnected = False
+                        opponent_left_gracefully = False
                         print("Disconnected from online game")
 
         elif not mouse_clicked:

@@ -40,7 +40,7 @@ except Exception as e:
 # Protocol version - bump whenever a packet format changes incompatibly.
 # Carried in MSG_READY (guest->host) and MSG_START (host->guest); a mismatch
 # refuses the match with a clear message instead of desyncing silently.
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 3  # v3: state sync carries pitch/roll per beetle
 
 # Network message types
 MSG_INPUT = 0x01        # Frame input data
@@ -530,19 +530,20 @@ class NetworkManager:
 
     def send_state_sync(self, frame, beetle_states, ball_state):
         """
-        Host sends authoritative state to guest (protocol v2).
+        Host sends authoritative state to guest (protocol v3).
 
         Args:
             frame: physics frame number
             beetle_states: list of per-beetle dicts (blue first, then red) with
-                x, y, z, rot, vx, vy, vz, active (bool), is_falling (bool)
+                x, y, z, rot, pitch, roll, vx, vy, vz,
+                active (bool), is_falling (bool)
             ball_state: dict with x, y, z, vx, vy, vz, active (bool)
 
         Packet: [type:1][frame:4]
-                per beetle: [x,y,z,rot,vx,vy,vz (7*f32)][flags:1] = 29 bytes
+                per beetle: [x,y,z,rot,pitch,roll,vx,vy,vz (9*f32)][flags:1] = 37 bytes
                             flags bit0 = active, bit1 = is_falling
                 ball: [x,y,z,vx,vy,vz (6*f32)][active:1] = 25 bytes
-        Total for 2 beetles: 5 + 58 + 25 = 88 bytes
+        Total for 2 beetles: 5 + 74 + 25 = 104 bytes
         """
         if not self.is_host or not self.connected:
             return
@@ -550,8 +551,9 @@ class NetworkManager:
         parts = [struct.pack('>BI', MSG_STATE_SYNC, frame)]
         for b in beetle_states:
             flags = (1 if b['active'] else 0) | (2 if b['is_falling'] else 0)
-            parts.append(struct.pack('>fffffffB',
-                                     b['x'], b['y'], b['z'], b['rot'],
+            parts.append(struct.pack('>fffffffffB',
+                                     b['x'], b['y'], b['z'],
+                                     b['rot'], b['pitch'], b['roll'],
                                      b['vx'], b['vy'], b['vz'], flags))
         parts.append(struct.pack('>ffffffB',
                                  ball_state['x'], ball_state['y'], ball_state['z'],
@@ -991,19 +993,20 @@ class NetworkManager:
                     self.ping_ms = (0xFFFFFFFF - sent_time) + now
 
         elif msg_type == MSG_STATE_SYNC:
-            # Protocol v2: [type:1][frame:4] + 2x beetle(29B) + ball(25B) = 88 bytes
-            if len(data) >= 88 and not self.is_host:
+            # Protocol v3: [type:1][frame:4] + 2x beetle(37B) + ball(25B) = 104 bytes
+            if len(data) >= 104 and not self.is_host:
                 _, frame = struct.unpack('>BI', data[:5])
                 offset = 5
                 beetles = []
                 for _i in range(2):
-                    bx, by, bz, brot, bvx, bvy, bvz, flags = struct.unpack('>fffffffB', data[offset:offset + 29])
+                    bx, by, bz, brot, bpitch, broll, bvx, bvy, bvz, flags = struct.unpack('>fffffffffB', data[offset:offset + 37])
                     beetles.append({
-                        'x': bx, 'y': by, 'z': bz, 'rot': brot,
+                        'x': bx, 'y': by, 'z': bz,
+                        'rot': brot, 'pitch': bpitch, 'roll': broll,
                         'vx': bvx, 'vy': bvy, 'vz': bvz,
                         'active': bool(flags & 1), 'is_falling': bool(flags & 2),
                     })
-                    offset += 29
+                    offset += 37
                 ball_x, ball_y, ball_z, ball_vx, ball_vy, ball_vz, ball_active = struct.unpack('>ffffffB', data[offset:offset + 25])
                 self.pending_state_sync = {
                     'frame': frame,
