@@ -214,20 +214,52 @@ def get_fullscreen_from_args():
                 return False, None
     return False, None
 
-def install_modifier_keyshield():
+def defuse_crt_asserts():
     """
     Workaround for taichi-dev/taichi#6513: GGUI's bundled imgui hard-aborts
-    the process (assert 'Mismatching io.KeyCtrl...' at imgui.cpp:7234) when
-    Shift/Ctrl/Alt/Win keys reach the window. A low-level keyboard hook
-    swallows those keys ONLY while this game's window is in the foreground,
-    so they never reach GLFW/imgui.
+    the process via a CRT assert ('Mismatching io.KeyCtrl...' imgui.cpp:7234)
+    when Shift/Ctrl/Alt/Win keys are pressed.
 
-    Side effect: Alt-Tab does not work while the game is focused - click
-    another window / the taskbar instead. Disable with --no-keyshield.
-    Remove this whole function when taichi ships imgui >= 1.87.
+    taichi_python.pyd links the dynamic UCRT, so patching ucrtbase._wassert
+    to an immediate `ret` turns that assert (and any other CRT assert in the
+    process) into a no-op - imgui's sanity check simply continues, which is
+    harmless for this diagnostic check. Restores normal Alt-Tab behavior
+    that the previous KeyShield hook blocked.
+
+    Disable with --no-assertpatch. Remove when taichi ships imgui >= 1.87.
     """
-    if '--no-keyshield' in sys.argv:
-        print("[KeyShield] Disabled via --no-keyshield (modifier keys may crash the window, taichi#6513)")
+    if '--no-assertpatch' in sys.argv:
+        print("[AssertPatch] Disabled via --no-assertpatch (modifier keys may crash the window, taichi#6513)")
+        return False
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ucrt = ctypes.WinDLL('ucrtbase')
+        addr = ctypes.cast(ucrt._wassert, ctypes.c_void_p).value
+        old = ctypes.c_ulong(0)
+        PAGE_EXECUTE_READWRITE = 0x40
+        kernel32.VirtualProtect.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)]
+        if not kernel32.VirtualProtect(addr, 1, PAGE_EXECUTE_READWRITE, ctypes.byref(old)):
+            print("[AssertPatch] VirtualProtect failed - modifier keys may crash the window")
+            return False
+        ctypes.memmove(addr, b'\xc3', 1)  # x64: ret (caller-cleaned args, safe to no-op)
+        kernel32.VirtualProtect(addr, 1, old.value, ctypes.byref(old))
+        print("[AssertPatch] CRT asserts defused (taichi imgui modifier-key crash workaround)")
+        return True
+    except Exception as e:
+        print(f"[AssertPatch] Failed: {e} - modifier keys may crash the window (taichi#6513)")
+        return False
+
+def install_modifier_keyshield():
+    """
+    Fallback workaround for taichi-dev/taichi#6513 (opt-in via --keyshield):
+    a low-level keyboard hook that swallows Shift/Ctrl/Alt/Win ONLY while
+    this game's window is in the foreground, so they never reach GLFW/imgui.
+
+    Side effect: Alt-Tab does not work while the game is focused - prefer
+    the default defuse_crt_asserts() patch, which has no such side effect.
+    """
+    if '--keyshield' not in sys.argv:
         return None
     import ctypes
     import ctypes.wintypes as wt
@@ -271,8 +303,7 @@ def install_modifier_keyshield():
         if not hook:
             print("[KeyShield] Hook install FAILED - modifier keys may crash the window (taichi#6513)")
             return
-        print("[KeyShield] Active: Shift/Ctrl/Alt/Win blocked while game is focused")
-        print("[KeyShield] (taichi imgui crash workaround - launch with --no-keyshield to disable)")
+        print("[KeyShield] Active: Shift/Ctrl/Alt/Win blocked while game is focused (--keyshield fallback mode)")
         msg = wt.MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
             user32.TranslateMessage(ctypes.byref(msg))
@@ -281,6 +312,9 @@ def install_modifier_keyshield():
     threading.Thread(target=run, daemon=True, name="KeyShield").start()
     return proc  # Keep a reference alive so the callback isn't garbage-collected
 
+# Default: neutralize the CRT assert (keeps Alt-Tab working).
+# --keyshield enables the key-blocking hook as a fallback if ever needed.
+defuse_crt_asserts()
 _keyshield_proc = install_modifier_keyshield()
 
 FULLSCREEN_ENABLED, FULLSCREEN_RES = get_fullscreen_from_args()
@@ -17499,6 +17533,9 @@ try:
         SYNC_OPP_RATE = 0.15                   # opponent blend per render frame (~60Hz)
         SYNC_OPP_ROT_RATE = 0.2
         SYNC_OPP_MAX_EXTRAP = 0.25             # seconds; don't extrapolate through packet gaps
+        SYNC_OPP_DEADZONE = 0.3                # no positional correction below this error
+        SYNC_OPP_Y_DEADZONE = 0.5              # extra slack on Y (floor contact owns small y)
+        SYNC_OPP_RATE_Y = 0.06                 # gentle Y blend - avoids floor-contact shake
         TWO_PI = 2.0 * math.pi
         if not network_manager.is_host and network_manager.pending_state_sync:
             sync = network_manager.pending_state_sync
@@ -17641,18 +17678,24 @@ try:
                     opp.z = pred_z
                     opp.rotation = tgt['rot']
                     net_hud['snap_count'] += 1
-                else:
+                elif err >= SYNC_OPP_DEADZONE:
                     opp.x += (pred_x - opp.x) * SYNC_OPP_RATE
-                    opp.y += (pred_y - opp.y) * SYNC_OPP_RATE
+                    opp.z += (pred_z - opp.z) * SYNC_OPP_RATE
+                    # Y corrects gently and only on real divergence - a tilted
+                    # beetle's floor contact otherwise fights the blend (shake)
+                    if abs(pred_y - opp.y) > SYNC_OPP_Y_DEADZONE:
+                        opp.y += (pred_y - opp.y) * SYNC_OPP_RATE_Y
                     if abs(rot_diff) > SYNC_SNAP_ANGLE:
                         opp.rotation = tgt['rot']
                     else:
                         opp.rotation += rot_diff * SYNC_OPP_ROT_RATE
-                    opp.z += (pred_z - opp.z) * SYNC_OPP_RATE
-                # Adopt host velocities so the local sim carries the target's motion
+                # Adopt host horizontal velocities so the local sim carries the
+                # target's motion; vertical velocity stays local unless the host
+                # shows real vertical motion (jump/launch) - floor contact owns it
                 opp.vx = tgt['vx']
-                opp.vy = tgt['vy']
                 opp.vz = tgt['vz']
+                if abs(tgt['vy']) > 1.0:
+                    opp.vy = tgt['vy']
 
                 # Clamp to floor so corrections never leave the opponent under the arena
                 if opp.active:
@@ -17668,6 +17711,9 @@ try:
             if not opponent_disconnected:
                 opponent_disconnected = True
                 opponent_left_gracefully = True
+                # Stop the ghost: don't keep replaying their last-known input
+                input_buffer.remote_last_known = 0
+                input_buffer.remote_inputs.clear()
                 print("[Network] Opponent left the game")
             network_manager.pending_disconnect = False  # Consume the flag
         # Fallback: If no packets of ANY kind for 3 seconds, connection lost.
@@ -17677,6 +17723,9 @@ try:
             if not opponent_disconnected:
                 opponent_disconnected = True
                 opponent_left_gracefully = False
+                # Stop the ghost: don't keep replaying their last-known input
+                input_buffer.remote_last_known = 0
+                input_buffer.remote_inputs.clear()
                 print("[Network] Connection lost...")
         elif opponent_disconnected and not opponent_left_gracefully:
             # A packet arrived within the last 3s - they're back!
@@ -25065,6 +25114,16 @@ try:
     # === NET STATS CSV LOG (automatic during online play, 1 row/sec) ===
     if network_manager is not None and game_state == GAME_STATE_ONLINE_PLAY:
         net_log_tick(actual_fps)
+
+    # === OPPONENT DISCONNECTED BANNER (center screen, impossible to miss) ===
+    if opponent_disconnected and game_state == GAME_STATE_ONLINE_PLAY and not gui_skip_content:
+        window.GUI.begin("!! CONNECTION !!", 0.35, 0.40, 0.30, 0.10)
+        if opponent_left_gracefully:
+            window.GUI.text("OPPONENT LEFT THE GAME")
+        else:
+            window.GUI.text("CONNECTION LOST")
+            window.GUI.text("(waiting for reconnect...)")
+        window.GUI.end()
 
     # === NET DEBUG HUD (toggle with N key during online sessions) ===
     if show_net_debug and network_manager is not None and not gui_skip_content:

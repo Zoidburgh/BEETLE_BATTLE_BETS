@@ -732,6 +732,15 @@ class NetworkManager:
         # Send multiple times for reliability
         for _ in range(3):
             self._send_packet(data, reliable=True)
+        # Pump Steam callbacks briefly so the message actually transmits
+        # before the caller tears the connection down (otherwise the peer
+        # never learns we left gracefully and has to hit the 3s timeout)
+        for _ in range(6):
+            try:
+                self.client.run_callbacks()
+            except Exception:
+                pass
+            time.sleep(0.03)
         print("[Network] Sent disconnect message")
 
     def send_ping(self):
