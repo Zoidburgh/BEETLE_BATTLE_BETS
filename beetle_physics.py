@@ -573,6 +573,162 @@ def get_physics_timing():
     """Get last frame's physics timing breakdown"""
     return _physics_timing
 
+# Rolling history of the physics breakdown (per render frame, ms) so the perf
+# log can report avg/max over ~2s instead of a single noisy last-frame sample
+_physics_timing_history = {key: deque(maxlen=120) for key in _physics_timing}
+
+# Collision diagnostics — cheap Python counters for the perf log and for
+# debugging horn clipping. Cumulative since launch unless noted.
+collision_stats = {
+    'pairs_checked': 0,        # beetle_collision() calls
+    'voxel_collisions': 0,     # calls where the voxel-overlap kernel fired
+    'predictive_pushes': 0,    # horn-tip predictive separation events
+    'shaft_pushes': 0,         # shaft-cylinder separation events
+    'max_contact_count': 0,    # largest voxel contact cluster seen (penetration depth proxy)
+    'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
+}
+
+def save_perf_log():
+    """Write perf_log.txt plus a timestamped archive copy under perf_logs/.
+
+    Reads module globals at call time (actual_fps, game_state, beetles, ...),
+    so it must only be called from inside the main loop.
+    """
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    lines = []
+    w = lines.append
+
+    w("=== SYSTEM INFO ===")
+    w(f"Saved: {stamp}")
+    w(f"Backend: {simulation.BACKEND_REASON}")
+    w(f"Resolution: {WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]}")
+    w(f"Taichi version: {ti.__version__}")
+    try:
+        import subprocess
+        result = subprocess.run(
+            ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
+            capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0:
+            gpus = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
+            w(f"GPU(s): {', '.join(gpus)}")
+    except:
+        w("GPU(s): (detection failed)")
+    w("")
+
+    # Game mode / beetle roster — makes 4P logs self-describing
+    state_name = next((n for n, v in globals().items()
+                       if n.startswith('GAME_STATE_') and v == game_state), str(game_state))
+    w("=== GAME MODE ===")
+    w(f"game_state: {state_name}")
+    w(f"active_player_count: {active_player_count}")
+    w(f"local4: {LOCAL4_MODE} (bot_ai: {BOT_AI_MODE})")
+    for slot in range(active_player_count):
+        b = beetles[slot]
+        w(f"  slot {slot}: {b.horn_type} active={b.active} pos=({b.x:.1f}, {b.y:.1f}, {b.z:.1f})")
+    w("")
+
+    w(f"FPS: {actual_fps:.0f}")
+    w(f"Frame count: {perf_monitor.frame_count}")
+    w("")
+    for line in perf_monitor.get_detailed_breakdown():
+        w(line)
+
+    w("")
+    w("--- Physics Breakdown (avg over last 120 frames) ---")
+    def _avg(h):
+        return sum(h) / len(h) if h else 0.0
+    sorted_keys = sorted(_physics_timing_history,
+                         key=lambda k: _avg(_physics_timing_history[k]), reverse=True)
+    for key in sorted_keys:
+        h = _physics_timing_history[key]
+        if h:
+            w(f"  {key}: {_avg(h):.2f}ms (last: {h[-1]:.2f}, max: {max(h):.2f})")
+
+    w("")
+    w("--- Collision Diagnostics ---")
+    pf = max(1, physics_frame)
+    w(f"  physics_frames: {physics_frame}")
+    w(f"  pairs_checked: {collision_stats['pairs_checked']} ({collision_stats['pairs_checked'] / pf:.2f}/frame)")
+    w(f"  voxel_collisions: {collision_stats['voxel_collisions']} ({collision_stats['voxel_collisions'] / pf * 100:.1f}% of frames)")
+    w(f"  predictive_tip_pushes: {collision_stats['predictive_pushes']}")
+    w(f"  shaft_cylinder_pushes: {collision_stats['shaft_pushes']}")
+    w(f"  max_contact_cluster: {collision_stats['max_contact_count']} voxels (large = deep overlap/clip)")
+    for pair, hist in sorted(collision_stats['pair_time_ms'].items()):
+        if hist:
+            w(f"  pair {pair[0]}v{pair[1]}: {_avg(hist):.2f}ms avg, {max(hist):.2f}ms max (per physics step)")
+
+    w("")
+    w("--- Particle Counts ---")
+    w(f"  debris: {simulation.num_debris[None]} / {simulation.MAX_DEBRIS}")
+    w(f"  spray: {simulation.num_spray[None]} / {simulation.MAX_SPRAY}")
+    w(f"  silk: {simulation.num_silk[None]} / {simulation.MAX_SILK}")
+    w(f"  cleanup_freq_debris: every {simulation.CLEANUP_FREQUENCY_DEBRIS} frames")
+    w(f"  cleanup_freq_spray: every {simulation.CLEANUP_FREQUENCY_SPRAY} frames")
+    w(f"  cleanup_freq_silk: every {simulation.CLEANUP_FREQUENCY_SILK} frames")
+
+    rt = renderer.get_render_timing()
+    if rt:
+        w("")
+        w("--- Renderer Breakdown (last frame) ---")
+        w(f"  extract_all: {rt.get('extract_all', 0):.2f}ms")
+        w(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms")
+        w(f"  scene_draw: {rt.get('scene_draw', 0):.2f}ms")
+        w(f"  voxel_count: {rt.get('voxel_count', 0)}")
+        w(f"  floor_quads: {rt.get('floor_quads', 0)}")
+
+    if game_state == GAME_STATE_ONLINE_PLAY or network_stats['total_render_frames'] > 0:
+        w("")
+        w("--- Network Stats ---")
+        elapsed = time.time() - network_stats['session_start_time'] if network_stats['session_start_time'] > 0 else 1
+        expected_physics = elapsed * 60
+        actual_physics = network_stats['total_physics_frames']
+        game_speed = (actual_physics / expected_physics * 100) if expected_physics > 0 else 100
+        physics_per_render = actual_physics / max(1, network_stats['total_render_frames'])
+        w(f"  session_time: {elapsed:.1f}s")
+        w(f"  game_speed: {game_speed:.1f}% (100% = real-time)")
+        w(f"  physics_frames: {actual_physics} (expected: {int(expected_physics)})")
+        w(f"  render_frames: {network_stats['total_render_frames']}")
+        w(f"  physics_per_render: {physics_per_render:.2f} (should be ~1.0)")
+        w(f"  accumulator_drains: {network_stats['accumulator_drains']} (waits for opponent)")
+        w(f"  frame_diff: {network_stats['last_frame_diff']:+d} (host vs guest sync)")
+        if network_manager:
+            w(f"  ping: {network_manager.ping_ms}ms")
+            w(f"  input_delay: {input_buffer.delay} frames ({input_buffer.delay * 16.67:.0f}ms)")
+            if input_buffer.ping_samples:
+                p90_ping = input_buffer._get_percentile_ping(90)
+                w(f"  jitter_buffer: {len(input_buffer.ping_samples)} samples, 90th percentile: {p90_ping:.0f}ms")
+        w("")
+        w("  Diagnosis:")
+        if game_speed < 90:
+            w(f"    WARNING: Game running at {game_speed:.0f}% speed!")
+            if network_stats['accumulator_drains'] > network_stats['total_render_frames'] * 0.1:
+                w(f"    CAUSE: Waiting for opponent inputs ({network_stats['accumulator_drains']} drains)")
+                w("    FIX: Check opponent's connection, reduce input_delay, or increase buffer")
+        else:
+            w("    Game speed OK")
+
+    w("")
+    w("--- Notes ---")
+    w("scene_draw is the main bottleneck indicator:")
+    w("  <3ms = GPU backend working well (data on GPU)")
+    w("  8-15ms = CPU->GPU transfer overhead")
+    w("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)")
+
+    text = "\n".join(lines) + "\n"
+    with open("perf_log.txt", "w") as f:
+        f.write(text)
+    # Timestamped archive so test runs can be compared before/after changes
+    archive_path = None
+    try:
+        os.makedirs("perf_logs", exist_ok=True)
+        archive_path = os.path.join("perf_logs", f"perf_{stamp}_{active_player_count}p.txt")
+        with open(archive_path, "w") as f:
+            f.write(text)
+    except OSError as e:
+        print(f"Perf log archive failed: {e}")
+    print(f"Performance log saved to perf_log.txt" + (f" and {archive_path}" if archive_path else ""))
+
 # OPTIMIZATION: Pre-computed constants to avoid repeated calculations
 TWO_PI = 2.0 * math.pi  # Avoids ~20 multiplications per frame
 PI_HALF = math.pi * 0.5
@@ -13759,6 +13915,7 @@ def calculate_horn_damping(beetle, collision_x, collision_y, collision_z, engage
 
 def beetle_collision(b1, b2, params):
     """Handle collision with voxel-perfect detection, pushing, and horn leverage"""
+    collision_stats['pairs_checked'] += 1
     # Detect if this is a ball collision (ball uses different, gentler physics)
     is_ball_collision = (b1.horn_type == "ball" or b2.horn_type == "ball")
 
@@ -13823,6 +13980,7 @@ def beetle_collision(b1, b2, params):
 
         # If tips will be close, apply gentle preventive separation
         if tip_dist < predictive_threshold and tip_dist > 0.1:
+            collision_stats['predictive_pushes'] += 1
             # Normalize direction
             nx = dx / tip_dist
             ny = dy / tip_dist
@@ -13892,6 +14050,7 @@ def beetle_collision(b1, b2, params):
                     b1_tip_x, b1_tip_y, b1_tip_z
                 )
                 if dist_to_b1_shaft < b1_radius:
+                    collision_stats['shaft_pushes'] += 1
                     # Push b2 away from b1's shaft/head
                     # Direction: from closest point on shaft toward b2
                     push_strength = shaft_cylinder_push * (1.0 - dist_to_b1_shaft / b1_radius)
@@ -13915,6 +14074,7 @@ def beetle_collision(b1, b2, params):
                     b2_tip_x, b2_tip_y, b2_tip_z
                 )
                 if dist_to_b2_shaft < b2_radius:
+                    collision_stats['shaft_pushes'] += 1
                     # Push b1 away from b2's shaft/head
                     push_strength = shaft_cylinder_push * (1.0 - dist_to_b2_shaft / b2_radius)
                     dx = b1.x - b2.x
@@ -13947,6 +14107,10 @@ def beetle_collision(b1, b2, params):
         collision_z = collision_point_z[None]
         contact_count = collision_contact_count[None]
         has_horn_tips = collision_has_horn_tips[None]
+
+        collision_stats['voxel_collisions'] += 1
+        if contact_count > collision_stats['max_contact_count']:
+            collision_stats['max_contact_count'] = contact_count
 
         # Collision detected! Calculate 3D collision geometry
         dx = b1.x - b2.x
@@ -19856,7 +20020,10 @@ try:
                     if (beetles[i].active and beetles[j].active and
                         not beetles[i].is_falling and not beetles[j].is_falling and
                         not hovering[i] and not hovering[j]):
+                        _t_pair_start = time.perf_counter()
                         beetle_collision(beetles[i], beetles[j], physics_params)
+                        _pair_hist = collision_stats['pair_time_ms'].setdefault((i, j), deque(maxlen=120))
+                        _pair_hist.append((time.perf_counter() - _t_pair_start) * 1000)
 
         # === BEETLE COLLISION TIMING END ===
         _t_collision_end = time.perf_counter()
@@ -19874,6 +20041,10 @@ try:
 
     # ===== END FIXED TIMESTEP PHYSICS LOOP =====
     perf_monitor.stop('physics')
+
+    # Record this frame's physics breakdown into rolling history (for perf log avg/max)
+    for _pt_key, _pt_val in _physics_timing.items():
+        _physics_timing_history.setdefault(_pt_key, deque(maxlen=120)).append(_pt_val)
 
     # If physics loop didn't run this frame (high FPS) or network stalled,
     # use last known inputs for animation - ensures dust particles spawn consistently
@@ -23668,92 +23839,7 @@ try:
 
         # Save performance log button (at bottom of menu)
         if window.GUI.button("SAVE PERF LOG"):
-            with open("perf_log.txt", "w") as f:
-                f.write("=== SYSTEM INFO ===\n")
-                f.write(f"Backend: {simulation.BACKEND_REASON}\n")
-                f.write(f"Resolution: {WINDOW_RESOLUTION[0]}x{WINDOW_RESOLUTION[1]}\n")
-                f.write(f"Taichi version: {ti.__version__}\n")
-                try:
-                    import subprocess
-                    result = subprocess.run(
-                        ['wmic', 'path', 'win32_VideoController', 'get', 'name'],
-                        capture_output=True, text=True, timeout=5
-                    )
-                    if result.returncode == 0:
-                        gpus = [l.strip() for l in result.stdout.strip().split('\n') if l.strip() and l.strip() != 'Name']
-                        f.write(f"GPU(s): {', '.join(gpus)}\n")
-                except:
-                    f.write("GPU(s): (detection failed)\n")
-                f.write("\n")
-                f.write(f"FPS: {actual_fps:.0f}\n")
-                f.write(f"Frame count: {perf_monitor.frame_count}\n\n")
-                for line in perf_monitor.get_detailed_breakdown():
-                    f.write(line + "\n")
-                f.write("\n--- Particle Counts ---\n")
-                f.write(f"  debris: {simulation.num_debris[None]} / {simulation.MAX_DEBRIS}\n")
-                f.write(f"  spray: {simulation.num_spray[None]} / {simulation.MAX_SPRAY}\n")
-                f.write(f"  silk: {simulation.num_silk[None]} / {simulation.MAX_SILK}\n")
-                f.write(f"  cleanup_freq_debris: every {simulation.CLEANUP_FREQUENCY_DEBRIS} frames\n")
-                f.write(f"  cleanup_freq_spray: every {simulation.CLEANUP_FREQUENCY_SPRAY} frames\n")
-                f.write(f"  cleanup_freq_silk: every {simulation.CLEANUP_FREQUENCY_SILK} frames\n")
-                rt = renderer.get_render_timing()
-                if rt:
-                    f.write("\n--- Renderer Breakdown (last frame) ---\n")
-                    f.write(f"  extract_all: {rt.get('extract_all', 0):.2f}ms\n")
-                    f.write(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms\n")
-                    f.write(f"  scene_draw: {rt.get('scene_draw', 0):.2f}ms\n")
-                    f.write(f"  voxel_count: {rt.get('voxel_count', 0)}\n")
-                    f.write(f"  floor_quads: {rt.get('floor_quads', 0)}\n")
-                pt = get_physics_timing()
-                if pt:
-                    f.write("\n--- Physics Breakdown (last frame) ---\n")
-                    f.write(f"  input_controls: {pt.get('input_controls', 0):.2f}ms\n")
-                    f.write(f"  beetle_physics: {pt.get('beetle_physics', 0):.2f}ms\n")
-                    f.write(f"  ball_physics: {pt.get('ball_physics', 0):.2f}ms\n")
-                    f.write(f"  debris_update: {pt.get('debris_update', 0):.2f}ms\n")
-                    f.write(f"  spray_update: {pt.get('spray_update', 0):.2f}ms\n")
-                    f.write(f"  spray_collision: {pt.get('spray_collision', 0):.2f}ms\n")
-                    f.write(f"  silk_update: {pt.get('silk_update', 0):.2f}ms\n")
-                    f.write(f"  silk_collision: {pt.get('silk_collision', 0):.2f}ms\n")
-                    f.write(f"  all_particles_total: {pt.get('all_particles_total', 0):.2f}ms\n")
-                    f.write(f"  death_explosions: {pt.get('death_explosions', 0):.2f}ms\n")
-                    f.write(f"  respawn_timers: {pt.get('respawn_timers', 0):.2f}ms\n")
-                    f.write(f"  floor_collision: {pt.get('floor_collision', 0):.2f}ms\n")
-                    f.write(f"  beetle_collision: {pt.get('beetle_collision', 0):.2f}ms\n")
-                if game_state == GAME_STATE_ONLINE_PLAY or network_stats['total_render_frames'] > 0:
-                    f.write("\n--- Network Stats ---\n")
-                    elapsed = time.time() - network_stats['session_start_time'] if network_stats['session_start_time'] > 0 else 1
-                    expected_physics = elapsed * 60
-                    actual_physics = network_stats['total_physics_frames']
-                    game_speed = (actual_physics / expected_physics * 100) if expected_physics > 0 else 100
-                    physics_per_render = actual_physics / max(1, network_stats['total_render_frames'])
-                    f.write(f"  session_time: {elapsed:.1f}s\n")
-                    f.write(f"  game_speed: {game_speed:.1f}% (100% = real-time)\n")
-                    f.write(f"  physics_frames: {actual_physics} (expected: {int(expected_physics)})\n")
-                    f.write(f"  render_frames: {network_stats['total_render_frames']}\n")
-                    f.write(f"  physics_per_render: {physics_per_render:.2f} (should be ~1.0)\n")
-                    f.write(f"  accumulator_drains: {network_stats['accumulator_drains']} (waits for opponent)\n")
-                    f.write(f"  frame_diff: {network_stats['last_frame_diff']:+d} (host vs guest sync)\n")
-                    if network_manager:
-                        f.write(f"  ping: {network_manager.ping_ms}ms\n")
-                        f.write(f"  input_delay: {input_buffer.delay} frames ({input_buffer.delay * 16.67:.0f}ms)\n")
-                        if input_buffer.ping_samples:
-                            p90_ping = input_buffer._get_percentile_ping(90)
-                            f.write(f"  jitter_buffer: {len(input_buffer.ping_samples)} samples, 90th percentile: {p90_ping:.0f}ms\n")
-                    f.write("\n  Diagnosis:\n")
-                    if game_speed < 90:
-                        f.write(f"    WARNING: Game running at {game_speed:.0f}% speed!\n")
-                        if network_stats['accumulator_drains'] > network_stats['total_render_frames'] * 0.1:
-                            f.write(f"    CAUSE: Waiting for opponent inputs ({network_stats['accumulator_drains']} drains)\n")
-                            f.write("    FIX: Check opponent's connection, reduce input_delay, or increase buffer\n")
-                    else:
-                        f.write("    Game speed OK\n")
-                f.write("\n--- Notes ---\n")
-                f.write("scene_draw is the main bottleneck indicator:\n")
-                f.write("  <3ms = GPU backend working well (data on GPU)\n")
-                f.write("  8-15ms = CPU->GPU transfer overhead\n")
-                f.write("  >20ms = CUDA->Vulkan transfer (use --vulkan instead)\n")
-            print("Performance log saved to perf_log.txt")
+            save_perf_log()
 
         window.GUI.end()
 
