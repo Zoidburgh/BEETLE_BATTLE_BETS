@@ -5731,92 +5731,101 @@ print(f"Red beetle geometry cached: {len(RED_BODY)} body voxels + {sum(len(leg) 
 # Scorpion with Y-overlap for gap-free tail can reach ~2000 voxels at max length (3x multiplier in Y)
 MAX_BODY_VOXELS = 2000
 
-# Separate body cache fields for blue beetle
-blue_body_cache_size = ti.field(ti.i32, shape=())
-blue_body_cache_size[None] = len(BLUE_BODY)
-blue_body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
-blue_body_cache_y = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
-blue_body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
-blue_body_hook_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # Hook interior flags for stag beetles
-# OPTIMIZATION: Pre-computed voxel metadata to eliminate per-frame conditional logic
-blue_body_stripe_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is racing stripe
-blue_body_horn_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is horn tip
-blue_body_very_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is very tip (scorpion)
+# ============================================================================
+# PER-PLAYER BEETLE GEOMETRY FIELDS (slots 0-3; 4-player support)
+# One dict of Taichi fields per player slot, generated in a loop. The
+# blue_*/red_* and bare names below are aliases into slots 0/1 kept for
+# existing code paths (rebuild_*_beetle, calculate_beetle_lowest_point, ...).
+# ============================================================================
+MAX_LEG_VOXELS = 240      # 8 legs x 30 voxels max per leg (scorpion has 8)
+MAX_LEG_TIP_VOXELS = 100  # Spider at size 9-10 can generate ~80+ tip voxels
 
-# Separate body cache fields for red beetle
-red_body_cache_size = ti.field(ti.i32, shape=())
-red_body_cache_size[None] = len(RED_BODY)
-red_body_cache_x = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
-red_body_cache_y = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
-red_body_cache_z = ti.field(ti.i32, shape=MAX_BODY_VOXELS)
-red_body_hook_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # Hook interior flags for stag beetles
-# OPTIMIZATION: Pre-computed voxel metadata to eliminate per-frame conditional logic
-red_body_stripe_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is racing stripe
-red_body_horn_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is horn tip
-red_body_very_tip_flags = ti.field(ti.i32, shape=MAX_BODY_VOXELS)  # 1 if voxel is very tip (scorpion)
+def _make_beetle_geo_fields():
+    """All geometry cache fields for one player slot."""
+    return {
+        'body_cache_size': ti.field(ti.i32, shape=()),
+        'body_cache_x': ti.field(ti.i32, shape=MAX_BODY_VOXELS),
+        'body_cache_y': ti.field(ti.i32, shape=MAX_BODY_VOXELS),
+        'body_cache_z': ti.field(ti.i32, shape=MAX_BODY_VOXELS),
+        'body_hook_flags': ti.field(ti.i32, shape=MAX_BODY_VOXELS),
+        'body_stripe_flags': ti.field(ti.i32, shape=MAX_BODY_VOXELS),
+        'body_horn_tip_flags': ti.field(ti.i32, shape=MAX_BODY_VOXELS),
+        'body_very_tip_flags': ti.field(ti.i32, shape=MAX_BODY_VOXELS),
+        'leg_cache_x': ti.field(ti.i32, shape=MAX_LEG_VOXELS),
+        'leg_cache_y': ti.field(ti.i32, shape=MAX_LEG_VOXELS),
+        'leg_cache_z': ti.field(ti.i32, shape=MAX_LEG_VOXELS),
+        'leg_start_idx': ti.field(ti.i32, shape=8),
+        'leg_end_idx': ti.field(ti.i32, shape=8),
+        'leg_tip_cache_x': ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS),
+        'leg_tip_cache_y': ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS),
+        'leg_tip_cache_z': ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS),
+        'leg_tip_start_idx': ti.field(ti.i32, shape=8),
+        'leg_tip_end_idx': ti.field(ti.i32, shape=8),
+        'giraffe_pivot_x': ti.field(ti.f32, shape=()),
+        'giraffe_pivot_y': ti.field(ti.f32, shape=()),
+    }
 
-# Giraffe weevil pivot point (where prong attaches to shaft tip) — set per beetle during geometry rebuild
-giraffe_blue_pivot_x = ti.field(ti.f32, shape=())
-giraffe_blue_pivot_y = ti.field(ti.f32, shape=())
-giraffe_red_pivot_x = ti.field(ti.f32, shape=())
-giraffe_red_pivot_y = ti.field(ti.f32, shape=())
+beetle_geo = [_make_beetle_geo_fields() for _ in range(4)]
+beetle_geo[0]['body_cache_size'][None] = len(BLUE_BODY)
+beetle_geo[1]['body_cache_size'][None] = len(RED_BODY)
 
-# Create OVERSIZED Taichi fields for leg geometry cache (6 legs)
-# Store all leg voxels flattened with offsets to know where each leg starts
-# Max leg length=14: coxa(3) + femur(6) + tibia(6) = 15 voxels per segment
-# Each segment has 2 height layers, so 15*2 = 30 voxels max per leg
-# 8 legs × 30 voxels = 240 voxels max (scorpion has 8 legs)
-MAX_LEG_VOXELS = 240
+# Slot 0/1 aliases (existing code paths; retire as call sites migrate)
+blue_body_cache_size = beetle_geo[0]['body_cache_size']
+blue_body_cache_x = beetle_geo[0]['body_cache_x']
+blue_body_cache_y = beetle_geo[0]['body_cache_y']
+blue_body_cache_z = beetle_geo[0]['body_cache_z']
+blue_body_hook_flags = beetle_geo[0]['body_hook_flags']
+blue_body_stripe_flags = beetle_geo[0]['body_stripe_flags']
+blue_body_horn_tip_flags = beetle_geo[0]['body_horn_tip_flags']
+blue_body_very_tip_flags = beetle_geo[0]['body_very_tip_flags']
+blue_leg_cache_x = beetle_geo[0]['leg_cache_x']
+blue_leg_cache_y = beetle_geo[0]['leg_cache_y']
+blue_leg_cache_z = beetle_geo[0]['leg_cache_z']
+blue_leg_start_idx = beetle_geo[0]['leg_start_idx']
+blue_leg_end_idx = beetle_geo[0]['leg_end_idx']
+blue_leg_tip_cache_x = beetle_geo[0]['leg_tip_cache_x']
+blue_leg_tip_cache_y = beetle_geo[0]['leg_tip_cache_y']
+blue_leg_tip_cache_z = beetle_geo[0]['leg_tip_cache_z']
+blue_leg_tip_start_idx = beetle_geo[0]['leg_tip_start_idx']
+blue_leg_tip_end_idx = beetle_geo[0]['leg_tip_end_idx']
+giraffe_blue_pivot_x = beetle_geo[0]['giraffe_pivot_x']
+giraffe_blue_pivot_y = beetle_geo[0]['giraffe_pivot_y']
+red_body_cache_size = beetle_geo[1]['body_cache_size']
+red_body_cache_x = beetle_geo[1]['body_cache_x']
+red_body_cache_y = beetle_geo[1]['body_cache_y']
+red_body_cache_z = beetle_geo[1]['body_cache_z']
+red_body_hook_flags = beetle_geo[1]['body_hook_flags']
+red_body_stripe_flags = beetle_geo[1]['body_stripe_flags']
+red_body_horn_tip_flags = beetle_geo[1]['body_horn_tip_flags']
+red_body_very_tip_flags = beetle_geo[1]['body_very_tip_flags']
+red_leg_cache_x = beetle_geo[1]['leg_cache_x']
+red_leg_cache_y = beetle_geo[1]['leg_cache_y']
+red_leg_cache_z = beetle_geo[1]['leg_cache_z']
+red_leg_start_idx = beetle_geo[1]['leg_start_idx']
+red_leg_end_idx = beetle_geo[1]['leg_end_idx']
+red_leg_tip_cache_x = beetle_geo[1]['leg_tip_cache_x']
+red_leg_tip_cache_y = beetle_geo[1]['leg_tip_cache_y']
+red_leg_tip_cache_z = beetle_geo[1]['leg_tip_cache_z']
+red_leg_tip_start_idx = beetle_geo[1]['leg_tip_start_idx']
+red_leg_tip_end_idx = beetle_geo[1]['leg_tip_end_idx']
+giraffe_red_pivot_x = beetle_geo[1]['giraffe_pivot_x']
+giraffe_red_pivot_y = beetle_geo[1]['giraffe_pivot_y']
 
-# Separate leg cache fields for blue beetle
-blue_leg_cache_x = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
-blue_leg_cache_y = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
-blue_leg_cache_z = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
-blue_leg_start_idx = ti.field(ti.i32, shape=8)
-blue_leg_end_idx = ti.field(ti.i32, shape=8)
-
-# Separate leg cache fields for red beetle
-red_leg_cache_x = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
-red_leg_cache_y = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
-red_leg_cache_z = ti.field(ti.i32, shape=MAX_LEG_VOXELS)
-red_leg_start_idx = ti.field(ti.i32, shape=8)
-red_leg_end_idx = ti.field(ti.i32, shape=8)
-
-# Create OVERSIZED Taichi fields for leg tip geometry cache
-# Max leg length=14: tibia tips per leg × 8 legs
-# Spider at size 9-10 can generate ~80+ tip voxels (8 legs × 10 voxels each)
-MAX_LEG_TIP_VOXELS = 100
-
-# Separate leg tip cache fields for blue beetle
-blue_leg_tip_cache_x = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
-blue_leg_tip_cache_y = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
-blue_leg_tip_cache_z = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
-blue_leg_tip_start_idx = ti.field(ti.i32, shape=8)
-blue_leg_tip_end_idx = ti.field(ti.i32, shape=8)
-
-# Separate leg tip cache fields for red beetle
-red_leg_tip_cache_x = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
-red_leg_tip_cache_y = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
-red_leg_tip_cache_z = ti.field(ti.i32, shape=MAX_LEG_TIP_VOXELS)
-red_leg_tip_start_idx = ti.field(ti.i32, shape=8)
-red_leg_tip_end_idx = ti.field(ti.i32, shape=8)
-
-# Temporary compatibility aliases: old variable names point to blue beetle cache
-# (This allows old rendering functions to work while we transition to dual-beetle UI)
-body_cache_size = blue_body_cache_size
-body_cache_x = blue_body_cache_x
-body_cache_y = blue_body_cache_y
-body_cache_z = blue_body_cache_z
-leg_cache_x = blue_leg_cache_x
-leg_cache_y = blue_leg_cache_y
-leg_cache_z = blue_leg_cache_z
-leg_start_idx = blue_leg_start_idx
-leg_end_idx = blue_leg_end_idx
-leg_tip_cache_x = blue_leg_tip_cache_x
-leg_tip_cache_y = blue_leg_tip_cache_y
-leg_tip_cache_z = blue_leg_tip_cache_z
-leg_tip_start_idx = blue_leg_tip_start_idx
-leg_tip_end_idx = blue_leg_tip_end_idx
+# Bare aliases (historically = blue; used by calculate_beetle_lowest_point)
+body_cache_size = beetle_geo[0]['body_cache_size']
+body_cache_x = beetle_geo[0]['body_cache_x']
+body_cache_y = beetle_geo[0]['body_cache_y']
+body_cache_z = beetle_geo[0]['body_cache_z']
+leg_cache_x = beetle_geo[0]['leg_cache_x']
+leg_cache_y = beetle_geo[0]['leg_cache_y']
+leg_cache_z = beetle_geo[0]['leg_cache_z']
+leg_start_idx = beetle_geo[0]['leg_start_idx']
+leg_end_idx = beetle_geo[0]['leg_end_idx']
+leg_tip_cache_x = beetle_geo[0]['leg_tip_cache_x']
+leg_tip_cache_y = beetle_geo[0]['leg_tip_cache_y']
+leg_tip_cache_z = beetle_geo[0]['leg_tip_cache_z']
+leg_tip_start_idx = beetle_geo[0]['leg_tip_start_idx']
+leg_tip_end_idx = beetle_geo[0]['leg_tip_end_idx']
 
 # Collision detection fields - store occupied voxels for each beetle (GPU-resident)
 # Each beetle can occupy up to ~1600 voxels in a 40x40 area
@@ -7132,1062 +7141,337 @@ def calculate_beetle_lowest_point(world_y: ti.f32, rotation: ti.f32, pitch: ti.f
 
     return lowest_y
 
-@ti.kernel
-def place_animated_beetle_blue(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32, spider_aim_pitch: ti.f32):
-    """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
-
-    Args:
-        horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
-        tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 6=spider
-        body_pitch_offset: Static body tilt angle for scorpion (radians)
-        butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
-        spray_aim_pitch: Bombardier aim angle (radians) - tilts beetle from rear pivot
-        spider_aim_pitch: Spider abdomen aim angle (radians) - tilts abdomen from front pivot
+def make_place_beetle_kernel(slot):
     """
-    center_x = int(world_x + simulation.n_grid / 2.0)
-    center_z = int(world_z + simulation.n_grid / 2.0)
-    base_y = int(world_y + RENDER_Y_OFFSET)  # Apply Y offset for rendering below floor
+    Generate the animated beetle placement kernel for one player slot.
 
-    # Rotation matrices for yaw, pitch, roll
-    cos_yaw = ti.cos(rotation)
-    sin_yaw = ti.sin(rotation)
-    # Combine physics pitch with static body tilt offset (for scorpion stance)
-    total_pitch = pitch + body_pitch_offset
-    cos_pitch_body = ti.cos(total_pitch)
-    sin_pitch_body = ti.sin(total_pitch)
-    cos_roll = ti.cos(roll)
-    sin_roll = ti.sin(roll)
+    The body below is the (formerly duplicated) blue kernel verbatim, with
+    per-slot geometry fields and voxel-type ids bound via closure so Taichi
+    compiles them in as constants. The red duplicate is gone - it was
+    byte-identical apart from field names, color ids and a missing leg
+    Y-compensation block (this version keeps that fix for everyone).
+    """
+    geo = beetle_geo[slot]
+    body_cache_size = geo['body_cache_size']
+    body_cache_x = geo['body_cache_x']
+    body_cache_y = geo['body_cache_y']
+    body_cache_z = geo['body_cache_z']
+    body_hook_flags = geo['body_hook_flags']
+    body_stripe_flags = geo['body_stripe_flags']
+    body_horn_tip_flags = geo['body_horn_tip_flags']
+    body_very_tip_flags = geo['body_very_tip_flags']
+    leg_cache_x = geo['leg_cache_x']
+    leg_cache_y = geo['leg_cache_y']
+    leg_cache_z = geo['leg_cache_z']
+    leg_start_idx = geo['leg_start_idx']
+    leg_end_idx = geo['leg_end_idx']
+    leg_tip_cache_x = geo['leg_tip_cache_x']
+    leg_tip_cache_y = geo['leg_tip_cache_y']
+    leg_tip_cache_z = geo['leg_tip_cache_z']
+    leg_tip_start_idx = geo['leg_tip_start_idx']
+    leg_tip_end_idx = geo['leg_tip_end_idx']
+    giraffe_pivot_x = geo['giraffe_pivot_x']
+    giraffe_pivot_y = geo['giraffe_pivot_y']
+    (_body_id, _legs_id, _leg_tip_id, _stripe_id,
+     _horn_tip_id, _hook_id, _venom_id) = simulation.PLAYER_VOXEL_IDS[slot]
 
-    # Pitch rotation for horn (rotation around Z-axis in local space)
-    cos_pitch = ti.cos(horn_pitch)
-    sin_pitch = ti.sin(horn_pitch)
+    @ti.kernel
+    def place_animated_beetle(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32, spider_aim_pitch: ti.f32):
+        """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
 
-    # Horn/claw pivot point in local coordinates (where horn/claw attaches to head)
-    # Scorpion claws pivot at X=2, beetle horns pivot at X=3, giraffe uses dynamic pivot
-    horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
-    horn_pivot_y = 2
-    if horn_type_id == 7:  # Giraffe weevil - pivot at shaft tip
-        horn_pivot_x = giraffe_blue_pivot_x[None]
-        horn_pivot_y = int(giraffe_blue_pivot_y[None])
+        Args:
+            horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
+            tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
+            horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 6=spider
+            body_pitch_offset: Static body tilt angle for scorpion (radians)
+            butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
+            spray_aim_pitch: Bombardier aim angle (radians) - tilts beetle from rear pivot
+            spider_aim_pitch: Spider abdomen aim angle (radians) - tilts abdomen from front pivot
+        """
+        center_x = int(world_x + simulation.n_grid / 2.0)
+        center_z = int(world_z + simulation.n_grid / 2.0)
+        base_y = int(world_y + RENDER_Y_OFFSET)  # Apply Y offset for rendering below floor
 
-    # OPTIMIZATION: Pre-calculate all trigonometry values ONCE before voxel loop
-    # These are constant for all voxels in this beetle, no need to recalculate 600+ times
-    cos_horn_pitch = ti.cos(horn_pitch)
-    sin_horn_pitch = ti.sin(horn_pitch)
-    cos_horn_yaw = ti.cos(horn_yaw)
-    sin_horn_yaw = ti.sin(horn_yaw)
+        # Rotation matrices for yaw, pitch, roll
+        cos_yaw = ti.cos(rotation)
+        sin_yaw = ti.sin(rotation)
+        # Combine physics pitch with static body tilt offset (for scorpion stance)
+        total_pitch = pitch + body_pitch_offset
+        cos_pitch_body = ti.cos(total_pitch)
+        sin_pitch_body = ti.sin(total_pitch)
+        cos_roll = ti.cos(roll)
+        sin_roll = ti.sin(roll)
 
-    # Scorpion-specific trig (only calculated if needed, but outside loop)
-    pitch_deviation = horn_pitch - default_horn_pitch
-    cos_default = ti.cos(default_horn_pitch)
-    sin_default = ti.sin(default_horn_pitch)
-    cos_deviation = ti.cos(pitch_deviation)
-    sin_deviation = ti.sin(pitch_deviation)
+        # Pitch rotation for horn (rotation around Z-axis in local space)
+        cos_pitch = ti.cos(horn_pitch)
+        sin_pitch = ti.sin(horn_pitch)
 
-    # Bombardier aim trig (butt-pivot rotation for spray aiming)
-    cos_aim = ti.cos(spray_aim_pitch)
-    sin_aim = ti.sin(spray_aim_pitch)
-    rear_pivot_x = float(-body_length)  # Rear of beetle in local X coordinates
+        # Horn/claw pivot point in local coordinates (where horn/claw attaches to head)
+        # Scorpion claws pivot at X=2, beetle horns pivot at X=3, giraffe uses dynamic pivot
+        horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
+        horn_pivot_y = 2
+        if horn_type_id == 7:  # Giraffe weevil - pivot at shaft tip
+            horn_pivot_x = giraffe_pivot_x[None]
+            horn_pivot_y = int(giraffe_pivot_y[None])
 
-    # Spider abdomen aim trig (front-pivot rotation for web aiming)
-    cos_spider = ti.cos(spider_aim_pitch)
-    sin_spider = ti.sin(spider_aim_pitch)
-    spider_pivot_x = 3.0  # Pedicel (front of abdomen) in local X coordinates
+        # OPTIMIZATION: Pre-calculate all trigonometry values ONCE before voxel loop
+        # These are constant for all voxels in this beetle, no need to recalculate 600+ times
+        cos_horn_pitch = ti.cos(horn_pitch)
+        sin_horn_pitch = ti.sin(horn_pitch)
+        cos_horn_yaw = ti.cos(horn_yaw)
+        sin_horn_yaw = ti.sin(horn_yaw)
 
-    # 1. Place body with horn pitch applied
-    for i in range(body_cache_size[None]):
-        local_x = float(body_cache_x[i])
-        local_y = body_cache_y[i]
-        local_z = float(body_cache_z[i])
+        # Scorpion-specific trig (only calculated if needed, but outside loop)
+        pitch_deviation = horn_pitch - default_horn_pitch
+        cos_default = ti.cos(default_horn_pitch)
+        sin_default = ti.sin(default_horn_pitch)
+        cos_deviation = ti.cos(pitch_deviation)
+        sin_deviation = ti.sin(pitch_deviation)
 
-        # Apply horn pitch and yaw rotation ONLY to horn voxels (dx >= 2 for scorpion claws, dx >= 3 for others)
-        # Scorpion claws start at dx=2, beetle horns start at dx=3
-        should_rotate = False
-        if horn_type_id == 3:  # Scorpion - rotate claws (dx >= 2 AND |dz| > 2 to exclude centered tail)
-            should_rotate = body_cache_x[i] >= 2 and abs(local_z) > 2.0
-        elif horn_type_id == 4:  # Atlas - only rotate cephalic horn (centered Z position)
-            # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
-            # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
-            should_rotate = body_cache_x[i] >= 3 and abs(local_z) <= 1.5
-        elif horn_type_id == 6:  # Spider - no rotation at all (fangs are fixed)
+        # Bombardier aim trig (butt-pivot rotation for spray aiming)
+        cos_aim = ti.cos(spray_aim_pitch)
+        sin_aim = ti.sin(spray_aim_pitch)
+        rear_pivot_x = float(-body_length)  # Rear of beetle in local X coordinates
+
+        # Spider abdomen aim trig (front-pivot rotation for web aiming)
+        cos_spider = ti.cos(spider_aim_pitch)
+        sin_spider = ti.sin(spider_aim_pitch)
+        spider_pivot_x = 3.0  # Pedicel (front of abdomen) in local X coordinates
+
+        # 1. Place body with horn pitch applied
+        for i in range(body_cache_size[None]):
+            local_x = float(body_cache_x[i])
+            local_y = body_cache_y[i]
+            local_z = float(body_cache_z[i])
+
+            # Apply horn pitch and yaw rotation ONLY to horn voxels (dx >= 2 for scorpion claws, dx >= 3 for others)
+            # Scorpion claws start at dx=2, beetle horns start at dx=3
             should_rotate = False
-        elif horn_type_id == 7:  # Giraffe weevil - only prong rotates (voxels beyond shaft tip)
-            should_rotate = body_cache_x[i] > int(horn_pivot_x)
-        elif body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
-            should_rotate = True
+            if horn_type_id == 3:  # Scorpion - rotate claws (dx >= 2 AND |dz| > 2 to exclude centered tail)
+                should_rotate = body_cache_x[i] >= 2 and abs(local_z) > 2.0
+            elif horn_type_id == 4:  # Atlas - only rotate cephalic horn (centered Z position)
+                # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
+                # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
+                should_rotate = body_cache_x[i] >= 3 and abs(local_z) <= 1.5
+            elif horn_type_id == 6:  # Spider - no rotation at all (fangs are fixed)
+                should_rotate = False
+            elif horn_type_id == 7:  # Giraffe weevil - only prong rotates (voxels beyond shaft tip)
+                should_rotate = body_cache_x[i] > int(horn_pivot_x)
+            elif body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
+                should_rotate = True
 
-        if should_rotate:
-            # This is a horn voxel - apply pitch and yaw rotations around pivot point
-            # Translate to pivot
-            rel_x = local_x - horn_pivot_x
-            rel_y = float(local_y - horn_pivot_y)
-            rel_z = local_z  # Z is already centered at 0
+            if should_rotate:
+                # This is a horn voxel - apply pitch and yaw rotations around pivot point
+                # Translate to pivot
+                rel_x = local_x - horn_pivot_x
+                rel_y = float(local_y - horn_pivot_y)
+                rel_z = local_z  # Z is already centered at 0
 
-            # STEP 1: Pitch rotation (around Z-axis in beetle local space)
-            # Positive pitch = horn rotates up
-            # For Hercules: ONLY bottom horn (y < 3) rotates, top horn (y >= 3) stays fixed
-            # NOTE: cos_horn_pitch and sin_horn_pitch already calculated outside loop
+                # STEP 1: Pitch rotation (around Z-axis in beetle local space)
+                # Positive pitch = horn rotates up
+                # For Hercules: ONLY bottom horn (y < 3) rotates, top horn (y >= 3) stays fixed
+                # NOTE: cos_horn_pitch and sin_horn_pitch already calculated outside loop
 
-            # Initialize pitched results
-            pitched_x = rel_x
-            pitched_y = rel_y
-            pitched_z = rel_z
-
-            # Apply pitch rotation based on beetle type and horn position
-            if horn_type_id == 3:
-                # SCORPION: Both claws start at default angle, then alternate when R/Y pressed
-                # NOTE: pitch_deviation, cos_default, sin_default, cos_deviation, sin_deviation
-                # already calculated outside loop for performance
-
-                # First apply default pitch to both claws equally
-                temp_x = rel_x * cos_default - rel_y * sin_default
-                temp_y = rel_x * sin_default + rel_y * cos_default
-
-                # Then apply alternating deviation
-                if pitch_deviation != 0.0:
-
-                    if rel_z < -1.0:  # Left claw - invert deviation
-                        pitched_x = temp_x * cos_deviation + temp_y * sin_deviation
-                        pitched_y = -temp_x * sin_deviation + temp_y * cos_deviation
-                    elif rel_z > 1.0:  # Right claw - normal deviation
-                        pitched_x = temp_x * cos_deviation - temp_y * sin_deviation
-                        pitched_y = temp_x * sin_deviation + temp_y * cos_deviation
-                    else:  # Center voxels use default only
-                        pitched_x = temp_x
-                        pitched_y = temp_y
-                else:  # No deviation, just use default
-                    pitched_x = temp_x
-                    pitched_y = temp_y
-                # else: center voxels don't rotate
-            elif horn_type_id == 2:
-                # HERCULES: Only rotate bottom horn, top horn stays fixed
-                # After -30 degree rotation, bottom horn is mostly Y < 3, with tip reaching ~Y=5
-                # Top horn: After +10 degree rotation, starts at Y~8, goes up to Y=20+
-                # Simple conservative rule: if Y < 5, it's bottom horn for sure
-                # If Y >= 5 and Y < 8, only rotate if far forward (bottom horn tip area)
-                if local_y < 5:
-                    # Definitely bottom horn (rotated down 30 degrees)
-                    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-                elif local_y < 8 and rel_x >= 10.0:
-                    # Mid-height but far forward - bottom horn tip only
-                    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-                # else: Y >= 8 or near base - top horn stays fixed
-            elif horn_type_id == 4:
-                # ATLAS: Only rotate cephalic horn (centered), pronotum horns (sides) stay fixed
-                # should_rotate already filtered for |Z| <= 1.5, so just apply rotation
-                pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-            elif horn_type_id == 7:
-                # GIRAFFE WEEVIL: Skip pitch here — combined yaw+pitch in Step 2
+                # Initialize pitched results
                 pitched_x = rel_x
                 pitched_y = rel_y
-            else:
-                # STAG/RHINO: Rotate entire horn
-                pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-
-            # Z unchanged by pitch regardless of beetle type
-            pitched_z = rel_z
-
-            # STEP 2: Yaw rotation (around Y-axis in beetle local space)
-            # Behavior differs based on beetle type
-            # NOTE: cos_horn_yaw and sin_horn_yaw already calculated outside loop
-
-            # Initialize yaw results (required for Taichi)
-            yawed_x = pitched_x
-            yawed_y = pitched_y
-            yawed_z = pitched_z
-            temp_x = 0.0
-            temp_z = 0.0
-
-            if horn_type_id == 1:
-                # STAG BEETLE: Apply opposite rotations to left vs right pincers
-                # Left pincer (z < 0): positive horn_yaw opens outward (more negative Z)
-                # Right pincer (z > 0): positive horn_yaw opens outward (more positive Z)
-                if pitched_z < -0.1:
-                    # Left pincer - apply rotation as-is
-                    yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-                    yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-                elif pitched_z > 0.1:
-                    # Right pincer - apply inverse rotation
-                    yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
-                    yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-                # else: Center voxels - keep initialized values (no yaw rotation)
-            elif horn_type_id == 2:
-                # HERCULES BEETLE: Roll/twist both horns around X-axis (forward axis)
-                # Like twisting a ball held between top and bottom hands
-                # Both horns roll in same direction (B key = both twist right, V key = both twist left)
-                yawed_x = pitched_x  # X unchanged (axis of rotation)
-                yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
-                yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
-            elif horn_type_id == 4:
-                # ATLAS BEETLE: Apply yaw rotation to cephalic horn (scanning left/right)
-                # Same as rhino - uniform rotation around Y-axis
-                # V/B keys scan the cephalice horn left/right (±15°)
-                yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-                yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-            elif horn_type_id == 7:
-                # GIRAFFE WEEVIL: Yaw first, then pitch (so sweep works at any pitch angle)
-                # Step A: Yaw on raw rel coords (inverted for downward prong)
-                temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
-                temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
-                # Step B: Pitch on yawed result
-                yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
-                yawed_z = temp_z
-            else:
-                # RHINO BEETLE (horn_type_id == 0): Apply uniform rotation to entire horn
-                yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-                yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-
-            # Translate back from pivot
-            local_x = yawed_x + horn_pivot_x
-            local_y = int(ti.round(yawed_y + float(horn_pivot_y)))
-            local_z = yawed_z  # Already centered at 0
-
-        # SCORPION TAIL ROTATION: Apply runtime tail rotation to tail voxels (not claws or body)
-        # Tail starts at x = -body_length + 1 and extends forward, curving UPWARD
-        if horn_type_id == 3:  # Scorpion only
-            # Detect tail voxels: X range at rear, Y starting 3 voxels above attachment, Z near centerline
-            # Tail is at centerline (z = -1, 0, 1) while claws are at sides (larger |z|)
-            # This combination isolates tail from body/claws regardless of back_body_height
-            is_tail_voxel = (body_cache_x[i] >= -body_length) and (body_cache_x[i] <= -body_length + 30) and (body_cache_y[i] >= back_body_height + 3) and (abs(body_cache_z[i]) <= 2)
-
-            if is_tail_voxel:
-                # Tail attachment point in body-local coordinates (from generate_scorpion_stinger)
-                # Attachment is at top of abdomen: x = -body_length + 1, y = back_body_height, z = 0
-                # Body cache uses positive X forward, so attachment is at negative X
-                tail_pivot_x = -body_length + 1.0
-                tail_pivot_y = float(back_body_height)
-
-                # Translate to tail pivot
-                tail_rel_x = local_x - tail_pivot_x
-                tail_rel_y = float(local_y) - tail_pivot_y
-
-                # Apply tail rotation in X-Y plane (around Z-axis)
-                # tail_pitch is already in radians and includes base 15 degrees + dynamic adjustment
-                cos_tail = ti.cos(tail_pitch)
-                sin_tail = ti.sin(tail_pitch)
-
-                rotated_tail_x = tail_rel_x * cos_tail - tail_rel_y * sin_tail
-                rotated_tail_y = tail_rel_x * sin_tail + tail_rel_y * cos_tail
-
-                # Translate back from tail pivot
-                local_x = rotated_tail_x + tail_pivot_x
-                local_y = int(ti.round(rotated_tail_y + tail_pivot_y))
-                # local_z unchanged (rotation around Z-axis)
-
-        # BOMBARDIER AIM: Rotate around rear pivot BEFORE yaw/pitch/roll transforms
-        # This tilts the beetle from its butt pivot point to visually indicate spray aim
-        if horn_type_id == 5 and spray_aim_pitch != 0.0:
-            # Translate to rear pivot, rotate in X-Y plane (pitch), translate back
-            rel_x = local_x - rear_pivot_x
-            ly_aim = float(local_y)
-            local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
-            local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
-
-            # BUTT TIP COUNTER-ROTATION: Rear voxels tilt opposite to sell the aiming pose
-            # When front tilts UP, butt tip dips DOWN (and vice versa)
-            orig_x_aim = body_cache_x[i]
-            butt_thresh = -body_length + 3  # Just the tip
-            if orig_x_aim < butt_thresh:
-                # How far into the butt region (0 to 1)
-                butt_depth = float(butt_thresh - orig_x_aim) / 3.0
-                butt_depth = ti.min(butt_depth, 1.0)
-                # Counter-rotate: negative aim when front goes up, positive when front goes down
-                butt_offset = -spray_aim_pitch * butt_depth * 25.0
-                local_y = local_y + int(ti.round(butt_offset))
-
-        # SPIDER AIM: Rotate abdomen around FRONT pivot (pedicel)
-        # Opposite of bombardier - butt moves up/down, front stays fixed
-        if horn_type_id == 6 and spider_aim_pitch != 0.0:
-            # Only rotate ABDOMEN voxels (dx < spider_pivot_x)
-            # Leave PROSOMA (dx >= 3) and legs untouched
-            orig_x_spider = body_cache_x[i]
-            if orig_x_spider < spider_pivot_x:
-                # Translate to front pivot, rotate in X-Y plane (pitch), translate back
-                rel_x = local_x - spider_pivot_x
-                ly_spider = float(local_y)
-                local_x = spider_pivot_x + rel_x * cos_spider - ly_spider * sin_spider
-                local_y = int(ti.round(rel_x * sin_spider + ly_spider * cos_spider))
-
-        # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
-        # Convert local_y to float for rotation
-        ly = float(local_y)
-
-        # Step 1: Yaw rotation (around Y-axis)
-        temp_x = local_x * cos_yaw - local_z * sin_yaw
-        temp_z = local_x * sin_yaw + local_z * cos_yaw
-        temp_y = ly
-
-        # Step 2: Pitch rotation (around Z-axis) - nose up/down
-        temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
-        temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
-        temp2_z = temp_z
-
-        # Step 3: Roll rotation (around X-axis) - tilt left/right
-        final_x = temp2_x
-        final_y = temp2_y * cos_roll - temp2_z * sin_roll
-        final_z = temp2_y * sin_roll + temp2_z * cos_roll
-
-        grid_x = center_x + int(ti.round(final_x))
-        grid_y = base_y + int(ti.round(final_y))
-        grid_z = center_z + int(ti.round(final_z))
-
-        # BUTT PUCKER: Contract/extend rear voxels when spray fires (bombardier only)
-        # Forward spray (dir=1): contract inward, Backward spray (dir=-1): extend outward
-        if butt_wiggle > 0.0 and horn_type_id == 5:
-            orig_x = body_cache_x[i]  # Original local X to detect rear
-            rear_thresh = -body_length + 4
-            if orig_x < rear_thresh:
-                depth = float(rear_thresh - orig_x) / 4.0
-                depth = ti.min(depth, 1.0)
-                # Smooth pucker - contract/extend then relax
-                t = butt_wiggle / 0.3  # 1.0 at start, fades to 0.0
-                amt = depth * t * 2.0 * butt_wiggle_dir  # Direction controls in/out
-                # Move along beetle facing direction (+ = forward/contract, - = backward/extend)
-                grid_x = grid_x + int(ti.round(cos_yaw * amt))
-                grid_z = grid_z + int(ti.round(sin_yaw * amt))
-
-        if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-            # Don't overwrite floor (CONCRETE), shadow, slippery bowl, or goal voxels
-            existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
-            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY and existing_voxel != simulation.GOAL:
-                # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
-                # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
-                is_hook_interior = blue_body_hook_flags[i]
-                is_stripe = blue_body_stripe_flags[i]
-                is_horn_tip = blue_body_horn_tip_flags[i]
-                is_very_tip = blue_body_very_tip_flags[i]
-
-                # Use appropriate color: hook interior > horn tip > stripe > body color
-                voxel_color = body_color
-
-                if is_hook_interior == 1:
-                    # Hook interior voxels use special type
-                    voxel_color = simulation.STAG_HOOK_INTERIOR_BLUE
-                elif is_horn_tip == 1:
-                    # Apply color based on tip type
-                    if is_very_tip == 1:  # VERY tips: scorpion uses venom tip, others use leg tip
-                        if horn_type_id == 3:  # Scorpion - use venom tip color (glows with charges)
-                            voxel_color = simulation.VENOM_TIP_BLUE
-                        elif body_color == simulation.BEETLE_BLUE:
-                            voxel_color = simulation.LEG_TIP_BLUE
-                        elif body_color == simulation.BEETLE_RED:
-                            voxel_color = simulation.LEG_TIP_RED
-                    else:  # Regular tips: bright horn tip color (all beetles including scorpion)
-                        if body_color == simulation.BEETLE_BLUE:
-                            voxel_color = simulation.BEETLE_BLUE_HORN_TIP
-                        elif body_color == simulation.BEETLE_RED:
-                            voxel_color = simulation.BEETLE_RED_HORN_TIP
-                elif is_stripe == 1:
-                    if body_color == simulation.BEETLE_BLUE:
-                        voxel_color = simulation.BEETLE_BLUE_STRIPE
-                    elif body_color == simulation.BEETLE_RED:
-                        voxel_color = simulation.BEETLE_RED_STRIPE
-
-                simulation.voxel_type[grid_x, grid_y, grid_z] = voxel_color
-                # Track this voxel for efficient clearing later
-                idx = ti.atomic_add(dirty_voxel_count[None], 1)
-                if idx < MAX_DIRTY_VOXELS:
-                    dirty_voxel_x[idx] = grid_x
-                    dirty_voxel_y[idx] = grid_y
-                    dirty_voxel_z[idx] = grid_z
-
-    # 2. Place legs (animated with tripod gait) - DIFFERENT COLOR
-    # Tripod gait: legs 0, 3, 4 move together (Group A), legs 1, 2, 5 move together (Group B)
-    # leg_id: 0=front_left, 1=front_right, 2=middle_left, 3=middle_right, 4=rear_left, 5=rear_right
-    # Scorpion adds: 6=rear2_left, 7=rear2_right
-
-    for leg_id in range(8):  # Up to 8 legs for scorpion, 6 for beetles
-        # Determine leg phase offset for gait pattern
-        # SCORPION (horn_type_id == 3): Quadrupod gait (like tripod but for 8 legs)
-        #   Group A (0, 3, 4, 7): phase_offset = 0
-        #   Group B (1, 2, 5, 6): phase_offset = π
-        # BEETLE: Tripod gait
-        #   Group A (0, 3, 4): phase_offset = 0
-        #   Group B (1, 2, 5): phase_offset = π
-        phase_offset = 0.0
-        if horn_type_id == 6:  # Spider: staggered quadrupod gait (wave-like)
-            # Group A with stagger: 0, 3, 4, 7 have increasing delays
-            # Group B with stagger: 1, 2, 5, 6 have π + increasing delays
-            if leg_id == 0:
-                phase_offset = 0.0
-            elif leg_id == 3:
-                phase_offset = 0.15
-            elif leg_id == 4:
-                phase_offset = 0.30
-            elif leg_id == 7:
-                phase_offset = 0.45
-            elif leg_id == 1:
-                phase_offset = 3.14159265359  # π
-            elif leg_id == 2:
-                phase_offset = 3.14159265359 + 0.15
-            elif leg_id == 5:
-                phase_offset = 3.14159265359 + 0.30
-            elif leg_id == 6:
-                phase_offset = 3.14159265359 + 0.45
-        elif horn_type_id == 3:  # Scorpion: standard quadrupod gait (8 legs)
-            # Group A (0, 3, 4, 7): phase_offset = 0
-            # Group B (1, 2, 5, 6): phase_offset = π
-            if leg_id == 1 or leg_id == 2 or leg_id == 5 or leg_id == 6:
-                phase_offset = 3.14159265359  # π
-        else:  # Beetle: tripod gait
-            if leg_id == 1 or leg_id == 2 or leg_id == 5:
-                phase_offset = 3.14159265359  # π
-
-        # Apply asymmetric leg timing for rotation-only movement
-        leg_phase_offset = phase_offset
-        if is_rotating_only == 1:
-            # Asymmetric timing: inside legs (toward turn direction) lag behind
-            if rotation_direction == -1:  # Turning left
-                # Left legs (leg_id 0,2,4,6) lag, right legs normal
-                if leg_id == 0 or leg_id == 2 or leg_id == 4 or leg_id == 6:
-                    leg_phase_offset += 0.6  # ~35 degree phase lag
-            elif rotation_direction == 1:  # Turning right
-                # Right legs (leg_id 1,3,5,7) lag, left legs normal
-                if leg_id == 1 or leg_id == 3 or leg_id == 5 or leg_id == 7:
-                    leg_phase_offset += 0.6  # ~35 degree phase lag
-
-        leg_phase = walk_phase + leg_phase_offset
-
-        # Calculate animation transforms (vertical lift and minimal forward/back sweep)
-        # sin(leg_phase) ranges from -1 to 1
-        # We want: lift when sin > 0 (leg in air), on ground when sin <= 0
-        base_lift = 2.5  # Normal lift height
-        base_sweep = 0.5  # Normal sweep distance
-
-        # Reduce amplitude when rotating only (80% of normal)
-        if is_rotating_only == 1:
-            base_lift *= 0.8
-            base_sweep *= 0.8
-
-        # OPTIMIZATION: Calculate trig once per leg and cache
-        leg_sin = ti.sin(leg_phase)
-        leg_cos = ti.cos(leg_phase)
-
-        lift = ti.max(0.0, leg_sin) * base_lift  # Lift (reduced during rotation)
-        sweep = -leg_cos * base_sweep  # Sweep (reduced during rotation)
-
-        # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
-        if is_lifted_high == 1:
-            # High-frequency wiggle with per-leg variation for chaos
-            # Slower wiggle when rotating only (to prevent excessive speed appearance)
-            wiggle_freq = 1.05 if is_rotating_only == 1 else 2.2
-            wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
-
-            # OPTIMIZATION: Pre-calculate wiggle trig
-            wiggle_sin = ti.sin(wiggle_phase)
-            wiggle_cos = ti.cos(wiggle_phase * 1.3)
-
-            # Add erratic movement to lift and sweep
-            wiggle_lift = wiggle_sin * 2.0  # ±2 voxels extra lift
-            wiggle_sweep = wiggle_cos * 0.8  # ±0.8 voxels extra sweep
-
-            lift += wiggle_lift
-            sweep += wiggle_sweep
-
-        # Place all voxels for this leg
-        start_idx = leg_start_idx[leg_id]
-        end_idx = leg_end_idx[leg_id]
-
-        for i in range(start_idx, end_idx):
-            local_x = float(leg_cache_x[i]) + sweep  # Apply sweep
-            local_y = leg_cache_y[i] + int(lift)  # Apply vertical lift
-            local_z = float(leg_cache_z[i])
-
-            # BOMBARDIER AIM: Rotate legs around rear pivot BUT compensate Y to stay grounded
-            if horn_type_id == 5 and spray_aim_pitch != 0.0:
-                orig_x = local_x  # Save original X for compensation calc
-                rel_x = local_x - rear_pivot_x
-                ly_aim = float(local_y)
-                local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
-                rotated_y = rel_x * sin_aim + ly_aim * cos_aim
-                # Compensate Y to keep legs planted - counteract the vertical lift from rotation
-                # Front legs (positive rel_x) get pushed down when tilting up, lifted when tilting down
-                y_compensation = rel_x * sin_aim
-                local_y = int(ti.round(rotated_y - y_compensation))
-
-            # 3D rotation (same as body)
-            ly = float(local_y)
-
-            # Yaw
-            temp_x = local_x * cos_yaw - local_z * sin_yaw
-            temp_z = local_x * sin_yaw + local_z * cos_yaw
-            temp_y = ly
-
-            # Pitch
-            temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
-            temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
-            temp2_z = temp_z
-
-            # Roll
-            final_x = temp2_x
-            final_y = temp2_y * cos_roll - temp2_z * sin_roll
-            final_z = temp2_y * sin_roll + temp2_z * cos_roll
-
-            grid_x = center_x + int(ti.round(final_x))
-            grid_y = base_y + int(ti.round(final_y))
-            grid_z = center_z + int(ti.round(final_z))
-
-            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
-                existing_leg = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_leg != simulation.CONCRETE and existing_leg != simulation.SHADOW and existing_leg != simulation.SLIPPERY and existing_leg != simulation.GOAL:
-                    simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
-                    # Track this voxel for efficient clearing later
-                    idx = ti.atomic_add(dirty_voxel_count[None], 1)
-                    if idx < MAX_DIRTY_VOXELS:
-                        dirty_voxel_x[idx] = grid_x
-                        dirty_voxel_y[idx] = grid_y
-                        dirty_voxel_z[idx] = grid_z
-
-        # Place leg tips (same animation as legs, but BLACK color for visibility)
-        tip_start_idx = leg_tip_start_idx[leg_id]
-        tip_end_idx = leg_tip_end_idx[leg_id]
-
-        for i in range(tip_start_idx, tip_end_idx):
-            local_x = float(leg_tip_cache_x[i]) + sweep  # Apply same animation
-            local_y = leg_tip_cache_y[i] + int(lift)
-            local_z = float(leg_tip_cache_z[i])
-
-            # BOMBARDIER AIM: Rotate leg tips around rear pivot BUT compensate Y to stay grounded
-            if horn_type_id == 5 and spray_aim_pitch != 0.0:
-                rel_x = local_x - rear_pivot_x
-                ly_aim = float(local_y)
-                local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
-                rotated_y = rel_x * sin_aim + ly_aim * cos_aim
-                y_compensation = rel_x * sin_aim
-                local_y = int(ti.round(rotated_y - y_compensation))
-
-            # 3D rotation (same as legs)
-            ly = float(local_y)
-
-            # Yaw
-            temp_x = local_x * cos_yaw - local_z * sin_yaw
-            temp_z = local_x * sin_yaw + local_z * cos_yaw
-            temp_y = ly
-
-            # Pitch
-            temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
-            temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
-            temp2_z = temp_z
-
-            # Roll
-            final_x = temp2_x
-            final_y = temp2_y * cos_roll - temp2_z * sin_roll
-            final_z = temp2_y * sin_roll + temp2_z * cos_roll
-
-            grid_x = center_x + int(ti.round(final_x))
-            grid_y = base_y + int(ti.round(final_y))
-            grid_z = center_z + int(ti.round(final_z))
-
-            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
-                existing_tip = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_tip != simulation.CONCRETE and existing_tip != simulation.SHADOW and existing_tip != simulation.SLIPPERY and existing_tip != simulation.GOAL:
-                    simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
-                    # Track this voxel for efficient clearing later
-                    idx = ti.atomic_add(dirty_voxel_count[None], 1)
-                    if idx < MAX_DIRTY_VOXELS:
-                        dirty_voxel_x[idx] = grid_x
-                        dirty_voxel_y[idx] = grid_y
-                        dirty_voxel_z[idx] = grid_z
-
-@ti.kernel
-def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32, horn_type_id: ti.i32, body_pitch_offset: ti.f32, body_color: ti.i32, leg_color: ti.i32, leg_tip_color: ti.i32, walk_phase: ti.f32, is_lifted_high: ti.i32, default_horn_pitch: ti.f32, body_length: ti.i32, back_body_height: ti.i32, is_rotating_only: ti.i32, rotation_direction: ti.i32, butt_wiggle: ti.f32, butt_wiggle_dir: ti.f32, charge_glow: ti.f32, spray_aim_pitch: ti.f32, spider_aim_pitch: ti.f32):
-    """Beetle placement with 3D rotation (yaw/pitch/roll) and animated legs
-
-    Args:
-        horn_yaw: Horizontal horn rotation (stag=pincer spread, rhino/hercules=horn yaw)
-        tail_pitch: Scorpion tail rotation angle (degrees, -15 to +15)
-        horn_type_id: 0=rhino, 1=stag, 2=hercules, 3=scorpion, 5=bombardier, 6=spider
-        body_pitch_offset: Static body tilt angle for scorpion (radians)
-        butt_wiggle: 0.0 = no wiggle, >0 = pucker animation (contracts rear voxels)
-        charge_glow: 0.0-1.0, glow intensity for bombardier beetle charges
-        spray_aim_pitch: Bombardier aim angle (radians) - tilts beetle from rear pivot
-        spider_aim_pitch: Spider abdomen aim angle (radians) - tilts abdomen from front pivot
-    """
-    center_x = int(world_x + simulation.n_grid / 2.0)
-    center_z = int(world_z + simulation.n_grid / 2.0)
-    base_y = int(world_y + RENDER_Y_OFFSET)  # Apply Y offset for rendering below floor
-
-    # Rotation matrices for yaw, pitch, roll
-    cos_yaw = ti.cos(rotation)
-    sin_yaw = ti.sin(rotation)
-    # Combine physics pitch with static body tilt offset (for scorpion stance)
-    total_pitch = pitch + body_pitch_offset
-    cos_pitch_body = ti.cos(total_pitch)
-    sin_pitch_body = ti.sin(total_pitch)
-    cos_roll = ti.cos(roll)
-    sin_roll = ti.sin(roll)
-
-    # Pitch rotation for horn (rotation around Z-axis in local space)
-    cos_pitch = ti.cos(horn_pitch)
-    sin_pitch = ti.sin(horn_pitch)
-
-    # Horn/claw pivot point in local coordinates (where horn/claw attaches to head)
-    # Scorpion claws pivot at X=2, beetle horns pivot at X=3, giraffe uses dynamic pivot
-    horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
-    horn_pivot_y = 2
-    if horn_type_id == 7:  # Giraffe weevil - pivot at shaft tip
-        horn_pivot_x = giraffe_red_pivot_x[None]
-        horn_pivot_y = int(giraffe_red_pivot_y[None])
-
-    # OPTIMIZATION: Pre-calculate all trigonometry values ONCE before voxel loop
-    # These are constant for all voxels in this beetle, no need to recalculate 600+ times
-    cos_horn_pitch = ti.cos(horn_pitch)
-    sin_horn_pitch = ti.sin(horn_pitch)
-    cos_horn_yaw = ti.cos(horn_yaw)
-    sin_horn_yaw = ti.sin(horn_yaw)
-
-    # Scorpion-specific trig (only calculated if needed, but outside loop)
-    pitch_deviation = horn_pitch - default_horn_pitch
-    cos_default = ti.cos(default_horn_pitch)
-    sin_default = ti.sin(default_horn_pitch)
-    cos_deviation = ti.cos(pitch_deviation)
-    sin_deviation = ti.sin(pitch_deviation)
-
-    # Bombardier aim trig (butt-pivot rotation for spray aiming)
-    cos_aim = ti.cos(spray_aim_pitch)
-    sin_aim = ti.sin(spray_aim_pitch)
-    rear_pivot_x = float(-body_length)  # Rear of beetle in local X coordinates
-
-    # Spider abdomen aim trig (front-pivot rotation for web aiming)
-    cos_spider = ti.cos(spider_aim_pitch)
-    sin_spider = ti.sin(spider_aim_pitch)
-    spider_pivot_x = 3.0  # Pedicel (front of abdomen) in local X coordinates
-
-    # 1. Place body with horn pitch applied
-    for i in range(red_body_cache_size[None]):
-        local_x = float(red_body_cache_x[i])
-        local_y = red_body_cache_y[i]
-        local_z = float(red_body_cache_z[i])
-
-        # Apply horn pitch and yaw rotation ONLY to horn voxels (dx >= 2 for scorpion claws, dx >= 3 for others)
-        # Scorpion claws start at dx=2, beetle horns start at dx=3
-        should_rotate = False
-        if horn_type_id == 3:  # Scorpion - rotate claws (dx >= 2 AND |dz| > 2 to exclude centered tail)
-            should_rotate = red_body_cache_x[i] >= 2 and abs(local_z) > 2.0
-        elif horn_type_id == 4:  # Atlas - only rotate cephalic horn (centered Z position)
-            # Cephalic horn: dx >= 3 AND |dz| <= 1 (centered on midline Z=0)
-            # Pronotum horns: dx >= 3 AND |dz| >= 2 (spread outward Z=±3+) - DON'T rotate
-            should_rotate = red_body_cache_x[i] >= 3 and abs(local_z) <= 1.5
-        elif horn_type_id == 6:  # Spider - no rotation at all (fangs are fixed)
-            should_rotate = False
-        elif horn_type_id == 7:  # Giraffe weevil - only prong rotates (voxels beyond shaft tip)
-            should_rotate = red_body_cache_x[i] > int(horn_pivot_x)
-        elif red_body_cache_x[i] >= 3:  # Other beetles - rotate horns (dx >= 3)
-            should_rotate = True
-
-        if should_rotate:
-            # This is a horn voxel - apply pitch and yaw rotations around pivot point
-            # Translate to pivot
-            rel_x = local_x - horn_pivot_x
-            rel_y = float(local_y - horn_pivot_y)
-            rel_z = local_z  # Z is already centered at 0
-
-            # STEP 1: Pitch rotation (around Z-axis in beetle local space)
-            # Positive pitch = horn rotates up
-            # For Hercules: ONLY bottom horn (y < 3) rotates, top horn (y >= 3) stays fixed
-            # NOTE: cos_horn_pitch and sin_horn_pitch already calculated outside loop
-
-            # Initialize pitched results
-            pitched_x = rel_x
-            pitched_y = rel_y
-            pitched_z = rel_z
-
-            # Apply pitch rotation based on beetle type and horn position
-            if horn_type_id == 3:
-                # SCORPION: Both claws start at default angle, then alternate when R/Y pressed
-                # NOTE: pitch_deviation, cos_default, sin_default, cos_deviation, sin_deviation
-                # already calculated outside loop for performance
-
-                # First apply default pitch to both claws equally
-                temp_x = rel_x * cos_default - rel_y * sin_default
-                temp_y = rel_x * sin_default + rel_y * cos_default
-
-                # Then apply alternating deviation
-                if pitch_deviation != 0.0:
-
-                    if rel_z < -1.0:  # Left claw - invert deviation
-                        pitched_x = temp_x * cos_deviation + temp_y * sin_deviation
-                        pitched_y = -temp_x * sin_deviation + temp_y * cos_deviation
-                    elif rel_z > 1.0:  # Right claw - normal deviation
-                        pitched_x = temp_x * cos_deviation - temp_y * sin_deviation
-                        pitched_y = temp_x * sin_deviation + temp_y * cos_deviation
-                    else:  # Center voxels use default only
+                pitched_z = rel_z
+
+                # Apply pitch rotation based on beetle type and horn position
+                if horn_type_id == 3:
+                    # SCORPION: Both claws start at default angle, then alternate when R/Y pressed
+                    # NOTE: pitch_deviation, cos_default, sin_default, cos_deviation, sin_deviation
+                    # already calculated outside loop for performance
+
+                    # First apply default pitch to both claws equally
+                    temp_x = rel_x * cos_default - rel_y * sin_default
+                    temp_y = rel_x * sin_default + rel_y * cos_default
+
+                    # Then apply alternating deviation
+                    if pitch_deviation != 0.0:
+
+                        if rel_z < -1.0:  # Left claw - invert deviation
+                            pitched_x = temp_x * cos_deviation + temp_y * sin_deviation
+                            pitched_y = -temp_x * sin_deviation + temp_y * cos_deviation
+                        elif rel_z > 1.0:  # Right claw - normal deviation
+                            pitched_x = temp_x * cos_deviation - temp_y * sin_deviation
+                            pitched_y = temp_x * sin_deviation + temp_y * cos_deviation
+                        else:  # Center voxels use default only
+                            pitched_x = temp_x
+                            pitched_y = temp_y
+                    else:  # No deviation, just use default
                         pitched_x = temp_x
                         pitched_y = temp_y
-                else:  # No deviation, just use default
-                    pitched_x = temp_x
-                    pitched_y = temp_y
-                # else: center voxels don't rotate
-            elif horn_type_id == 2:
-                # HERCULES: Only rotate bottom horn, top horn stays fixed
-                # After -30 degree rotation, bottom horn is mostly Y < 3, with tip reaching ~Y=5
-                # Top horn: After +10 degree rotation, starts at Y~8, goes up to Y=20+
-                # Simple conservative rule: if Y < 5, it's bottom horn for sure
-                # If Y >= 5 and Y < 8, only rotate if far forward (bottom horn tip area)
-                if local_y < 5:
-                    # Definitely bottom horn (rotated down 30 degrees)
+                    # else: center voxels don't rotate
+                elif horn_type_id == 2:
+                    # HERCULES: Only rotate bottom horn, top horn stays fixed
+                    # After -30 degree rotation, bottom horn is mostly Y < 3, with tip reaching ~Y=5
+                    # Top horn: After +10 degree rotation, starts at Y~8, goes up to Y=20+
+                    # Simple conservative rule: if Y < 5, it's bottom horn for sure
+                    # If Y >= 5 and Y < 8, only rotate if far forward (bottom horn tip area)
+                    if local_y < 5:
+                        # Definitely bottom horn (rotated down 30 degrees)
+                        pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                        pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+                    elif local_y < 8 and rel_x >= 10.0:
+                        # Mid-height but far forward - bottom horn tip only
+                        pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                        pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+                    # else: Y >= 8 or near base - top horn stays fixed
+                elif horn_type_id == 4:
+                    # ATLAS: Only rotate cephalic horn (centered), pronotum horns (sides) stay fixed
+                    # should_rotate already filtered for |Z| <= 1.5, so just apply rotation
                     pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
                     pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-                elif local_y < 8 and rel_x >= 10.0:
-                    # Mid-height but far forward - bottom horn tip only
+                elif horn_type_id == 7:
+                    # GIRAFFE WEEVIL: Skip pitch here — combined yaw+pitch in Step 2
+                    pitched_x = rel_x
+                    pitched_y = rel_y
+                else:
+                    # STAG/RHINO: Rotate entire horn
                     pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
                     pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-                # else: Y >= 8 or near base - top horn stays fixed
-            elif horn_type_id == 4:
-                # ATLAS: Only rotate cephalic horn (centered), pronotum horns (sides) stay fixed
-                # should_rotate already filtered for |Z| <= 1.5, so just apply rotation
-                pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-            elif horn_type_id == 7:
-                # GIRAFFE WEEVIL: Skip pitch here — combined yaw+pitch in Step 2
-                pitched_x = rel_x
-                pitched_y = rel_y
-            else:
-                # STAG/RHINO: Rotate entire horn
-                pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
 
-            # Z unchanged by pitch regardless of beetle type
-            pitched_z = rel_z
+                # Z unchanged by pitch regardless of beetle type
+                pitched_z = rel_z
 
-            # STEP 2: Yaw rotation (around Y-axis in beetle local space)
-            # Behavior differs based on beetle type
-            # NOTE: cos_horn_yaw and sin_horn_yaw already calculated outside loop
+                # STEP 2: Yaw rotation (around Y-axis in beetle local space)
+                # Behavior differs based on beetle type
+                # NOTE: cos_horn_yaw and sin_horn_yaw already calculated outside loop
 
-            # Initialize yaw results (required for Taichi)
-            yawed_x = pitched_x
-            yawed_y = pitched_y
-            yawed_z = pitched_z
-            temp_x = 0.0
-            temp_z = 0.0
+                # Initialize yaw results (required for Taichi)
+                yawed_x = pitched_x
+                yawed_y = pitched_y
+                yawed_z = pitched_z
+                temp_x = 0.0
+                temp_z = 0.0
 
-            if horn_type_id == 1:
-                # STAG BEETLE: Apply opposite rotations to left vs right pincers
-                # Left pincer (z < 0): positive horn_yaw opens outward (more negative Z)
-                # Right pincer (z > 0): positive horn_yaw opens outward (more positive Z)
-                if pitched_z < -0.1:
-                    # Left pincer - apply rotation as-is
+                if horn_type_id == 1:
+                    # STAG BEETLE: Apply opposite rotations to left vs right pincers
+                    # Left pincer (z < 0): positive horn_yaw opens outward (more negative Z)
+                    # Right pincer (z > 0): positive horn_yaw opens outward (more positive Z)
+                    if pitched_z < -0.1:
+                        # Left pincer - apply rotation as-is
+                        yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+                        yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+                    elif pitched_z > 0.1:
+                        # Right pincer - apply inverse rotation
+                        yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+                        yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+                    # else: Center voxels - keep initialized values (no yaw rotation)
+                elif horn_type_id == 2:
+                    # HERCULES BEETLE: Roll/twist both horns around X-axis (forward axis)
+                    # Like twisting a ball held between top and bottom hands
+                    # Both horns roll in same direction (B key = both twist right, V key = both twist left)
+                    yawed_x = pitched_x  # X unchanged (axis of rotation)
+                    yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
+                    yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
+                elif horn_type_id == 4:
+                    # ATLAS BEETLE: Apply yaw rotation to cephalic horn (scanning left/right)
+                    # Same as rhino - uniform rotation around Y-axis
+                    # V/B keys scan the cephalice horn left/right (±15°)
                     yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
                     yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-                elif pitched_z > 0.1:
-                    # Right pincer - apply inverse rotation
-                    yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
-                    yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-                # else: Center voxels - keep initialized values (no yaw rotation)
-            elif horn_type_id == 2:
-                # HERCULES BEETLE: Roll/twist both horns around X-axis (forward axis)
-                # Like twisting a ball held between top and bottom hands
-                # Both horns roll in same direction (B key = both twist right, V key = both twist left)
-                yawed_x = pitched_x  # X unchanged (axis of rotation)
-                yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
-                yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
-            elif horn_type_id == 4:
-                # ATLAS BEETLE: Apply yaw rotation to cephalic horn (scanning left/right)
-                # Same as rhino - uniform rotation around Y-axis
-                # V/B keys scan the cephalice horn left/right (±15°)
-                yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-                yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-            elif horn_type_id == 7:
-                # GIRAFFE WEEVIL: Yaw first, then pitch (so sweep works at any pitch angle)
-                # Step A: Yaw on raw rel coords (inverted for downward prong)
-                temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
-                temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
-                # Step B: Pitch on yawed result
-                yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
-                yawed_z = temp_z
-            else:
-                # RHINO BEETLE (horn_type_id == 0): Apply uniform rotation to entire horn
-                yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-                yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+                elif horn_type_id == 7:
+                    # GIRAFFE WEEVIL: Yaw first, then pitch (so sweep works at any pitch angle)
+                    # Step A: Yaw on raw rel coords (inverted for downward prong)
+                    temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
+                    temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
+                    # Step B: Pitch on yawed result
+                    yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                    yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
+                    yawed_z = temp_z
+                else:
+                    # RHINO BEETLE (horn_type_id == 0): Apply uniform rotation to entire horn
+                    yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+                    yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
 
-            # Translate back from pivot
-            local_x = yawed_x + horn_pivot_x
-            local_y = int(ti.round(yawed_y + float(horn_pivot_y)))
-            local_z = yawed_z  # Already centered at 0
+                # Translate back from pivot
+                local_x = yawed_x + horn_pivot_x
+                local_y = int(ti.round(yawed_y + float(horn_pivot_y)))
+                local_z = yawed_z  # Already centered at 0
 
-        # SCORPION TAIL ROTATION: Apply runtime tail rotation to tail voxels (not claws or body)
-        # Tail starts at x = -body_length + 1 and extends forward, curving UPWARD
-        if horn_type_id == 3:  # Scorpion only
-            # Detect tail voxels: X range at rear, Y starting 3 voxels above attachment, Z near centerline
-            # Tail is at centerline (z = -1, 0, 1) while claws are at sides (larger |z|)
-            # This combination isolates tail from body/claws regardless of back_body_height
-            is_tail_voxel = (red_body_cache_x[i] >= -body_length) and (red_body_cache_x[i] <= -body_length + 30) and (red_body_cache_y[i] >= back_body_height + 3) and (abs(red_body_cache_z[i]) <= 2)
+            # SCORPION TAIL ROTATION: Apply runtime tail rotation to tail voxels (not claws or body)
+            # Tail starts at x = -body_length + 1 and extends forward, curving UPWARD
+            if horn_type_id == 3:  # Scorpion only
+                # Detect tail voxels: X range at rear, Y starting 3 voxels above attachment, Z near centerline
+                # Tail is at centerline (z = -1, 0, 1) while claws are at sides (larger |z|)
+                # This combination isolates tail from body/claws regardless of back_body_height
+                is_tail_voxel = (body_cache_x[i] >= -body_length) and (body_cache_x[i] <= -body_length + 30) and (body_cache_y[i] >= back_body_height + 3) and (abs(body_cache_z[i]) <= 2)
 
-            if is_tail_voxel:
-                # Tail attachment point in body-local coordinates (from generate_scorpion_stinger)
-                # Attachment is at top of abdomen: x = -body_length + 1, y = back_body_height, z = 0
-                # Body cache uses positive X forward, so attachment is at negative X
-                tail_pivot_x = -body_length + 1.0
-                tail_pivot_y = float(back_body_height)
+                if is_tail_voxel:
+                    # Tail attachment point in body-local coordinates (from generate_scorpion_stinger)
+                    # Attachment is at top of abdomen: x = -body_length + 1, y = back_body_height, z = 0
+                    # Body cache uses positive X forward, so attachment is at negative X
+                    tail_pivot_x = -body_length + 1.0
+                    tail_pivot_y = float(back_body_height)
 
-                # Translate to tail pivot
-                tail_rel_x = local_x - tail_pivot_x
-                tail_rel_y = float(local_y) - tail_pivot_y
+                    # Translate to tail pivot
+                    tail_rel_x = local_x - tail_pivot_x
+                    tail_rel_y = float(local_y) - tail_pivot_y
 
-                # Apply tail rotation in X-Y plane (around Z-axis)
-                # tail_pitch is already in radians and includes base 15 degrees + dynamic adjustment
-                cos_tail = ti.cos(tail_pitch)
-                sin_tail = ti.sin(tail_pitch)
+                    # Apply tail rotation in X-Y plane (around Z-axis)
+                    # tail_pitch is already in radians and includes base 15 degrees + dynamic adjustment
+                    cos_tail = ti.cos(tail_pitch)
+                    sin_tail = ti.sin(tail_pitch)
 
-                rotated_tail_x = tail_rel_x * cos_tail - tail_rel_y * sin_tail
-                rotated_tail_y = tail_rel_x * sin_tail + tail_rel_y * cos_tail
+                    rotated_tail_x = tail_rel_x * cos_tail - tail_rel_y * sin_tail
+                    rotated_tail_y = tail_rel_x * sin_tail + tail_rel_y * cos_tail
 
-                # Translate back from tail pivot
-                local_x = rotated_tail_x + tail_pivot_x
-                local_y = int(ti.round(rotated_tail_y + tail_pivot_y))
-                # local_z unchanged (rotation around Z-axis)
+                    # Translate back from tail pivot
+                    local_x = rotated_tail_x + tail_pivot_x
+                    local_y = int(ti.round(rotated_tail_y + tail_pivot_y))
+                    # local_z unchanged (rotation around Z-axis)
 
-        # BOMBARDIER AIM: Rotate around rear pivot BEFORE yaw/pitch/roll transforms
-        # This tilts the beetle from its butt pivot point to visually indicate spray aim
-        if horn_type_id == 5 and spray_aim_pitch != 0.0:
-            # Translate to rear pivot, rotate in X-Y plane (pitch), translate back
-            rel_x = local_x - rear_pivot_x
-            ly_aim = float(local_y)
-            local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
-            local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
-
-            # BUTT TIP COUNTER-ROTATION: Rear voxels tilt opposite to sell the aiming pose
-            # When front tilts UP, butt tip dips DOWN (and vice versa)
-            orig_x_aim = red_body_cache_x[i]
-            butt_thresh = -body_length + 3  # Just the tip
-            if orig_x_aim < butt_thresh:
-                # How far into the butt region (0 to 1)
-                butt_depth = float(butt_thresh - orig_x_aim) / 3.0
-                butt_depth = ti.min(butt_depth, 1.0)
-                # Counter-rotate: negative aim when front goes up, positive when front goes down
-                butt_offset = -spray_aim_pitch * butt_depth * 25.0
-                local_y = local_y + int(ti.round(butt_offset))
-
-        # SPIDER AIM: Rotate abdomen around FRONT pivot (pedicel)
-        # Opposite of bombardier - butt moves up/down, front stays fixed
-        if horn_type_id == 6 and spider_aim_pitch != 0.0:
-            # Only rotate ABDOMEN voxels (dx < spider_pivot_x)
-            # Leave PROSOMA (dx >= 3) and legs untouched
-            orig_x_spider = red_body_cache_x[i]
-            if orig_x_spider < spider_pivot_x:
-                # Translate to front pivot, rotate in X-Y plane (pitch), translate back
-                rel_x = local_x - spider_pivot_x
-                ly_spider = float(local_y)
-                local_x = spider_pivot_x + rel_x * cos_spider - ly_spider * sin_spider
-                local_y = int(ti.round(rel_x * sin_spider + ly_spider * cos_spider))
-
-        # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
-        # Convert local_y to float for rotation
-        ly = float(local_y)
-
-        # Step 1: Yaw rotation (around Y-axis)
-        temp_x = local_x * cos_yaw - local_z * sin_yaw
-        temp_z = local_x * sin_yaw + local_z * cos_yaw
-        temp_y = ly
-
-        # Step 2: Pitch rotation (around Z-axis) - nose up/down
-        temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
-        temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
-        temp2_z = temp_z
-
-        # Step 3: Roll rotation (around X-axis) - tilt left/right
-        final_x = temp2_x
-        final_y = temp2_y * cos_roll - temp2_z * sin_roll
-        final_z = temp2_y * sin_roll + temp2_z * cos_roll
-
-        grid_x = center_x + int(ti.round(final_x))
-        grid_y = base_y + int(ti.round(final_y))
-        grid_z = center_z + int(ti.round(final_z))
-
-        # BUTT PUCKER: Contract/extend rear voxels when spray fires (bombardier only)
-        # Forward spray (dir=1): contract inward, Backward spray (dir=-1): extend outward
-        if butt_wiggle > 0.0 and horn_type_id == 5:
-            orig_x = red_body_cache_x[i]  # Original local X to detect rear
-            rear_thresh = -body_length + 4
-            if orig_x < rear_thresh:
-                depth = float(rear_thresh - orig_x) / 4.0
-                depth = ti.min(depth, 1.0)
-                # Smooth pucker - contract/extend then relax
-                t = butt_wiggle / 0.3  # 1.0 at start, fades to 0.0
-                amt = depth * t * 2.0 * butt_wiggle_dir  # Direction controls in/out
-                # Move along beetle facing direction (+ = forward/contract, - = backward/extend)
-                grid_x = grid_x + int(ti.round(cos_yaw * amt))
-                grid_z = grid_z + int(ti.round(sin_yaw * amt))
-
-        if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-            # Don't overwrite floor (CONCRETE), shadow, slippery bowl, or goal voxels
-            existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
-            if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY and existing_voxel != simulation.GOAL:
-                # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
-                # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
-                is_hook_interior = red_body_hook_flags[i]
-                is_stripe = red_body_stripe_flags[i]
-                is_horn_tip = red_body_horn_tip_flags[i]
-                is_very_tip = red_body_very_tip_flags[i]
-
-                # Use appropriate color: hook interior > horn tip > stripe > body color
-                voxel_color = body_color
-
-                if is_hook_interior == 1:
-                    # Hook interior voxels use special type
-                    voxel_color = simulation.STAG_HOOK_INTERIOR_RED
-                elif is_horn_tip == 1:
-                    # Apply color based on tip type
-                    if is_very_tip == 1:  # VERY tips: scorpion uses venom tip, others use leg tip
-                        if horn_type_id == 3:  # Scorpion - use venom tip color (glows with charges)
-                            voxel_color = simulation.VENOM_TIP_RED
-                        elif body_color == simulation.BEETLE_BLUE:
-                            voxel_color = simulation.LEG_TIP_BLUE
-                        elif body_color == simulation.BEETLE_RED:
-                            voxel_color = simulation.LEG_TIP_RED
-                    else:  # Regular tips: bright horn tip color (all beetles including scorpion)
-                        if body_color == simulation.BEETLE_BLUE:
-                            voxel_color = simulation.BEETLE_BLUE_HORN_TIP
-                        elif body_color == simulation.BEETLE_RED:
-                            voxel_color = simulation.BEETLE_RED_HORN_TIP
-                elif is_stripe == 1:
-                    if body_color == simulation.BEETLE_BLUE:
-                        voxel_color = simulation.BEETLE_BLUE_STRIPE
-                    elif body_color == simulation.BEETLE_RED:
-                        voxel_color = simulation.BEETLE_RED_STRIPE
-
-                simulation.voxel_type[grid_x, grid_y, grid_z] = voxel_color
-                # Track this voxel for efficient clearing later
-                idx = ti.atomic_add(dirty_voxel_count[None], 1)
-                if idx < MAX_DIRTY_VOXELS:
-                    dirty_voxel_x[idx] = grid_x
-                    dirty_voxel_y[idx] = grid_y
-                    dirty_voxel_z[idx] = grid_z
-
-    # 2. Place legs (animated with tripod gait) - DIFFERENT COLOR
-    # Tripod gait: legs 0, 3, 4 move together (Group A), legs 1, 2, 5 move together (Group B)
-    # leg_id: 0=front_left, 1=front_right, 2=middle_left, 3=middle_right, 4=rear_left, 5=rear_right
-    # Scorpion adds: 6=rear2_left, 7=rear2_right
-
-    for leg_id in range(8):  # Up to 8 legs for scorpion, 6 for beetles
-        # Determine leg phase offset for gait pattern
-        # SCORPION (horn_type_id == 3): Quadrupod gait (like tripod but for 8 legs)
-        #   Group A (0, 3, 4, 7): phase_offset = 0
-        #   Group B (1, 2, 5, 6): phase_offset = π
-        # BEETLE: Tripod gait
-        #   Group A (0, 3, 4): phase_offset = 0
-        #   Group B (1, 2, 5): phase_offset = π
-        phase_offset = 0.0
-        if horn_type_id == 6:  # Spider: staggered quadrupod gait (wave-like)
-            # Group A with stagger: 0, 3, 4, 7 have increasing delays
-            # Group B with stagger: 1, 2, 5, 6 have π + increasing delays
-            if leg_id == 0:
-                phase_offset = 0.0
-            elif leg_id == 3:
-                phase_offset = 0.15
-            elif leg_id == 4:
-                phase_offset = 0.30
-            elif leg_id == 7:
-                phase_offset = 0.45
-            elif leg_id == 1:
-                phase_offset = 3.14159265359  # π
-            elif leg_id == 2:
-                phase_offset = 3.14159265359 + 0.15
-            elif leg_id == 5:
-                phase_offset = 3.14159265359 + 0.30
-            elif leg_id == 6:
-                phase_offset = 3.14159265359 + 0.45
-        elif horn_type_id == 3:  # Scorpion: standard quadrupod gait (8 legs)
-            # Group A (0, 3, 4, 7): phase_offset = 0
-            # Group B (1, 2, 5, 6): phase_offset = π
-            if leg_id == 1 or leg_id == 2 or leg_id == 5 or leg_id == 6:
-                phase_offset = 3.14159265359  # π
-        else:  # Beetle: tripod gait
-            if leg_id == 1 or leg_id == 2 or leg_id == 5:
-                phase_offset = 3.14159265359  # π
-
-        # Apply asymmetric leg timing for rotation-only movement
-        leg_phase_offset = phase_offset
-        if is_rotating_only == 1:
-            # Asymmetric timing: inside legs (toward turn direction) lag behind
-            if rotation_direction == -1:  # Turning left
-                # Left legs (leg_id 0,2,4,6) lag, right legs normal
-                if leg_id == 0 or leg_id == 2 or leg_id == 4 or leg_id == 6:
-                    leg_phase_offset += 0.6  # ~35 degree phase lag
-            elif rotation_direction == 1:  # Turning right
-                # Right legs (leg_id 1,3,5,7) lag, left legs normal
-                if leg_id == 1 or leg_id == 3 or leg_id == 5 or leg_id == 7:
-                    leg_phase_offset += 0.6  # ~35 degree phase lag
-
-        leg_phase = walk_phase + leg_phase_offset
-
-        # Calculate animation transforms (vertical lift and minimal forward/back sweep)
-        # sin(leg_phase) ranges from -1 to 1
-        # We want: lift when sin > 0 (leg in air), on ground when sin <= 0
-        base_lift = 2.5  # Normal lift height
-        base_sweep = 0.5  # Normal sweep distance
-
-        # Reduce amplitude when rotating only (80% of normal)
-        if is_rotating_only == 1:
-            base_lift *= 0.8
-            base_sweep *= 0.8
-
-        # OPTIMIZATION: Calculate trig once per leg and cache
-        leg_sin = ti.sin(leg_phase)
-        leg_cos = ti.cos(leg_phase)
-
-        lift = ti.max(0.0, leg_sin) * base_lift  # Lift (reduced during rotation)
-        sweep = -leg_cos * base_sweep  # Sweep (reduced during rotation)
-
-        # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
-        if is_lifted_high == 1:
-            # High-frequency wiggle with per-leg variation for chaos
-            # Slower wiggle when rotating only (to prevent excessive speed appearance)
-            wiggle_freq = 1.05 if is_rotating_only == 1 else 2.2
-            wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
-
-            # OPTIMIZATION: Pre-calculate wiggle trig
-            wiggle_sin = ti.sin(wiggle_phase)
-            wiggle_cos = ti.cos(wiggle_phase * 1.3)
-
-            # Add erratic movement to lift and sweep
-            wiggle_lift = wiggle_sin * 2.0  # ±2 voxels extra lift
-            wiggle_sweep = wiggle_cos * 0.8  # ±0.8 voxels extra sweep
-
-            lift += wiggle_lift
-            sweep += wiggle_sweep
-
-        # Place all voxels for this leg
-        start_idx = red_leg_start_idx[leg_id]
-        end_idx = red_leg_end_idx[leg_id]
-
-        for i in range(start_idx, end_idx):
-            local_x = float(red_leg_cache_x[i]) + sweep  # Apply sweep
-            local_y = red_leg_cache_y[i] + int(lift)  # Apply vertical lift
-            local_z = float(red_leg_cache_z[i])
-
-            # BOMBARDIER AIM: Rotate legs around rear pivot BUT compensate Y to stay grounded
+            # BOMBARDIER AIM: Rotate around rear pivot BEFORE yaw/pitch/roll transforms
+            # This tilts the beetle from its butt pivot point to visually indicate spray aim
             if horn_type_id == 5 and spray_aim_pitch != 0.0:
+                # Translate to rear pivot, rotate in X-Y plane (pitch), translate back
                 rel_x = local_x - rear_pivot_x
                 ly_aim = float(local_y)
                 local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
-                rotated_y = rel_x * sin_aim + ly_aim * cos_aim
-                y_compensation = rel_x * sin_aim
-                local_y = int(ti.round(rotated_y - y_compensation))
+                local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
 
-            # 3D rotation (same as body)
+                # BUTT TIP COUNTER-ROTATION: Rear voxels tilt opposite to sell the aiming pose
+                # When front tilts UP, butt tip dips DOWN (and vice versa)
+                orig_x_aim = body_cache_x[i]
+                butt_thresh = -body_length + 3  # Just the tip
+                if orig_x_aim < butt_thresh:
+                    # How far into the butt region (0 to 1)
+                    butt_depth = float(butt_thresh - orig_x_aim) / 3.0
+                    butt_depth = ti.min(butt_depth, 1.0)
+                    # Counter-rotate: negative aim when front goes up, positive when front goes down
+                    butt_offset = -spray_aim_pitch * butt_depth * 25.0
+                    local_y = local_y + int(ti.round(butt_offset))
+
+            # SPIDER AIM: Rotate abdomen around FRONT pivot (pedicel)
+            # Opposite of bombardier - butt moves up/down, front stays fixed
+            if horn_type_id == 6 and spider_aim_pitch != 0.0:
+                # Only rotate ABDOMEN voxels (dx < spider_pivot_x)
+                # Leave PROSOMA (dx >= 3) and legs untouched
+                orig_x_spider = body_cache_x[i]
+                if orig_x_spider < spider_pivot_x:
+                    # Translate to front pivot, rotate in X-Y plane (pitch), translate back
+                    rel_x = local_x - spider_pivot_x
+                    ly_spider = float(local_y)
+                    local_x = spider_pivot_x + rel_x * cos_spider - ly_spider * sin_spider
+                    local_y = int(ti.round(rel_x * sin_spider + ly_spider * cos_spider))
+
+            # 3D rotation: Apply yaw → pitch → roll (standard rotation order)
+            # Convert local_y to float for rotation
             ly = float(local_y)
 
-            # Yaw
+            # Step 1: Yaw rotation (around Y-axis)
             temp_x = local_x * cos_yaw - local_z * sin_yaw
             temp_z = local_x * sin_yaw + local_z * cos_yaw
             temp_y = ly
 
-            # Pitch
+            # Step 2: Pitch rotation (around Z-axis) - nose up/down
             temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
             temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
             temp2_z = temp_z
 
-            # Roll
+            # Step 3: Roll rotation (around X-axis) - tilt left/right
             final_x = temp2_x
             final_y = temp2_y * cos_roll - temp2_z * sin_roll
             final_z = temp2_y * sin_roll + temp2_z * cos_roll
@@ -8196,11 +7480,51 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
             grid_y = base_y + int(ti.round(final_y))
             grid_z = center_z + int(ti.round(final_z))
 
+            # BUTT PUCKER: Contract/extend rear voxels when spray fires (bombardier only)
+            # Forward spray (dir=1): contract inward, Backward spray (dir=-1): extend outward
+            if butt_wiggle > 0.0 and horn_type_id == 5:
+                orig_x = body_cache_x[i]  # Original local X to detect rear
+                rear_thresh = -body_length + 4
+                if orig_x < rear_thresh:
+                    depth = float(rear_thresh - orig_x) / 4.0
+                    depth = ti.min(depth, 1.0)
+                    # Smooth pucker - contract/extend then relax
+                    t = butt_wiggle / 0.3  # 1.0 at start, fades to 0.0
+                    amt = depth * t * 2.0 * butt_wiggle_dir  # Direction controls in/out
+                    # Move along beetle facing direction (+ = forward/contract, - = backward/extend)
+                    grid_x = grid_x + int(ti.round(cos_yaw * amt))
+                    grid_z = grid_z + int(ti.round(sin_yaw * amt))
+
             if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
-                existing_leg_r = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_leg_r != simulation.CONCRETE and existing_leg_r != simulation.SHADOW and existing_leg_r != simulation.SLIPPERY and existing_leg_r != simulation.GOAL:
-                    simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
+                # Don't overwrite floor (CONCRETE), shadow, slippery bowl, or goal voxels
+                existing_voxel = simulation.voxel_type[grid_x, grid_y, grid_z]
+                if existing_voxel != simulation.CONCRETE and existing_voxel != simulation.SHADOW and existing_voxel != simulation.SLIPPERY and existing_voxel != simulation.GOAL:
+                    # OPTIMIZATION: Use pre-computed voxel metadata instead of calculating every frame
+                    # Eliminates ~90 lines of conditional logic per voxel (600-800 voxels per beetle)
+                    is_hook_interior = body_hook_flags[i]
+                    is_stripe = body_stripe_flags[i]
+                    is_horn_tip = body_horn_tip_flags[i]
+                    is_very_tip = body_very_tip_flags[i]
+
+                    # Use appropriate color: hook interior > horn tip > stripe > body color
+                    voxel_color = body_color
+
+                    if is_hook_interior == 1:
+                        # Hook interior voxels use special type
+                        voxel_color = _hook_id
+                    elif is_horn_tip == 1:
+                        # Apply color based on tip type
+                        if is_very_tip == 1:  # VERY tips: scorpion uses venom tip, others use leg tip
+                            if horn_type_id == 3:  # Scorpion - use venom tip color (glows with charges)
+                                voxel_color = _venom_id
+                            else:
+                                voxel_color = _leg_tip_id
+                        else:  # Regular tips: bright horn tip color (all beetles including scorpion)
+                            voxel_color = _horn_tip_id
+                    elif is_stripe == 1:
+                        voxel_color = _stripe_id
+
+                    simulation.voxel_type[grid_x, grid_y, grid_z] = voxel_color
                     # Track this voxel for efficient clearing later
                     idx = ti.atomic_add(dirty_voxel_count[None], 1)
                     if idx < MAX_DIRTY_VOXELS:
@@ -8208,57 +7532,213 @@ def place_animated_beetle_red(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
                         dirty_voxel_y[idx] = grid_y
                         dirty_voxel_z[idx] = grid_z
 
-        # Place leg tips (same animation as legs, but BLACK color for visibility)
-        tip_start_idx = red_leg_tip_start_idx[leg_id]
-        tip_end_idx = red_leg_tip_end_idx[leg_id]
+        # 2. Place legs (animated with tripod gait) - DIFFERENT COLOR
+        # Tripod gait: legs 0, 3, 4 move together (Group A), legs 1, 2, 5 move together (Group B)
+        # leg_id: 0=front_left, 1=front_right, 2=middle_left, 3=middle_right, 4=rear_left, 5=rear_right
+        # Scorpion adds: 6=rear2_left, 7=rear2_right
 
-        for i in range(tip_start_idx, tip_end_idx):
-            local_x = float(red_leg_tip_cache_x[i]) + sweep  # Apply same animation
-            local_y = red_leg_tip_cache_y[i] + int(lift)
-            local_z = float(red_leg_tip_cache_z[i])
+        for leg_id in range(8):  # Up to 8 legs for scorpion, 6 for beetles
+            # Determine leg phase offset for gait pattern
+            # SCORPION (horn_type_id == 3): Quadrupod gait (like tripod but for 8 legs)
+            #   Group A (0, 3, 4, 7): phase_offset = 0
+            #   Group B (1, 2, 5, 6): phase_offset = π
+            # BEETLE: Tripod gait
+            #   Group A (0, 3, 4): phase_offset = 0
+            #   Group B (1, 2, 5): phase_offset = π
+            phase_offset = 0.0
+            if horn_type_id == 6:  # Spider: staggered quadrupod gait (wave-like)
+                # Group A with stagger: 0, 3, 4, 7 have increasing delays
+                # Group B with stagger: 1, 2, 5, 6 have π + increasing delays
+                if leg_id == 0:
+                    phase_offset = 0.0
+                elif leg_id == 3:
+                    phase_offset = 0.15
+                elif leg_id == 4:
+                    phase_offset = 0.30
+                elif leg_id == 7:
+                    phase_offset = 0.45
+                elif leg_id == 1:
+                    phase_offset = 3.14159265359  # π
+                elif leg_id == 2:
+                    phase_offset = 3.14159265359 + 0.15
+                elif leg_id == 5:
+                    phase_offset = 3.14159265359 + 0.30
+                elif leg_id == 6:
+                    phase_offset = 3.14159265359 + 0.45
+            elif horn_type_id == 3:  # Scorpion: standard quadrupod gait (8 legs)
+                # Group A (0, 3, 4, 7): phase_offset = 0
+                # Group B (1, 2, 5, 6): phase_offset = π
+                if leg_id == 1 or leg_id == 2 or leg_id == 5 or leg_id == 6:
+                    phase_offset = 3.14159265359  # π
+            else:  # Beetle: tripod gait
+                if leg_id == 1 or leg_id == 2 or leg_id == 5:
+                    phase_offset = 3.14159265359  # π
 
-            # BOMBARDIER AIM: Rotate leg tips around rear pivot BUT compensate Y to stay grounded
-            if horn_type_id == 5 and spray_aim_pitch != 0.0:
-                rel_x = local_x - rear_pivot_x
-                ly_aim = float(local_y)
-                local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
-                rotated_y = rel_x * sin_aim + ly_aim * cos_aim
-                y_compensation = rel_x * sin_aim
-                local_y = int(ti.round(rotated_y - y_compensation))
+            # Apply asymmetric leg timing for rotation-only movement
+            leg_phase_offset = phase_offset
+            if is_rotating_only == 1:
+                # Asymmetric timing: inside legs (toward turn direction) lag behind
+                if rotation_direction == -1:  # Turning left
+                    # Left legs (leg_id 0,2,4,6) lag, right legs normal
+                    if leg_id == 0 or leg_id == 2 or leg_id == 4 or leg_id == 6:
+                        leg_phase_offset += 0.6  # ~35 degree phase lag
+                elif rotation_direction == 1:  # Turning right
+                    # Right legs (leg_id 1,3,5,7) lag, left legs normal
+                    if leg_id == 1 or leg_id == 3 or leg_id == 5 or leg_id == 7:
+                        leg_phase_offset += 0.6  # ~35 degree phase lag
 
-            # 3D rotation (same as legs)
-            ly = float(local_y)
+            leg_phase = walk_phase + leg_phase_offset
 
-            # Yaw
-            temp_x = local_x * cos_yaw - local_z * sin_yaw
-            temp_z = local_x * sin_yaw + local_z * cos_yaw
-            temp_y = ly
+            # Calculate animation transforms (vertical lift and minimal forward/back sweep)
+            # sin(leg_phase) ranges from -1 to 1
+            # We want: lift when sin > 0 (leg in air), on ground when sin <= 0
+            base_lift = 2.5  # Normal lift height
+            base_sweep = 0.5  # Normal sweep distance
 
-            # Pitch
-            temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
-            temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
-            temp2_z = temp_z
+            # Reduce amplitude when rotating only (80% of normal)
+            if is_rotating_only == 1:
+                base_lift *= 0.8
+                base_sweep *= 0.8
 
-            # Roll
-            final_x = temp2_x
-            final_y = temp2_y * cos_roll - temp2_z * sin_roll
-            final_z = temp2_y * sin_roll + temp2_z * cos_roll
+            # OPTIMIZATION: Calculate trig once per leg and cache
+            leg_sin = ti.sin(leg_phase)
+            leg_cos = ti.cos(leg_phase)
 
-            grid_x = center_x + int(ti.round(final_x))
-            grid_y = base_y + int(ti.round(final_y))
-            grid_z = center_z + int(ti.round(final_z))
+            lift = ti.max(0.0, leg_sin) * base_lift  # Lift (reduced during rotation)
+            sweep = -leg_cos * base_sweep  # Sweep (reduced during rotation)
 
-            if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
-                # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
-                existing_tip_r = simulation.voxel_type[grid_x, grid_y, grid_z]
-                if existing_tip_r != simulation.CONCRETE and existing_tip_r != simulation.SHADOW and existing_tip_r != simulation.SLIPPERY and existing_tip_r != simulation.GOAL:
-                    simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
-                    # Track this voxel for efficient clearing later
-                    idx = ti.atomic_add(dirty_voxel_count[None], 1)
-                    if idx < MAX_DIRTY_VOXELS:
-                        dirty_voxel_x[idx] = grid_x
-                        dirty_voxel_y[idx] = grid_y
-                        dirty_voxel_z[idx] = grid_z
+            # SPAZ WIGGLE: When beetle is lifted high, add chaotic leg movement
+            if is_lifted_high == 1:
+                # High-frequency wiggle with per-leg variation for chaos
+                # Slower wiggle when rotating only (to prevent excessive speed appearance)
+                wiggle_freq = 1.05 if is_rotating_only == 1 else 2.2
+                wiggle_phase = leg_phase * wiggle_freq + float(leg_id)  # Each leg different
+
+                # OPTIMIZATION: Pre-calculate wiggle trig
+                wiggle_sin = ti.sin(wiggle_phase)
+                wiggle_cos = ti.cos(wiggle_phase * 1.3)
+
+                # Add erratic movement to lift and sweep
+                wiggle_lift = wiggle_sin * 2.0  # ±2 voxels extra lift
+                wiggle_sweep = wiggle_cos * 0.8  # ±0.8 voxels extra sweep
+
+                lift += wiggle_lift
+                sweep += wiggle_sweep
+
+            # Place all voxels for this leg
+            start_idx = leg_start_idx[leg_id]
+            end_idx = leg_end_idx[leg_id]
+
+            for i in range(start_idx, end_idx):
+                local_x = float(leg_cache_x[i]) + sweep  # Apply sweep
+                local_y = leg_cache_y[i] + int(lift)  # Apply vertical lift
+                local_z = float(leg_cache_z[i])
+
+                # BOMBARDIER AIM: Rotate legs around rear pivot BUT compensate Y to stay grounded
+                if horn_type_id == 5 and spray_aim_pitch != 0.0:
+                    orig_x = local_x  # Save original X for compensation calc
+                    rel_x = local_x - rear_pivot_x
+                    ly_aim = float(local_y)
+                    local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+                    rotated_y = rel_x * sin_aim + ly_aim * cos_aim
+                    # Compensate Y to keep legs planted - counteract the vertical lift from rotation
+                    # Front legs (positive rel_x) get pushed down when tilting up, lifted when tilting down
+                    y_compensation = rel_x * sin_aim
+                    local_y = int(ti.round(rotated_y - y_compensation))
+
+                # 3D rotation (same as body)
+                ly = float(local_y)
+
+                # Yaw
+                temp_x = local_x * cos_yaw - local_z * sin_yaw
+                temp_z = local_x * sin_yaw + local_z * cos_yaw
+                temp_y = ly
+
+                # Pitch
+                temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+                temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+                temp2_z = temp_z
+
+                # Roll
+                final_x = temp2_x
+                final_y = temp2_y * cos_roll - temp2_z * sin_roll
+                final_z = temp2_y * sin_roll + temp2_z * cos_roll
+
+                grid_x = center_x + int(ti.round(final_x))
+                grid_y = base_y + int(ti.round(final_y))
+                grid_z = center_z + int(ti.round(final_z))
+
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
+                    # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
+                    existing_leg = simulation.voxel_type[grid_x, grid_y, grid_z]
+                    if existing_leg != simulation.CONCRETE and existing_leg != simulation.SHADOW and existing_leg != simulation.SLIPPERY and existing_leg != simulation.GOAL:
+                        simulation.voxel_type[grid_x, grid_y, grid_z] = leg_color
+                        # Track this voxel for efficient clearing later
+                        idx = ti.atomic_add(dirty_voxel_count[None], 1)
+                        if idx < MAX_DIRTY_VOXELS:
+                            dirty_voxel_x[idx] = grid_x
+                            dirty_voxel_y[idx] = grid_y
+                            dirty_voxel_z[idx] = grid_z
+
+            # Place leg tips (same animation as legs, but BLACK color for visibility)
+            tip_start_idx = leg_tip_start_idx[leg_id]
+            tip_end_idx = leg_tip_end_idx[leg_id]
+
+            for i in range(tip_start_idx, tip_end_idx):
+                local_x = float(leg_tip_cache_x[i]) + sweep  # Apply same animation
+                local_y = leg_tip_cache_y[i] + int(lift)
+                local_z = float(leg_tip_cache_z[i])
+
+                # BOMBARDIER AIM: Rotate leg tips around rear pivot BUT compensate Y to stay grounded
+                if horn_type_id == 5 and spray_aim_pitch != 0.0:
+                    rel_x = local_x - rear_pivot_x
+                    ly_aim = float(local_y)
+                    local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+                    rotated_y = rel_x * sin_aim + ly_aim * cos_aim
+                    y_compensation = rel_x * sin_aim
+                    local_y = int(ti.round(rotated_y - y_compensation))
+
+                # 3D rotation (same as legs)
+                ly = float(local_y)
+
+                # Yaw
+                temp_x = local_x * cos_yaw - local_z * sin_yaw
+                temp_z = local_x * sin_yaw + local_z * cos_yaw
+                temp_y = ly
+
+                # Pitch
+                temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+                temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+                temp2_z = temp_z
+
+                # Roll
+                final_x = temp2_x
+                final_y = temp2_y * cos_roll - temp2_z * sin_roll
+                final_z = temp2_y * sin_roll + temp2_z * cos_roll
+
+                grid_x = center_x + int(ti.round(final_x))
+                grid_y = base_y + int(ti.round(final_y))
+                grid_z = center_z + int(ti.round(final_z))
+
+                if 0 <= grid_x < simulation.n_grid and 0 <= grid_z < simulation.n_grid and 0 <= grid_y < simulation.n_grid:
+                    # Don't overwrite floor (CONCRETE), shadow, slippery, or goal voxels
+                    existing_tip = simulation.voxel_type[grid_x, grid_y, grid_z]
+                    if existing_tip != simulation.CONCRETE and existing_tip != simulation.SHADOW and existing_tip != simulation.SLIPPERY and existing_tip != simulation.GOAL:
+                        simulation.voxel_type[grid_x, grid_y, grid_z] = leg_tip_color
+                        # Track this voxel for efficient clearing later
+                        idx = ti.atomic_add(dirty_voxel_count[None], 1)
+                        if idx < MAX_DIRTY_VOXELS:
+                            dirty_voxel_x[idx] = grid_x
+                            dirty_voxel_y[idx] = grid_y
+                            dirty_voxel_z[idx] = grid_z
+
+    return place_animated_beetle
+
+
+# One placement kernel per player slot (compiled lazily on first call/warmup)
+place_beetle_kernels = [make_place_beetle_kernel(_s) for _s in range(4)]
+place_animated_beetle_blue = place_beetle_kernels[0]
+place_animated_beetle_red = place_beetle_kernels[1]
 
 @ti.kernel
 def reset_dirty_voxels():
@@ -16822,9 +16302,11 @@ update_loading(3)
 # PHASE 4: Edge tipping, beetle placement, and beetle clear kernels
 calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_BLUE, 0.016, 1.0, 1.0)
 calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_RED, 0.016, 1.0, 1.0)
-# Warm up beetle placement kernels (540 lines each, compile on first game frame otherwise)
-place_animated_beetle_blue(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, simulation.BEETLE_BLUE, simulation.BEETLE_BLUE_LEGS, simulation.LEG_TIP_BLUE, 0.0, 0, 0.0, 12, 6, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
-place_animated_beetle_red(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, simulation.BEETLE_RED, simulation.BEETLE_RED_LEGS, simulation.LEG_TIP_RED, 0.0, 0, 0.0, 12, 6, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
+# Warm up beetle placement kernels for all player slots (540 lines each,
+# compile on first game frame otherwise)
+for _wslot in range(4):
+    _wbody, _wlegs, _wtip = simulation.PLAYER_VOXEL_IDS[_wslot][:3]
+    place_beetle_kernels[_wslot](0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 0.0, _wbody, _wlegs, _wtip, 0.0, 0, 0.0, 12, 6, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0)
 clear_beetles()
 clear_beetles_bounded(0.0, 0.0, 0.0, 10.0, 10.0, 10.0)
 update_loading(4)
