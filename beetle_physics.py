@@ -17278,135 +17278,168 @@ try:
         if network_manager.is_host and physics_frame % 30 == 0:
             network_manager.send_frame_sync(input_buffer.current_frame)
 
-        # === HOST STATE SYNC (send authoritative positions periodically) ===
-        if network_manager.is_host and physics_frame % 5 == 0:  # Every ~83ms (12 syncs/sec)
+        # === HOST STATE SYNC (send authoritative state periodically) ===
+        if network_manager.is_host and physics_frame % 3 == 0:  # Every ~50ms (20 syncs/sec)
             network_manager.send_state_sync(
                 physics_frame,
-                beetle_blue.x, beetle_blue.y, beetle_blue.z, beetle_blue.rotation,
-                beetle_red.x, beetle_red.y, beetle_red.z, beetle_red.rotation,
-                beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.active
+                [
+                    {'x': beetle_blue.x, 'y': beetle_blue.y, 'z': beetle_blue.z,
+                     'rot': beetle_blue.rotation,
+                     'vx': beetle_blue.vx, 'vy': beetle_blue.vy, 'vz': beetle_blue.vz,
+                     'active': beetle_blue.active, 'is_falling': beetle_blue.is_falling},
+                    {'x': beetle_red.x, 'y': beetle_red.y, 'z': beetle_red.z,
+                     'rot': beetle_red.rotation,
+                     'vx': beetle_red.vx, 'vy': beetle_red.vy, 'vz': beetle_red.vz,
+                     'active': beetle_red.active, 'is_falling': beetle_red.is_falling},
+                ],
+                {'x': beetle_ball.x, 'y': beetle_ball.y, 'z': beetle_ball.z,
+                 'vx': beetle_ball.vx, 'vy': beetle_ball.vy, 'vz': beetle_ball.vz,
+                 'active': beetle_ball.active},
             )
 
-        # === GUEST STATE SYNC (apply received state - always lerp, never snap) ===
+        # === GUEST STATE SYNC (apply received host-authoritative state) ===
+        # Correction scheme (tunables - adjust on the 2-computer test):
+        #   own beetle  -> deadzone, then gentle blend (avoids rubber-banding
+        #                  from corrections that reflect our inputs ~RTT ago)
+        #   opponent    -> firm lerp + adopt host velocities (tracks closely,
+        #                  prediction between syncs diverges far less)
+        #   big error   -> hard snap (position + rotation + velocities)
+        SYNC_SNAP_DIST = 6.0                   # world units
+        SYNC_SNAP_ANGLE = math.radians(60.0)   # radians
+        SYNC_OWN_DEADZONE = 0.75               # no positional correction below this
+        SYNC_OWN_LERP = 0.18
+        SYNC_OWN_VEL_BLEND = 0.3
+        SYNC_OTHER_LERP = 0.45
         if not network_manager.is_host and network_manager.pending_state_sync:
             sync = network_manager.pending_state_sync
             network_manager.pending_state_sync = None  # Consume it
 
-            # Net debug HUD: measure prediction error BEFORE corrections are applied
             net_hud['last_sync_time'] = time.time()
-            _err_blue = math.sqrt((sync['blue_x'] - beetle_blue.x) ** 2 + (sync['blue_z'] - beetle_blue.z) ** 2)
-            _err_red = math.sqrt((sync['red_x'] - beetle_red.x) ** 2 + (sync['red_z'] - beetle_red.z) ** 2)
-            net_hud['corr_blue'] = _err_blue
-            net_hud['corr_red'] = _err_red
-            net_hud_record_correction(max(_err_blue, _err_red))
-
-            # Always lerp toward host state - no more snapping
-            # Larger lerp factor for faster convergence since syncing more often
-            lerp_factor = 0.5
-
-            # Handle falling desync: if guest thinks beetle is falling but host
-            # says it's above the board, trust host and rescue the beetle.
-            # If host also shows beetle below board, let it fall cleanly (skip lerp).
-            FALL_RESCUE_Y = -5.0  # Match POINT_OF_NO_RETURN
-            blue_falling = beetle_blue.is_falling
-            red_falling = beetle_red.is_falling
-
-            if blue_falling and 'blue_y' in sync and sync['blue_y'] > FALL_RESCUE_Y:
-                # Host beetle is alive — guest desync, rescue it
-                beetle_blue.is_falling = False
-                beetle_blue.vy = 0.0
-                beetle_blue.x = sync['blue_x']
-                beetle_blue.y = sync['blue_y']
-                beetle_blue.z = sync['blue_z']
-                blue_falling = False
-
-            if red_falling and 'red_y' in sync and sync['red_y'] > FALL_RESCUE_Y:
-                beetle_red.is_falling = False
-                beetle_red.vy = 0.0
-                beetle_red.x = sync['red_x']
-                beetle_red.y = sync['red_y']
-                beetle_red.z = sync['red_z']
-                red_falling = False
-
-            if not blue_falling:
-                beetle_blue.x += (sync['blue_x'] - beetle_blue.x) * lerp_factor
-                beetle_blue.z += (sync['blue_z'] - beetle_blue.z) * lerp_factor
-            if not red_falling:
-                beetle_red.x += (sync['red_x'] - beetle_red.x) * lerp_factor
-                beetle_red.z += (sync['red_z'] - beetle_red.z) * lerp_factor
-
-            # Sync beetle Y positions (prevents death desync near edges/pits)
-            # After lerping Y, clamp to floor so beetle never gets stuck under arena
-            if 'blue_y' in sync and not blue_falling:
-                beetle_blue.y += (sync['blue_y'] - beetle_blue.y) * lerp_factor
-                if beetle_blue.active:
-                    floor_y = check_floor_collision(beetle_blue.x, beetle_blue.z)
-                    if floor_y > -100.0:
-                        floor_surface = floor_y + 0.5
-                        if beetle_blue.y < floor_surface:
-                            beetle_blue.y = floor_surface
-            if 'red_y' in sync and not red_falling:
-                beetle_red.y += (sync['red_y'] - beetle_red.y) * lerp_factor
-                if beetle_red.active:
-                    floor_y = check_floor_collision(beetle_red.x, beetle_red.z)
-                    if floor_y > -100.0:
-                        floor_surface = floor_y + 0.5
-                        if beetle_red.y < floor_surface:
-                            beetle_red.y = floor_surface
-
-            # Rotation lerp with angle wrapping (shortest path)
-            # This prevents beetles from spinning the wrong way when angles wrap around 0/2π
             TWO_PI = 2.0 * math.pi
-            if not blue_falling:
-                blue_rot_diff = (sync['blue_rot'] - beetle_blue.rotation) % TWO_PI
-                if blue_rot_diff > math.pi:
-                    blue_rot_diff -= TWO_PI
-                beetle_blue.rotation += blue_rot_diff * lerp_factor
+            own_idx = local_player_id  # guest's own beetle (1 = red)
+            sync_errors = [0.0, 0.0]
 
-            if not red_falling:
-                red_rot_diff = (sync['red_rot'] - beetle_red.rotation) % TWO_PI
-                if red_rot_diff > math.pi:
-                    red_rot_diff -= TWO_PI
-                beetle_red.rotation += red_rot_diff * lerp_factor
+            for i, beetle in enumerate((beetle_blue, beetle_red)):
+                host_b = sync['beetles'][i]
+                is_own = (i == own_idx)
 
-            # Ball sync (if present in sync data)
-            if 'ball_x' in sync:
-                # Detect respawn: if Y changed drastically (>15 units), snap instead of lerp
-                y_diff = abs(sync['ball_y'] - beetle_ball.y)
-                if y_diff > 15:
-                    # Respawn detected - snap to position and reset velocity
-                    beetle_ball.x = sync['ball_x']
-                    beetle_ball.y = sync['ball_y']
-                    beetle_ball.z = sync['ball_z']
-                    beetle_ball.vx = 0.0
-                    beetle_ball.vy = 0.0
-                    beetle_ball.vz = 0.0
-                    beetle_ball.angular_velocity = 0.0
-                    beetle_ball.pitch_velocity = 0.0
-                    beetle_ball.roll_velocity = 0.0
-                    print(f"Ball respawn detected (Y jump: {y_diff:.1f}), snapping to spawn")
+                err = math.sqrt((host_b['x'] - beetle.x) ** 2
+                                + (host_b['y'] - beetle.y) ** 2
+                                + (host_b['z'] - beetle.z) ** 2)
+                sync_errors[i] = err
+
+                # Shortest-path angular error
+                rot_diff = (host_b['rot'] - beetle.rotation) % TWO_PI
+                if rot_diff > math.pi:
+                    rot_diff -= TWO_PI
+
+                # --- Falling: host flag is authoritative ---
+                if host_b['is_falling']:
+                    # Host says falling: hands off, let the local fall play
+                    # out (host will send MSG_SCORE when it dies)
+                    continue
+                if beetle.is_falling and host_b['active']:
+                    # Guest-only fall desync - rescue to host state
+                    beetle.is_falling = False
+                    beetle.x = host_b['x']
+                    beetle.y = host_b['y']
+                    beetle.z = host_b['z']
+                    beetle.vx = host_b['vx']
+                    beetle.vy = host_b['vy']
+                    beetle.vz = host_b['vz']
+                    beetle.rotation = host_b['rot']
+                    net_hud['snap_count'] += 1
+                    continue
+
+                # --- Hard snap on large divergence ---
+                if err > SYNC_SNAP_DIST:
+                    beetle.x = host_b['x']
+                    beetle.y = host_b['y']
+                    beetle.z = host_b['z']
+                    beetle.vx = host_b['vx']
+                    beetle.vy = host_b['vy']
+                    beetle.vz = host_b['vz']
+                    beetle.rotation = host_b['rot']
+                    net_hud['snap_count'] += 1
+                    continue
+
+                # --- Soft correction ---
+                if is_own:
+                    if err >= SYNC_OWN_DEADZONE:
+                        beetle.x += (host_b['x'] - beetle.x) * SYNC_OWN_LERP
+                        beetle.y += (host_b['y'] - beetle.y) * SYNC_OWN_LERP
+                        beetle.z += (host_b['z'] - beetle.z) * SYNC_OWN_LERP
+                    beetle.vx += (host_b['vx'] - beetle.vx) * SYNC_OWN_VEL_BLEND
+                    beetle.vy += (host_b['vy'] - beetle.vy) * SYNC_OWN_VEL_BLEND
+                    beetle.vz += (host_b['vz'] - beetle.vz) * SYNC_OWN_VEL_BLEND
                 else:
-                    # Normal movement - lerp toward host position
-                    beetle_ball.x += (sync['ball_x'] - beetle_ball.x) * lerp_factor
-                    beetle_ball.y += (sync['ball_y'] - beetle_ball.y) * lerp_factor
-                    beetle_ball.z += (sync['ball_z'] - beetle_ball.z) * lerp_factor
-                # Check if ball is becoming active (need to initialize)
-                if sync['ball_active'] and not beetle_ball.active:
-                    # Initialize ball cache if needed
-                    if not ball_cache_initialized:
-                        init_ball_cache(beetle_ball.radius)
-                    # Render bowl and rebuild floor cache
-                    simulation.render_bowl_perimeter()
-                    simulation.clear_goal_pit_floor()
-                    build_floor_height_cache()
-                    print("Ball enabled via state sync")
-                elif not sync['ball_active'] and beetle_ball.active:
-                    # Ball being disabled
-                    clear_ball()
-                    simulation.clear_bowl_perimeter()
-                    build_floor_height_cache()
-                    print("Ball disabled via state sync")
-                beetle_ball.active = sync['ball_active']
+                    beetle.x += (host_b['x'] - beetle.x) * SYNC_OTHER_LERP
+                    beetle.y += (host_b['y'] - beetle.y) * SYNC_OTHER_LERP
+                    beetle.z += (host_b['z'] - beetle.z) * SYNC_OTHER_LERP
+                    # Adopt host velocities so prediction between syncs tracks
+                    beetle.vx = host_b['vx']
+                    beetle.vy = host_b['vy']
+                    beetle.vz = host_b['vz']
+
+                # Clamp to floor so corrections never leave a beetle under the arena
+                if beetle.active:
+                    floor_y = check_floor_collision(float(beetle.x), float(beetle.z))
+                    if floor_y > -100.0:
+                        floor_surface = floor_y + 0.5
+                        if beetle.y < floor_surface:
+                            beetle.y = floor_surface
+
+                # Rotation: shortest-path lerp, snap on big divergence
+                if abs(rot_diff) > SYNC_SNAP_ANGLE:
+                    beetle.rotation = host_b['rot']
+                else:
+                    beetle.rotation += rot_diff * (SYNC_OWN_LERP if is_own else SYNC_OTHER_LERP)
+
+            # Net debug HUD
+            net_hud['corr_blue'] = sync_errors[0]
+            net_hud['corr_red'] = sync_errors[1]
+            net_hud_record_correction(max(sync_errors))
+
+            # --- Ball sync ---
+            host_ball = sync['ball']
+            # Detect respawn: if Y changed drastically (>15 units), snap instead of lerp
+            y_diff = abs(host_ball['y'] - beetle_ball.y)
+            if y_diff > 15:
+                beetle_ball.x = host_ball['x']
+                beetle_ball.y = host_ball['y']
+                beetle_ball.z = host_ball['z']
+                beetle_ball.vx = 0.0
+                beetle_ball.vy = 0.0
+                beetle_ball.vz = 0.0
+                beetle_ball.angular_velocity = 0.0
+                beetle_ball.pitch_velocity = 0.0
+                beetle_ball.roll_velocity = 0.0
+                print(f"Ball respawn detected (Y jump: {y_diff:.1f}), snapping to spawn")
+            else:
+                beetle_ball.x += (host_ball['x'] - beetle_ball.x) * SYNC_OTHER_LERP
+                beetle_ball.y += (host_ball['y'] - beetle_ball.y) * SYNC_OTHER_LERP
+                beetle_ball.z += (host_ball['z'] - beetle_ball.z) * SYNC_OTHER_LERP
+                # Adopt host velocities so prediction between syncs tracks
+                beetle_ball.vx = host_ball['vx']
+                beetle_ball.vy = host_ball['vy']
+                beetle_ball.vz = host_ball['vz']
+            # Check if ball is becoming active (need to initialize)
+            if host_ball['active'] and not beetle_ball.active:
+                # Initialize ball cache if needed
+                if not ball_cache_initialized:
+                    init_ball_cache(beetle_ball.radius)
+                # Render bowl and rebuild floor cache
+                simulation.render_bowl_perimeter()
+                simulation.clear_goal_pit_floor()
+                build_floor_height_cache()
+                print("Ball enabled via state sync")
+            elif not host_ball['active'] and beetle_ball.active:
+                # Ball being disabled
+                clear_ball()
+                simulation.clear_bowl_perimeter()
+                build_floor_height_cache()
+                print("Ball disabled via state sync")
+            beetle_ball.active = host_ball['active']
 
         # === DISCONNECT DETECTION ===
         # Check for graceful disconnect first (opponent clicked Disconnect button)

@@ -519,23 +519,36 @@ class NetworkManager:
         """Request a rematch."""
         self._send_packet(struct.pack('>B', MSG_REMATCH), reliable=True)
 
-    def send_state_sync(self, frame, blue_x, blue_y, blue_z, blue_rot, red_x, red_y, red_z, red_rot,
-                        ball_x=0.0, ball_y=0.0, ball_z=0.0, ball_active=False):
+    def send_state_sync(self, frame, beetle_states, ball_state):
         """
-        Host sends authoritative state to guest.
-        Packet format: [type:1][frame:4][blue_x:4][blue_y:4][blue_z:4][blue_rot:4]
-                       [red_x:4][red_y:4][red_z:4][red_rot:4]
-                       [ball_x:4][ball_y:4][ball_z:4][ball_active:1] = 50 bytes
+        Host sends authoritative state to guest (protocol v2).
+
+        Args:
+            frame: physics frame number
+            beetle_states: list of per-beetle dicts (blue first, then red) with
+                x, y, z, rot, vx, vy, vz, active (bool), is_falling (bool)
+            ball_state: dict with x, y, z, vx, vy, vz, active (bool)
+
+        Packet: [type:1][frame:4]
+                per beetle: [x,y,z,rot,vx,vy,vz (7*f32)][flags:1] = 29 bytes
+                            flags bit0 = active, bit1 = is_falling
+                ball: [x,y,z,vx,vy,vz (6*f32)][active:1] = 25 bytes
+        Total for 2 beetles: 5 + 58 + 25 = 88 bytes
         """
         if not self.is_host or not self.connected:
             return
 
-        data = struct.pack('>BIfffffffffffB',
-                           MSG_STATE_SYNC, frame,
-                           blue_x, blue_y, blue_z, blue_rot,
-                           red_x, red_y, red_z, red_rot,
-                           ball_x, ball_y, ball_z, 1 if ball_active else 0)
-        self._send_packet(data, reliable=False)  # Unreliable is fine for periodic sync
+        parts = [struct.pack('>BI', MSG_STATE_SYNC, frame)]
+        for b in beetle_states:
+            flags = (1 if b['active'] else 0) | (2 if b['is_falling'] else 0)
+            parts.append(struct.pack('>fffffffB',
+                                     b['x'], b['y'], b['z'], b['rot'],
+                                     b['vx'], b['vy'], b['vz'], flags))
+        parts.append(struct.pack('>ffffffB',
+                                 ball_state['x'], ball_state['y'], ball_state['z'],
+                                 ball_state['vx'], ball_state['vy'], ball_state['vz'],
+                                 1 if ball_state['active'] else 0))
+        self._send_packet(b''.join(parts), reliable=False)  # Unreliable is fine for periodic sync
 
     def send_sync_ready(self):
         """Guest sends SYNC_READY to host to confirm ready to start."""
@@ -949,32 +962,26 @@ class NetworkManager:
                     self.ping_ms = (0xFFFFFFFF - sent_time) + now
 
         elif msg_type == MSG_STATE_SYNC:
-            # Host state sync: [type:1][frame:4][beetles:32][ball:13] = 50 bytes (new format with Y)
-            if len(data) >= 50 and not self.is_host:
-                _, frame, blue_x, blue_y, blue_z, blue_rot, red_x, red_y, red_z, red_rot, ball_x, ball_y, ball_z, ball_active = struct.unpack('>BIfffffffffffB', data[:50])
-                # Store for guest to apply
+            # Protocol v2: [type:1][frame:4] + 2x beetle(29B) + ball(25B) = 88 bytes
+            if len(data) >= 88 and not self.is_host:
+                _, frame = struct.unpack('>BI', data[:5])
+                offset = 5
+                beetles = []
+                for _i in range(2):
+                    bx, by, bz, brot, bvx, bvy, bvz, flags = struct.unpack('>fffffffB', data[offset:offset + 29])
+                    beetles.append({
+                        'x': bx, 'y': by, 'z': bz, 'rot': brot,
+                        'vx': bvx, 'vy': bvy, 'vz': bvz,
+                        'active': bool(flags & 1), 'is_falling': bool(flags & 2),
+                    })
+                    offset += 29
+                ball_x, ball_y, ball_z, ball_vx, ball_vy, ball_vz, ball_active = struct.unpack('>ffffffB', data[offset:offset + 25])
                 self.pending_state_sync = {
                     'frame': frame,
-                    'blue_x': blue_x, 'blue_y': blue_y, 'blue_z': blue_z, 'blue_rot': blue_rot,
-                    'red_x': red_x, 'red_y': red_y, 'red_z': red_z, 'red_rot': red_rot,
-                    'ball_x': ball_x, 'ball_y': ball_y, 'ball_z': ball_z, 'ball_active': ball_active == 1
-                }
-            elif len(data) >= 42 and not self.is_host:
-                # Backwards compatibility with old 42-byte format (no beetle Y)
-                _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot, ball_x, ball_y, ball_z, ball_active = struct.unpack('>BIfffffffffB', data[:42])
-                self.pending_state_sync = {
-                    'frame': frame,
-                    'blue_x': blue_x, 'blue_z': blue_z, 'blue_rot': blue_rot,
-                    'red_x': red_x, 'red_z': red_z, 'red_rot': red_rot,
-                    'ball_x': ball_x, 'ball_y': ball_y, 'ball_z': ball_z, 'ball_active': ball_active == 1
-                }
-            elif len(data) >= 29 and not self.is_host:
-                # Backwards compatibility with old 29-byte format (no ball, no Y)
-                _, frame, blue_x, blue_z, blue_rot, red_x, red_z, red_rot = struct.unpack('>BIffffff', data[:29])
-                self.pending_state_sync = {
-                    'frame': frame,
-                    'blue_x': blue_x, 'blue_z': blue_z, 'blue_rot': blue_rot,
-                    'red_x': red_x, 'red_z': red_z, 'red_rot': red_rot
+                    'beetles': beetles,
+                    'ball': {'x': ball_x, 'y': ball_y, 'z': ball_z,
+                             'vx': ball_vx, 'vy': ball_vy, 'vz': ball_vz,
+                             'active': ball_active == 1},
                 }
 
         elif msg_type == MSG_SYNC_READY:
