@@ -194,19 +194,17 @@ silk_stuck = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 0=flying, 1=stuck to floo
 silk_active = ti.field(dtype=ti.i32, shape=MAX_SILK)  # 1=alive, 0=dead (for free list pattern)
 silk_active_count = ti.field(dtype=ti.i32, shape=())  # Actual live particle count (for high water mark reset)
 # Beetle-sticking tracking
-silk_stuck_beetle = ti.field(dtype=ti.i32, shape=MAX_SILK)  # -1=none/floor, 0=blue, 1=red, 2=ball
-# Silk counters per beetle (for slowdown effects)
-silk_on_blue = ti.field(dtype=ti.i32, shape=())  # Count of silk stuck to blue beetle
-silk_on_red = ti.field(dtype=ti.i32, shape=())   # Count of silk stuck to red beetle
-# Floor silk counters (for speed effects when walking over silk)
-silk_under_blue = ti.field(dtype=ti.i32, shape=())  # Floor silk near blue beetle
-silk_under_red = ti.field(dtype=ti.i32, shape=())   # Floor silk near red beetle
+silk_stuck_beetle = ti.field(dtype=ti.i32, shape=MAX_SILK)  # -1=none/floor, 0-3=player slot, 9=ball
+# Silk counters per player slot (for slowdown effects)
+silk_on = ti.field(dtype=ti.i32, shape=4)     # Count of silk stuck to each player's beetle
+# Floor silk counters per player slot (speed effects when walking over silk)
+silk_under = ti.field(dtype=ti.i32, shape=4)  # Floor silk near each player
 # Ball silk counters (for friction effects in ball mode)
 silk_on_ball = ti.field(dtype=ti.i32, shape=())     # Count of silk stuck to ball
 silk_under_ball = ti.field(dtype=ti.i32, shape=())  # Floor silk near ball
 # OPTIMIZATION: Batched silk counts array for single GPU->CPU transfer
-# Indices: 0=on_blue, 1=under_blue, 2=on_red, 3=under_red, 4=on_ball, 5=under_ball
-silk_counts_batched = ti.field(dtype=ti.i32, shape=6)
+# Indices: [slot*2]=on, [slot*2+1]=under for slots 0-3; [8]=on_ball, [9]=under_ball
+silk_counts_batched = ti.field(dtype=ti.i32, shape=10)
 silk_stuck_voxel_idx = ti.field(dtype=ti.i32, shape=MAX_SILK)  # index into body cache
 silk_stuck_offset = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SILK)  # small random offset for variation
 
@@ -8382,15 +8380,14 @@ def init_golden_gate():
 def batch_silk_counts():
     """Copy all silk count scalars into single array for efficient GPU->CPU transfer.
 
-    Reduces 6 separate GPU reads to 1, saving ~1-1.5ms on dedicated GPUs.
-    Indices: 0=on_blue, 1=under_blue, 2=on_red, 3=under_red, 4=on_ball, 5=under_ball
+    Reduces 10 separate GPU reads to 1, saving ~1-1.5ms on dedicated GPUs.
+    Indices: [slot*2]=on, [slot*2+1]=under for slots 0-3; [8]=on_ball, [9]=under_ball
     """
-    silk_counts_batched[0] = silk_on_blue[None]
-    silk_counts_batched[1] = silk_under_blue[None]
-    silk_counts_batched[2] = silk_on_red[None]
-    silk_counts_batched[3] = silk_under_red[None]
-    silk_counts_batched[4] = silk_on_ball[None]
-    silk_counts_batched[5] = silk_under_ball[None]
+    for s in range(4):
+        silk_counts_batched[s * 2] = silk_on[s]
+        silk_counts_batched[s * 2 + 1] = silk_under[s]
+    silk_counts_batched[8] = silk_on_ball[None]
+    silk_counts_batched[9] = silk_under_ball[None]
 
 # Initialize voxel sphere on module load
 print(f"Initializing voxel grid: {n_grid}x{n_grid}x{n_grid}")

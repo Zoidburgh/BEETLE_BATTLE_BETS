@@ -1893,11 +1893,9 @@ def reset_match():
 
     # Reset spider silk particles
     simulation.num_silk[None] = 0
-    simulation.silk_on_blue[None] = 0
-    simulation.silk_on_red[None] = 0
+    simulation.silk_on.fill(0)
+    simulation.silk_under.fill(0)
     simulation.silk_on_ball[None] = 0
-    simulation.silk_under_blue[None] = 0
-    simulation.silk_under_red[None] = 0
     simulation.silk_under_ball[None] = 0
     silk_might_exist = False  # GPU sync optimization flag
 
@@ -10804,261 +10802,230 @@ def cleanup_dead_spray():
 
 # ============== SPIDER SILK PARTICLE SYSTEM ==============
 
-@ti.func
-def transform_body_voxel_to_world(
-    voxel_idx: ti.i32,
-    is_blue: ti.i32,
-    world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
-    rotation: ti.f32, pitch: ti.f32, roll: ti.f32,
-    horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32,
-    horn_type_id: ti.i32, body_length: ti.i32, back_body_height: ti.i32,
-    spray_aim_pitch: ti.f32, spider_aim_pitch: ti.f32,
-    default_horn_pitch: ti.f32
-) -> ti.math.vec3:
-    """Transform a body cache voxel to world position - mirrors place_animated_beetle logic exactly"""
+def make_transform_func(slot):
+    """Per-slot body-voxel -> world transform (mirrors place_animated_beetle
+    logic exactly, bound to this slot's geometry caches)."""
+    geo = beetle_geo[slot]
+    body_cache_x = geo['body_cache_x']
+    body_cache_y = geo['body_cache_y']
+    body_cache_z = geo['body_cache_z']
+    giraffe_pivot_x = geo['giraffe_pivot_x']
+    giraffe_pivot_y = geo['giraffe_pivot_y']
 
-    # Load local coordinates from appropriate cache
-    local_x = 0.0
-    local_y = 0
-    local_z = 0.0
+    @ti.func
+    def transform_body_voxel_to_world(
+        voxel_idx: ti.i32,
+        world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
+        rotation: ti.f32, pitch: ti.f32, roll: ti.f32,
+        horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32,
+        horn_type_id: ti.i32, body_length: ti.i32, back_body_height: ti.i32,
+        spray_aim_pitch: ti.f32, spider_aim_pitch: ti.f32,
+        default_horn_pitch: ti.f32
+    ) -> ti.math.vec3:
+        """Transform a body cache voxel to world position - mirrors place_animated_beetle logic exactly"""
 
-    if is_blue == 1:
-        local_x = float(blue_body_cache_x[voxel_idx])
-        local_y = blue_body_cache_y[voxel_idx]
-        local_z = float(blue_body_cache_z[voxel_idx])
-    else:
-        local_x = float(red_body_cache_x[voxel_idx])
-        local_y = red_body_cache_y[voxel_idx]
-        local_z = float(red_body_cache_z[voxel_idx])
+        # Load local coordinates from this player's cache
+        local_x = float(body_cache_x[voxel_idx])
+        local_y = body_cache_y[voxel_idx]
+        local_z = float(body_cache_z[voxel_idx])
 
-    # Store original values for zone detection
-    orig_local_x = local_x
-    orig_local_y = local_y
-    orig_local_z = local_z
+        # Store original values for zone detection
+        orig_local_x = local_x
+        orig_local_y = local_y
+        orig_local_z = local_z
 
-    # Pre-calculate trig values
-    cos_yaw = ti.cos(rotation)
-    sin_yaw = ti.sin(rotation)
-    cos_pitch_body = ti.cos(pitch)
-    sin_pitch_body = ti.sin(pitch)
-    cos_roll = ti.cos(roll)
-    sin_roll = ti.sin(roll)
-    cos_horn_pitch = ti.cos(horn_pitch)
-    sin_horn_pitch = ti.sin(horn_pitch)
-    cos_horn_yaw = ti.cos(horn_yaw)
-    sin_horn_yaw = ti.sin(horn_yaw)
+        # Pre-calculate trig values
+        cos_yaw = ti.cos(rotation)
+        sin_yaw = ti.sin(rotation)
+        cos_pitch_body = ti.cos(pitch)
+        sin_pitch_body = ti.sin(pitch)
+        cos_roll = ti.cos(roll)
+        sin_roll = ti.sin(roll)
+        cos_horn_pitch = ti.cos(horn_pitch)
+        sin_horn_pitch = ti.sin(horn_pitch)
+        cos_horn_yaw = ti.cos(horn_yaw)
+        sin_horn_yaw = ti.sin(horn_yaw)
 
-    # Scorpion-specific: pitch deviation from default
-    pitch_deviation = horn_pitch - default_horn_pitch
-    cos_default = ti.cos(default_horn_pitch)
-    sin_default = ti.sin(default_horn_pitch)
-    cos_deviation = ti.cos(pitch_deviation)
-    sin_deviation = ti.sin(pitch_deviation)
+        # Scorpion-specific: pitch deviation from default
+        pitch_deviation = horn_pitch - default_horn_pitch
+        cos_default = ti.cos(default_horn_pitch)
+        sin_default = ti.sin(default_horn_pitch)
+        cos_deviation = ti.cos(pitch_deviation)
+        sin_deviation = ti.sin(pitch_deviation)
 
-    # Horn pivot (scorpion claws at x=2, others at x=3, giraffe dynamic)
-    horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
-    horn_pivot_y = 2
-    if horn_type_id == 7:
-        if is_blue == 1:
-            horn_pivot_x = giraffe_blue_pivot_x[None]
-            horn_pivot_y = int(giraffe_blue_pivot_y[None])
-        else:
-            horn_pivot_x = giraffe_red_pivot_x[None]
-            horn_pivot_y = int(giraffe_red_pivot_y[None])
+        # Horn pivot (scorpion claws at x=2, others at x=3, giraffe dynamic)
+        horn_pivot_x = 2.0 if horn_type_id == 3 else 3.0
+        horn_pivot_y = 2
+        if horn_type_id == 7:
+            horn_pivot_x = giraffe_pivot_x[None]
+            horn_pivot_y = int(giraffe_pivot_y[None])
 
-    # Detect if this is a horn voxel that needs rotation
-    should_rotate = False
-
-    if horn_type_id == 3:  # Scorpion - rotate claws (dx >= 2 AND |dz| > 2 to exclude tail)
-        should_rotate = orig_local_x >= 2.0 and ti.abs(orig_local_z) > 2.0
-    elif horn_type_id == 4:  # Atlas - only cephalic horn (center, |z| <= 1.5)
-        should_rotate = orig_local_x >= 3.0 and ti.abs(orig_local_z) <= 1.5
-    elif horn_type_id == 6:  # Spider - no horn rotation
+        # Detect if this is a horn voxel that needs rotation
         should_rotate = False
-    elif horn_type_id == 7:  # Giraffe weevil - only prong rotates
-        should_rotate = orig_local_x > horn_pivot_x
-    elif orig_local_x >= 3.0:  # Other beetles - rotate horns
-        should_rotate = True
 
-    if should_rotate:
-        rel_x = local_x - horn_pivot_x
-        rel_y = float(local_y - horn_pivot_y)
-        rel_z = local_z
+        if horn_type_id == 3:  # Scorpion - rotate claws (dx >= 2 AND |dz| > 2 to exclude tail)
+            should_rotate = orig_local_x >= 2.0 and ti.abs(orig_local_z) > 2.0
+        elif horn_type_id == 4:  # Atlas - only cephalic horn (center, |z| <= 1.5)
+            should_rotate = orig_local_x >= 3.0 and ti.abs(orig_local_z) <= 1.5
+        elif horn_type_id == 6:  # Spider - no horn rotation
+            should_rotate = False
+        elif horn_type_id == 7:  # Giraffe weevil - only prong rotates
+            should_rotate = orig_local_x > horn_pivot_x
+        elif orig_local_x >= 3.0:  # Other beetles - rotate horns
+            should_rotate = True
 
-        # Initialize pitched results
-        pitched_x = rel_x
-        pitched_y = rel_y
-        pitched_z = rel_z
+        if should_rotate:
+            rel_x = local_x - horn_pivot_x
+            rel_y = float(local_y - horn_pivot_y)
+            rel_z = local_z
 
-        # STEP 1: Pitch rotation - differs by beetle type
-        if horn_type_id == 3:
-            # SCORPION: Both claws start at default angle, then alternate when R/Y pressed
-            temp_x = rel_x * cos_default - rel_y * sin_default
-            temp_y = rel_x * sin_default + rel_y * cos_default
+            # Initialize pitched results
+            pitched_x = rel_x
+            pitched_y = rel_y
+            pitched_z = rel_z
 
-            if pitch_deviation != 0.0:
-                if rel_z < -1.0:  # Left claw - invert deviation
-                    pitched_x = temp_x * cos_deviation + temp_y * sin_deviation
-                    pitched_y = -temp_x * sin_deviation + temp_y * cos_deviation
-                elif rel_z > 1.0:  # Right claw - normal deviation
-                    pitched_x = temp_x * cos_deviation - temp_y * sin_deviation
-                    pitched_y = temp_x * sin_deviation + temp_y * cos_deviation
+            # STEP 1: Pitch rotation - differs by beetle type
+            if horn_type_id == 3:
+                # SCORPION: Both claws start at default angle, then alternate when R/Y pressed
+                temp_x = rel_x * cos_default - rel_y * sin_default
+                temp_y = rel_x * sin_default + rel_y * cos_default
+
+                if pitch_deviation != 0.0:
+                    if rel_z < -1.0:  # Left claw - invert deviation
+                        pitched_x = temp_x * cos_deviation + temp_y * sin_deviation
+                        pitched_y = -temp_x * sin_deviation + temp_y * cos_deviation
+                    elif rel_z > 1.0:  # Right claw - normal deviation
+                        pitched_x = temp_x * cos_deviation - temp_y * sin_deviation
+                        pitched_y = temp_x * sin_deviation + temp_y * cos_deviation
+                    else:
+                        pitched_x = temp_x
+                        pitched_y = temp_y
                 else:
                     pitched_x = temp_x
                     pitched_y = temp_y
+
+            elif horn_type_id == 2:
+                # HERCULES: Only bottom horn rotates (y < 5), top horn stays fixed
+                if orig_local_y < 5:
+                    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+                elif orig_local_y < 8 and rel_x >= 10.0:
+                    # Mid-height but far forward - bottom horn tip
+                    pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                    pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+                # else: top horn stays fixed (pitched = rel)
+
+            elif horn_type_id == 7:
+                # GIRAFFE WEEVIL: Skip pitch here — combined yaw+pitch in Step 2
+                pitched_x = rel_x
+                pitched_y = rel_y
             else:
-                pitched_x = temp_x
-                pitched_y = temp_y
-
-        elif horn_type_id == 2:
-            # HERCULES: Only bottom horn rotates (y < 5), top horn stays fixed
-            if orig_local_y < 5:
+                # STAG/RHINO/ATLAS: Rotate entire horn
                 pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
                 pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-            elif orig_local_y < 8 and rel_x >= 10.0:
-                # Mid-height but far forward - bottom horn tip
-                pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-                pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
-            # else: top horn stays fixed (pitched = rel)
 
-        elif horn_type_id == 7:
-            # GIRAFFE WEEVIL: Skip pitch here — combined yaw+pitch in Step 2
-            pitched_x = rel_x
-            pitched_y = rel_y
-        else:
-            # STAG/RHINO/ATLAS: Rotate entire horn
-            pitched_x = rel_x * cos_horn_pitch - rel_y * sin_horn_pitch
-            pitched_y = rel_x * sin_horn_pitch + rel_y * cos_horn_pitch
+            pitched_z = rel_z
 
-        pitched_z = rel_z
+            # STEP 2: Yaw rotation - differs by beetle type
+            yawed_x = pitched_x
+            yawed_y = pitched_y
+            yawed_z = pitched_z
+            temp_x = 0.0
+            temp_z = 0.0
 
-        # STEP 2: Yaw rotation - differs by beetle type
-        yawed_x = pitched_x
-        yawed_y = pitched_y
-        yawed_z = pitched_z
-        temp_x = 0.0
-        temp_z = 0.0
+            if horn_type_id == 1:
+                # STAG: Opposite rotations for left vs right pincers
+                if pitched_z < -0.1:  # Left pincer
+                    yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
+                    yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+                elif pitched_z > 0.1:  # Right pincer - inverse
+                    yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
+                    yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+                # else: center voxels don't rotate
 
-        if horn_type_id == 1:
-            # STAG: Opposite rotations for left vs right pincers
-            if pitched_z < -0.1:  # Left pincer
+            elif horn_type_id == 2:
+                # HERCULES: Roll/twist around X-axis (not yaw)
+                yawed_x = pitched_x
+                yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
+                yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
+
+            elif horn_type_id == 3:
+                # SCORPION: No yaw for claws (already handled in pitch)
+                pass
+
+            elif horn_type_id == 7:
+                # GIRAFFE WEEVIL: Yaw first, then pitch (so sweep works at any pitch angle)
+                temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
+                temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
+                yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
+                yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
+                yawed_z = temp_z
+
+            else:
+                # RHINO/ATLAS: Standard yaw rotation
                 yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
                 yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-            elif pitched_z > 0.1:  # Right pincer - inverse
-                yawed_x = pitched_x * cos_horn_yaw - pitched_z * sin_horn_yaw
-                yawed_z = pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
-            # else: center voxels don't rotate
 
-        elif horn_type_id == 2:
-            # HERCULES: Roll/twist around X-axis (not yaw)
-            yawed_x = pitched_x
-            yawed_y = pitched_y * cos_horn_yaw - pitched_z * sin_horn_yaw
-            yawed_z = pitched_y * sin_horn_yaw + pitched_z * cos_horn_yaw
+            # Translate back from pivot
+            local_x = yawed_x + horn_pivot_x
+            local_y = int(ti.round(yawed_y + float(horn_pivot_y)))
+            local_z = yawed_z
 
-        elif horn_type_id == 3:
-            # SCORPION: No yaw for claws (already handled in pitch)
-            pass
+        # SCORPION TAIL ROTATION
+        if horn_type_id == 3:
+            is_tail = (orig_local_x >= -body_length) and (orig_local_x <= -body_length + 30) and (orig_local_y >= back_body_height + 3) and (ti.abs(orig_local_z) <= 2)
+            if is_tail:
+                tail_pivot_x = float(-body_length + 1)
+                tail_pivot_y = float(back_body_height)
+                tail_rel_x = local_x - tail_pivot_x
+                tail_rel_y = float(local_y) - tail_pivot_y
+                cos_tail = ti.cos(tail_pitch)
+                sin_tail = ti.sin(tail_pitch)
+                local_x = tail_pivot_x + tail_rel_x * cos_tail - tail_rel_y * sin_tail
+                local_y = int(ti.round(tail_pivot_y + tail_rel_x * sin_tail + tail_rel_y * cos_tail))
 
-        elif horn_type_id == 7:
-            # GIRAFFE WEEVIL: Yaw first, then pitch (so sweep works at any pitch angle)
-            temp_x = rel_x * cos_horn_yaw - rel_z * sin_horn_yaw
-            temp_z = rel_x * sin_horn_yaw + rel_z * cos_horn_yaw
-            yawed_x = temp_x * cos_horn_pitch - rel_y * sin_horn_pitch
-            yawed_y = temp_x * sin_horn_pitch + rel_y * cos_horn_pitch
-            yawed_z = temp_z
+        # BOMBARDIER AIM ROTATION
+        if horn_type_id == 5 and spray_aim_pitch != 0.0:
+            rear_pivot_x = float(-body_length)
+            cos_aim = ti.cos(spray_aim_pitch)
+            sin_aim = ti.sin(spray_aim_pitch)
+            rel_x = local_x - rear_pivot_x
+            ly_aim = float(local_y)
+            local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
+            local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
 
-        else:
-            # RHINO/ATLAS: Standard yaw rotation
-            yawed_x = pitched_x * cos_horn_yaw + pitched_z * sin_horn_yaw
-            yawed_z = -pitched_x * sin_horn_yaw + pitched_z * cos_horn_yaw
+        # SPIDER ABDOMEN ROTATION
+        if horn_type_id == 6 and spider_aim_pitch != 0.0:
+            spider_pivot_x = 3.0
+            if orig_local_x < spider_pivot_x:
+                cos_spider = ti.cos(spider_aim_pitch)
+                sin_spider = ti.sin(spider_aim_pitch)
+                rel_x = local_x - spider_pivot_x
+                ly_spider = float(local_y)
+                local_x = spider_pivot_x + rel_x * cos_spider - ly_spider * sin_spider
+                local_y = int(ti.round(rel_x * sin_spider + ly_spider * cos_spider))
 
-        # Translate back from pivot
-        local_x = yawed_x + horn_pivot_x
-        local_y = int(ti.round(yawed_y + float(horn_pivot_y)))
-        local_z = yawed_z
+        # Apply beetle 3D rotation (yaw -> pitch -> roll)
+        ly = float(local_y)
+        temp_x = local_x * cos_yaw - local_z * sin_yaw
+        temp_z = local_x * sin_yaw + local_z * cos_yaw
+        temp_y = ly
 
-    # SCORPION TAIL ROTATION
-    if horn_type_id == 3:
-        is_tail = (orig_local_x >= -body_length) and (orig_local_x <= -body_length + 30) and (orig_local_y >= back_body_height + 3) and (ti.abs(orig_local_z) <= 2)
-        if is_tail:
-            tail_pivot_x = float(-body_length + 1)
-            tail_pivot_y = float(back_body_height)
-            tail_rel_x = local_x - tail_pivot_x
-            tail_rel_y = float(local_y) - tail_pivot_y
-            cos_tail = ti.cos(tail_pitch)
-            sin_tail = ti.sin(tail_pitch)
-            local_x = tail_pivot_x + tail_rel_x * cos_tail - tail_rel_y * sin_tail
-            local_y = int(ti.round(tail_pivot_y + tail_rel_x * sin_tail + tail_rel_y * cos_tail))
+        temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
+        temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+        temp2_z = temp_z
 
-    # BOMBARDIER AIM ROTATION
-    if horn_type_id == 5 and spray_aim_pitch != 0.0:
-        rear_pivot_x = float(-body_length)
-        cos_aim = ti.cos(spray_aim_pitch)
-        sin_aim = ti.sin(spray_aim_pitch)
-        rel_x = local_x - rear_pivot_x
-        ly_aim = float(local_y)
-        local_x = rear_pivot_x + rel_x * cos_aim - ly_aim * sin_aim
-        local_y = int(ti.round(rel_x * sin_aim + ly_aim * cos_aim))
+        final_x = temp2_x
+        final_y = temp2_y * cos_roll - temp2_z * sin_roll
+        final_z = temp2_y * sin_roll + temp2_z * cos_roll
 
-    # SPIDER ABDOMEN ROTATION
-    if horn_type_id == 6 and spider_aim_pitch != 0.0:
-        spider_pivot_x = 3.0
-        if orig_local_x < spider_pivot_x:
-            cos_spider = ti.cos(spider_aim_pitch)
-            sin_spider = ti.sin(spider_aim_pitch)
-            rel_x = local_x - spider_pivot_x
-            ly_spider = float(local_y)
-            local_x = spider_pivot_x + rel_x * cos_spider - ly_spider * sin_spider
-            local_y = int(ti.round(rel_x * sin_spider + ly_spider * cos_spider))
+        # Return world position
+        return ti.math.vec3(world_x + final_x, world_y + RENDER_Y_OFFSET + final_y, world_z + final_z)
 
-    # Apply beetle 3D rotation (yaw -> pitch -> roll)
-    ly = float(local_y)
-    temp_x = local_x * cos_yaw - local_z * sin_yaw
-    temp_z = local_x * sin_yaw + local_z * cos_yaw
-    temp_y = ly
-
-    temp2_x = temp_x * cos_pitch_body - temp_y * sin_pitch_body
-    temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
-    temp2_z = temp_z
-
-    final_x = temp2_x
-    final_y = temp2_y * cos_roll - temp2_z * sin_roll
-    final_z = temp2_y * sin_roll + temp2_z * cos_roll
-
-    # Return world position
-    return ti.math.vec3(world_x + final_x, world_y + RENDER_Y_OFFSET + final_y, world_z + final_z)
+    return transform_body_voxel_to_world
 
 
-@ti.func
-def is_horn_zone_voxel(voxel_idx: ti.i32, is_blue: ti.i32, horn_type_id: ti.i32, body_length: ti.i32, back_body_height: ti.i32) -> ti.i32:
-    """Check if a voxel is in the horn zone (front) vs body zone"""
-    local_x = 0.0
-    local_y = 0
-    local_z = 0.0
-
-    if is_blue == 1:
-        local_x = float(blue_body_cache_x[voxel_idx])
-        local_y = blue_body_cache_y[voxel_idx]
-        local_z = float(blue_body_cache_z[voxel_idx])
-    else:
-        local_x = float(red_body_cache_x[voxel_idx])
-        local_y = red_body_cache_y[voxel_idx]
-        local_z = float(red_body_cache_z[voxel_idx])
-
-    is_horn = 0
-
-    if horn_type_id == 3:  # Scorpion - claws and tail are "horn"
-        if local_x >= 2.0 and ti.abs(local_z) > 2.0:  # Claws
-            is_horn = 1
-        elif local_y >= back_body_height + 3 and ti.abs(local_z) <= 2:  # Tail
-            is_horn = 1
-    elif horn_type_id == 6:  # Spider - no horn zone
-        is_horn = 0
-    elif local_x >= 3.0:  # Other beetles - front is horn
-        is_horn = 1
-
-    return is_horn
-
+transform_funcs = [make_transform_func(_s) for _s in range(4)]
 
 @ti.kernel
 def spawn_silk(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
@@ -11196,11 +11163,10 @@ def update_silk_particles(dt: ti.f32):
         # Mark dead particles as inactive and update counters
         if simulation.silk_lifetime[idx] <= 0:
             # Decrement counter if it was stuck to something (moved from cleanup function)
-            if simulation.silk_stuck[idx] == 2:  # Was stuck to beetle
-                if simulation.silk_stuck_beetle[idx] == 0:
-                    ti.atomic_sub(simulation.silk_on_blue[None], 1)
-                elif simulation.silk_stuck_beetle[idx] == 1:
-                    ti.atomic_sub(simulation.silk_on_red[None], 1)
+            if simulation.silk_stuck[idx] == 2:  # Was stuck to a beetle
+                sb = simulation.silk_stuck_beetle[idx]
+                if 0 <= sb < 4:
+                    ti.atomic_sub(simulation.silk_on[sb], 1)
             elif simulation.silk_stuck[idx] == 3:  # Was stuck to ball
                 ti.atomic_sub(simulation.silk_on_ball[None], 1)
             simulation.silk_active[idx] = 0
@@ -11242,40 +11208,36 @@ def update_silk_particles(dt: ti.f32):
                     simulation.silk_lifetime[idx] = 0.0
 
 
-@ti.kernel
-def check_silk_beetle_collision(
-    # Blue beetle state
-    blue_x: ti.f32, blue_y: ti.f32, blue_z: ti.f32,
-    blue_rotation: ti.f32, blue_pitch: ti.f32, blue_roll: ti.f32,
-    blue_horn_pitch: ti.f32, blue_horn_yaw: ti.f32, blue_tail_pitch: ti.f32,
-    blue_horn_type_id: ti.i32, blue_body_length: ti.i32, blue_back_height: ti.i32,
-    blue_spray_aim: ti.f32, blue_spider_aim: ti.f32, blue_default_horn_pitch: ti.f32, blue_active: ti.i32,
-    # Red beetle state
-    red_x: ti.f32, red_y: ti.f32, red_z: ti.f32,
-    red_rotation: ti.f32, red_pitch: ti.f32, red_roll: ti.f32,
-    red_horn_pitch: ti.f32, red_horn_yaw: ti.f32, red_tail_pitch: ti.f32,
-    red_horn_type_id: ti.i32, red_body_length: ti.i32, red_back_height: ti.i32,
-    red_spray_aim: ti.f32, red_spider_aim: ti.f32, red_default_horn_pitch: ti.f32, red_active: ti.i32
-):
-    """Check flying silk against beetle voxels and stick if hit"""
-    COLLISION_RADIUS = 18.0  # Bounding sphere for fast rejection
-    VOXEL_HIT_DIST = 1.5  # Distance to count as hit
+def make_silk_collision_kernel(slot):
+    """Per-slot flying-silk vs beetle collision. Silk from ANOTHER spider
+    sticks (and slows); a spider's own silk never sticks to it."""
+    geo = beetle_geo[slot]
+    body_cache_size = geo['body_cache_size']
+    _transform = transform_funcs[slot]
+    _slot = slot
 
-    for idx in range(simulation.num_silk[None]):
-        # Skip inactive particles (free list pattern)
-        if simulation.silk_active[idx] == 0:
-            continue
-        if simulation.silk_stuck[idx] != 0:  # Only check flying silk
-            continue
+    @ti.kernel
+    def silk_collision(bx: ti.f32, by: ti.f32, bz: ti.f32,
+                       rotation: ti.f32, pitch: ti.f32, roll: ti.f32,
+                       horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32,
+                       horn_type_id: ti.i32, body_length: ti.i32, back_height: ti.i32,
+                       spray_aim_p: ti.f32, spider_aim_p: ti.f32, default_horn_pitch: ti.f32):
+        COLLISION_RADIUS = 18.0  # Bounding sphere for fast rejection
+        VOXEL_HIT_DIST = 1.5  # Distance to count as hit
 
-        pos = simulation.silk_pos[idx]
-        owner = simulation.silk_owner[idx]
+        for idx in range(simulation.num_silk[None]):
+            # Skip inactive particles (free list pattern)
+            if simulation.silk_active[idx] == 0:
+                continue
+            if simulation.silk_stuck[idx] != 0:  # Only check flying silk
+                continue
+            if simulation.silk_owner[idx] == _slot:  # Own silk never sticks to us
+                continue
 
-        # Check blue beetle (if silk not from blue)
-        if blue_active == 1 and owner != 0:
-            dx = pos.x - blue_x
-            dy = pos.y - (blue_y + RENDER_Y_OFFSET)
-            dz = pos.z - blue_z
+            pos = simulation.silk_pos[idx]
+            dx = pos.x - bx
+            dy = pos.y - (by + RENDER_Y_OFFSET)
+            dz = pos.z - bz
             dist_sq = dx * dx + dy * dy + dz * dz
 
             if dist_sq < COLLISION_RADIUS * COLLISION_RADIUS:
@@ -11283,15 +11245,14 @@ def check_silk_beetle_collision(
                 best_dist = 999.0
                 best_voxel = -1
 
-                for vi in range(blue_body_cache_size[None]):
+                for vi in range(body_cache_size[None]):
                     if best_dist > 0.5:  # Early exit once close enough
-                        voxel_world = transform_body_voxel_to_world(
-                            vi, 1,  # is_blue = 1
-                            blue_x, blue_y, blue_z,
-                            blue_rotation, blue_pitch, blue_roll,
-                            blue_horn_pitch, blue_horn_yaw, blue_tail_pitch,
-                            blue_horn_type_id, blue_body_length, blue_back_height,
-                            blue_spray_aim, blue_spider_aim, blue_default_horn_pitch
+                        voxel_world = _transform(
+                            vi, bx, by, bz,
+                            rotation, pitch, roll,
+                            horn_pitch, horn_yaw, tail_pitch,
+                            horn_type_id, body_length, back_height,
+                            spray_aim_p, spider_aim_p, default_horn_pitch
                         )
 
                         vdx = pos.x - voxel_world.x
@@ -11308,7 +11269,7 @@ def check_silk_beetle_collision(
                     voxel_taken = False
                     for other in range(simulation.num_silk[None]):
                         if other != idx and simulation.silk_stuck[other] == 2:  # Beetle-stuck
-                            if simulation.silk_stuck_beetle[other] == 0:  # On blue beetle
+                            if simulation.silk_stuck_beetle[other] == _slot:
                                 if simulation.silk_stuck_voxel_idx[other] == best_voxel:
                                     voxel_taken = True
                                     break
@@ -11316,7 +11277,7 @@ def check_silk_beetle_collision(
                     if not voxel_taken:
                         # Hit! Stick to this voxel (body or horn)
                         simulation.silk_stuck[idx] = 2  # Stuck to beetle
-                        simulation.silk_stuck_beetle[idx] = 0  # Blue beetle
+                        simulation.silk_stuck_beetle[idx] = _slot
                         simulation.silk_stuck_voxel_idx[idx] = best_voxel
                         simulation.silk_stuck_offset[idx] = ti.math.vec3(
                             (ti.random() - 0.5) * 0.3,
@@ -11325,144 +11286,89 @@ def check_silk_beetle_collision(
                         )
                         simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
                         simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK
-                        ti.atomic_add(simulation.silk_on_blue[None], 1)  # Increment counter
-                        continue  # Don't check red if already hit blue
+                        ti.atomic_add(simulation.silk_on[_slot], 1)  # Increment counter
                     else:
                         # Voxel already has silk - expire this particle
                         simulation.silk_lifetime[idx] = 0.0
-                        continue
 
-        # Check red beetle (if silk not from red)
-        if red_active == 1 and owner != 1:
-            dx = pos.x - red_x
-            dy = pos.y - (red_y + RENDER_Y_OFFSET)
-            dz = pos.z - red_z
-            dist_sq = dx * dx + dy * dy + dz * dz
+    return silk_collision
 
-            if dist_sq < COLLISION_RADIUS * COLLISION_RADIUS:
-                # Within bounding sphere - check voxels
-                best_dist = 999.0
-                best_voxel = -1
 
-                for vi in range(red_body_cache_size[None]):
-                    if best_dist > 0.5:  # Early exit once close enough
-                        voxel_world = transform_body_voxel_to_world(
-                            vi, 0,  # is_blue = 0
-                            red_x, red_y, red_z,
-                            red_rotation, red_pitch, red_roll,
-                            red_horn_pitch, red_horn_yaw, red_tail_pitch,
-                            red_horn_type_id, red_body_length, red_back_height,
-                            red_spray_aim, red_spider_aim, red_default_horn_pitch
-                        )
+silk_collision_kernels = [make_silk_collision_kernel(_s) for _s in range(4)]
 
-                        vdx = pos.x - voxel_world.x
-                        vdy = pos.y - voxel_world.y
-                        vdz = pos.z - voxel_world.z
-                        vdist = ti.sqrt(vdx * vdx + vdy * vdy + vdz * vdz)
 
-                        if vdist < best_dist:
-                            best_dist = vdist
-                            best_voxel = vi
+def check_silk_beetle_collisions(states):
+    """Check flying silk against every provided beetle.
 
-                if best_dist < VOXEL_HIT_DIST and best_voxel >= 0:
-                    # Check if this voxel already has silk (prevent stacking)
-                    voxel_taken = False
-                    for other in range(simulation.num_silk[None]):
-                        if other != idx and simulation.silk_stuck[other] == 2:  # Beetle-stuck
-                            if simulation.silk_stuck_beetle[other] == 1:  # On red beetle
-                                if simulation.silk_stuck_voxel_idx[other] == best_voxel:
-                                    voxel_taken = True
-                                    break
+    states: per-slot tuples (x, y, z, rotation, pitch, roll, horn_pitch,
+    horn_yaw, tail_pitch, horn_type_id, body_length, back_height,
+    spray_aim_pitch, spider_aim_pitch, default_horn_pitch, active) or None.
+    """
+    for slot, st in enumerate(states):
+        if st is None or st[15] != 1:
+            continue
+        silk_collision_kernels[slot](
+            float(st[0]), float(st[1]), float(st[2]),
+            float(st[3]), float(st[4]), float(st[5]),
+            float(st[6]), float(st[7]), float(st[8]),
+            int(st[9]), int(st[10]), int(st[11]),
+            float(st[12]), float(st[13]), float(st[14]))
 
-                    if not voxel_taken:
-                        # Hit! Stick to this voxel (body or horn)
-                        simulation.silk_stuck[idx] = 2  # Stuck to beetle
-                        simulation.silk_stuck_beetle[idx] = 1  # Red beetle
-                        simulation.silk_stuck_voxel_idx[idx] = best_voxel
-                        simulation.silk_stuck_offset[idx] = ti.math.vec3(
-                            (ti.random() - 0.5) * 0.3,
-                            (ti.random() - 0.5) * 0.3,
-                            (ti.random() - 0.5) * 0.3
-                        )
-                        simulation.silk_vel[idx] = ti.math.vec3(0.0, 0.0, 0.0)
-                        simulation.silk_lifetime[idx] = SILK_LIFETIME_STUCK
-                        ti.atomic_add(simulation.silk_on_red[None], 1)  # Increment counter
-                    else:
-                        # Voxel already has silk - expire this particle
-                        simulation.silk_lifetime[idx] = 0.0
+
+def make_stuck_silk_update_kernel(slot):
+    """Per-slot world-position update for silk stuck to this beetle."""
+    _transform = transform_funcs[slot]
+    _slot = slot
+
+    @ti.kernel
+    def update_stuck(bx: ti.f32, by: ti.f32, bz: ti.f32,
+                     rotation: ti.f32, pitch: ti.f32, roll: ti.f32,
+                     horn_pitch: ti.f32, horn_yaw: ti.f32, tail_pitch: ti.f32,
+                     horn_type_id: ti.i32, body_length: ti.i32, back_height: ti.i32,
+                     spray_aim_p: ti.f32, spider_aim_p: ti.f32, default_horn_pitch: ti.f32):
+        for idx in range(simulation.num_silk[None]):
+            if simulation.silk_active[idx] == 0:
+                continue
+            if simulation.silk_stuck[idx] == 2 and simulation.silk_stuck_beetle[idx] == _slot:
+                world_pos = _transform(
+                    simulation.silk_stuck_voxel_idx[idx], bx, by, bz,
+                    rotation, pitch, roll,
+                    horn_pitch, horn_yaw, tail_pitch,
+                    horn_type_id, body_length, back_height,
+                    spray_aim_p, spider_aim_p, default_horn_pitch
+                )
+                simulation.silk_pos[idx] = world_pos + simulation.silk_stuck_offset[idx]
+
+    return update_stuck
+
+
+stuck_silk_update_kernels = [make_stuck_silk_update_kernel(_s) for _s in range(4)]
 
 
 @ti.kernel
-def update_beetle_stuck_silk_positions(
-    # Blue beetle state
-    blue_x: ti.f32, blue_y: ti.f32, blue_z: ti.f32,
-    blue_rotation: ti.f32, blue_pitch: ti.f32, blue_roll: ti.f32,
-    blue_horn_pitch: ti.f32, blue_horn_yaw: ti.f32, blue_tail_pitch: ti.f32,
-    blue_horn_type_id: ti.i32, blue_body_length: ti.i32, blue_back_height: ti.i32,
-    blue_spray_aim: ti.f32, blue_spider_aim: ti.f32, blue_default_horn_pitch: ti.f32,
-    # Red beetle state
-    red_x: ti.f32, red_y: ti.f32, red_z: ti.f32,
-    red_rotation: ti.f32, red_pitch: ti.f32, red_roll: ti.f32,
-    red_horn_pitch: ti.f32, red_horn_yaw: ti.f32, red_tail_pitch: ti.f32,
-    red_horn_type_id: ti.i32, red_body_length: ti.i32, red_back_height: ti.i32,
-    red_spray_aim: ti.f32, red_spider_aim: ti.f32, red_default_horn_pitch: ti.f32,
-    # Ball state
-    ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32,
-    ball_rotation: ti.f32, ball_pitch: ti.f32, ball_roll: ti.f32, ball_active: ti.i32
-):
-    """Update world positions of silk stuck to beetles/ball - call after beetle render"""
+def update_ball_stuck_silk(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32,
+                           ball_rotation: ti.f32, ball_pitch: ti.f32, ball_roll: ti.f32,
+                           ball_active: ti.i32):
+    """Update world positions of silk stuck to the ball"""
     for idx in range(simulation.num_silk[None]):
-        # Skip inactive particles (free list pattern)
         if simulation.silk_active[idx] == 0:
             continue
-
-        stuck_type = simulation.silk_stuck[idx]
-
-        if stuck_type == 2:  # Beetle-stuck silk
-            stuck_beetle = simulation.silk_stuck_beetle[idx]
-            voxel_idx = simulation.silk_stuck_voxel_idx[idx]
-            offset = simulation.silk_stuck_offset[idx]
-
-            if stuck_beetle == 0:  # Blue beetle
-                world_pos = transform_body_voxel_to_world(
-                    voxel_idx, 1,
-                    blue_x, blue_y, blue_z,
-                    blue_rotation, blue_pitch, blue_roll,
-                    blue_horn_pitch, blue_horn_yaw, blue_tail_pitch,
-                    blue_horn_type_id, blue_body_length, blue_back_height,
-                    blue_spray_aim, blue_spider_aim, blue_default_horn_pitch
-                )
-                simulation.silk_pos[idx] = world_pos + offset
-            else:  # Red beetle
-                world_pos = transform_body_voxel_to_world(
-                    voxel_idx, 0,
-                    red_x, red_y, red_z,
-                    red_rotation, red_pitch, red_roll,
-                    red_horn_pitch, red_horn_yaw, red_tail_pitch,
-                    red_horn_type_id, red_body_length, red_back_height,
-                    red_spray_aim, red_spider_aim, red_default_horn_pitch
-                )
-                simulation.silk_pos[idx] = world_pos + offset
-
-        elif stuck_type == 3 and ball_active == 1:  # Ball-stuck silk
+        if simulation.silk_stuck[idx] == 3 and ball_active == 1:  # Ball-stuck silk
             offset = simulation.silk_stuck_offset[idx]
 
             # Rotate offset with ball's rotation (yaw -> pitch -> roll)
-            # Step 1: Yaw (around Y-axis)
             cos_yaw = ti.cos(ball_rotation)
             sin_yaw = ti.sin(ball_rotation)
             temp_x = offset.x * cos_yaw - offset.z * sin_yaw
             temp_z = offset.x * sin_yaw + offset.z * cos_yaw
             temp_y = offset.y
 
-            # Step 2: Pitch (around Z-axis, nose up/down)
             cos_pitch = ti.cos(ball_pitch)
             sin_pitch = ti.sin(ball_pitch)
             rot_x = temp_x * cos_pitch - temp_y * sin_pitch
             rot_y = temp_x * sin_pitch + temp_y * cos_pitch
             rot_z = temp_z
 
-            # Step 3: Roll (around X-axis, side tilt)
             cos_roll = ti.cos(ball_roll)
             sin_roll = ti.sin(ball_roll)
             final_y = rot_y * cos_roll - rot_z * sin_roll
@@ -11470,6 +11376,27 @@ def update_beetle_stuck_silk_positions(
             final_x = rot_x
 
             simulation.silk_pos[idx] = ti.math.vec3(ball_x + final_x, ball_y + final_y, ball_z + final_z)
+
+
+def update_all_stuck_silk_positions(states, ball_args):
+    """Update stuck-silk anchors for every provided beetle + the ball.
+
+    states: per-slot 15-tuples (same layout as check_silk_beetle_collisions,
+    without the trailing active flag) or None; ball_args: (x, y, z, rotation,
+    pitch, roll, active).
+    """
+    for slot, st in enumerate(states):
+        if st is None:
+            continue
+        stuck_silk_update_kernels[slot](
+            float(st[0]), float(st[1]), float(st[2]),
+            float(st[3]), float(st[4]), float(st[5]),
+            float(st[6]), float(st[7]), float(st[8]),
+            int(st[9]), int(st[10]), int(st[11]),
+            float(st[12]), float(st[13]), float(st[14]))
+    update_ball_stuck_silk(float(ball_args[0]), float(ball_args[1]), float(ball_args[2]),
+                           float(ball_args[3]), float(ball_args[4]), float(ball_args[5]),
+                           int(ball_args[6]))
 
 
 @ti.kernel
@@ -11502,44 +11429,51 @@ def cleanup_dead_silk():
 
 
 @ti.kernel
-def count_floor_silk_under_beetles(blue_x: ti.f32, blue_z: ti.f32, red_x: ti.f32, red_z: ti.f32,
-                                   ball_x: ti.f32, ball_z: ti.f32, ball_active: ti.i32):
-    """Count floor silk particles near each beetle and ball for speed/friction effects"""
-    FLOOR_SILK_RADIUS = 8.0  # How close counts as "under" the beetle
-    BALL_SILK_RADIUS = 6.0   # Smaller radius for ball (ball is smaller than beetle)
-    RADIUS_SQ = FLOOR_SILK_RADIUS * FLOOR_SILK_RADIUS
-    BALL_RADIUS_SQ = BALL_SILK_RADIUS * BALL_SILK_RADIUS
-
-    # Reset counters
-    simulation.silk_under_blue[None] = 0
-    simulation.silk_under_red[None] = 0
+def reset_floor_silk_counts():
+    """Reset per-slot + ball floor-silk counters before recounting"""
+    for s in range(4):
+        simulation.silk_under[s] = 0
     simulation.silk_under_ball[None] = 0
 
+@ti.kernel
+def count_floor_silk_under(x: ti.f32, z: ti.f32, slot: ti.i32):
+    """Count floor silk near one player's beetle (speed effects)"""
+    FLOOR_SILK_RADIUS = 8.0  # How close counts as "under" the beetle
+    RADIUS_SQ = FLOOR_SILK_RADIUS * FLOOR_SILK_RADIUS
     for idx in range(simulation.num_silk[None]):
-        # Skip inactive particles (free list pattern)
         if simulation.silk_active[idx] == 0:
             continue
         if simulation.silk_stuck[idx] == 1:  # Floor silk only
             pos = simulation.silk_pos[idx]
+            dx = pos.x - x
+            dz = pos.z - z
+            if dx * dx + dz * dz < RADIUS_SQ:
+                ti.atomic_add(simulation.silk_under[slot], 1)
 
-            # Check distance to blue beetle
-            dx_blue = pos.x - blue_x
-            dz_blue = pos.z - blue_z
-            if dx_blue * dx_blue + dz_blue * dz_blue < RADIUS_SQ:
-                ti.atomic_add(simulation.silk_under_blue[None], 1)
+@ti.kernel
+def count_floor_silk_under_ball(x: ti.f32, z: ti.f32):
+    """Count floor silk near the ball (friction effects)"""
+    BALL_SILK_RADIUS = 6.0   # Smaller radius for ball
+    BALL_RADIUS_SQ = BALL_SILK_RADIUS * BALL_SILK_RADIUS
+    for idx in range(simulation.num_silk[None]):
+        if simulation.silk_active[idx] == 0:
+            continue
+        if simulation.silk_stuck[idx] == 1:
+            pos = simulation.silk_pos[idx]
+            dx = pos.x - x
+            dz = pos.z - z
+            if dx * dx + dz * dz < BALL_RADIUS_SQ:
+                ti.atomic_add(simulation.silk_under_ball[None], 1)
 
-            # Check distance to red beetle
-            dx_red = pos.x - red_x
-            dz_red = pos.z - red_z
-            if dx_red * dx_red + dz_red * dz_red < RADIUS_SQ:
-                ti.atomic_add(simulation.silk_under_red[None], 1)
-
-            # Check distance to ball (if active)
-            if ball_active == 1:
-                dx_ball = pos.x - ball_x
-                dz_ball = pos.z - ball_z
-                if dx_ball * dx_ball + dz_ball * dz_ball < BALL_RADIUS_SQ:
-                    ti.atomic_add(simulation.silk_under_ball[None], 1)
+def count_floor_silk_under_all():
+    """Count floor silk near every active beetle + the ball"""
+    reset_floor_silk_counts()
+    for slot in range(active_player_count):
+        b = beetles[slot]
+        if b.active:
+            count_floor_silk_under(float(b.x), float(b.z), slot)
+    if beetle_ball.active:
+        count_floor_silk_under_ball(float(beetle_ball.x), float(beetle_ball.z))
 
 
 @ti.kernel
@@ -11567,7 +11501,7 @@ def check_silk_ball_collision(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, ba
         if dist_sq < STICK_RADIUS_SQ:
             # Hit the ball! Stick to it
             simulation.silk_stuck[idx] = 3  # New value: stuck to ball
-            simulation.silk_stuck_beetle[idx] = 2  # 2 = ball (not 0=blue, 1=red)
+            simulation.silk_stuck_beetle[idx] = 9  # 9 = ball (0-3 are player slots)
             # Store offset in BALL-LOCAL space (inverse rotate world offset)
             dist = ti.sqrt(dist_sq)
             # Initialize world offset (must be before if/else for Taichi scoping)
@@ -16243,12 +16177,10 @@ update_loading(6)
 spawn_silk(0.0, -100.0, 0.0, 1.0, 0.0, 50.0, 0.0, 0, 0.0)
 build_silk_spatial_grid()
 update_silk_particles(0.016)
-check_silk_beetle_collision(
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1
-)
+_warm_silk_state = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1)
+check_silk_beetle_collisions([_warm_silk_state, _warm_silk_state])
 check_silk_ball_collision(0.0, -100.0, 0.0, 4.0, 0.0, 0.0, 0.0)
-count_floor_silk_under_beetles(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0)
+count_floor_silk_under_all()
 cleanup_dead_silk()
 simulation.batch_silk_counts()
 update_loading(7)
@@ -16261,11 +16193,9 @@ clear_score_digits()  # Clear score digits warmup
 spawn_score_burst(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1, 0, 1)
 clear_ladybug_bounded(0.0, -100.0, 0.0)
 place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-update_beetle_stuck_silk_positions(
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0,
-    0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0,
-    0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0
-)
+update_all_stuck_silk_positions(
+    [_warm_silk_state[:15], _warm_silk_state[:15]],
+    (0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0))
 update_loading(8)
 
 # PHASE 9: GPU sync and .to_numpy() warmup
@@ -17685,9 +17615,9 @@ try:
                     # silk_counts fetched once per frame before physics loop (GPU sync optimization)
                     if silk_might_exist and silk_counts is not None:
                         # Each silk ON ball adds 4% friction (stickier ball)
-                        silk_on_friction = 0.04 * silk_counts[4]
+                        silk_on_friction = 0.04 * silk_counts[8]
                         # Each floor silk UNDER ball adds 2% friction (sticky floor)
-                        silk_under_friction = 0.02 * silk_counts[5]
+                        silk_under_friction = 0.02 * silk_counts[9]
                         # Cap total silk friction bonus at 60% (prevents ball from stopping instantly)
                         total_silk_friction = min(0.60, silk_on_friction + silk_under_friction)
                         adjusted_friction = base_friction - total_silk_friction
@@ -18019,22 +17949,20 @@ try:
                                   HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[beetles[0].horn_type_id]
                 red_def_pitch = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
                                  HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[beetles[1].horn_type_id]
-                check_silk_beetle_collision(
-                    # Blue beetle state
-                    beetles[0].x, beetles[0].y, beetles[0].z,
-                    beetles[0].rotation, beetles[0].pitch, beetles[0].roll,
-                    beetles[0].horn_pitch, beetles[0].horn_yaw, blue_tail_pitch_rad,
-                    beetles[0].horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
-                    spray_aim[0] * SPRAY_AIM_MAX, spider_aim[0] * SPIDER_AIM_MAX, blue_def_pitch,
-                    1 if beetles[0].active else 0,
-                    # Red beetle state
-                    beetles[1].x, beetles[1].y, beetles[1].z,
-                    beetles[1].rotation, beetles[1].pitch, beetles[1].roll,
-                    beetles[1].horn_pitch, beetles[1].horn_yaw, red_tail_pitch_rad,
-                    beetles[1].horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
-                    spray_aim[1] * SPRAY_AIM_MAX, spider_aim[1] * SPRAY_AIM_MAX, red_def_pitch,
-                    1 if beetles[1].active else 0
-                )
+                check_silk_beetle_collisions([
+                    (beetles[0].x, beetles[0].y, beetles[0].z,
+                     beetles[0].rotation, beetles[0].pitch, beetles[0].roll,
+                     beetles[0].horn_pitch, beetles[0].horn_yaw, blue_tail_pitch_rad,
+                     beetles[0].horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
+                     spray_aim[0] * SPRAY_AIM_MAX, spider_aim[0] * SPIDER_AIM_MAX, blue_def_pitch,
+                     1 if beetles[0].active else 0),
+                    (beetles[1].x, beetles[1].y, beetles[1].z,
+                     beetles[1].rotation, beetles[1].pitch, beetles[1].roll,
+                     beetles[1].horn_pitch, beetles[1].horn_yaw, red_tail_pitch_rad,
+                     beetles[1].horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
+                     spray_aim[1] * SPRAY_AIM_MAX, spider_aim[1] * SPRAY_AIM_MAX, red_def_pitch,
+                     1 if beetles[1].active else 0),
+                ])
 
                 # Check silk-ball collision if ball mode is active
                 if beetle_ball.active:
@@ -18052,8 +17980,7 @@ try:
                     cleanup_dead_silk()
 
                 # Count floor silk under each beetle and ball for speed/friction effects
-                count_floor_silk_under_beetles(beetles[0].x, beetles[0].z, beetles[1].x, beetles[1].z,
-                                               beetle_ball.x, beetle_ball.z, 1 if beetle_ball.active else 0)
+                count_floor_silk_under_all()
             else:
                 # All silk expired - clear flag so we skip GPU reads next frame
                 silk_might_exist = False
@@ -21157,25 +21084,26 @@ try:
             ball_silk_x, ball_silk_y, ball_silk_z = 0.0, 0.0, 0.0
             ball_silk_rotation, ball_silk_pitch, ball_silk_roll = 0.0, 0.0, 0.0
 
-        update_beetle_stuck_silk_positions(
-            # Blue beetle state (use render values for smooth interpolation)
-            blue_render_x, blue_render_y, blue_render_z,
-            blue_render_rotation, blue_render_pitch, blue_render_roll,
-            blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch,
-            blue_horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
-            blue_render_spray_aim * SPRAY_AIM_MAX, blue_render_spider_aim * SPIDER_AIM_MAX,
-            blue_default_horn_pitch,
-            # Red beetle state
-            red_render_x, red_render_y, red_render_z,
-            red_render_rotation, red_render_pitch, red_render_roll,
-            red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch,
-            red_horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
-            red_render_spray_aim * SPRAY_AIM_MAX, red_render_spider_aim * SPIDER_AIM_MAX,
-            red_default_horn_pitch,
-            # Ball state
-            ball_silk_x, ball_silk_y, ball_silk_z,
-            ball_silk_rotation, ball_silk_pitch, ball_silk_roll,
-            1 if beetle_ball.active else 0
+        update_all_stuck_silk_positions(
+            [
+                # Blue beetle state (use render values for smooth interpolation)
+                (blue_render_x, blue_render_y, blue_render_z,
+                 blue_render_rotation, blue_render_pitch, blue_render_roll,
+                 blue_render_horn_pitch, blue_render_horn_yaw, blue_render_tail_pitch,
+                 blue_horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
+                 blue_render_spray_aim * SPRAY_AIM_MAX, blue_render_spider_aim * SPIDER_AIM_MAX,
+                 blue_default_horn_pitch),
+                # Red beetle state
+                (red_render_x, red_render_y, red_render_z,
+                 red_render_rotation, red_render_pitch, red_render_roll,
+                 red_render_horn_pitch, red_render_horn_yaw, red_render_tail_pitch,
+                 red_horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
+                 red_render_spray_aim * SPRAY_AIM_MAX, red_render_spider_aim * SPIDER_AIM_MAX,
+                 red_default_horn_pitch),
+            ],
+            (ball_silk_x, ball_silk_y, ball_silk_z,
+             ball_silk_rotation, ball_silk_pitch, ball_silk_roll,
+             1 if beetle_ball.active else 0),
         )
 
     # === BALL RENDER TIMING ===
