@@ -1848,6 +1848,11 @@ def reset_match():
     red_x, red_z, red_rot = get_spawn_position(for_blue=False, is_initial=True)
     beetle_blue = Beetle(blue_x, blue_z, blue_rot, simulation.BEETLE_BLUE)
     beetle_red = Beetle(red_x, red_z, red_rot, simulation.BEETLE_RED)
+    # Keep the beetles[] array pointing at the fresh objects (4P refactor:
+    # beetles[slot] is becoming the canonical accessor; the named globals
+    # are legacy aliases being phased out)
+    beetles[0] = beetle_blue
+    beetles[1] = beetle_red
     match_winner = None
     blue_celebrating = False
     red_celebrating = False
@@ -2208,6 +2213,14 @@ def apply_remote_beetle_config(network_mgr):
 # Create beetles - closer together for smaller arena (horn dimensions set later)
 beetle_blue = Beetle(-20.0, 0.0, 0.0, simulation.BEETLE_BLUE)  # Facing right (toward red)
 beetle_red = Beetle(20.0, 0.0, math.pi, simulation.BEETLE_RED)  # Facing left (toward blue)
+
+# 4-player refactor: beetles[slot] is the canonical player-indexed accessor
+# (slot 0 = blue/host, slot 1 = red/guest; slots 2-3 arrive in Phase 4).
+# beetle_blue/beetle_red remain as aliases while call sites migrate; the two
+# MUST always point at the same objects - reset_match() refreshes both.
+beetles = [beetle_blue, beetle_red]
+active_player_count = 2
+
 beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of arena, no rotation matters)
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
 beetle_ball.active = False  # Ball starts disabled
@@ -16995,6 +17008,13 @@ try:
   while window.running:
     # === START FRAME TIMING ===
     perf_monitor.start('frame_total')
+
+    # 4P refactor safety net: beetles[] and the legacy aliases must stay in
+    # sync (only reset_match() rebinds them). Identity checks are ~free.
+    if beetles[0] is not beetle_blue or beetles[1] is not beetle_red:
+        print("[REFACTOR WARNING] beetles[] desynced from beetle_blue/beetle_red aliases - resyncing!")
+        beetles[0] = beetle_blue
+        beetles[1] = beetle_red
 
     # Poll controller events (hot-plug detection, ~0.01ms)
     pump_controller_events()
