@@ -214,6 +214,75 @@ def get_fullscreen_from_args():
                 return False, None
     return False, None
 
+def install_modifier_keyshield():
+    """
+    Workaround for taichi-dev/taichi#6513: GGUI's bundled imgui hard-aborts
+    the process (assert 'Mismatching io.KeyCtrl...' at imgui.cpp:7234) when
+    Shift/Ctrl/Alt/Win keys reach the window. A low-level keyboard hook
+    swallows those keys ONLY while this game's window is in the foreground,
+    so they never reach GLFW/imgui.
+
+    Side effect: Alt-Tab does not work while the game is focused - click
+    another window / the taskbar instead. Disable with --no-keyshield.
+    Remove this whole function when taichi ships imgui >= 1.87.
+    """
+    if '--no-keyshield' in sys.argv:
+        print("[KeyShield] Disabled via --no-keyshield (modifier keys may crash the window, taichi#6513)")
+        return None
+    import ctypes
+    import ctypes.wintypes as wt
+    import threading
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.SetWindowsHookExW.restype = ctypes.c_void_p
+    user32.CallNextHookEx.restype = ctypes.c_longlong
+    user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wt.WPARAM, wt.LPARAM]
+    kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+
+    WH_KEYBOARD_LL = 13
+    HC_ACTION = 0
+    # Shift (generic/L/R), Ctrl, Alt, and the Windows keys
+    BLOCKED_VKS = {0x10, 0xA0, 0xA1, 0x11, 0xA2, 0xA3, 0x12, 0xA4, 0xA5, 0x5B, 0x5C}
+    game_pid = os.getpid()
+
+    HOOKPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wt.WPARAM, wt.LPARAM)
+    user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, ctypes.c_void_p, wt.DWORD]
+
+    class KBDLLHOOKSTRUCT(ctypes.Structure):
+        _fields_ = [("vkCode", wt.DWORD), ("scanCode", wt.DWORD),
+                    ("flags", wt.DWORD), ("time", wt.DWORD),
+                    ("dwExtraInfo", ctypes.c_void_p)]
+
+    def hook_proc(nCode, wParam, lParam):
+        if nCode == HC_ACTION:
+            kb = ctypes.cast(lParam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+            if kb.vkCode in BLOCKED_VKS:
+                pid = wt.DWORD(0)
+                user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), ctypes.byref(pid))
+                if pid.value == game_pid:
+                    return 1  # Swallow the key - it never reaches GLFW/imgui
+        return user32.CallNextHookEx(None, nCode, wParam, lParam)
+
+    proc = HOOKPROC(hook_proc)
+
+    def run():
+        hook = user32.SetWindowsHookExW(WH_KEYBOARD_LL, proc, kernel32.GetModuleHandleW(None), 0)
+        if not hook:
+            print("[KeyShield] Hook install FAILED - modifier keys may crash the window (taichi#6513)")
+            return
+        print("[KeyShield] Active: Shift/Ctrl/Alt/Win blocked while game is focused")
+        print("[KeyShield] (taichi imgui crash workaround - launch with --no-keyshield to disable)")
+        msg = wt.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) != 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
+
+    threading.Thread(target=run, daemon=True, name="KeyShield").start()
+    return proc  # Keep a reference alive so the callback isn't garbage-collected
+
+_keyshield_proc = install_modifier_keyshield()
+
 FULLSCREEN_ENABLED, FULLSCREEN_RES = get_fullscreen_from_args()
 if FULLSCREEN_ENABLED:
     WINDOW_RESOLUTION = FULLSCREEN_RES
@@ -11072,6 +11141,68 @@ def queue_arena_switch(mode_name):
     start_arena_transition()  # Start animation immediately
     pending_arena_switch = (mode_name, ARENA_SWITCH_DELAY)
 
+def set_network_ball_mode(active):
+    """
+    Guest applies the host's ball mode with the SAME full setup the host does
+    locally (ball init + queue_arena_switch, which rebuilds the arena, sets
+    the arena snap, renders the bowl rim, and refreshes the floor cache).
+
+    Called from BOTH the MSG_GAME_OPTIONS handler and the state-sync fallback;
+    whichever arrives first wins, the other sees no change and returns.
+    """
+    global ball_cache_initialized, blue_score, red_score
+    if active == beetle_ball.active:
+        return
+    if active:
+        if not ball_cache_initialized:
+            init_ball_cache(beetle_ball.radius)
+            ball_cache_initialized = True
+        beetle_ball.x = 0.0
+        beetle_ball.y = 28.0
+        beetle_ball.z = 0.0
+        beetle_ball.vx = 0.0
+        beetle_ball.vy = 0.0
+        beetle_ball.vz = 0.0
+        beetle_ball.rotation = 0.0
+        beetle_ball.angular_velocity = 0.0
+        beetle_ball.pitch = 0.0
+        beetle_ball.pitch_velocity = 0.0
+        beetle_ball.roll = 0.0
+        beetle_ball.roll_velocity = 0.0
+        beetle_ball.prev_x = beetle_ball.x
+        beetle_ball.prev_y = beetle_ball.y
+        beetle_ball.prev_z = beetle_ball.z
+        beetle_ball.prev_rotation = beetle_ball.rotation
+        beetle_ball.prev_pitch = beetle_ball.pitch
+        beetle_ball.prev_roll = beetle_ball.roll
+        blue_score = 0
+        red_score = 0
+        g['blue_score'] = 0
+        g['red_score'] = 0
+        g['ball_scored_this_fall'] = False
+        g['ball_has_exploded'] = False
+        g['ball_explosion_delay'] = 0.0
+        g['ball_explosion_timer'] = 0.0
+        beetle_ball.active = True
+        queue_arena_switch('ball')
+        print("Ball mode ON (from host)")
+    else:
+        if ball_last_rendered[None] == 1:
+            num_voxels = ball_cache_size[None]
+            if num_voxels > 0:
+                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+            ball_last_rendered[None] = 0
+        else:
+            clear_ball()
+        simulation.clear_bowl_perimeter()
+        beetle_ball.active = False
+        blue_score = 0
+        red_score = 0
+        g['blue_score'] = 0
+        g['red_score'] = 0
+        queue_arena_switch('ball_off')
+        print("Ball mode OFF (from host)")
+
 # ============================================================
 # BOMBARDIER BEETLE SPRAY ATTACK SYSTEM
 # ============================================================
@@ -16311,6 +16442,10 @@ def reset_network_stats():
     network_stats['last_frame_diff'] = 0
     network_stats['total_wait_time_ms'] = 0.0
 
+# Guest: latest opponent state from host sync, dead-reckoned every frame
+# (dict with x/y/z/rot/vx/vy/vz/active/is_falling/recv_time, or None)
+guest_opp_target = None
+
 # Net debug HUD (toggle with N key while in an online session)
 show_net_debug = False
 net_hud = {
@@ -16324,10 +16459,59 @@ net_hud = {
     'corr_avg': 0.0,         # Displayed: avg correction over last completed 5s window
     'corr_peak': 0.0,        # Displayed: peak correction over last completed 5s window
     'snap_count': 0,         # Times guest hard-snapped to host state
+    'log_fh': None,          # CSV log file handle (auto-opened during online play)
+    'log_path': '',
+    'log_t0': 0.0,           # Session start for the t_s column
+    'last_log_time': 0.0,    # Last CSV row written
 }
 
+NET_LOG_COLUMNS = ("t_s,ping_ms,fps,in_pps,out_pps,in_kbps,out_kbps,frame,frame_diff,"
+                   "stalls,stale,waits,sync_age_ms,corr_blue,corr_red,corr5s_avg,corr5s_peak,snaps")
+
+def net_log_tick(actual_fps):
+    """Append one CSV row per second during online play (for post-session analysis)."""
+    now = time.time()
+    if now - net_hud['last_log_time'] < 1.0:
+        return
+    net_hud['last_log_time'] = now
+    try:
+        if net_hud['log_fh'] is None:
+            role = 'host' if network_manager.is_host else 'guest'
+            net_hud['log_path'] = f"net_log_{role}_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+            net_hud['log_fh'] = open(net_hud['log_path'], 'w')
+            net_hud['log_fh'].write(NET_LOG_COLUMNS + "\n")
+            net_hud['log_t0'] = now
+            print(f"[NetLog] Logging to {net_hud['log_path']}")
+        rates = network_manager.pkt_rates
+        sync_age_ms = (now - net_hud['last_sync_time']) * 1000.0 if net_hud['last_sync_time'] > 0 else -1.0
+        frame_diff = input_buffer.remote_frame_received - input_buffer.current_frame
+        net_hud['log_fh'].write(
+            f"{now - net_hud['log_t0']:.1f},{network_manager.ping_ms},{actual_fps:.0f},"
+            f"{rates['in_pps']:.0f},{rates['out_pps']:.0f},"
+            f"{rates['in_bps'] / 1000:.2f},{rates['out_bps'] / 1000:.2f},"
+            f"{input_buffer.current_frame},{frame_diff},"
+            f"{network_stats['accumulator_drains']},{input_buffer.total_stale},{input_buffer.total_waits},"
+            f"{sync_age_ms:.0f},{net_hud['corr_blue']:.3f},{net_hud['corr_red']:.3f},"
+            f"{net_hud['corr_avg']:.3f},{net_hud['corr_peak']:.3f},{net_hud['snap_count']}\n"
+        )
+        net_hud['log_fh'].flush()
+    except Exception as e:
+        print(f"[NetLog] write error: {e}")
+        net_hud['log_fh'] = None
+        net_hud['last_log_time'] = now + 60.0  # Back off retries
+
 def reset_net_hud():
-    """Reset per-match net debug HUD stats."""
+    """Reset per-match net debug HUD stats and start a fresh CSV log."""
+    global guest_opp_target
+    guest_opp_target = None
+    if net_hud['log_fh'] is not None:
+        try:
+            net_hud['log_fh'].close()
+            print(f"[NetLog] Saved {net_hud['log_path']}")
+        except Exception:
+            pass
+        net_hud['log_fh'] = None
+    net_hud['last_log_time'] = 0.0
     net_hud['last_sync_time'] = 0.0
     net_hud['corr_blue'] = 0.0
     net_hud['corr_red'] = 0.0
@@ -17299,89 +17483,88 @@ try:
 
         # === GUEST STATE SYNC (apply received host-authoritative state) ===
         # Correction scheme (tunables - adjust on the 2-computer test):
-        #   own beetle  -> deadzone, then gentle blend (avoids rubber-banding
-        #                  from corrections that reflect our inputs ~RTT ago)
-        #   opponent    -> firm lerp + adopt host velocities (tracks closely,
-        #                  prediction between syncs diverges far less)
+        #   own beetle  -> per-sync: deadzone, then gentle blend (avoids
+        #                  rubber-banding from corrections that reflect our
+        #                  inputs ~RTT ago)
+        #   opponent    -> continuous: small blend EVERY frame toward the
+        #                  extrapolated host state (pos + vel*age) - no
+        #                  visible skip at sync-packet rate
         #   big error   -> hard snap (position + rotation + velocities)
         SYNC_SNAP_DIST = 6.0                   # world units
         SYNC_SNAP_ANGLE = math.radians(60.0)   # radians
         SYNC_OWN_DEADZONE = 0.75               # no positional correction below this
         SYNC_OWN_LERP = 0.18
         SYNC_OWN_VEL_BLEND = 0.3
-        SYNC_OTHER_LERP = 0.45
+        SYNC_BALL_LERP = 0.45
+        SYNC_OPP_RATE = 0.15                   # opponent blend per render frame (~60Hz)
+        SYNC_OPP_ROT_RATE = 0.2
+        SYNC_OPP_MAX_EXTRAP = 0.25             # seconds; don't extrapolate through packet gaps
+        TWO_PI = 2.0 * math.pi
         if not network_manager.is_host and network_manager.pending_state_sync:
             sync = network_manager.pending_state_sync
             network_manager.pending_state_sync = None  # Consume it
 
             net_hud['last_sync_time'] = time.time()
-            TWO_PI = 2.0 * math.pi
             own_idx = local_player_id  # guest's own beetle (1 = red)
+            opp_idx = 1 - own_idx
+
+            # Net debug HUD: prediction error for both beetles at packet arrival
             sync_errors = [0.0, 0.0]
+            for i, b in enumerate((beetle_blue, beetle_red)):
+                hb = sync['beetles'][i]
+                sync_errors[i] = math.sqrt((hb['x'] - b.x) ** 2 + (hb['y'] - b.y) ** 2 + (hb['z'] - b.z) ** 2)
+            net_hud['corr_blue'] = sync_errors[0]
+            net_hud['corr_red'] = sync_errors[1]
+            net_hud_record_correction(max(sync_errors))
 
-            for i, beetle in enumerate((beetle_blue, beetle_red)):
-                host_b = sync['beetles'][i]
-                is_own = (i == own_idx)
+            # Opponent: just store the target - corrections happen continuously below
+            guest_opp_target = dict(sync['beetles'][opp_idx])
+            guest_opp_target['recv_time'] = time.time()
 
-                err = math.sqrt((host_b['x'] - beetle.x) ** 2
-                                + (host_b['y'] - beetle.y) ** 2
-                                + (host_b['z'] - beetle.z) ** 2)
-                sync_errors[i] = err
+            # --- Own beetle (per-sync correction) ---
+            beetle = (beetle_blue, beetle_red)[own_idx]
+            host_b = sync['beetles'][own_idx]
+            err = sync_errors[own_idx]
+            rot_diff = (host_b['rot'] - beetle.rotation) % TWO_PI
+            if rot_diff > math.pi:
+                rot_diff -= TWO_PI
 
-                # Shortest-path angular error
-                rot_diff = (host_b['rot'] - beetle.rotation) % TWO_PI
-                if rot_diff > math.pi:
-                    rot_diff -= TWO_PI
+            if host_b['is_falling']:
+                # Host says falling: hands off, let the local fall play
+                # out (host will send MSG_SCORE when it dies)
+                pass
+            elif beetle.is_falling and host_b['active']:
+                # Guest-only fall desync - rescue to host state
+                beetle.is_falling = False
+                beetle.x = host_b['x']
+                beetle.y = host_b['y']
+                beetle.z = host_b['z']
+                beetle.vx = host_b['vx']
+                beetle.vy = host_b['vy']
+                beetle.vz = host_b['vz']
+                beetle.rotation = host_b['rot']
+                net_hud['snap_count'] += 1
+            elif err > SYNC_SNAP_DIST:
+                # Hard snap on large divergence
+                beetle.x = host_b['x']
+                beetle.y = host_b['y']
+                beetle.z = host_b['z']
+                beetle.vx = host_b['vx']
+                beetle.vy = host_b['vy']
+                beetle.vz = host_b['vz']
+                beetle.rotation = host_b['rot']
+                net_hud['snap_count'] += 1
+            else:
+                # Soft correction with deadzone
+                if err >= SYNC_OWN_DEADZONE:
+                    beetle.x += (host_b['x'] - beetle.x) * SYNC_OWN_LERP
+                    beetle.y += (host_b['y'] - beetle.y) * SYNC_OWN_LERP
+                    beetle.z += (host_b['z'] - beetle.z) * SYNC_OWN_LERP
+                beetle.vx += (host_b['vx'] - beetle.vx) * SYNC_OWN_VEL_BLEND
+                beetle.vy += (host_b['vy'] - beetle.vy) * SYNC_OWN_VEL_BLEND
+                beetle.vz += (host_b['vz'] - beetle.vz) * SYNC_OWN_VEL_BLEND
 
-                # --- Falling: host flag is authoritative ---
-                if host_b['is_falling']:
-                    # Host says falling: hands off, let the local fall play
-                    # out (host will send MSG_SCORE when it dies)
-                    continue
-                if beetle.is_falling and host_b['active']:
-                    # Guest-only fall desync - rescue to host state
-                    beetle.is_falling = False
-                    beetle.x = host_b['x']
-                    beetle.y = host_b['y']
-                    beetle.z = host_b['z']
-                    beetle.vx = host_b['vx']
-                    beetle.vy = host_b['vy']
-                    beetle.vz = host_b['vz']
-                    beetle.rotation = host_b['rot']
-                    net_hud['snap_count'] += 1
-                    continue
-
-                # --- Hard snap on large divergence ---
-                if err > SYNC_SNAP_DIST:
-                    beetle.x = host_b['x']
-                    beetle.y = host_b['y']
-                    beetle.z = host_b['z']
-                    beetle.vx = host_b['vx']
-                    beetle.vy = host_b['vy']
-                    beetle.vz = host_b['vz']
-                    beetle.rotation = host_b['rot']
-                    net_hud['snap_count'] += 1
-                    continue
-
-                # --- Soft correction ---
-                if is_own:
-                    if err >= SYNC_OWN_DEADZONE:
-                        beetle.x += (host_b['x'] - beetle.x) * SYNC_OWN_LERP
-                        beetle.y += (host_b['y'] - beetle.y) * SYNC_OWN_LERP
-                        beetle.z += (host_b['z'] - beetle.z) * SYNC_OWN_LERP
-                    beetle.vx += (host_b['vx'] - beetle.vx) * SYNC_OWN_VEL_BLEND
-                    beetle.vy += (host_b['vy'] - beetle.vy) * SYNC_OWN_VEL_BLEND
-                    beetle.vz += (host_b['vz'] - beetle.vz) * SYNC_OWN_VEL_BLEND
-                else:
-                    beetle.x += (host_b['x'] - beetle.x) * SYNC_OTHER_LERP
-                    beetle.y += (host_b['y'] - beetle.y) * SYNC_OTHER_LERP
-                    beetle.z += (host_b['z'] - beetle.z) * SYNC_OTHER_LERP
-                    # Adopt host velocities so prediction between syncs tracks
-                    beetle.vx = host_b['vx']
-                    beetle.vy = host_b['vy']
-                    beetle.vz = host_b['vz']
-
-                # Clamp to floor so corrections never leave a beetle under the arena
+                # Clamp to floor so corrections never leave us under the arena
                 if beetle.active:
                     floor_y = check_floor_collision(float(beetle.x), float(beetle.z))
                     if floor_y > -100.0:
@@ -17393,12 +17576,7 @@ try:
                 if abs(rot_diff) > SYNC_SNAP_ANGLE:
                     beetle.rotation = host_b['rot']
                 else:
-                    beetle.rotation += rot_diff * (SYNC_OWN_LERP if is_own else SYNC_OTHER_LERP)
-
-            # Net debug HUD
-            net_hud['corr_blue'] = sync_errors[0]
-            net_hud['corr_red'] = sync_errors[1]
-            net_hud_record_correction(max(sync_errors))
+                    beetle.rotation += rot_diff * SYNC_OWN_LERP
 
             # --- Ball sync ---
             host_ball = sync['ball']
@@ -17416,30 +17594,73 @@ try:
                 beetle_ball.roll_velocity = 0.0
                 print(f"Ball respawn detected (Y jump: {y_diff:.1f}), snapping to spawn")
             else:
-                beetle_ball.x += (host_ball['x'] - beetle_ball.x) * SYNC_OTHER_LERP
-                beetle_ball.y += (host_ball['y'] - beetle_ball.y) * SYNC_OTHER_LERP
-                beetle_ball.z += (host_ball['z'] - beetle_ball.z) * SYNC_OTHER_LERP
+                beetle_ball.x += (host_ball['x'] - beetle_ball.x) * SYNC_BALL_LERP
+                beetle_ball.y += (host_ball['y'] - beetle_ball.y) * SYNC_BALL_LERP
+                beetle_ball.z += (host_ball['z'] - beetle_ball.z) * SYNC_BALL_LERP
                 # Adopt host velocities so prediction between syncs tracks
                 beetle_ball.vx = host_ball['vx']
                 beetle_ball.vy = host_ball['vy']
                 beetle_ball.vz = host_ball['vz']
-            # Check if ball is becoming active (need to initialize)
-            if host_ball['active'] and not beetle_ball.active:
-                # Initialize ball cache if needed
-                if not ball_cache_initialized:
-                    init_ball_cache(beetle_ball.radius)
-                # Render bowl and rebuild floor cache
-                simulation.render_bowl_perimeter()
-                simulation.clear_goal_pit_floor()
-                build_floor_height_cache()
-                print("Ball enabled via state sync")
-            elif not host_ball['active'] and beetle_ball.active:
-                # Ball being disabled
-                clear_ball()
-                simulation.clear_bowl_perimeter()
-                build_floor_height_cache()
-                print("Ball disabled via state sync")
-            beetle_ball.active = host_ball['active']
+            # Ball active toggle: full setup shared with the game-options path
+            # (arena rebuild + snap + bowl rim via queue_arena_switch)
+            set_network_ball_mode(host_ball['active'])
+
+        # === OPPONENT CONTINUOUS CORRECTION (guest, every frame) ===
+        # Blend a little toward the extrapolated host state every render frame
+        # instead of one firm lerp per sync packet - removes visible skipping
+        if not network_manager.is_host and guest_opp_target is not None:
+            tgt = guest_opp_target
+            opp = (beetle_blue, beetle_red)[1 - local_player_id]
+            if tgt['is_falling']:
+                pass  # host says falling - hands off, local fall plays out
+            elif opp.is_falling and tgt['active']:
+                # Guest-only fall desync - rescue to host state
+                opp.is_falling = False
+                opp.x = tgt['x']
+                opp.y = tgt['y']
+                opp.z = tgt['z']
+                opp.vx = tgt['vx']
+                opp.vy = tgt['vy']
+                opp.vz = tgt['vz']
+                opp.rotation = tgt['rot']
+                net_hud['snap_count'] += 1
+            else:
+                # Dead-reckon the target forward by packet age
+                age = min(time.time() - tgt['recv_time'], SYNC_OPP_MAX_EXTRAP)
+                pred_x = tgt['x'] + tgt['vx'] * age
+                pred_y = tgt['y'] + tgt['vy'] * age
+                pred_z = tgt['z'] + tgt['vz'] * age
+                err = math.sqrt((pred_x - opp.x) ** 2 + (pred_y - opp.y) ** 2 + (pred_z - opp.z) ** 2)
+                rot_diff = (tgt['rot'] - opp.rotation) % TWO_PI
+                if rot_diff > math.pi:
+                    rot_diff -= TWO_PI
+
+                if err > SYNC_SNAP_DIST:
+                    opp.x = pred_x
+                    opp.y = pred_y
+                    opp.z = pred_z
+                    opp.rotation = tgt['rot']
+                    net_hud['snap_count'] += 1
+                else:
+                    opp.x += (pred_x - opp.x) * SYNC_OPP_RATE
+                    opp.y += (pred_y - opp.y) * SYNC_OPP_RATE
+                    if abs(rot_diff) > SYNC_SNAP_ANGLE:
+                        opp.rotation = tgt['rot']
+                    else:
+                        opp.rotation += rot_diff * SYNC_OPP_ROT_RATE
+                    opp.z += (pred_z - opp.z) * SYNC_OPP_RATE
+                # Adopt host velocities so the local sim carries the target's motion
+                opp.vx = tgt['vx']
+                opp.vy = tgt['vy']
+                opp.vz = tgt['vz']
+
+                # Clamp to floor so corrections never leave the opponent under the arena
+                if opp.active:
+                    floor_y = check_floor_collision(float(opp.x), float(opp.z))
+                    if floor_y > -100.0:
+                        floor_surface = floor_y + 0.5
+                        if opp.y < floor_surface:
+                            opp.y = floor_surface
 
         # === DISCONNECT DETECTION ===
         # Check for graceful disconnect first (opponent clicked Disconnect button)
@@ -18741,58 +18962,8 @@ try:
                 opts = network_manager.pending_game_options
                 network_manager.pending_game_options = None  # Consume
                 # Apply ball state (referee is local-only, not synced)
-                if opts['ball_active'] != beetle_ball.active:
-                    beetle_ball.active = opts['ball_active']
-                    if beetle_ball.active:
-                        # Initialize ball cache for guest (CRITICAL - without this ball won't render!)
-                        if not ball_cache_initialized:
-                            init_ball_cache(beetle_ball.radius)
-                            ball_cache_initialized = True
-                        # Initialize ball position and physics
-                        beetle_ball.x = 0.0
-                        beetle_ball.y = 28.0
-                        beetle_ball.z = 0.0
-                        beetle_ball.vx = 0.0
-                        beetle_ball.vy = 0.0
-                        beetle_ball.vz = 0.0
-                        beetle_ball.rotation = 0.0
-                        beetle_ball.angular_velocity = 0.0
-                        beetle_ball.pitch = 0.0
-                        beetle_ball.pitch_velocity = 0.0
-                        beetle_ball.roll = 0.0
-                        beetle_ball.roll_velocity = 0.0
-                        # Reset prev state for interpolation
-                        beetle_ball.prev_x = beetle_ball.x
-                        beetle_ball.prev_y = beetle_ball.y
-                        beetle_ball.prev_z = beetle_ball.z
-                        beetle_ball.prev_rotation = beetle_ball.rotation
-                        beetle_ball.prev_pitch = beetle_ball.pitch
-                        beetle_ball.prev_roll = beetle_ball.roll
-                        # Reset ball game state
-                        g['ball_scored_this_fall'] = False
-                        g['ball_has_exploded'] = False
-                        g['ball_explosion_delay'] = 0.0
-                        g['ball_explosion_timer'] = 0.0
-                        g['blue_score'] = 0
-                        g['red_score'] = 0
-                        # Immediately render bowl — don't queue, avoids overwrite by arena switches
-                        simulation.render_bowl_perimeter()
-                        simulation.clear_goal_pit_floor()
-                        build_floor_height_cache()
-                    else:
-                        # Disabling ball - clear voxels immediately
-                        if ball_last_rendered[None] == 1:
-                            num_voxels = ball_cache_size[None]
-                            if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
-                        else:
-                            clear_ball()
-                        simulation.clear_bowl_perimeter()
-                        build_floor_height_cache()
-                        g['blue_score'] = 0
-                        g['red_score'] = 0
-                    print(f"Ball mode: {opts['ball_active']} (from host)")
+                # Full setup shared with the state-sync fallback path
+                set_network_ball_mode(opts['ball_active'])
 
                 # Apply donut mode state
                 if opts.get('donut_mode', False) != donut_mode:
@@ -24890,6 +25061,10 @@ try:
             print("Performance log saved to perf_log.txt")
 
         window.GUI.end()
+
+    # === NET STATS CSV LOG (automatic during online play, 1 row/sec) ===
+    if network_manager is not None and game_state == GAME_STATE_ONLINE_PLAY:
+        net_log_tick(actual_fps)
 
     # === NET DEBUG HUD (toggle with N key during online sessions) ===
     if show_net_debug and network_manager is not None and not gui_skip_content:
