@@ -17836,7 +17836,10 @@ try:
         if game_state == GAME_STATE_ONLINE_PLAY and network_manager:
             # Store and send our input for THIS physics frame
             input_buffer.add_local(current_local_inputs)
-            network_manager.send_input(input_buffer.current_frame, current_local_inputs)
+            if not network_manager.is_host:
+                # Guests send their input to the host; the host redistributes
+                # everyone's inputs via MSG_INPUTS_ALL (below)
+                network_manager.send_input(input_buffer.current_frame, current_local_inputs)
 
             # Check if we can simulate (have both players' inputs)
             if not input_buffer.can_simulate():
@@ -17869,6 +17872,12 @@ try:
             # Store for animation when network stalls
             g['last_blue_inputs'] = blue_inputs
             g['last_red_inputs'] = red_inputs
+
+            # Host redistributes the authoritative input set for this frame
+            # (one small packet; guests predict ALL beetles from it)
+            if network_manager.is_host:
+                network_manager.send_inputs_all(input_buffer.current_frame,
+                                                list(enumerate(frame_inputs)))
 
             # === DEBUG: Network responsiveness logging (every 120 frames = ~2 sec) ===
             if input_buffer.current_frame - input_buffer.debug_last_report >= 120:

@@ -40,7 +40,7 @@ except Exception as e:
 # Protocol version - bump whenever a packet format changes incompatibly.
 # Carried in MSG_READY (guest->host) and MSG_START (host->guest); a mismatch
 # refuses the match with a clear message instead of desyncing silently.
-PROTOCOL_VERSION = 3  # v3: state sync carries pitch/roll per beetle
+PROTOCOL_VERSION = 4  # v4: N-player - state sync player_count, MSG_INPUTS_ALL, score victim
 
 # Network message types
 MSG_INPUT = 0x01        # Frame input data
@@ -68,7 +68,7 @@ MAX_PLAYERS = 4
 
 # Messages sent on the unreliable channel (subject to real packet loss,
 # and the only ones dropped by the --simloss debug simulator)
-UNRELIABLE_MSG_TYPES = {MSG_INPUT, MSG_PING, MSG_PONG, MSG_STATE_SYNC, MSG_FRAME_SYNC}
+UNRELIABLE_MSG_TYPES = {MSG_INPUT, MSG_INPUTS_ALL, MSG_PING, MSG_PONG, MSG_STATE_SYNC, MSG_FRAME_SYNC}
 
 # Short names for the debug HUD / logging
 MSG_NAMES = {
@@ -581,6 +581,19 @@ class NetworkManager:
         data = struct.pack('>BIB', MSG_INPUT, frame, inputs)
         return self._send_packet(data, reliable=False)  # Inputs can be unreliable for speed
 
+    def send_inputs_all(self, frame, slot_bits):
+        """
+        Host broadcasts every player's input for a frame to all guests, so
+        guests predict ALL beetles with the same last-known-input model.
+        Packet: [type:1][frame:4][count:1] + [slot:1][bits:1] per player (~11B at 4P)
+        """
+        if not self.is_host or not self.peers:
+            return
+        parts = [struct.pack('>BIB', MSG_INPUTS_ALL, frame, len(slot_bits))]
+        for slot, bits in slot_bits:
+            parts.append(struct.pack('>BB', slot, bits))
+        self._broadcast(b''.join(parts), reliable=False)
+
     def send_ready(self):
         """Signal that local player is ready to start."""
         self.local_ready = True
@@ -622,16 +635,16 @@ class NetworkManager:
                 active (bool), is_falling (bool)
             ball_state: dict with x, y, z, vx, vy, vz, active (bool)
 
-        Packet: [type:1][frame:4]
+        Packet (v4): [type:1][frame:4][player_count:1]
                 per beetle: [x,y,z,rot,pitch,roll,vx,vy,vz (9*f32)][flags:1] = 37 bytes
                             flags bit0 = active, bit1 = is_falling
                 ball: [x,y,z,vx,vy,vz (6*f32)][active:1] = 25 bytes
-        Total for 2 beetles: 5 + 74 + 25 = 104 bytes
+        Total: 6 + 37*N + 25 (= 105 bytes for 2 players)
         """
         if not self.is_host or not self.connected:
             return
 
-        parts = [struct.pack('>BI', MSG_STATE_SYNC, frame)]
+        parts = [struct.pack('>BIB', MSG_STATE_SYNC, frame, len(beetle_states))]
         for b in beetle_states:
             flags = (1 if b['active'] else 0) | (2 if b['is_falling'] else 0)
             parts.append(struct.pack('>fffffffffB',
@@ -705,21 +718,25 @@ class NetworkManager:
         self._send_packet(data, reliable=True)
         print(f"[Network] Sent beetle config: horn={horn_type_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
 
-    def send_score(self, scorer, score_type=0, death_x=0.0, death_z=0.0):
+    def send_score(self, scorer, score_type=0, death_x=0.0, death_z=0.0, victim=None):
         """
-        Host sends authoritative score event to guest.
+        Host sends authoritative score event to guests.
 
         Args:
-            scorer: 0 = blue scores (red died/goal), 1 = red scores (blue died/goal)
+            scorer: player slot that scored (0-3)
             score_type: 0 = beetle death (explode beetle), 1 = ball goal (don't explode beetle)
             death_x, death_z: Position where beetle died (for smooth death animation on guest)
+            victim: player slot that died / was scored on (defaults to the
+                other player at 2P; 255 = unknown/none)
         """
         if not self.is_host or not self.connected:
             return
-        data = struct.pack('>BBBff', MSG_SCORE, scorer, score_type, death_x, death_z)
+        if victim is None:
+            victim = 1 - scorer if scorer in (0, 1) else 255
+        data = struct.pack('>BBBBff', MSG_SCORE, scorer, victim, score_type, death_x, death_z)
         self._broadcast(data, reliable=True)
         type_str = "death" if score_type == 0 else "ball goal"
-        print(f"[Network] Sent score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str}) at ({death_x:.1f}, {death_z:.1f})")
+        print(f"[Network] Sent score event: slot {scorer} scores ({type_str}), victim slot {victim} at ({death_x:.1f}, {death_z:.1f})")
 
     def send_game_options(self, referee_enabled, ball_active, donut_mode=False, x_stage_mode=False, barbell_mode=False, yinyang_mode=False, hourglass_mode=False, tornado_mode=False, sandstorm_mode=False, ufo_mode=False, ice_mode=False, figure8_mode=False, squiggle_mode=False, hole_mode=False, comet_mode=False, square_mode=False, cut_square_mode=False, board_break_mode=False, star_mode=False):
         """
@@ -1037,6 +1054,19 @@ class NetworkManager:
                     if slot is not None:
                         input_buffer.add_remote(slot, frame, inputs)
 
+        elif msg_type == MSG_INPUTS_ALL:
+            # Host broadcast of all players' inputs: [type][frame:4][count] + [slot][bits]*
+            if len(data) >= 6 and not self.is_host and input_buffer:
+                _, frame, count = struct.unpack('>BIB', data[:6])
+                offset = 6
+                for _i in range(count):
+                    if offset + 2 > len(data):
+                        break
+                    slot, bits = data[offset], data[offset + 1]
+                    offset += 2
+                    if slot != self.my_slot:
+                        input_buffer.add_remote(slot, frame, bits)
+
         elif msg_type == MSG_READY:
             # [type:1][protocol_version:1] - old builds send just [type:1]
             peer_version = data[1] if len(data) >= 2 else 0
@@ -1098,12 +1128,14 @@ class NetworkManager:
                     self.ping_ms = (0xFFFFFFFF - sent_time) + now
 
         elif msg_type == MSG_STATE_SYNC:
-            # Protocol v3: [type:1][frame:4] + 2x beetle(37B) + ball(25B) = 104 bytes
-            if len(data) >= 104 and not self.is_host:
-                _, frame = struct.unpack('>BI', data[:5])
-                offset = 5
+            # Protocol v4: [type:1][frame:4][player_count:1] + Nx beetle(37B) + ball(25B)
+            if len(data) >= 6 and not self.is_host:
+                _, frame, sync_count = struct.unpack('>BIB', data[:6])
+                if len(data) < 6 + 37 * sync_count + 25:
+                    return  # Truncated packet
+                offset = 6
                 beetles = []
-                for _i in range(2):
+                for _i in range(sync_count):
                     bx, by, bz, brot, bpitch, broll, bvx, bvy, bvz, flags = struct.unpack('>fffffffffB', data[offset:offset + 37])
                     beetles.append({
                         'x': bx, 'y': by, 'z': bz,
@@ -1187,18 +1219,13 @@ class NetworkManager:
 
         elif msg_type == MSG_SCORE:
             # Host-authoritative score event (guest receives)
-            if len(data) >= 11 and not self.is_host:
-                # New format with death position
-                _, scorer, score_type, death_x, death_z = struct.unpack('>BBBff', data[:11])
-                self.pending_score = {'scorer': scorer, 'score_type': score_type, 'death_x': death_x, 'death_z': death_z}
+            # v4: [type][scorer:1][victim:1][score_type:1][death_x:4][death_z:4]
+            if len(data) >= 12 and not self.is_host:
+                _, scorer, victim, score_type, death_x, death_z = struct.unpack('>BBBBff', data[:12])
+                self.pending_score = {'scorer': scorer, 'victim': victim, 'score_type': score_type,
+                                      'death_x': death_x, 'death_z': death_z}
                 type_str = "death" if score_type == 0 else "ball goal"
-                print(f"[Network] Received score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str}) at ({death_x:.1f}, {death_z:.1f})")
-            elif len(data) >= 3 and not self.is_host:
-                # Old format without death position (backwards compatibility)
-                _, scorer, score_type = struct.unpack('>BBB', data[:3])
-                self.pending_score = {'scorer': scorer, 'score_type': score_type, 'death_x': 0.0, 'death_z': 0.0}
-                type_str = "death" if score_type == 0 else "ball goal"
-                print(f"[Network] Received score event: {'Blue' if scorer == 0 else 'Red'} scores ({type_str})")
+                print(f"[Network] Received score event: slot {scorer} scores ({type_str}), victim slot {victim} at ({death_x:.1f}, {death_z:.1f})")
 
         elif msg_type == MSG_GAME_OPTIONS:
             # Host sends game options (guest receives)
