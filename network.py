@@ -604,9 +604,18 @@ class NetworkManager:
         if self.is_host and self.local_ready and self.remote_ready:
             self._send_start()
 
+    # Fake steam id for --phantom-peer broadcast testing
+    PHANTOM_PEER_ID = 0xDEADBEEF
+
     def start_match_now(self):
         """Host immediately starts the match (skip ready handshake for now)."""
         if self.is_host and self.connected:
+            if '--phantom-peer' in sys.argv and self.PHANTOM_PEER_ID not in self.peers:
+                # Debug: a fake guest that receives everything and answers
+                # nothing - exercises multi-peer broadcast/roster paths with
+                # only one real guest connected
+                print("[Network] PHANTOM PEER: registering fake guest (--phantom-peer)")
+                self._register_peer(self.PHANTOM_PEER_ID)
             self._send_start()
 
     def send_horn_select(self, horn_type):

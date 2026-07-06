@@ -1845,8 +1845,8 @@ def reset_match():
     physics_frame = 0
 
     # Get spawn positions based on arena mode (is_initial=True for game start)
-    blue_x, blue_z, blue_rot = get_spawn_position(for_blue=True, is_initial=True)
-    red_x, red_z, red_rot = get_spawn_position(for_blue=False, is_initial=True)
+    blue_x, blue_z, blue_rot = get_spawn_position(0, is_initial=True)
+    red_x, red_z, red_rot = get_spawn_position(1, is_initial=True)
     beetles[0] = Beetle(blue_x, blue_z, blue_rot, simulation.BEETLE_BLUE)
     beetles[1] = Beetle(red_x, red_z, red_rot, simulation.BEETLE_RED)
     match_winner = None
@@ -2321,11 +2321,40 @@ SQUIGGLE_SEG_HALF_LEN = 20.0  # Half-length of each vertical segment (z directio
 SQUIGGLE_NUM_SEGS = 5  # Number of vertical segments
 SQUIGGLE_SPAWN_X = 42.0  # Spawn distance from center (on outermost segments)
 
-def get_spawn_position(for_blue=True, is_initial=False):
-    """Get a valid spawn position based on current arena mode.
-    Returns (x, z, rotation) tuple.
-    is_initial=True for game start positions, False for respawns."""
+# Ring-spawn tuning for players 3/4 (fractions/distances are the ONLY thing
+# to edit when tuning arenas for more players later)
+SPAWN_RING_DIST_INITIAL = 16.0   # Match start: partway out, clear of slots 0/1
+SPAWN_RING_DIST_RESPAWN = 8.0    # Respawn: near center but not stacked on it
+
+def get_spawn_position(slot=0, is_initial=False, for_blue=None, player_count=None):
+    """Get a valid spawn position for a player slot based on current arena mode.
+    Returns (x, z, rotation) tuple - rotation faces the arena center.
+    is_initial=True for game start positions, False for respawns.
+
+    Slots 0/1 keep the exact historical blue/red positions per arena mode.
+    Slots 2+ spawn on an evenly-spaced ring facing center - proportional, so
+    it stays inside every arena; per-arena tuning can be layered on later.
+    (for_blue kept for backward compatibility: True->slot 0, False->slot 1.)
+    """
     import random
+
+    if for_blue is not None:
+        slot = 0 if for_blue else 1
+    if player_count is None:
+        player_count = active_player_count
+
+    if slot >= 2:
+        # Players 3/4: ring spawn facing center. Slot 0 is west and slot 1
+        # east historically; evenly spacing from west keeps that pattern
+        # (4P: slot 2 = north, slot 3 = south).
+        angle = math.pi + slot * (2.0 * math.pi / max(2, player_count))
+        dist = SPAWN_RING_DIST_INITIAL if is_initial else SPAWN_RING_DIST_RESPAWN
+        x = math.cos(angle) * dist
+        z = math.sin(angle) * dist
+        rotation = (angle + math.pi) % (2.0 * math.pi)  # Face inward
+        return (x, z, rotation)
+
+    for_blue = (slot == 0)
 
     if donut_mode:
         # Spawn on the donut ring - pick random angle and distance
@@ -19362,7 +19391,7 @@ try:
                 g['blue_assembly_timer'] = 0.0
 
                 # Get spawn position
-                spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=True)
+                spawn_x, spawn_z, spawn_rot = get_spawn_position(0)
 
                 if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode or cut_square_mode:
                     # Start hover phase - beetle flies from center to spawn point
@@ -19517,7 +19546,7 @@ try:
                 g['red_assembly_timer'] = 0.0
 
                 # Get spawn position
-                spawn_x, spawn_z, spawn_rot = get_spawn_position(for_blue=False)
+                spawn_x, spawn_z, spawn_rot = get_spawn_position(1)
 
                 if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode or cut_square_mode:
                     # Start hover phase - beetle flies from center to spawn point
