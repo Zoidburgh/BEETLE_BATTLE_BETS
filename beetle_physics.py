@@ -343,6 +343,10 @@ if SPHERE_FLOOR_MODE:
     renderer.mesh_floor_enabled = False
     print("[PerfTest] Sphere floor mode (mesh floor disabled)")
 
+# --bots N: host-side network bots (see 4_player_steam.md A1). With no real
+# guest connected, hosting + START runs a solo bot match on one machine.
+NET_BOTS_REQUESTED = '--bots' in sys.argv
+
 FULLSCREEN_ENABLED, FULLSCREEN_RES = get_fullscreen_from_args()
 if FULLSCREEN_ENABLED:
     WINDOW_RESOLUTION = FULLSCREEN_RES
@@ -22262,13 +22266,19 @@ try:
             if network_manager:
                 apply_remote_beetle_config(network_manager)
 
-            # Check if opponent joined
-            if network_manager and network_manager.connected:
-                window.GUI.text("Opponent connected!")
-                # Send our beetle config to opponent (do this every few frames to ensure delivery)
-                if physics_frame % 30 == 0:
-                    send_local_beetle_config(network_manager, is_host=True)
-                if window.GUI.button("START MATCH"):
+            # Check if opponent joined (or allow a solo bot match with --bots)
+            _solo_bots_ok = NET_BOTS_REQUESTED and network_manager and not network_manager.connected
+            if network_manager and (network_manager.connected or _solo_bots_ok):
+                if network_manager.connected:
+                    window.GUI.text("Opponent connected!")
+                    # Send our beetle config to opponent (do this every few frames to ensure delivery)
+                    if physics_frame % 30 == 0:
+                        send_local_beetle_config(network_manager, is_host=True)
+                    _start_label = "START MATCH"
+                else:
+                    window.GUI.text("No guest yet - solo bot match available")
+                    _start_label = "START BOT MATCH (solo test)"
+                if window.GUI.button(_start_label):
                     # Go to syncing state - wait for guest to confirm ready
                     game_state = GAME_STATE_SYNCING
                     input_buffer.is_network_mode = True

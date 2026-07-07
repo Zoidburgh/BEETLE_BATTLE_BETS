@@ -648,9 +648,17 @@ class NetworkManager:
             print(f"[Network] BOT PEER: registering bot {b + 1} (--bots {bots})")
             self._register_peer(fake_id)
 
+    def has_real_guests(self):
+        """Any connected peers that are not host-side bots?"""
+        return any(pid not in self.bot_peers for pid in self.peers)
+
     def start_match_now(self):
-        """Host immediately starts the match (skip ready handshake for now)."""
-        if self.is_host and self.connected:
+        """Host immediately starts the match (skip ready handshake for now).
+        With --bots and no real guest connected this starts a SOLO BOT MATCH:
+        the full online code path (roster, input packets, state sync attempts)
+        runs on one machine - the single-machine test rig for 4P plumbing."""
+        solo_bots = ('--bots' in sys.argv) and not self.connected
+        if self.is_host and (self.connected or solo_bots):
             if '--phantom-peer' in sys.argv and self.PHANTOM_PEER_ID not in self.peers:
                 # Debug: a fake guest that receives everything and answers
                 # nothing - exercises multi-peer broadcast/roster paths with
@@ -659,6 +667,10 @@ class NetworkManager:
                 self._register_peer(self.PHANTOM_PEER_ID)
             self.register_bot_peers()
             self._send_start()
+            if not self.has_real_guests():
+                # Nobody real to wait for - skip the SYNC_READY handshake
+                print("[Network] Solo bot match: no real guests, sending GO immediately")
+                self.send_go()
 
     def send_horn_select(self, horn_type):
         """Send horn type selection to opponent."""
