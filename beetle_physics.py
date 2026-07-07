@@ -7216,9 +7216,16 @@ def generate_giraffe_weevil_neck(shaft_len, prong_len):
     # Attaches at tip of segment 1, angles downward
     # 2 voxels thick (2x3), with 3x3 head knob at the end
 
-    _tip_i = (length - 1) + half_tip  # Head attaches to the partial tip when present
-    tip_x = 3 + _tip_i
-    tip_y = base_y + 3 + int(_tip_i * 1.8)  # Must match the neck slope above
+    # Head attaches at the TOP of the final block: the partial nub (odd
+    # steps) is 2-tall, completing it (even steps) makes it 3-tall and the
+    # top rises 1 - so the head visibly climbs EVERY slider step instead of
+    # every other (the block's BASE only moves on odd steps)
+    if half_tip:
+        tip_x = 3 + length
+        tip_y = base_y + 3 + int(length * 1.8) + 1   # top of the 2-tall nub
+    else:
+        tip_x = 3 + (length - 1)
+        tip_y = base_y + 3 + int((length - 1) * 1.8) + 2  # top of the full 3-tall section
 
     for i in range(head_len):
         dx = tip_x + 1 + i
