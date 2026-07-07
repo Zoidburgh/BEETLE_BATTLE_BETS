@@ -1,19 +1,60 @@
 # BACKGROUND EFFECTS — Art & Optimization Plan
 
-## STATUS 2026-07-08: STEPS 1, 2, 4 IMPLEMENTED (fog + presence + biome skies)
-- `bg_mute`/`bg_fog` per-voxel fields + `THEME_TREATMENT` table (simulation.py,
-  stamped in toggle_theme; compaction + clears carry them)
-- `update_bg_cache(cam, sky, fog_start/end/max, mute_strength)`: presence
-  desat/dim + motion-amp calm, smoothstep fog toward sky color, f>0.97 cull
-- Sliders in BACKGROUND panel: BIOME MUTE / FOG START / FOG END / FOG MAX
-- Biome toggles set their sky color (THEME_SKY_COLORS in beetle_physics.py);
-  CLEAR ALL / biome-off restores default
-- VERIFIED headless: stars pixel-identical with treatment on (0.0 diff,
-  fog=0 exemption works); desert desaturates 0.52->0.38, dims 0.45->0.38;
-  mute slider restores presence; compaction preserves treatment
-- 'background' perf bucket already existed in the main loop
-- REMAINING: step 3 (twinkle spike taming — deferred, stars approved as-is),
-  user feel-tune of slider defaults per biome
+## STATUS 2026-07-08 EVENING: SHIPPED + USER-VALIDATED "general concept gonna work"
+(commits 7fd68a5 + be7e8fa on arena_mods, NOT yet pushed as of writing)
+
+### What shipped (steps 1, 2, 4 of the plan below)
+- `bg_mute`/`bg_fog` per-voxel fields + `THEME_TREATMENT` table (simulation.py
+  near the theme IDs; stamped onto each theme's voxel range in toggle_theme;
+  compact_background_voxels + clear_background + clear_all_themes all carry
+  them — if you add a bg field, update ALL FOUR places)
+- `update_bg_cache(cam_x/y/z, sky_r/g/b, fog_start, fog_end, fog_max,
+  mute_strength)` (simulation.py): presence desat/dim, then smoothstep fog
+  toward sky color, radius taper (1 - 0.35*f), f>0.97 voxels culled before
+  claiming a cache slot. TWO call sites in beetle_physics.py (warmup +
+  main loop) — args wrapped in float() (Taichi recompile gotcha).
+- Sliders in BACKGROUND panel under --- ATMOSPHERE ---: BIOME MUTE (0-2.0),
+  FOG START (20-250), FOG END (60-400), FOG MAX (0-1). Globals
+  BG_MUTE_STRENGTH / BG_FOG_START / BG_FOG_END / BG_FOG_MAX + THEME_SKY_COLORS
+  + DEFAULT_SKY_COLOR live near window.background_color init in
+  beetle_physics.py.
+- Biome toggles set their sky color; CLEAR ALL / biome-off restores default.
+
+### Lessons from user feedback (do not re-introduce)
+- **NEVER scale animation offsets for muting.** First version multiplied
+  bg_offset_* by presence to "calm motion" — but for traveling critters
+  (scorpion/toad/dolphin/pterodactyl) the offset IS the patrol path: orbits
+  shrank and splashes desynced when the slider moved. Presence is COLOR
+  treatment only (desaturate + dim). Verified: positions bit-identical
+  across mute 0..2.
+- Fog's radius taper (far voxels shrink up to ~35%) is INTENDED depth cue,
+  but the user noticed sizes changing with sliders — if it ever reads as
+  wrong rather than as depth, the 0.35 constant in update_bg_cache is the
+  one knob (soften or zero it).
+
+### Verification methods that work (reuse these)
+- Headless check (no window): ti.init(cpu), import simulation, toggle_theme,
+  animate_background(1.0), update_bg_cache(...), read num_visible_bg +
+  bg_cache_* .to_numpy(). IMPORTANT: cache order is nondeterministic
+  (parallel atomic_add) — always lexsort by position before comparing runs.
+- Stars contract check: run with (fog_max=0, mute=0) vs defaults, sorted
+  color diff must be 0.0 (stars have bg_fog=0 so fog never touches them).
+- --local4 --perfauto canary: 'background' perf bucket in perf_log.txt
+  (~1.0ms for animate + cache + fog at 743 star voxels; frame 17.1ms).
+
+### REMAINING WORK
+1. USER FEEL-TUNE (next session): walk each biome (desert/grass/ocean/
+   swamp/lava) with the four sliders; adjust per-theme values in
+   THEME_TREATMENT (mute, fog participation) and THEME_SKY_COLORS to taste.
+   Current defaults: biomes 0.7 presence, extras 1.0; stars fog 0.0,
+   comet 0.15, clouds 0.5, ptero 0.6, fireflies/butterflies 0.8,
+   terrestrial 1.0.
+2. Step 3 below (twinkle spike taming) — DEFERRED, stars approved as-is.
+3. If a biome still competes after tuning: consider per-theme brightness
+   floor (the 0.6 in the presence dim `(0.6 + 0.4*m)`) or stronger
+   desaturation curve.
+4. Slider persistence across sessions (currently reset to defaults each
+   boot) — only if the user asks.
 
 Research done 2026-07-08. Problem statement (user): background themes look
 cool but their voxels are DISTRACTING next to the beetle voxels — want a
