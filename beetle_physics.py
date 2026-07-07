@@ -14196,9 +14196,9 @@ def beetle_collision(b1, b2, params):
                         collision_x, collision_y, collision_z,
                         so_base_x, so_base_y, so_base_z,
                         so_tip_x, so_tip_y, so_tip_z)
-                    # Contact must sit on the shaft interior (not the base near
-                    # the body, not the tip — those have their own handling)
-                    if _sdist > shaft_contact_dist or _st < 0.1 or _st > 0.95:
+                    # Contact must sit on the shaft (base through mid included —
+                    # that's where bodies slip through; tip end has own handling)
+                    if _sdist > shaft_contact_dist or _st < 0.02 or _st > 0.95:
                         continue
                     _px = intruder.x - _scx
                     _pz = intruder.z - _scz
@@ -14207,12 +14207,23 @@ def beetle_collision(b1, b2, params):
                         continue
                     _pnx = _px / _pdist
                     _pnz = _pz / _pdist
-                    # Damp only the velocity component driving INTO the shaft
-                    # (moving away or sliding along it is untouched)
-                    _vn = intruder.vx * _pnx + intruder.vz * _pnz
-                    if _vn < 0.0:
-                        intruder.vx -= _vn * _pnx * shaft_vel_damp
-                        intruder.vz -= _vn * _pnz * shaft_vel_damp
+                    # Closing speed at the contact: how fast the shaft (including
+                    # the owner's turn sweeping it) and the intruder's body are
+                    # approaching along the outward normal. Positive = closing.
+                    _own_cvx = shaft_owner.vx - (_scz - shaft_owner.z) * shaft_owner.angular_velocity
+                    _own_cvz = shaft_owner.vz + (_scx - shaft_owner.x) * shaft_owner.angular_velocity
+                    _int_cvx = intruder.vx - (_scz - intruder.z) * intruder.angular_velocity
+                    _int_cvz = intruder.vz + (_scx - intruder.x) * intruder.angular_velocity
+                    _closing = (_own_cvx - _int_cvx) * _pnx + (_own_cvz - _int_cvz) * _pnz
+                    if _closing > 0.0:
+                        # Momentum transfer: driving or sweeping a horn into a
+                        # body shoves it, with a reaction on the horn owner.
+                        # Resistance is natural — an intruder moving/turning
+                        # away from the shaft reduces the closing speed.
+                        intruder.vx += _pnx * _closing * shaft_vel_damp
+                        intruder.vz += _pnz * _closing * shaft_vel_damp
+                        shaft_owner.vx -= _pnx * _closing * shaft_vel_damp * 0.3
+                        shaft_owner.vz -= _pnz * _closing * shaft_vel_damp * 0.3
                     # Small clamped positional separation per step (mirrors the
                     # floor's capped push-out; slightly outpaces max drive speed)
                     intruder.x += _pnx * shaft_pushout
@@ -14494,10 +14505,12 @@ def beetle_collision(b1, b2, params):
 
                     # Calculate tangential velocity at collision point (perpendicular to normal)
                     # This captures rotation effects even when linear velocity is small
-                    v1_at_collision_x = b1.vx + dz_to_b1 * b1.angular_velocity
-                    v1_at_collision_z = b1.vz - dx_to_b1 * b1.angular_velocity
-                    v2_at_collision_x = b2.vx + dz_to_b2 * b2.angular_velocity
-                    v2_at_collision_z = b2.vz - dx_to_b2 * b2.angular_velocity
+                    # (rotation convention: world = R(th)*local with R=[[c,-s],[s,c]],
+                    # so a point at offset (dx, dz) moves at omega*(-dz, +dx))
+                    v1_at_collision_x = b1.vx - dz_to_b1 * b1.angular_velocity
+                    v1_at_collision_z = b1.vz + dx_to_b1 * b1.angular_velocity
+                    v2_at_collision_x = b2.vx - dz_to_b2 * b2.angular_velocity
+                    v2_at_collision_z = b2.vz + dx_to_b2 * b2.angular_velocity
 
                     # Relative velocity at collision point
                     rel_vx = v1_at_collision_x - v2_at_collision_x
@@ -14529,8 +14542,10 @@ def beetle_collision(b1, b2, params):
 
                     # AWAY-FROM-ATTACKER BIAS: Ensure hit beetle spins away from attacker
                     # This fixes counterintuitive behavior where shaft hits cause turning INTO attacker
-                    b1_toward_bias = b1.vx * (-normal_x) + b1.vz * (-normal_z)
-                    b2_toward_bias = b2.vx * normal_x + b2.vz * normal_z
+                    # Velocity AT the contact point, so sweeping your horn into
+                    # someone by turning counts as attacking, not just driving
+                    b1_toward_bias = v1_at_collision_x * (-normal_x) + v1_at_collision_z * (-normal_z)
+                    b2_toward_bias = v2_at_collision_x * normal_x + v2_at_collision_z * normal_z
                     b1_toward_bias = max(b1_toward_bias, 0.0)
                     b2_toward_bias = max(b2_toward_bias, 0.0)
 
@@ -14583,8 +14598,14 @@ def beetle_collision(b1, b2, params):
                     tip_strength = params.get("HORN_TIP_STRENGTH", 2.0)
 
                     # MOMENTUM-BASED TIPPING: Beetle with more momentum tips the other more
-                    b1_toward = b1.vx * (-normal_x) + b1.vz * (-normal_z)
-                    b2_toward = b2.vx * normal_x + b2.vz * normal_z
+                    # Momentum measured at the contact point: horn sweeps from turning
+                    # count, and a victim rotating with the blow yields less
+                    tip_cv1_x = b1.vx - (collision_z - b1.z) * b1.angular_velocity
+                    tip_cv1_z = b1.vz + (collision_x - b1.x) * b1.angular_velocity
+                    tip_cv2_x = b2.vx - (collision_z - b2.z) * b2.angular_velocity
+                    tip_cv2_z = b2.vz + (collision_x - b2.x) * b2.angular_velocity
+                    b1_toward = tip_cv1_x * (-normal_x) + tip_cv1_z * (-normal_z)
+                    b2_toward = tip_cv2_x * normal_x + tip_cv2_z * normal_z
                     b1_toward = max(b1_toward, 0.0)
                     b2_toward = max(b2_toward, 0.0)
                     total_momentum = b1_toward + b2_toward + 0.01
@@ -14638,9 +14659,13 @@ def beetle_collision(b1, b2, params):
                     mini_sep = separation_force * shaft_sep_mult  # Shaft: more separation to prevent clip
 
                 # MOMENTUM-BASED SEPARATION: Moving beetle pushes stationary one more
-                # Calculate each beetle's velocity toward the other (dot product with collision normal)
-                b1_toward = b1.vx * (-normal_x) + b1.vz * (-normal_z)  # b1 moving toward b2
-                b2_toward = b2.vx * normal_x + b2.vz * normal_z        # b2 moving toward b1
+                # Measured at the contact point so horn sweeps from turning push too
+                sep_cv1_x = b1.vx - (collision_z - b1.z) * b1.angular_velocity
+                sep_cv1_z = b1.vz + (collision_x - b1.x) * b1.angular_velocity
+                sep_cv2_x = b2.vx - (collision_z - b2.z) * b2.angular_velocity
+                sep_cv2_z = b2.vz + (collision_x - b2.x) * b2.angular_velocity
+                b1_toward = sep_cv1_x * (-normal_x) + sep_cv1_z * (-normal_z)  # b1 moving toward b2
+                b2_toward = sep_cv2_x * normal_x + sep_cv2_z * normal_z        # b2 moving toward b1
 
                 # Clamp to positive (only count forward momentum)
                 b1_toward = max(b1_toward, 0.0)
@@ -14648,6 +14673,10 @@ def beetle_collision(b1, b2, params):
 
                 # Calculate momentum ratio (who's pushing harder)
                 total_momentum = b1_toward + b2_toward + 0.01  # small epsilon to avoid div by zero
+
+                # Harder approach pushes harder: scale separation with closing
+                # momentum (capped at 2x) instead of a constant-strength shove
+                mini_sep *= 1.0 + min(total_momentum * params.get("SEPARATION_MOMENTUM_SCALE", 0.06), 1.0)
                 b1_push_ratio = b1_toward / total_momentum  # 0-1, how much b1 is pushing
                 b2_push_ratio = b2_toward / total_momentum  # 0-1, how much b2 is pushing
 
