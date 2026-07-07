@@ -591,6 +591,7 @@ collision_stats = {
     'min_shaft_center_dist': 999.0,  # closest a horn shaft got to a body center (<5 = buried)
     'deep_clip_events': 0,     # shaft-contact steps with shaft within 5 voxels of body center
     'deep_clip_by_type': {},   # "owner->intruder" horn types -> count (attribution for clip hunts)
+    'batch_check_ms': deque(maxlen=120),  # batched all-pairs kernel time per physics step
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
 }
 
@@ -668,9 +669,12 @@ def save_perf_log():
     w(f"  deep_clip_events: {collision_stats['deep_clip_events']} (shaft within 5 voxels of body center)")
     for _ck, _cv in sorted(collision_stats['deep_clip_by_type'].items(), key=lambda kv: -kv[1]):
         w(f"    {_ck}: {_cv}")
+    _bh = collision_stats['batch_check_ms']
+    if _bh:
+        w(f"  batch_check: {_avg(_bh):.2f}ms avg, {max(_bh):.2f}ms max (ALL pairs, one kernel launch)")
     for pair, hist in sorted(collision_stats['pair_time_ms'].items()):
         if hist:
-            w(f"  pair {pair[0]}v{pair[1]}: {_avg(hist):.2f}ms avg, {max(hist):.2f}ms max (per physics step)")
+            w(f"  pair {pair[0]}v{pair[1]}: {_avg(hist):.2f}ms avg, {max(hist):.2f}ms max (response only, per physics step)")
 
     w("")
     w("--- Particle Counts ---")
@@ -4258,9 +4262,175 @@ def clear_beetles():
         if simulation.is_beetle_voxel(vt) == 1 and simulation.voxel_part[vt] == simulation.PART_BODY:
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
+@ti.func
+def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1: ti.i32, color2: ti.i32) -> ti.i32:
+    """Per-column contact test shared by the single-pair and batched-pairs
+    kernels. Returns 1 if this XZ column (or its cardinal-neighbor edge check)
+    indicates contact between the two entities. Logic is byte-identical to the
+    original check_collision_kernel column scan."""
+    contact = 0
+
+    # Track Y ranges for both beetles in this XZ column
+    beetle1_y_min = 999
+    beetle1_y_max = -1
+    beetle2_y_min = 999
+    beetle2_y_max = -1
+    # Track if column has non-leg-tip voxels (for less sensitive leg collision)
+    has_non_leg_tip_1 = 0
+    has_non_leg_tip_2 = 0
+
+    # Find Y-ranges for both beetles/ball in this column (includes legs and tips!)
+    # OPTIMIZED: Adaptive Y-range based on beetle height (grounded vs airborne)
+    beetle1_grid_y = int(RENDER_Y_OFFSET + y1)
+    beetle2_grid_y = int(RENDER_Y_OFFSET + y2)
+
+    # Adaptive reach: grounded beetles need less vertical scan upward
+    beetle1_max_up = 22 if y1 < 2.0 else 28  # Grounded: reduced scan, Airborne: full scan
+    beetle1_max_down = 12 if y1 >= 2.0 else 10  # Airborne: increase down, Grounded: reduce
+    beetle2_max_up = 22 if y2 < 2.0 else 28
+    beetle2_max_down = 12 if y2 >= 2.0 else 10
+
+    # Take union of both beetles' adaptive ranges
+    y_start = ti.max(0, ti.min(beetle1_grid_y - beetle1_max_down,
+                                beetle2_grid_y - beetle2_max_down))
+    y_end = ti.min(simulation.n_grid, ti.max(beetle1_grid_y + beetle1_max_up,
+                                              beetle2_grid_y + beetle2_max_up))
+
+    # Track if hook interior voxels are present in this column
+    has_hook_interior = 0
+
+    for gy in range(y_start, y_end):
+        voxel = simulation.voxel_type[gx, gy, gz]
+
+        voxel_owner_v = simulation.beetle_owner(voxel)
+        voxel_part_v = simulation.voxel_part[voxel]
+
+        # Check for hook interior voxels (any player)
+        if voxel_part_v == simulation.PART_HOOK:
+            has_hook_interior = 1
+
+        # Check if voxel belongs to entity 1 (based on color1)
+        belongs_to_1 = 0
+        is_leg_tip_1 = 0
+        if color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
+            if voxel == 16 or voxel == 17:
+                belongs_to_1 = 1
+        elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color1) and voxel_part_v != simulation.PART_VENOM_TIP:
+            # Any of this player's parts except the venom bulb
+            # (body/legs/stripe/horn tip/hook; leg tips tracked separately)
+            belongs_to_1 = 1
+            if voxel_part_v == simulation.PART_LEG_TIP:
+                is_leg_tip_1 = 1
+
+        # Check if voxel belongs to entity 2 (based on color2)
+        belongs_to_2 = 0
+        is_leg_tip_2 = 0
+        if color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
+            if voxel == 16 or voxel == 17:
+                belongs_to_2 = 1
+        elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color2) and voxel_part_v != simulation.PART_VENOM_TIP:
+            # Any of this player's parts except the venom bulb
+            # (body/legs/stripe/horn tip/hook; leg tips tracked separately)
+            belongs_to_2 = 1
+            if voxel_part_v == simulation.PART_LEG_TIP:
+                is_leg_tip_2 = 1
+
+        # Update Y-ranges based on ownership
+        if belongs_to_1 == 1:
+            if gy < beetle1_y_min:
+                beetle1_y_min = gy
+            if gy > beetle1_y_max:
+                beetle1_y_max = gy
+            # Track if this column has only leg tips for beetle1
+            if is_leg_tip_1 == 0:
+                has_non_leg_tip_1 = 1
+
+        if belongs_to_2 == 1:
+            if gy < beetle2_y_min:
+                beetle2_y_min = gy
+            if gy > beetle2_y_max:
+                beetle2_y_max = gy
+            # Track if this column has only leg tips for beetle2
+            if is_leg_tip_2 == 0:
+                has_non_leg_tip_2 = 1
+
+    # Check if Y-ranges overlap or are adjacent (variable tolerance based on voxel types)
+    if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
+        # Use stricter tolerance (±5 voxels) for hook interior collisions to catch them earlier
+        # Use normal tolerance (±2 voxels) for beetle-beetle, tight (±0) for ball collisions
+        is_ball_involved = 0
+        if color1 == simulation.BALL or color2 == simulation.BALL:
+            is_ball_involved = 1
+
+        # Check if collision involves only leg tips (less sensitive)
+        is_leg_tip_only = 0
+        if has_non_leg_tip_1 == 0 or has_non_leg_tip_2 == 0:
+            is_leg_tip_only = 1
+
+        # Initialize tolerance (required by Taichi)
+        tolerance = 3  # Default: beetle-beetle (±3 voxels for earlier detection)
+        if has_hook_interior == 1:
+            tolerance = 5
+        elif is_ball_involved == 1:
+            tolerance = 0  # Ball needs tight collision - no early detection
+        elif is_leg_tip_only == 1:
+            tolerance = -2  # Leg tips need actual overlap (stricter)
+
+        if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
+            contact = 1
+
+    # XZ NEIGHBOR CHECK: Catch edge-to-edge clipping in adjacent columns
+    # Only check 4 cardinal neighbors (not diagonals) with tight Y tolerance
+    # This prevents thin horn edges from slipping through gaps between spherical voxels
+    elif beetle1_y_max >= 0 and beetle2_y_max < 0:  # Only beetle1 in this column
+        # Check 4 cardinal neighboring columns for beetle2 voxels
+        for neighbor_dir in range(4):
+            if contact == 0:
+                # Cardinal directions: +X, -X, +Z, -Z
+                neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
+                neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
+                if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
+                    # Check for beetle2 voxels in neighbor column at exact Y (±0 tolerance)
+                    for neighbor_gy in range(beetle1_y_min, beetle1_y_max + 1):
+                        if 0 <= neighbor_gy < simulation.n_grid and contact == 0:
+                            neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
+                            neighbor_is_2 = 0
+                            if color2 == simulation.BEETLE_BLUE:
+                                if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
+                                    neighbor_is_2 = 1
+                            elif color2 == simulation.BEETLE_RED:
+                                if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
+                                    neighbor_is_2 = 1
+                            if neighbor_is_2 == 1:
+                                contact = 1
+    elif beetle2_y_max >= 0 and beetle1_y_max < 0:  # Only beetle2 in this column
+        # Check 4 cardinal neighboring columns for beetle1 voxels
+        for neighbor_dir in range(4):
+            if contact == 0:
+                neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
+                neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
+                if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
+                    # Check for beetle1 voxels in neighbor column at exact Y (±0 tolerance)
+                    for neighbor_gy in range(beetle2_y_min, beetle2_y_max + 1):
+                        if 0 <= neighbor_gy < simulation.n_grid and contact == 0:
+                            neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
+                            neighbor_is_1 = 0
+                            if color1 == simulation.BEETLE_BLUE:
+                                if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
+                                    neighbor_is_1 = 1
+                            elif color1 == simulation.BEETLE_RED:
+                                if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
+                                    neighbor_is_1 = 1
+                            if neighbor_is_1 == 1:
+                                contact = 1
+
+    return contact
+
+
 @ti.kernel
 def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: ti.f32, y2: ti.f32, color1: ti.i32, color2: ti.i32) -> ti.i32:
-    """Fast GPU-based collision check - returns 1 if collision, 0 otherwise"""
+    """Fast GPU-based collision check - returns 1 if collision, 0 otherwise.
+    Single-pair fallback; the main loop uses check_collision_pairs_kernel."""
     collision = 0
 
     # Convert to grid coordinates
@@ -4270,188 +4440,80 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
     center2_z = int(z2 + simulation.n_grid / 2.0)
 
     # Early rejection: If beetles too far apart, skip voxel scanning
-    # Optimized: Beetle max radius ~18 voxels (body + horn), so 2x radius + margin = 38
     dx = center1_x - center2_x
     dz = center1_z - center2_z
     dist_sq = dx * dx + dz * dz
     too_far = 0
-    if dist_sq > 5776:  # (76 voxels)^2 = 2 * 38 voxel max reach for collision detection
+    if dist_sq > 5776:  # (76 voxels)^2 = 2 * 38 voxel max reach
         too_far = 1
 
-    # Scan only the intersection of the two beetles' reach boxes (+-38 voxels,
-    # the same conservative max reach the too_far check assumes). Any column
-    # holding voxels from BOTH beetles must lie inside both boxes, so this
-    # can't miss contact — it just skips columns only one beetle can reach.
-    # Unlike the old midpoint-radius heuristic, this region shrinks to empty
-    # as beetles separate instead of growing with distance.
+    # Scan only the intersection of the two beetles' reach boxes (+-38 voxels)
     REACH = 38
     x_min = ti.max(0, ti.max(center1_x, center2_x) - REACH)
     x_max = ti.min(simulation.n_grid, ti.min(center1_x, center2_x) + REACH + 1)
     z_min = ti.max(0, ti.max(center1_z, center2_z) - REACH)
     z_max = ti.min(simulation.n_grid, ti.min(center1_z, center2_z) + REACH + 1)
 
-    # Scan for colliding voxels - TRUE 3D collision detection (only if not too far)
-    # Track Y-ranges for each beetle in each XZ column
     for gx in range(x_min, x_max):
         for gz in range(z_min, z_max):
             # Skip remaining checks if collision already found OR beetles too far apart
             if collision == 0 and too_far == 0:
-                # Track Y ranges for both beetles in this XZ column
-                beetle1_y_min = 999
-                beetle1_y_max = -1
-                beetle2_y_min = 999
-                beetle2_y_max = -1
-                # Track if column has non-leg-tip voxels (for less sensitive leg collision)
-                has_non_leg_tip_1 = 0
-                has_non_leg_tip_2 = 0
-
-                # Find Y-ranges for both beetles/ball in this column (includes legs and tips!)
-                # OPTIMIZED: Adaptive Y-range based on beetle height (grounded vs airborne)
-                # Find grid Y for each beetle
-                beetle1_grid_y = int(RENDER_Y_OFFSET + y1)
-                beetle2_grid_y = int(RENDER_Y_OFFSET + y2)
-
-                # Adaptive reach: grounded beetles need less vertical scan upward
-                beetle1_max_up = 22 if y1 < 2.0 else 28  # Grounded: reduced scan, Airborne: full scan
-                beetle1_max_down = 12 if y1 >= 2.0 else 10  # Airborne: increase down, Grounded: reduce
-                beetle2_max_up = 22 if y2 < 2.0 else 28
-                beetle2_max_down = 12 if y2 >= 2.0 else 10
-
-                # Take union of both beetles' adaptive ranges
-                y_start = ti.max(0, ti.min(beetle1_grid_y - beetle1_max_down,
-                                            beetle2_grid_y - beetle2_max_down))
-                y_end = ti.min(simulation.n_grid, ti.max(beetle1_grid_y + beetle1_max_up,
-                                                          beetle2_grid_y + beetle2_max_up))
-
-                # Track if hook interior voxels are present in this column
-                has_hook_interior = 0
-
-                for gy in range(y_start, y_end):
-                    voxel = simulation.voxel_type[gx, gy, gz]
-
-                    voxel_owner_v = simulation.beetle_owner(voxel)
-                    voxel_part_v = simulation.voxel_part[voxel]
-
-                    # Check for hook interior voxels (any player)
-                    if voxel_part_v == simulation.PART_HOOK:
-                        has_hook_interior = 1
-
-                    # Check if voxel belongs to entity 1 (based on color1)
-                    belongs_to_1 = 0
-                    is_leg_tip_1 = 0
-                    if color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
-                        if voxel == 16 or voxel == 17:
-                            belongs_to_1 = 1
-                    elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color1) and voxel_part_v != simulation.PART_VENOM_TIP:
-                        # Any of this player's parts except the venom bulb
-                        # (body/legs/stripe/horn tip/hook; leg tips tracked separately)
-                        belongs_to_1 = 1
-                        if voxel_part_v == simulation.PART_LEG_TIP:
-                            is_leg_tip_1 = 1
-
-                    # Check if voxel belongs to entity 2 (based on color2)
-                    belongs_to_2 = 0
-                    is_leg_tip_2 = 0
-                    if color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
-                        if voxel == 16 or voxel == 17:
-                            belongs_to_2 = 1
-                    elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color2) and voxel_part_v != simulation.PART_VENOM_TIP:
-                        # Any of this player's parts except the venom bulb
-                        # (body/legs/stripe/horn tip/hook; leg tips tracked separately)
-                        belongs_to_2 = 1
-                        if voxel_part_v == simulation.PART_LEG_TIP:
-                            is_leg_tip_2 = 1
-
-                    # Update Y-ranges based on ownership
-                    if belongs_to_1 == 1:
-                        if gy < beetle1_y_min:
-                            beetle1_y_min = gy
-                        if gy > beetle1_y_max:
-                            beetle1_y_max = gy
-                        # Track if this column has only leg tips for beetle1
-                        if is_leg_tip_1 == 0:
-                            has_non_leg_tip_1 = 1
-
-                    if belongs_to_2 == 1:
-                        if gy < beetle2_y_min:
-                            beetle2_y_min = gy
-                        if gy > beetle2_y_max:
-                            beetle2_y_max = gy
-                        # Track if this column has only leg tips for beetle2
-                        if is_leg_tip_2 == 0:
-                            has_non_leg_tip_2 = 1
-
-                # Check if Y-ranges overlap or are adjacent (variable tolerance based on voxel types)
-                if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
-                    # Use stricter tolerance (±5 voxels) for hook interior collisions to catch them earlier
-                    # Use normal tolerance (±2 voxels) for beetle-beetle, tight (±0) for ball collisions
-                    is_ball_involved = 0
-                    if color1 == simulation.BALL or color2 == simulation.BALL:
-                        is_ball_involved = 1
-
-                    # Check if collision involves only leg tips (less sensitive)
-                    is_leg_tip_only = 0
-                    if has_non_leg_tip_1 == 0 or has_non_leg_tip_2 == 0:
-                        is_leg_tip_only = 1
-
-                    # Initialize tolerance (required by Taichi)
-                    tolerance = 3  # Default: beetle-beetle (±3 voxels for earlier detection)
-                    if has_hook_interior == 1:
-                        tolerance = 5
-                    elif is_ball_involved == 1:
-                        tolerance = 0  # Ball needs tight collision - no early detection
-                    elif is_leg_tip_only == 1:
-                        tolerance = -2  # Leg tips need actual overlap (stricter)
-
-                    if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
-                        collision = 1
-
-                # XZ NEIGHBOR CHECK: Catch edge-to-edge clipping in adjacent columns
-                # Only check 4 cardinal neighbors (not diagonals) with tight Y tolerance
-                # This prevents thin horn edges from slipping through gaps between spherical voxels
-                elif beetle1_y_max >= 0 and beetle2_y_max < 0:  # Only beetle1 in this column
-                    # Check 4 cardinal neighboring columns for beetle2 voxels
-                    for neighbor_dir in range(4):
-                        if collision == 0:
-                            # Cardinal directions: +X, -X, +Z, -Z
-                            neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
-                            neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
-                            if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
-                                # Check for beetle2 voxels in neighbor column at exact Y (±0 tolerance)
-                                for neighbor_gy in range(beetle1_y_min, beetle1_y_max + 1):
-                                    if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
-                                        neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
-                                        neighbor_is_2 = 0
-                                        if color2 == simulation.BEETLE_BLUE:
-                                            if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
-                                                neighbor_is_2 = 1
-                                        elif color2 == simulation.BEETLE_RED:
-                                            if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
-                                                neighbor_is_2 = 1
-                                        if neighbor_is_2 == 1:
-                                            collision = 1
-                elif beetle2_y_max >= 0 and beetle1_y_max < 0:  # Only beetle2 in this column
-                    # Check 4 cardinal neighboring columns for beetle1 voxels
-                    for neighbor_dir in range(4):
-                        if collision == 0:
-                            neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
-                            neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
-                            if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
-                                # Check for beetle1 voxels in neighbor column at exact Y (±0 tolerance)
-                                for neighbor_gy in range(beetle2_y_min, beetle2_y_max + 1):
-                                    if 0 <= neighbor_gy < simulation.n_grid and collision == 0:
-                                        neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
-                                        neighbor_is_1 = 0
-                                        if color1 == simulation.BEETLE_BLUE:
-                                            if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
-                                                neighbor_is_1 = 1
-                                        elif color1 == simulation.BEETLE_RED:
-                                            if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
-                                                neighbor_is_1 = 1
-                                        if neighbor_is_1 == 1:
-                                            collision = 1
+                if _column_pair_contact(gx, gz, y1, y2, color1, color2) == 1:
+                    collision = 1
 
     return collision
+
+
+# Batched pair collision check: ONE kernel launch tests every active pair per
+# physics step. Per-pair launches cost ~0.8ms each on the CPU backend (mostly
+# launch/sync overhead, not scan work) — 6 pairs in 4P made this the top
+# physics cost. Detection logic is shared via _column_pair_contact.
+MAX_COLLISION_PAIRS = 6  # 4P worst case: n*(n-1)/2
+PAIR_TILE = 77           # max intersection box width (2 * 38 reach + 1)
+pair_check_data = ti.field(dtype=ti.f32, shape=(MAX_COLLISION_PAIRS, 6))   # x1, z1, y1, x2, z2, y2
+pair_check_colors = ti.field(dtype=ti.i32, shape=(MAX_COLLISION_PAIRS, 2))
+pair_check_result = ti.field(dtype=ti.i32, shape=MAX_COLLISION_PAIRS)
+
+@ti.kernel
+def check_collision_pairs_kernel(pair_count: ti.i32):
+    """Check all active pairs in one launch. Results in pair_check_result."""
+    for p in range(MAX_COLLISION_PAIRS):
+        pair_check_result[p] = 0
+
+    # Parallelize over (pair, column tile). Out-of-bounds tile cells and
+    # already-decided pairs skip cheaply; each in-bounds cell runs the same
+    # column test the single-pair kernel uses.
+    for p, ix, iz in ti.ndrange(MAX_COLLISION_PAIRS, PAIR_TILE, PAIR_TILE):
+        if p < pair_count and pair_check_result[p] == 0:
+            x1 = pair_check_data[p, 0]
+            z1 = pair_check_data[p, 1]
+            y1 = pair_check_data[p, 2]
+            x2 = pair_check_data[p, 3]
+            z2 = pair_check_data[p, 4]
+            y2 = pair_check_data[p, 5]
+            color1 = pair_check_colors[p, 0]
+            color2 = pair_check_colors[p, 1]
+
+            center1_x = int(x1 + simulation.n_grid / 2.0)
+            center1_z = int(z1 + simulation.n_grid / 2.0)
+            center2_x = int(x2 + simulation.n_grid / 2.0)
+            center2_z = int(z2 + simulation.n_grid / 2.0)
+
+            dx = center1_x - center2_x
+            dz = center1_z - center2_z
+            dist_sq = dx * dx + dz * dz
+            if dist_sq <= 5776:  # same too_far rejection as single-pair kernel
+                REACH = 38
+                x_min = ti.max(0, ti.max(center1_x, center2_x) - REACH)
+                x_max = ti.min(simulation.n_grid, ti.min(center1_x, center2_x) + REACH + 1)
+                z_min = ti.max(0, ti.max(center1_z, center2_z) - REACH)
+                z_max = ti.min(simulation.n_grid, ti.min(center1_z, center2_z) + REACH + 1)
+
+                gx = x_min + ix
+                gz = z_min + iz
+                if gx < x_max and gz < z_max:
+                    if _column_pair_contact(gx, gz, y1, y2, color1, color2) == 1:
+                        pair_check_result[p] = 1
 
 @ti.kernel
 def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32, front_body_height: ti.i32, back_body_height: ti.i32):
@@ -13933,8 +13995,11 @@ def calculate_horn_damping(beetle, collision_x, collision_y, collision_z, engage
     return new_pitch_damping, new_yaw_damping
 
 
-def beetle_collision(b1, b2, params):
-    """Handle collision with voxel-perfect detection, pushing, and horn leverage"""
+def beetle_collision(b1, b2, params, precomputed_collision=None):
+    """Handle collision with voxel-perfect detection, pushing, and horn leverage.
+
+    precomputed_collision: result from the batched check_collision_pairs_kernel
+    (main loop); None falls back to a standalone single-pair kernel launch."""
     collision_stats['pairs_checked'] += 1
     # Detect if this is a ball collision (ball uses different, gentler physics)
     is_ball_collision = (b1.horn_type == "ball" or b2.horn_type == "ball")
@@ -14119,8 +14184,12 @@ def beetle_collision(b1, b2, params):
                         b2.x -= nx * push_strength * 0.3  # Slight counter-push
                         b2.z -= nz * push_strength * 0.3
 
-    # Fast GPU-based collision check
-    has_collision = check_collision_kernel(b1.x, b1.z, b1.y, b2.x, b2.z, b2.y, b1.color, b2.color)
+    # Voxel-overlap check: normally precomputed by the batched pairs kernel
+    # (one launch for all pairs in the main loop); standalone kernel otherwise
+    if precomputed_collision is None:
+        has_collision = check_collision_kernel(b1.x, b1.z, b1.y, b2.x, b2.z, b2.y, b1.color, b2.color)
+    else:
+        has_collision = precomputed_collision
 
     if has_collision:
         # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
@@ -16470,6 +16539,12 @@ update_loading(0)
 renderer.init_gradient_background()
 renderer.init_shimmer_lut()
 check_collision_kernel(0.0, 0.0, 0.0, 100.0, 100.0, 0.0, simulation.BEETLE_BLUE, simulation.BEETLE_RED)
+# Warm up the batched all-pairs kernel with the same pair
+pair_check_data[0, 3] = 100.0
+pair_check_data[0, 4] = 100.0
+pair_check_colors[0, 0] = simulation.BEETLE_BLUE
+pair_check_colors[0, 1] = simulation.BEETLE_RED
+check_collision_pairs_kernel(1)
 calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_BLUE,
                                  beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
 calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_RED,
@@ -20198,31 +20273,49 @@ try:
         # Skip first 30 frames to let geometry fully initialize (prevents startup skipping)
         # Pairwise beetle-beetle collision (n*(n-1)/2 pairs; 1 pair for 2P)
         if physics_frame > 30:
+            # Gather active pairs, then run ALL voxel-overlap checks in ONE
+            # kernel launch (per-pair launches cost ~0.8ms each in launch/sync
+            # overhead — with 6 pairs in 4P that was the top physics cost)
+            _active_pairs = []
             for i in range(active_player_count):
                 for j in range(i + 1, active_player_count):
                     if (beetles[i].active and beetles[j].active and
                         not beetles[i].is_falling and not beetles[j].is_falling and
                         not hovering[i] and not hovering[j]):
                         # Distance cull: beyond 77 voxels no contact is possible
-                        # (check_collision_kernel itself reports too_far at 76;
-                        # 77 covers float-vs-grid-int rounding). Skipping saves
-                        # the kernel launch + sync and the predictive/shaft math,
-                        # which can't trigger at this range either.
+                        # (the kernel's own too_far is 76; 77 covers rounding).
+                        # Predictive push decay is the only far-range side
+                        # effect of beetle_collision(), replicated here.
                         _pair_dx = beetles[i].x - beetles[j].x
                         _pair_dz = beetles[i].z - beetles[j].z
                         if _pair_dx * _pair_dx + _pair_dz * _pair_dz > 5929.0:  # 77^2
-                            # Replicate the only far-range side effect of
-                            # beetle_collision(): predictive push decay
                             beetles[i].predictive_push_x *= 0.8
                             beetles[i].predictive_push_z *= 0.8
                             beetles[j].predictive_push_x *= 0.8
                             beetles[j].predictive_push_z *= 0.8
                             collision_stats['pairs_culled'] += 1
                             continue
-                        _t_pair_start = time.perf_counter()
-                        beetle_collision(beetles[i], beetles[j], physics_params)
-                        _pair_hist = collision_stats['pair_time_ms'].setdefault((i, j), deque(maxlen=120))
-                        _pair_hist.append((time.perf_counter() - _t_pair_start) * 1000)
+                        _active_pairs.append((i, j))
+            if _active_pairs:
+                _t_batch_start = time.perf_counter()
+                for _pi, (_bi, _bj) in enumerate(_active_pairs):
+                    pair_check_data[_pi, 0] = beetles[_bi].x
+                    pair_check_data[_pi, 1] = beetles[_bi].z
+                    pair_check_data[_pi, 2] = beetles[_bi].y
+                    pair_check_data[_pi, 3] = beetles[_bj].x
+                    pair_check_data[_pi, 4] = beetles[_bj].z
+                    pair_check_data[_pi, 5] = beetles[_bj].y
+                    pair_check_colors[_pi, 0] = beetles[_bi].color
+                    pair_check_colors[_pi, 1] = beetles[_bj].color
+                check_collision_pairs_kernel(len(_active_pairs))
+                _pair_results = pair_check_result.to_numpy()  # single sync for all pairs
+                collision_stats['batch_check_ms'].append((time.perf_counter() - _t_batch_start) * 1000)
+                for _pi, (_bi, _bj) in enumerate(_active_pairs):
+                    _t_pair_start = time.perf_counter()
+                    beetle_collision(beetles[_bi], beetles[_bj], physics_params,
+                                     precomputed_collision=int(_pair_results[_pi]))
+                    _pair_hist = collision_stats['pair_time_ms'].setdefault((_bi, _bj), deque(maxlen=120))
+                    _pair_hist.append((time.perf_counter() - _t_pair_start) * 1000)
 
         # === BEETLE COLLISION TIMING END ===
         _t_collision_end = time.perf_counter()
