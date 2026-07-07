@@ -331,6 +331,11 @@ def get_local4_from_args():
 
 LOCAL4_MODE, BOT_AI_MODE = get_local4_from_args()
 
+# --perfauto: auto-save the perf log every 30s (headless perf testing of bot
+# sessions without clicking the SAVE PERF LOG button)
+PERF_AUTO_MODE = '--perfauto' in sys.argv
+_last_perf_auto_save = time.time()
+
 FULLSCREEN_ENABLED, FULLSCREEN_RES = get_fullscreen_from_args()
 if FULLSCREEN_ENABLED:
     WINDOW_RESOLUTION = FULLSCREEN_RES
@@ -692,6 +697,9 @@ def save_perf_log():
         w(f"  extract_all: {rt.get('extract_all', 0):.2f}ms")
         w(f"  lighting_setup: {rt.get('lighting_setup', 0):.2f}ms")
         w(f"  scene_draw: {rt.get('scene_draw', 0):.2f}ms")
+        w(f"    particles_draw: {rt.get('particles_draw', 0):.2f}ms (scene.particles upload+draw)")
+        w(f"    floor_mesh_draw: {rt.get('floor_mesh_draw', 0):.2f}ms (floor mesh upload+draw)")
+        w(f"    shadow_draw: {rt.get('shadow_draw', 0):.2f}ms")
         w(f"  voxel_count: {rt.get('voxel_count', 0)}")
         w(f"  floor_quads: {rt.get('floor_quads', 0)}")
 
@@ -24176,6 +24184,12 @@ try:
         window.GUI.end()
 
     perf_monitor.stop('gui')
+
+    # --perfauto: periodic auto-save for hands-off perf testing (runs in any
+    # game state, including the title screen)
+    if PERF_AUTO_MODE and time.time() - _last_perf_auto_save > 30.0:
+        _last_perf_auto_save = time.time()
+        save_perf_log()
 
     # === END FRAME TIMING ===
     perf_monitor.stop('frame_total')

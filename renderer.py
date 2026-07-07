@@ -3,9 +3,11 @@ import numpy as np
 import simulation
 
 # Maximum number of voxels to render
-# Reduced from 200000 to minimize CPU->GPU transfer overhead
-# Typical usage: arena ~4000 + 2 beetles ~2400 + particles ~1000 = ~7500
-MAX_VOXELS = 20000
+# Kept tight: scene.particles() uploads the FULL field capacity every frame
+# (measured ~2.5ms per MB on CPU backend), so slack costs real frame time.
+# Typical usage: arena ~4000 + 4 beetles ~4800 + live debris ~2000 = ~11000;
+# bg themes add up to 8000. Overflow just skips rendering excess particles.
+MAX_VOXELS = 16000
 
 # Particle render caps - prevents high water mark from tanking FPS
 # These cap how many particle slots we CHECK (not just render) to avoid
@@ -25,7 +27,10 @@ voxel_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for mixed voxel/debris sizes
 
 # Floor mesh fields (flat quads + bevel skirts — single merged mesh for one draw call)
-MAX_FLOOR_QUADS = 10000
+# Capacity kept tight: scene.mesh() uploads the FULL vertex buffer every frame
+# regardless of vertex_count, so slack costs milliseconds. Observed peak across
+# arenas ~1500 quads; render() warns if a rebuild ever overflows this.
+MAX_FLOOR_QUADS = 4000
 MAX_FLOOR_VERTS = MAX_FLOOR_QUADS * 4
 
 num_floor_quads = ti.field(dtype=ti.i32, shape=())
@@ -1573,6 +1578,8 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         # Cache the freshly-built floor mesh count (fill + edge + bevel + merged quads)
         cached_floor_count = num_floor_quads[None]
         floor_cache_valid = True
+        if cached_floor_count >= MAX_FLOOR_QUADS:
+            print(f"[Renderer] WARNING: floor quad overflow ({cached_floor_count} >= {MAX_FLOOR_QUADS}) - floor may have holes, raise MAX_FLOOR_QUADS")
 
     _t2 = time.perf_counter()
 
@@ -1613,7 +1620,9 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
 
     # Render non-floor particles as spheres
     # (beetles, steel, goals, debris, spray, silk, projectiles, etc.)
-    count = num_voxels[None]
+    # Clamp: the atomic counter keeps counting past MAX_VOXELS even though
+    # writes are guarded — an unclamped index_count would overrun the buffer
+    count = min(num_voxels[None], MAX_VOXELS)
     _t_particles0 = time.perf_counter()
     if count > 0:
         scene.particles(
@@ -1630,6 +1639,7 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
     _t_mesh0 = time.perf_counter()
     if mesh_floor_enabled:
         floor_count = cached_floor_count if floor_cache_valid else num_floor_quads[None]
+        floor_count = min(floor_count, MAX_FLOOR_QUADS)  # same buffer-overrun guard
         if floor_count > 0:
             scene.mesh(floor_vertices, indices=_floor_indices_np, normals=floor_normals,
                        per_vertex_color=floor_colors, two_sided=False,
@@ -1659,6 +1669,9 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         'extract_all': (_t2 - _t1) * 1000,  # Megakernel: voxels + debris + spray + silk + projectiles
         'lighting_setup': (_t5 - _t2) * 1000,
         'scene_draw': (_t6 - _t5) * 1000,  # particles + mesh
+        'particles_draw': (_t_particles1 - _t_particles0) * 1000,  # scene.particles (uploads voxel fields)
+        'floor_mesh_draw': (_t_mesh1 - _t_mesh0) * 1000,  # scene.mesh floor (uploads floor fields)
+        'shadow_draw': (_t_shadow1 - _t_shadow0) * 1000,  # shadow disc build + mesh
         'voxel_count': count,
         'floor_quads': floor_count,
     }
