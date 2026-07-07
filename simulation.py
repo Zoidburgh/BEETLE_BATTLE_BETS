@@ -4015,16 +4015,18 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
         if bright < 0.01:
             continue
 
-        # Presence: 1.0 = full cast member, lower = stage dressing
+        # Presence: 1.0 = full cast member, lower = stage dressing.
+        # NOTE: presence must NEVER scale the animation offsets — for
+        # traveling critters (scorpion/toad/dolphin/ptero) the offset IS
+        # the patrol path, so scaling it shrinks orbits and desyncs
+        # splashes. Color treatment only.
         m = 1.0 - (1.0 - bg_mute[idx]) * mute_strength
         m = ti.min(ti.max(m, 0.0), 1.0)
-        # Calmer motion for muted themes (motion steals the eye hardest)
-        amp = 0.6 + 0.4 * m
 
         pos = bg_positions[idx]
-        pos.x += bg_offset_x[idx] * amp
-        pos.y += bg_offset_y[idx] * amp
-        pos.z += bg_offset_z[idx] * amp
+        pos.x += bg_offset_x[idx]
+        pos.y += bg_offset_y[idx]
+        pos.z += bg_offset_z[idx]
 
         base_color = bg_colors[idx]
         anim = bg_anim_type[idx]

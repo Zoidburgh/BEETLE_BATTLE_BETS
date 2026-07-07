@@ -24233,7 +24233,7 @@ try:
 
         # === ATMOSPHERE (BACKGROUND_ART_PLAN.md) ===
         window.GUI.text("--- ATMOSPHERE ---")
-        BG_MUTE_STRENGTH = window.GUI.slider_float("BIOME MUTE", BG_MUTE_STRENGTH, 0.0, 1.5)
+        BG_MUTE_STRENGTH = window.GUI.slider_float("BIOME MUTE", BG_MUTE_STRENGTH, 0.0, 2.0)
         BG_FOG_START = window.GUI.slider_float("FOG START", BG_FOG_START, 20.0, 250.0)
         BG_FOG_END = window.GUI.slider_float("FOG END", BG_FOG_END, 60.0, 400.0)
         BG_FOG_MAX = window.GUI.slider_float("FOG MAX", BG_FOG_MAX, 0.0, 1.0)
