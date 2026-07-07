@@ -14730,22 +14730,27 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 _hx = _sepx / _seph
                                 _hz = _sepz / _seph
                                 # Contact-point velocities: body + turn sweep +
-                                # horn articulation (numeric tip diff x param)
+                                # horn articulation (numeric tip diff x param).
+                                # Articulation only moves the ROTATING segment
+                                # (whole shaft for most types; head only for
+                                # giraffe - the neck segment is fixed)
+                                _svs_as = _ss_s_loc if _svs_best[1] == len(_segs1) - 1 else 0.0
+                                _svs_at = _ss_t_loc if _svs_best[2] == len(_segs2) - 1 else 0.0
                                 _a1vx = _a1vz = _a2vx = _a2vz = 0.0
-                                if (abs(b1.horn_pitch_velocity) > 0.02 or
+                                if _svs_as > 0.0 and (abs(b1.horn_pitch_velocity) > 0.02 or
                                         abs(b1.horn_yaw_velocity) > 0.02):
                                     _p1x, _p1y, _p1z = calculate_horn_tip_position_with_both(
                                         b1, b1.horn_pitch + b1.horn_pitch_velocity * PHYSICS_TIMESTEP,
                                         b1.horn_yaw + b1.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                                    _a1vx = _ss_s * (_p1x - _s1tx) / PHYSICS_TIMESTEP
-                                    _a1vz = _ss_s * (_p1z - _s1tz) / PHYSICS_TIMESTEP
-                                if (abs(b2.horn_pitch_velocity) > 0.02 or
+                                    _a1vx = _svs_as * (_p1x - _segs1[-1][3]) / PHYSICS_TIMESTEP
+                                    _a1vz = _svs_as * (_p1z - _segs1[-1][5]) / PHYSICS_TIMESTEP
+                                if _svs_at > 0.0 and (abs(b2.horn_pitch_velocity) > 0.02 or
                                         abs(b2.horn_yaw_velocity) > 0.02):
                                     _p2x, _p2y, _p2z = calculate_horn_tip_position_with_both(
                                         b2, b2.horn_pitch + b2.horn_pitch_velocity * PHYSICS_TIMESTEP,
                                         b2.horn_yaw + b2.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                                    _a2vx = _ss_t * (_p2x - _s2tx) / PHYSICS_TIMESTEP
-                                    _a2vz = _ss_t * (_p2z - _s2tz) / PHYSICS_TIMESTEP
+                                    _a2vx = _svs_at * (_p2x - _segs2[-1][3]) / PHYSICS_TIMESTEP
+                                    _a2vz = _svs_at * (_p2z - _segs2[-1][5]) / PHYSICS_TIMESTEP
                                 _v1x = b1.vx - (_c1z - b1.z) * b1.angular_velocity + _a1vx
                                 _v1z = b1.vz + (_c1x - b1.x) * b1.angular_velocity + _a1vz
                                 _v2x = b2.vx - (_c2z - b2.z) * b2.angular_velocity + _a2vx
