@@ -44,6 +44,24 @@ change, beetles untouched.
   (0.407) while clouds go to 2.8 and crowd grubs 1.3. Without depth cues, a
   big far sphere and a near small one are the same screen blob.
 
+## USER CLARIFICATION (2026-07-08): the default look (STARS) is GREAT — don't touch it.
+The competition problem is the BIOMES: swamp / desert / ocean / lava / grass.
+Diagnosis: stars accidentally follow good art rules (tiny voxels, 55-220 units
+away, gentle motion, dark sky) — biomes break them: ground-level decor starts
+just past the arena edge (~35-55 units, nearly beetle distance), with BIG
+voxels (lava crust 2.5-3.0 vs beetle 0.407), full saturation, and constant
+eye-level splash/sway animation. **Distance fog alone will not fix biomes —
+they're too close for fog. They need a per-theme PRESENCE cut (saturation /
+brightness / animation amplitude), while fog handles their farther shells.**
+
+Tuning contract: all defaults chosen so the STARS+COMET look is pixel-
+identical (or imperceptibly changed); biome mute defaults ~0.7 presence.
+Mechanism: add a per-voxel `bg_mute` f32 field (shape 8000) written at
+generation time per theme (theme_start_idx/theme_count maps already exist in
+simulation.py); `update_bg_cache` applies it to saturation + brightness +
+anim spike amplitude, scaled by a global BIOME MUTE slider. Extras
+(stars/comet/fireflies/butterflies/palms/clouds/ptero) default mute 1.0.
+
 ## THE PLAN (ordered; each step independently shippable)
 
 ### 1. Distance fog + radius taper in `update_bg_cache` — THE BIG ONE
@@ -64,17 +82,22 @@ FOG_START 90, FOG_END 230, FOG_MAX 0.85 (leave a whisper of the far stuff;
 1.0 = vanish). **Expose all three as sliders in the BACKGROUND GUI panel** —
 this game tunes by feel.
 
-### 2. Palette separation — reserve saturation for gameplay
-Same kernel, before the fog mix:
+### 2. Palette separation — per-theme presence (THE BIOME FIX)
+Same kernel, before the fog mix, driven by the per-voxel `bg_mute` field
+(see clarification above) times a global BIOME MUTE slider:
 ```
+m    = bg_mute[i] * BIOME_MUTE                   # 1.0 for extras, ~0.7 biomes
 luma = dot(col, (0.299, 0.587, 0.114))
-col  = mix(vec3(luma), col, BG_SATURATION)      # slider, start ~0.65
-col *= min(1.0, BG_BRIGHTNESS_CAP / max_channel) # cap peaks, start ~0.85
+col  = mix(vec3(luma), col, m)                   # desaturate muted themes
+col *= mix(BG_BRIGHTNESS_FLOOR, 1.0, m)          # dim them (floor ~0.6)
 ```
 Rule of art direction: the brightest, most saturated things on screen should
-be beetle stripes/horn tips and score moments — never scenery. Optionally
-scale saturation DOWN with distance (near bg keeps color, far goes hazy-gray)
-— that's classic aerial perspective and one multiply.
+be beetle stripes/horn tips and score moments — never scenery. Biome decor is
+stage dressing, not cast. Also multiply animation OFFSET amplitude by m for
+the near-arena splash/sway anims (waves, mud splash, sway) so muted themes
+move less violently — motion draws the eye more than color does.
+Optionally scale saturation DOWN with distance too (near bg keeps color, far
+goes hazy-gray) — classic aerial perspective, one multiply.
 
 ### 3. Tame the attention spikes
 - Twinkle starburst size boost + flash brightness: scale the spike component
