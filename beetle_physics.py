@@ -14559,6 +14559,12 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 if has_horn_tips == 1:
                     engagement_factor = max(engagement_factor, MIN_TIP_ENGAGEMENT)
 
+                # Expose engagement for the input-side turn resistance (light
+                # contact turns near full speed, deep lock turns at the floor)
+                if not is_ball_collision:
+                    b1.horn_engagement = engagement_factor
+                    b2.horn_engagement = engagement_factor
+
                 # Calculate separate pitch and yaw damping for beetles (not ball) based on their rotation directions
                 if b1.horn_type != "ball":
                     b1.horn_pitch_damping, b1.horn_yaw_damping = calculate_horn_damping(
@@ -16370,6 +16376,9 @@ physics_params = {
     # Shaft cylinder collision (catches shaft/attachment area that voxels miss)
     "SHAFT_CYLINDER_RADIUS": 7.0,  # Collision cylinder radius around horn shaft
     "SHAFT_CYLINDER_PUSH": 0.25,  # Push strength when inside shaft cylinder
+    # Engagement resistance tuning (replaces hard blocks; 0 / 1.0 = old hard-block feel)
+    "HORN_LOCK_TURN_FACTOR": 0.35,  # Turn speed floor while horn-locked (0 = hard block like before)
+    "HORN_DAMPING_CAP": 0.9,  # Max horn pitch/yaw damping during contact (1.0 = can fully freeze like before)
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
@@ -17904,14 +17913,29 @@ try:
         # Merged from the formerly duplicated BLUE (TFGH) / RED (IJKL) blocks.
         # Comments reference blue's local-play keys (F/H rotate, T/G move,
         # R/Y/V/B horn) - red's are J/L, I/K, U/O/N/M respectively.
+        _damp_cap = physics_params.get("HORN_DAMPING_CAP", 1.0)
         for slot in range(active_player_count):
             beetle = beetles[slot]
             opp = beetles[1 - slot]
             p_inputs = frame_inputs[slot]
             if beetle.active and not beetle.is_falling and not hovering[slot]:
-                # Rotation controls (F/H) - BLOCKED during horn collision
-                # 30% faster rotation when spinning in place (not moving forward/backward)
-                if not beetle.in_horn_collision:
+                # Engagement fades once contact ends (collision refreshes it)
+                beetle.horn_engagement = getattr(beetle, 'horn_engagement', 0.0) * 0.85
+                # Rotation controls (F/H) - RESISTED (not hard-blocked) during
+                # horn collision. Engagement-aware: light contact turns near
+                # full speed, a deep horn lock turns at the tunable floor.
+                # HORN_LOCK_TURN_FACTOR = 0 restores the classic hard block.
+                # Turning while engaged transmits the sweep to the opponent
+                # via the contact-point momentum physics.
+                horn_lock_mult = 1.0
+                if beetle.in_horn_collision:
+                    _lock_floor = physics_params.get("HORN_LOCK_TURN_FACTOR", 0.35)
+                    if _lock_floor <= 0.001:
+                        horn_lock_mult = 0.0  # Classic hard block
+                    else:
+                        _eng = min(1.0, getattr(beetle, 'horn_engagement', 1.0))
+                        horn_lock_mult = _lock_floor + (1.0 - _lock_floor) * (1.0 - _eng)
+                if horn_lock_mult > 0.001:
                     # Check if rotating without moving (skill-based faster turning)
                     is_moving = (p_inputs & INPUT_FORWARD) or (p_inputs & INPUT_BACKWARD)
                     # Speed boost turn penalty: faster you go, harder to turn
@@ -17921,7 +17945,7 @@ try:
                     else:
                         normalized_bonus = beetle.backward_bonus / 0.80
                     turn_penalty = max(0.65, 1.0 - normalized_bonus * 0.35)  # Scales to 65% turn speed (35% penalty) over 3 sec
-                    rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty
+                    rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty * horn_lock_mult
                     # Spider gets 35% faster turning (agile hunter)
                     if beetle.horn_type_id == 6:
                         rotation_multiplier *= 1.35
@@ -18056,14 +18080,14 @@ try:
                 base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle.horn_type_id == 3 else (HORN_YAW_SPEED if beetle.horn_type_id == 7 else HORN_TILT_SPEED)
 
                 if p_inputs & INPUT_HORN_UP:
-                    effective_speed = base_tilt_speed * (1.0 - beetle.horn_pitch_damping)
+                    effective_speed = base_tilt_speed * (1.0 - min(beetle.horn_pitch_damping, _damp_cap))
                     new_pitch = beetle.horn_pitch + effective_speed * PHYSICS_TIMESTEP
                     new_pitch = min(max_pitch_limit, new_pitch)
                     # Only set velocity if horn actually moved (not clamped at max)
                     if abs(new_pitch - beetle.horn_pitch) > 0.001:
                         pitch_speed = effective_speed
                 elif p_inputs & INPUT_HORN_DOWN:
-                    effective_speed = base_tilt_speed * (1.0 - beetle.horn_pitch_damping)
+                    effective_speed = base_tilt_speed * (1.0 - min(beetle.horn_pitch_damping, _damp_cap))
                     new_pitch = beetle.horn_pitch - effective_speed * PHYSICS_TIMESTEP
                     new_pitch = max(min_pitch_limit, new_pitch)
                     # Only set velocity if horn actually moved (not clamped at min)
@@ -18111,7 +18135,7 @@ try:
                     if p_inputs & INPUT_HORN_LEFT:
                         # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
                         base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else HORN_YAW_SPEED
-                        effective_speed = base_yaw_speed * (1.0 - beetle.horn_yaw_damping)
+                        effective_speed = base_yaw_speed * (1.0 - min(beetle.horn_yaw_damping, _damp_cap))
 
                         new_yaw = beetle.horn_yaw - effective_speed * PHYSICS_TIMESTEP
                         new_yaw = max(min_yaw_limit, new_yaw)
@@ -18139,7 +18163,7 @@ try:
                     elif p_inputs & INPUT_HORN_RIGHT:
                         # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                         base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else HORN_YAW_SPEED
-                        effective_speed = base_yaw_speed * (1.0 - beetle.horn_yaw_damping)
+                        effective_speed = base_yaw_speed * (1.0 - min(beetle.horn_yaw_damping, _damp_cap))
 
                         new_yaw = beetle.horn_yaw + effective_speed * PHYSICS_TIMESTEP
                         new_yaw = min(max_yaw_limit, new_yaw)
@@ -24346,6 +24370,9 @@ try:
             physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
             physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
             physics_params["RESTITUTION"] = window.GUI.slider_float("Bounce", physics_params["RESTITUTION"], 0.0, 0.5)
+            # Engagement resistance (0 / 1.0 = classic hard-block feel)
+            physics_params["HORN_LOCK_TURN_FACTOR"] = window.GUI.slider_float("Horn Lock Turn", physics_params["HORN_LOCK_TURN_FACTOR"], 0.0, 1.0)
+            physics_params["HORN_DAMPING_CAP"] = window.GUI.slider_float("Horn Damping Cap", physics_params["HORN_DAMPING_CAP"], 0.5, 1.0)
             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
             physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
