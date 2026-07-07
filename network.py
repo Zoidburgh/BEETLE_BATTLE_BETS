@@ -141,6 +141,8 @@ class NetworkManager:
         self.slot_to_steam = {} # {slot: steam_id} - inverse mapping
         self.my_slot = 0        # Our own slot (0 until host assigns otherwise)
         self.player_count = 1   # Total players including us
+        self.bot_peers = set()  # Fake steam ids of host-side bots (--bots N);
+                                # counted in the roster but never sent to
 
         # Player info
         self.my_name = "Player"
@@ -416,6 +418,7 @@ class NetworkManager:
         self.slot_to_steam = {}
         self.my_slot = 0
         self.player_count = 1
+        self.bot_peers = set()
         self.match_started = False
         self.local_ready = False
         self.remote_ready = False
@@ -475,7 +478,10 @@ class NetworkManager:
         Packet: [type:1][your_slot:1][player_count:1] + [slot:1][steam64:8] per player."""
         if not self.is_host:
             return
+        real_guests = 0
         for steam_id, slot in self.peers.items():
+            if steam_id in self.bot_peers:
+                continue  # Roster CONTENT includes bots; never send TO them
             data = struct.pack('>BBB', MSG_SLOT_ASSIGN, slot, self.player_count)
             data += struct.pack('>BQ', 0, self.my_steam_id)  # Host is always slot 0
             for other_id, other_slot in self.peers.items():
@@ -484,9 +490,10 @@ class NetworkManager:
                 self.client.send_message_to(steam_id, SEND_RELIABLE, GAME_CHANNEL, data)
                 self.pkt_sent[MSG_SLOT_ASSIGN] = self.pkt_sent.get(MSG_SLOT_ASSIGN, 0) + 1
                 self.pkt_sent_bytes += len(data)
+                real_guests += 1
             except Exception as e:
                 print(f"[Network] slot assign send error: {e}")
-        print(f"[Network] Sent slot roster to {len(self.peers)} guest(s)")
+        print(f"[Network] Sent slot roster to {real_guests} guest(s) ({self.player_count} players incl. bots)")
 
     def get_lobby_members(self):
         """Get list of Steam IDs in current lobby."""
@@ -609,6 +616,38 @@ class NetworkManager:
     # Fake steam id for --phantom-peer broadcast testing
     PHANTOM_PEER_ID = 0xDEADBEEF
 
+    # Reserved fake steam id range for host-side network bots (--bots N).
+    # Must never collide with real ids; excluded from all sends and from
+    # SYNC_READY waits, but counted in the roster real guests receive.
+    BOT_PEER_ID_BASE = 0xB0700001
+
+    def register_bot_peers(self):
+        """Host registers --bots N fake guests at match start (AFTER real
+        guests, so humans keep low slots; lobby roster stays humans-only
+        until now). Their inputs are injected through _handle_packet each
+        frame by the main loop, so slot routing, last-known fallback and
+        MSG_INPUTS_ALL aggregation all exercise production code."""
+        if not self.is_host:
+            return
+        bots = 0
+        for i, arg in enumerate(sys.argv):
+            if arg == '--bots' and i + 1 < len(sys.argv):
+                try:
+                    bots = max(0, min(3, int(sys.argv[i + 1])))
+                except ValueError:
+                    bots = 0
+        for b in range(bots):
+            fake_id = self.BOT_PEER_ID_BASE + b
+            if fake_id in self.peers:
+                continue
+            if self.player_count >= MAX_PLAYERS:
+                print(f"[Network] BOTS: lobby full, skipping bot {b + 1}")
+                break
+            self.bot_peers.add(fake_id)  # Mark BEFORE registering so the
+            # roster send triggered inside _register_peer skips this id
+            print(f"[Network] BOT PEER: registering bot {b + 1} (--bots {bots})")
+            self._register_peer(fake_id)
+
     def start_match_now(self):
         """Host immediately starts the match (skip ready handshake for now)."""
         if self.is_host and self.connected:
@@ -618,6 +657,7 @@ class NetworkManager:
                 # only one real guest connected
                 print("[Network] PHANTOM PEER: registering fake guest (--phantom-peer)")
                 self._register_peer(self.PHANTOM_PEER_ID)
+            self.register_bot_peers()
             self._send_start()
 
     def send_horn_select(self, horn_type):
@@ -881,20 +921,25 @@ class NetworkManager:
         print(f"[Network] START sent, waiting for guest SYNC_READY... Seed: {self.random_seed}")
 
     def _broadcast(self, data, reliable=True):
-        """Send raw packet to ALL connected peers (host -> every guest)."""
+        """Send raw packet to ALL connected peers (host -> every guest).
+        Bot peers are skipped (fake ids; sends to them would error)."""
         if not self.peers:
             return False
         send_type = SEND_RELIABLE if reliable else SEND_UNRELIABLE
         ok = True
+        real_sends = 0
         for steam_id in self.peers:
+            if steam_id in self.bot_peers:
+                continue
             try:
                 self.client.send_message_to(steam_id, send_type, GAME_CHANNEL, data)
+                real_sends += 1
             except Exception as e:
                 print(f"[Network] Broadcast error to {steam_id}: {e}")
                 ok = False
-        if data:
-            self.pkt_sent[data[0]] = self.pkt_sent.get(data[0], 0) + len(self.peers)
-            self.pkt_sent_bytes += len(data) * len(self.peers)
+        if data and real_sends:
+            self.pkt_sent[data[0]] = self.pkt_sent.get(data[0], 0) + real_sends
+            self.pkt_sent_bytes += len(data) * real_sends
         return ok
 
     def _send_packet(self, data, reliable=True):

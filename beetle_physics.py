@@ -418,8 +418,9 @@ print(f"[Resolution] Using {RESOLUTION_NAME} ({WINDOW_RESOLUTION[0]}x{WINDOW_RES
 os.add_dll_directory(os.getcwd())
 
 # Import network module (Steam P2P via py_steam_net)
+import struct
 try:
-    from network import NetworkManager, STEAM_AVAILABLE
+    from network import NetworkManager, STEAM_AVAILABLE, MSG_INPUT
     NETWORK_AVAILABLE = STEAM_AVAILABLE
 except ImportError:
     NETWORK_AVAILABLE = False
@@ -2068,6 +2069,26 @@ VICTORY_CONFETTI_DELAY = 0.75  # Wait 750ms before starting confetti
 VICTORY_CONFETTI_INTERVAL = 0.15  # Spawn confetti every 0.15 seconds during victory
 VICTORY_CONFETTI_PARTICLES = 30  # Particles per spawn wave
 
+def apply_online_match_size():
+    """Set active_player_count from the network roster (humans + host bots)
+    and make sure beetles[2..n] exist with geometry. Idempotent; called at
+    online match start on host and guest (steps A2/A3 of 4_player_steam.md).
+    Must run BEFORE reset_match() so its range(2, active_player_count) loop
+    has list entries to replace."""
+    global active_player_count
+    if not network_manager:
+        return
+    n = max(2, min(4, network_manager.player_count))
+    if n != active_player_count:
+        print(f"[Game] Match size from roster: {n} players")
+    active_player_count = n
+    while len(beetles) < active_player_count:
+        _slot = len(beetles)
+        _sx, _sz, _srot = get_spawn_position(_slot, is_initial=True)
+        beetles.append(Beetle(_sx, _sz, _srot, simulation.PLAYER_VOXEL_IDS[_slot][0]))
+        rebuild_beetle(_slot, 12, 5)  # Default rhino geometry (matches reset_match)
+
+
 def reset_match():
     """Reset beetles to starting positions for new match"""
     global match_winner, blue_celebrating, red_celebrating, victory_pulse_timer, victory_confetti_timer, previous_stinger_curvature, previous_tail_rotation, blue_horn_type, red_horn_type
@@ -2094,6 +2115,8 @@ def reset_match():
     # Reset scores for new match (ensures host and guest start at 0-0)
     scores[0] = 0
     scores[1] = 0
+    scores[2] = 0
+    scores[3] = 0
 
     # Reset input buffer and physics frame for new match (important for network sync)
     input_buffer.reset()
@@ -17674,6 +17697,20 @@ try:
                 # everyone's inputs via MSG_INPUTS_ALL (below)
                 network_manager.send_input(input_buffer.current_frame, current_local_inputs)
 
+            # Host-side network bots (--bots N): build a REAL MSG_INPUT packet
+            # per bot and feed it through the production packet path, so slot
+            # routing, last-known-input fallback and the MSG_INPUTS_ALL
+            # rebroadcast all exercise the same code a human guest would
+            if network_manager.is_host and network_manager.bot_peers:
+                for _bot_id in network_manager.bot_peers:
+                    _bot_slot = network_manager.peers.get(_bot_id)
+                    if _bot_slot is None or _bot_slot >= active_player_count:
+                        continue
+                    _bot_pkt = struct.pack('>BIB', MSG_INPUT,
+                                           input_buffer.current_frame,
+                                           get_bot_inputs(_bot_slot))
+                    network_manager._handle_packet(_bot_pkt, _bot_id, input_buffer)
+
             # Check if we can simulate (have both players' inputs)
             if not input_buffer.can_simulate():
                 # Waiting for opponent - don't simulate, don't advance frame
@@ -22058,7 +22095,8 @@ try:
                             input_buffer.local_player_id = 0
                             input_buffer.reset()
                             local_player_id = 0
-                            network_manager.start_match_now()
+                            network_manager.start_match_now()  # registers --bots peers
+                            apply_online_match_size()
                             hazard_seed = network_manager.random_seed
                             print(f"[Game] Host starting match, seed: {hazard_seed}")
 
@@ -22228,7 +22266,8 @@ try:
                     input_buffer.local_player_id = 0  # Host is blue
                     input_buffer.reset()
                     local_player_id = 0  # Host is blue
-                    network_manager.start_match_now()  # Send START signal to guest
+                    network_manager.start_match_now()  # Send START signal to guest (registers --bots peers)
+                    apply_online_match_size()
                     # Sync hazard RNG seed so comets/board break are identical on both clients
                     hazard_seed = network_manager.random_seed
                     print(f"[Game] Host hazard seed: {hazard_seed}")
@@ -22359,6 +22398,9 @@ try:
                 input_buffer.local_player_id = 1  # Guest is red
                 input_buffer.reset()
                 local_player_id = 1  # Guest is red
+                # Match size from the host's roster (MSG_SLOT_ASSIGN arrives
+                # reliably before/with START; includes host-side bots)
+                apply_online_match_size()
                 # Sync hazard RNG seed so comets/board break are identical on both clients
                 hazard_seed = network_manager.random_seed
                 print(f"[Game] Guest hazard seed: {hazard_seed}")
