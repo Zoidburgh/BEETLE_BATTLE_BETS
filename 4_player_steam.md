@@ -45,6 +45,12 @@ ALL implementation steps below are DONE and committed:
    (suppressed at 3+P by design), bot charge-commitment polish,
    per-peer disconnect timeouts (wall-clock timer is connection-global;
    Steam lobby events cover departures today).
+6. BEFORE HUMANS PLAY SPIDER/SCORPION IN SLOTS 2/3: silk_charge_blue/red
+   and venom_recharge_timer_blue/red are still 2P-named singletons ->
+   [4]-arrays needed (bots are rhinos so the 2PC+bots tests don't hit
+   this; slots 0/1 humans are fine). Also ~2ms intermittent unattributed
+   cost in the hazards/downwash timing span during heavy bot-death churn
+   (visible in the new 'hazards' perf bucket) - subdivide to pinpoint.
 
 ## Goal
 
