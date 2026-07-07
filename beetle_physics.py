@@ -16539,6 +16539,25 @@ window.red_horn_tip_color = (0.4, 0.1, 0.1)
 window.background_color = (0.04, 0.04, 0.06)  # Dark background default
 window.board_color = (0.42, 0.3, 0.16)  # Warm amber wood default
 
+# Background atmosphere (BACKGROUND_ART_PLAN.md): defaults chosen so the
+# STARS look is effectively unchanged (stars have bg_fog=0). Sliders in the
+# BACKGROUND GUI panel. Fog fades bg voxels toward the sky color with
+# camera distance; MUTE scales how strongly biome decor is muted.
+BG_FOG_START = 100.0
+BG_FOG_END = 240.0
+BG_FOG_MAX = 0.85
+BG_MUTE_STRENGTH = 1.0
+DEFAULT_SKY_COLOR = (0.04, 0.04, 0.06)
+# Biome skies: fog fades toward these, which is what makes each biome's
+# air read as real (warm dust, murk, deep sea, ember glow)
+THEME_SKY_COLORS = {
+    simulation.THEME_DESERT: (0.10, 0.07, 0.05),
+    simulation.THEME_GRASS: (0.03, 0.05, 0.04),
+    simulation.THEME_WAVES: (0.02, 0.04, 0.08),
+    simulation.THEME_SWAMP: (0.03, 0.05, 0.03),
+    simulation.THEME_LAVA: (0.08, 0.03, 0.02),
+}
+
 camera = renderer.Camera()
 # Start camera at title screen position (will transition to game view on start)
 camera.pos_x = TITLE_CAM_X
@@ -17169,7 +17188,12 @@ simulation.bg_flush()  # Warm up all 14 from_numpy() transfers
 simulation.bg_theme_active[None] = 1  # Enable so renderer PHASE 6 compiles
 simulation.star_ripple_time[None] = -999.0  # No ripple at startup
 simulation.animate_background(0.0)  # Now hits all animation branches
-simulation.update_bg_cache()  # Warm up cache kernel
+simulation.update_bg_cache(
+    float(camera.pos_x), float(camera.pos_y), float(camera.pos_z),
+    float(window.background_color[0]), float(window.background_color[1]),
+    float(window.background_color[2]),
+    float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
+    float(BG_MUTE_STRENGTH))  # Warm up cache kernel
 # Quick render pass to compile renderer's split kernels (PHASE 6 path)
 renderer.num_voxels[None] = 0
 _t_ev = time.perf_counter()
@@ -22040,7 +22064,12 @@ try:
                 if ripple_age > 8.0 + (background_time * 7.3 % 7.0):  # Pseudo-random interval
                     simulation.trigger_star_ripple(background_time)
             simulation.animate_background(background_time)
-            simulation.update_bg_cache()
+            simulation.update_bg_cache(
+                float(camera.pos_x), float(camera.pos_y), float(camera.pos_z),
+                float(window.background_color[0]), float(window.background_color[1]),
+                float(window.background_color[2]),
+                float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
+                float(BG_MUTE_STRENGTH))
         simulation.decay_stadium_excitement(frame_dt)
     perf_monitor.stop('background')
 
@@ -24146,14 +24175,17 @@ try:
         biome_ids = [simulation.THEME_DESERT, simulation.THEME_GRASS, simulation.THEME_WAVES, simulation.THEME_SWAMP, simulation.THEME_LAVA]
 
         def toggle_biome(theme_id):
-            """Only one biome at a time — clear others before toggling."""
+            """Only one biome at a time — clear others before toggling.
+            Biomes also set their sky color (fog fades toward it)."""
             if simulation.is_theme_active(theme_id):
                 simulation.toggle_theme(theme_id)
+                window.background_color = DEFAULT_SKY_COLOR
             else:
                 for b in biome_ids:
                     if b != theme_id and simulation.is_theme_active(b):
                         simulation.remove_theme(b)
                 simulation.toggle_theme(theme_id)
+                window.background_color = THEME_SKY_COLORS.get(theme_id, DEFAULT_SKY_COLOR)
 
         if window.GUI.button(theme_label("DESERT", simulation.THEME_DESERT)):
             toggle_biome(simulation.THEME_DESERT)
@@ -24196,7 +24228,15 @@ try:
 
         if window.GUI.button("CLEAR ALL"):
             simulation.clear_all_themes()
+            window.background_color = DEFAULT_SKY_COLOR
             print("All background themes cleared")
+
+        # === ATMOSPHERE (BACKGROUND_ART_PLAN.md) ===
+        window.GUI.text("--- ATMOSPHERE ---")
+        BG_MUTE_STRENGTH = window.GUI.slider_float("BIOME MUTE", BG_MUTE_STRENGTH, 0.0, 1.5)
+        BG_FOG_START = window.GUI.slider_float("FOG START", BG_FOG_START, 20.0, 250.0)
+        BG_FOG_END = window.GUI.slider_float("FOG END", BG_FOG_END, 60.0, 400.0)
+        BG_FOG_MAX = window.GUI.slider_float("FOG MAX", BG_FOG_MAX, 0.0, 1.0)
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:

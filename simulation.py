@@ -290,6 +290,12 @@ bg_offset_x = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)               
 bg_offset_y = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                 # Current y offset
 bg_offset_z = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)                 # Current z offset
 
+# Atmosphere treatment (set per theme at spawn; see THEME_TREATMENT)
+# bg_mute: presence 1.0 = full color/brightness/motion, lower = stage dressing
+# bg_fog: how much distance fog applies (0 = celestial/never fogs, 1 = terrestrial)
+bg_mute = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
+bg_fog = ti.field(dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
+
 # Background extraction cache — pre-computed renderer-ready data
 bg_cache_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
 bg_cache_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_BACKGROUND_VOXELS)
@@ -331,6 +337,30 @@ theme_start_idx = {}   # theme_id -> start index in bg_* arrays
 theme_count = {}       # theme_id -> number of voxels for this theme
 active_themes = set()  # which themes are currently active
 
+# Atmosphere treatment per theme: (mute, fog_participation).
+# mute < 1 makes a theme stage dressing: desaturated, dimmed, calmer motion
+# (scaled live by the BIOME MUTE slider). fog = how much distance fog applies
+# (0 = celestial - stars never fog; 1 = terrestrial decor).
+# TUNING CONTRACT: the default STARS look must stay effectively unchanged.
+THEME_TREATMENT = {
+    1:  (1.0, 0.0),   # STARS - the reference look, untouchable
+    18: (1.0, 0.15),  # COMET - celestial set piece
+    14: (1.0, 0.5),   # CLOUDS
+    15: (1.0, 0.6),   # PTERODACTYL
+    3:  (1.0, 0.8),   # FIREFLIES - tiny + dim already
+    6:  (1.0, 0.8),   # BUTTERFLIES
+    10: (0.8, 1.0),   # PALM_TREES
+    11: (0.8, 0.8),   # STADIUM crowd
+    5:  (0.8, 1.0),   # JELLYFISH
+    13: (0.85, 1.0),  # RAIN
+    2:  (0.7, 1.0),   # GRASS biome
+    4:  (0.7, 1.0),   # WATER
+    7:  (0.7, 1.0),   # WAVES/OCEAN biome
+    12: (0.7, 1.0),   # LAVA biome
+    16: (0.7, 1.0),   # SWAMP biome
+    17: (0.7, 1.0),   # DESERT biome
+}
+
 # Stadium crowd excitement (for score reactions)
 stadium_excitement = ti.field(dtype=ti.f32, shape=())  # 0-1, current excitement level
 stadium_excitement_target = ti.field(dtype=ti.f32, shape=())  # Target to ramp toward
@@ -352,6 +382,8 @@ _bg_offset_x_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
 _bg_offset_y_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
 _bg_offset_z_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
 _bg_angle_np = np.zeros(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_mute_np = np.ones(MAX_BACKGROUND_VOXELS, dtype=np.float32)
+_bg_fog_np = np.ones(MAX_BACKGROUND_VOXELS, dtype=np.float32)
 _bg_count = 0  # Python-side voxel counter (mirrors num_bg_voxels on GPU)
 
 def bg_flush():
@@ -369,6 +401,8 @@ def bg_flush():
     bg_offset_y.from_numpy(_bg_offset_y_np)
     bg_offset_z.from_numpy(_bg_offset_z_np)
     bg_angle.from_numpy(_bg_angle_np)
+    bg_mute.from_numpy(_bg_mute_np)
+    bg_fog.from_numpy(_bg_fog_np)
     num_bg_voxels[None] = _bg_count
 
 # Voxel types
@@ -3962,56 +3996,95 @@ def animate_background(time: ti.f32):
                 bg_brightness[i] += wave_strength * fade * 1.5
 
 @ti.kernel
-def update_bg_cache():
-    """Pre-compute renderer-ready bg data. Only call at animation frequency."""
+def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
+                    sky_r: ti.f32, sky_g: ti.f32, sky_b: ti.f32,
+                    fog_start: ti.f32, fog_end: ti.f32, fog_max: ti.f32,
+                    mute_strength: ti.f32):
+    """Pre-compute renderer-ready bg data. Only call at animation frequency.
+
+    Atmosphere pass (per-voxel, GGUI has no shaders so it's baked into
+    vertex colors): presence mute (desaturate/dim/calm biome decor via
+    bg_mute x mute_strength) then distance fog (lerp toward the sky color
+    - visually identical to alpha against the flat clear color; bg_fog=0
+    exempts celestial themes). Fully fogged voxels are culled entirely."""
     num_visible_bg[None] = 0
     for idx in range(num_bg_voxels[None]):
         if bg_active[idx] == 0:
             continue
-        if bg_brightness[idx] < 0.01:
+        bright = bg_brightness[idx]
+        if bright < 0.01:
             continue
-        write_idx = ti.atomic_add(num_visible_bg[None], 1)
-        if write_idx < MAX_BACKGROUND_VOXELS:
-            pos = bg_positions[idx]
-            pos.x += bg_offset_x[idx]
-            pos.y += bg_offset_y[idx]
-            pos.z += bg_offset_z[idx]
-            bg_cache_positions[write_idx] = pos
 
-            bright = bg_brightness[idx]
-            base_color = bg_colors[idx]
-            anim = bg_anim_type[idx]
-            radius = bg_size[idx]
+        # Presence: 1.0 = full cast member, lower = stage dressing
+        m = 1.0 - (1.0 - bg_mute[idx]) * mute_strength
+        m = ti.min(ti.max(m, 0.0), 1.0)
+        # Calmer motion for muted themes (motion steals the eye hardest)
+        amp = 0.6 + 0.4 * m
 
-            if anim == BG_ANIM_TWINKLE:
-                # Color shift: warm/cool tint based on slow phase cycle
-                color_cycle = ti.sin(bg_anim_time[None] * 0.15 + bg_phase[idx] * 2.17)
-                r_boost = ti.max(0.0, color_cycle) * 0.06
-                b_boost = ti.max(0.0, -color_cycle) * 0.1
-                color = ti.Vector([
-                    base_color.x * bright + r_boost * bright,
-                    base_color.y * bright,
-                    base_color.z * bright + b_boost * bright
-                ])
+        pos = bg_positions[idx]
+        pos.x += bg_offset_x[idx] * amp
+        pos.y += bg_offset_y[idx] * amp
+        pos.z += bg_offset_z[idx] * amp
+
+        base_color = bg_colors[idx]
+        anim = bg_anim_type[idx]
+        radius = bg_size[idx]
+        color = base_color * bright
+        out_radius = radius
+
+        if anim == BG_ANIM_TWINKLE:
+            # Color shift: warm/cool tint based on slow phase cycle
+            color_cycle = ti.sin(bg_anim_time[None] * 0.15 + bg_phase[idx] * 2.17)
+            r_boost = ti.max(0.0, color_cycle) * 0.06
+            b_boost = ti.max(0.0, -color_cycle) * 0.1
+            color = ti.Vector([
+                base_color.x * bright + r_boost * bright,
+                base_color.y * bright,
+                base_color.z * bright + b_boost * bright
+            ])
+            # Starburst: size pulse on bright flashes (bright > 1.0)
+            size_boost = 1.0
+            if bright > 1.05:
+                size_boost = 1.0 + (bright - 1.05) * 1.5
+            out_radius = radius * size_boost
+        elif anim == BG_ANIM_SHOOTING_STAR:
+            # Hot glowing streak: starts intense white-blue, fades to warm orange
+            warmth = 1.0 - bright  # 0 at start (white-blue), 1 at end (warm)
+            glow = bright * 2.2  # Overdriven brightness for glow effect
+            color = ti.Vector([
+                glow * (1.0 + warmth * 0.4),
+                glow * (0.95 - warmth * 0.2),
+                glow * (1.1 - warmth * 0.6)
+            ])
+            out_radius = radius * (0.6 + bright * 1.0)  # Shrinks as it fades
+
+        # Presence: desaturate toward luma + dim (saturation and peak
+        # brightness belong to the beetles, not the scenery)
+        if m < 0.999:
+            luma = color.x * 0.299 + color.y * 0.587 + color.z * 0.114
+            grey = ti.Vector([luma, luma, luma])
+            color = (grey + (color - grey) * m) * (0.6 + 0.4 * m)
+
+        # Distance fog toward the sky color (fake alpha; bg_fog gates it)
+        f = 0.0
+        fogp = bg_fog[idx]
+        if fogp > 0.001 and fog_max > 0.001:
+            dxx = pos.x - cam_x
+            dyy = pos.y - cam_y
+            dzz = pos.z - cam_z
+            d = ti.sqrt(dxx * dxx + dyy * dyy + dzz * dzz)
+            t = ti.min(ti.max((d - fog_start) / ti.max(fog_end - fog_start, 1.0), 0.0), 1.0)
+            f = t * t * (3.0 - 2.0 * t) * fog_max * fogp
+        if f < 0.97:  # fully fogged voxels never enter the render buffer
+            sky = ti.Vector([sky_r, sky_g, sky_b])
+            color = color * (1.0 - f) + sky * f
+            out_radius = out_radius * (1.0 - 0.35 * f)
+
+            write_idx = ti.atomic_add(num_visible_bg[None], 1)
+            if write_idx < MAX_BACKGROUND_VOXELS:
+                bg_cache_positions[write_idx] = pos
                 bg_cache_colors[write_idx] = color
-                # Starburst: size pulse on bright flashes (bright > 1.0)
-                size_boost = 1.0
-                if bright > 1.05:
-                    size_boost = 1.0 + (bright - 1.05) * 1.5
-                bg_cache_radii[write_idx] = radius * size_boost
-            elif anim == BG_ANIM_SHOOTING_STAR:
-                # Hot glowing streak: starts intense white-blue, fades to warm orange
-                warmth = 1.0 - bright  # 0 at start (white-blue), 1 at end (warm)
-                glow = bright * 2.2  # Overdriven brightness for glow effect
-                bg_cache_colors[write_idx] = ti.Vector([
-                    glow * (1.0 + warmth * 0.4),
-                    glow * (0.95 - warmth * 0.2),
-                    glow * (1.1 - warmth * 0.6)
-                ])
-                bg_cache_radii[write_idx] = radius * (0.6 + bright * 1.0)  # Shrinks as it fades
-            else:
-                bg_cache_colors[write_idx] = base_color * bright
-                bg_cache_radii[write_idx] = radius
+                bg_cache_radii[write_idx] = out_radius
 
 def clear_background():
     """Clear all background voxels by zeroing numpy buffers and flushing to GPU."""
@@ -4021,6 +4094,7 @@ def clear_background():
     _bg_anim_amp_np[:] = 0; _bg_active_np[:] = 0; _bg_angle_np[:] = 0
     _bg_brightness_np[:] = 1.0
     _bg_offset_x_np[:] = 0; _bg_offset_y_np[:] = 0; _bg_offset_z_np[:] = 0
+    _bg_mute_np[:] = 1.0; _bg_fog_np[:] = 1.0
     _bg_count = 0
     bg_theme_active[None] = 0
     bg_flush()
@@ -4774,6 +4848,8 @@ def compact_background_voxels(removed_start: int, removed_count: int):
         _bg_offset_y_np[new_idx] = _bg_offset_y_np[i]
         _bg_offset_z_np[new_idx] = _bg_offset_z_np[i]
         _bg_angle_np[new_idx] = _bg_angle_np[i]
+        _bg_mute_np[new_idx] = _bg_mute_np[i]
+        _bg_fog_np[new_idx] = _bg_fog_np[i]
 
     # Clear the old slots at the end
     for i in range(total - removed_count, total):
@@ -4838,6 +4914,16 @@ def toggle_theme(theme_id: int):
         }
         if theme_id in add_functions:
             add_functions[theme_id]()
+            # Stamp the theme's atmosphere treatment onto its voxel range
+            # (add_* registered the range in theme_start_idx/theme_count)
+            if theme_id in theme_start_idx:
+                _mute, _fogp = THEME_TREATMENT.get(theme_id, (1.0, 1.0))
+                _s = theme_start_idx[theme_id]
+                _n = theme_count[theme_id]
+                _bg_mute_np[_s:_s + _n] = _mute
+                _bg_fog_np[_s:_s + _n] = _fogp
+                bg_mute.from_numpy(_bg_mute_np)
+                bg_fog.from_numpy(_bg_fog_np)
             # Enable background rendering
             bg_theme_active[None] = 1
 

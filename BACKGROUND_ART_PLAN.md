@@ -1,5 +1,20 @@
 # BACKGROUND EFFECTS — Art & Optimization Plan
 
+## STATUS 2026-07-08: STEPS 1, 2, 4 IMPLEMENTED (fog + presence + biome skies)
+- `bg_mute`/`bg_fog` per-voxel fields + `THEME_TREATMENT` table (simulation.py,
+  stamped in toggle_theme; compaction + clears carry them)
+- `update_bg_cache(cam, sky, fog_start/end/max, mute_strength)`: presence
+  desat/dim + motion-amp calm, smoothstep fog toward sky color, f>0.97 cull
+- Sliders in BACKGROUND panel: BIOME MUTE / FOG START / FOG END / FOG MAX
+- Biome toggles set their sky color (THEME_SKY_COLORS in beetle_physics.py);
+  CLEAR ALL / biome-off restores default
+- VERIFIED headless: stars pixel-identical with treatment on (0.0 diff,
+  fog=0 exemption works); desert desaturates 0.52->0.38, dims 0.45->0.38;
+  mute slider restores presence; compaction preserves treatment
+- 'background' perf bucket already existed in the main loop
+- REMAINING: step 3 (twinkle spike taming — deferred, stars approved as-is),
+  user feel-tune of slider defaults per biome
+
 Research done 2026-07-08. Problem statement (user): background themes look
 cool but their voxels are DISTRACTING next to the beetle voxels — want a
 shader-like treatment / distance fading so far things read as far, and a
