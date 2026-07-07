@@ -6,6 +6,46 @@ batched pair collision kernel, GGUI buffer cuts, horn anti-clip — brawl frame
 gotchas — READ IT FIRST), `NETWORKING_REWORK_PLAN.md` (architecture),
 `PHASE4_INVENTORY.md` (per-slot GPU details).
 
+## STATUS 2026-07-07 EVENING — M1 BUILD WORK COMPLETE (e281b4f..3eef8bd, pushed)
+
+ALL implementation steps below are DONE and committed:
+- A1 host bots (--bots N via _handle_packet; solo bot match test rig:
+  host + START BOT MATCH with no guest runs full online path on 1 machine)
+- A2 match size from roster (apply_online_match_size at all 3 start sites)
+- A3 guest my_slot everywhere + corrections fan out to ALL remote beetles
+- A4 lobby max 4, START gate waits for ALL real guests (bots exempt)
+- A5 protocol v5 (game_mode/team_of_slot/lives_per_player; auto-derives
+  mode 1 + lives 3 for >2P rosters)
+- A6 FFA-LIVES (lives[4]/eliminated[4], NO_CREDIT=255 victim events,
+  last-standing win, offline auto-rematch) — GATE PASSED, full bot match
+  played to eliminations + winner + auto-rematch; ALSO validated by user
+  in solo bot match over the online path
+- A7 lives HUD (text, per-slot, winner banner)
+- Config relay (per-slot configs, host relays to other guests, slots 2/3
+  apply via rebuild_beetle + p3/p4 palettes)
+- A8 departures (slot-resolved, match continues, score_type=2 elimination
+  broadcast keeps guests consistent)
+- BONUS: ghost overlay left panel click-interception fixed (HOST button
+  toggled fullscreen at large windows); engagement-resistance tuning
+  (HORN_LOCK_TURN_FACTOR / HORN_DAMPING_CAP sliders) + depth-aware turn
+  clamp — user-validated: faster fights, deep-clip severity better than
+  the old hard blocks (min_shaft_center_dist 1.1 vs 0.4)
+
+### WHAT'S LEFT (testing + small follow-ups)
+1. 2-PC test: host `--bots 2`, second machine joins (BOTH on this build —
+   v5 refuses stale builds). Verify: guest controls right beetle, bots
+   smooth on guest, lives identical both ends, N-key HUD sane.
+2. Same with `--simlag 80 --simloss 3`.
+3. Departure gate: kill guest process mid-match — host + bots continue.
+4. 4 real Steam accounts session (fan-out to >1 real guest is the only
+   untested path; also friends' GPU perf fleet).
+5. FOLLOW-UPS (known, non-blocking): online rematch flow after a lives
+   win (banner stays; host currently re-creates lobby), P3/P4 voxel score
+   digits + 4 rim digit stations (cosmetic), per-slot confetti colors
+   (suppressed at 3+P by design), bot charge-commitment polish,
+   per-peer disconnect timeouts (wall-clock timer is connection-global;
+   Steam lobby events cover departures today).
+
 ## Goal
 
 **Four Steam accounts in one lobby, playing a 4-beetle FFA match that feels
