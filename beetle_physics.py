@@ -4507,7 +4507,11 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
             is_leg_tip_only = 1
 
         # Initialize tolerance (required by Taichi)
-        tolerance = 3  # Default: beetle-beetle (±3 voxels for earlier detection)
+        # Beetle-beetle was +3 ("earlier detection") - near-touch registered
+        # as full contact, so inching a tip toward another fired the whole
+        # collision response with a visible gap. +1 = contact when things
+        # genuinely touch; the response layer owns actual contact now.
+        tolerance = 1  # Default: beetle-beetle
         if has_hook_interior == 1:
             tolerance = 5
         elif is_ball_involved == 1:
@@ -16560,9 +16564,12 @@ physics_params = {
     "SHAFT_LEVERAGE_MULT": 0.4,  # Shaft hits have 40% of tip leverage (less mechanical advantage)
     "SHAFT_SPIN_BIAS_MULT": 2.0,  # Shaft hits get 2x spin bias (counteract wrong-direction torque)
     "SHAFT_SEPARATION_MULT": 0.5,  # Shaft hits get 50% separation vs 20% for tips (prevent clipping)
-    # Predictive collision (prevents horn clipping during fast spins)
-    "PREDICTIVE_COLLISION_DIST": 5.0,  # Check if tips will be within this distance next frame
-    "PREDICTIVE_COLLISION_PUSH": 0.18,  # Gentle preventive push strength
+    # Predictive collision (prevents horn clipping during fast spins).
+    # Dialed way down 2026-07-08: at 5.0/0.18 it ghost-pushed tips apart
+    # while visibly NOT touching and made tip approaches skip - the tip/
+    # shaft responses own real contact now, this only backstops fast spins
+    "PREDICTIVE_COLLISION_DIST": 2.0,  # Check if tips will be within this distance next frame
+    "PREDICTIVE_COLLISION_PUSH": 0.08,  # Gentle preventive push strength
     "PREDICTIVE_COLLISION_SMOOTHING": 0.3,  # How fast push ramps up (0.3 = 30% per frame)
     # Shaft cylinder collision (catches shaft/attachment area that voxels miss)
     "SHAFT_CYLINDER_RADIUS": 7.0,  # Collision cylinder radius around horn shaft
