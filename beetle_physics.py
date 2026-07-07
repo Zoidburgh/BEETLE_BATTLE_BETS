@@ -21299,10 +21299,14 @@ try:
         _body_id, _legs_id, _leg_tip_id = simulation.PLAYER_VOXEL_IDS[slot][:3]
         # Sub-voxel render offset: the fractional part the kernel's int()
         # grid placement discards (renderer adds it back to this slot's
-        # voxels, so motion glides instead of stepping voxel-to-voxel)
+        # voxels, so motion glides instead of stepping voxel-to-voxel).
+        # Y stays integer: the floor-settle limit cycle (gravity vs floor
+        # correction vs pitch restoring) buzzes y by a fraction of a voxel
+        # at rest - integer y hides it, and vertical motion is fast enough
+        # that voxel-stepped y never read as choppy anyway.
         renderer.owner_frac_offset[slot] = [
             render_x[slot] + 64.0 - math.floor(render_x[slot] + 64.0),
-            render_y[slot] - math.floor(render_y[slot]),
+            0.0,
             render_z[slot] + 64.0 - math.floor(render_z[slot] + 64.0)]
         place_beetle_kernels[slot](
             render_x[slot], render_y[slot], render_z[slot],
