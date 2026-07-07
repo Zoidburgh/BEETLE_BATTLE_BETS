@@ -826,6 +826,12 @@ class NetworkManager:
         """
         if not self.is_host or not self.connected:
             return
+        # 3-4P matches are FFA-LIVES (mode 1) today; auto-derive so existing
+        # call sites (which don't pass the mode kwargs) stay correct
+        if game_mode == 0 and self.player_count > 2:
+            game_mode = 1
+            if lives_per_player == 0:
+                lives_per_player = 3
         teams_packed = ((team_of_slot[0] & 3) | ((team_of_slot[1] & 3) << 2) |
                         ((team_of_slot[2] & 3) << 4) | ((team_of_slot[3] & 3) << 6))
         data = struct.pack('>BBBBBBBBBBBBBBBBBBBBBBB', MSG_GAME_OPTIONS,

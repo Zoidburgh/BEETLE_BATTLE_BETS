@@ -2129,6 +2129,14 @@ def reset_match():
     scores[2] = 0
     scores[3] = 0
 
+    # Reset FFA-lives state (3-4P matches)
+    global win_banner_slot, win_banner_timer
+    for _s in range(4):
+        lives[_s] = LIVES_DEFAULT
+        eliminated[_s] = False
+    win_banner_slot = None
+    win_banner_timer = 0.0
+
     # Reset input buffer and physics frame for new match (important for network sync)
     input_buffer.reset()
     physics_frame = 0
@@ -2511,6 +2519,16 @@ if LOCAL4_MODE:
     beetles.append(Beetle(0.0, -16.0, math.pi / 2.0, simulation.BEETLE_P3))   # Slot 2 (green)
     beetles.append(Beetle(0.0, 16.0, -math.pi / 2.0, simulation.BEETLE_P4))   # Slot 3 (yellow)
 scores = [0, 0, 0, 0]  # Kill/goal score per player slot
+
+# FFA-LIVES mode (any 3-4P match; see 4_player_steam.md scoring matrix):
+# deaths cost the victim a life, 0 lives = eliminated (no respawn, spectate),
+# last beetle standing wins. 2P keeps the classic kill-score mode for now.
+LIVES_DEFAULT = 3
+WIN_BANNER_SECONDS = 6.0   # Offline: auto-rematch after this; online: banner stays
+lives = [LIVES_DEFAULT] * 4
+eliminated = [False] * 4
+win_banner_slot = None     # Winner slot once one beetle remains (lives mode)
+win_banner_timer = 0.0
 
 beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of arena, no rotation matters)
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
@@ -18592,8 +18610,36 @@ try:
                 scorer = score_event['scorer']
                 score_type = score_event['score_type']  # 0=beetle death, 1=ball goal
                 is_beetle_death = (score_type == 0)
+                victim = score_event.get('victim', 255)
 
-                if scorer == 1:  # Red scores (blue died or ball goal)
+                if scorer == 255:
+                    # FFA-LIVES death (3-4P): victim loses a life, no credit,
+                    # no score/confetti ceremony (see 4_player_steam.md)
+                    if is_beetle_death and victim < active_player_count:
+                        vb = beetles[victim]
+                        if not vb.has_exploded and not vb.guest_death_falling:
+                            vb.x = score_event.get('death_x', vb.x)
+                            vb.z = score_event.get('death_z', vb.z)
+                            vb.is_falling = True
+                            vb.guest_death_falling = True
+                            vb.on_ground = False
+                            vb.vy = -40.0  # Fast fall to minimize host/guest timing gap
+                        if not eliminated[victim]:
+                            lives[victim] = max(0, lives[victim] - 1)
+                            print(f"BEETLE {victim} LOSES A LIFE ({lives[victim]} left) (from host)")
+                            if lives[victim] <= 0:
+                                eliminated[victim] = True
+                                print(f"BEETLE {victim} IS ELIMINATED! (from host)")
+                        if not eliminated[victim] and respawn_timers[victim] <= 0:
+                            respawn_timers[victim] = BEETLE_RESPAWN_DELAY
+                        _alive = [s for s in range(active_player_count) if not eliminated[s]]
+                        if len(_alive) == 1 and win_banner_slot is None:
+                            win_banner_slot = _alive[0]
+                            win_banner_timer = WIN_BANNER_SECONDS
+                            print(f"BEETLE {_alive[0]} WINS THE MATCH! (from host)")
+                        simulation.trigger_stadium_excitement()
+
+                elif scorer == 1:  # Red scores (blue died or ball goal)
                     # Only trigger beetle explosion for actual death, not ball goals
                     if is_beetle_death and not beetles[0].has_exploded and not beetles[0].guest_death_falling:
                         # Get death position from host (where beetle actually died)
@@ -18965,8 +19011,8 @@ try:
                 b.explosion_delay = EXPLOSION_DELAY  # Delay before particles
                 b.explosion_timer = EXPLOSION_DURATION
                 b.has_exploded = True
-                respawn_timers[slot] = BEETLE_RESPAWN_DELAY
                 if active_player_count == 2:
+                    respawn_timers[slot] = BEETLE_RESPAWN_DELAY
                     # Opponent scores (works in both normal and ball mode)
                     other = 1 - slot
                     delay_key = ('blue_score_delay_timer', 'red_score_delay_timer')[other]
@@ -18978,6 +19024,27 @@ try:
                     if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                         network_manager.send_score(other, score_type=0, death_x=b.x, death_z=b.z, victim=slot)
                     print(f"{('BLUE', 'RED')[other]} SCORES!")
+                else:
+                    # FFA-LIVES (3-4P): the victim loses a life, nobody is
+                    # credited (no kill attribution by design - see
+                    # 4_player_steam.md scoring matrix). No confetti/beam
+                    # ceremony at 3+ players for now (user call).
+                    if not eliminated[slot]:
+                        lives[slot] = max(0, lives[slot] - 1)
+                        print(f"BEETLE {slot} LOSES A LIFE ({lives[slot]} left)")
+                        if lives[slot] <= 0:
+                            eliminated[slot] = True
+                            print(f"BEETLE {slot} IS ELIMINATED!")
+                    if not eliminated[slot]:
+                        respawn_timers[slot] = BEETLE_RESPAWN_DELAY
+                    if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
+                        network_manager.send_score(255, score_type=0, death_x=b.x, death_z=b.z, victim=slot)
+                    # Last beetle standing wins
+                    _alive = [s for s in range(active_player_count) if not eliminated[s]]
+                    if len(_alive) == 1 and win_banner_slot is None:
+                        win_banner_slot = _alive[0]
+                        win_banner_timer = WIN_BANNER_SECONDS
+                        print(f"BEETLE {_alive[0]} WINS THE MATCH!")
                 simulation.trigger_stadium_excitement()
                 print(f"BEETLE {slot} EXPLOSION STARTED! (debris: {simulation.num_debris[None]})")
 
@@ -19174,6 +19241,10 @@ try:
         for slot in range(active_player_count):
             hover_spin_dir = 1.0 if slot % 2 == 0 else -1.0
             hover_wobble_phase = slot * 1.5
+            # FFA-lives: eliminated beetles never respawn
+            if eliminated[slot]:
+                respawn_timers[slot] = 0
+                continue
             # Respawn with assembly animation
             if respawn_timers[slot] > 0:
                 respawn_timers[slot] -= PHYSICS_TIMESTEP
@@ -21325,6 +21396,14 @@ try:
     g['blue_score_pending'] = blue_score_pending
     g['red_score_pending'] = red_score_pending
 
+    # FFA-LIVES: winner banner countdown; offline auto-rematches, online the
+    # banner stays up (proper online rematch flow is a follow-up step)
+    if win_banner_slot is not None and win_banner_timer > 0:
+        win_banner_timer -= 1.0 / 60.0
+        if win_banner_timer <= 0 and game_state != GAME_STATE_ONLINE_PLAY:
+            print("[Game] Auto-rematch after lives-mode win (offline)")
+            reset_match()
+
     # Update bounce timers
     if blue_score_bounce_timer > 0:
         blue_score_bounce_timer -= 1.0 / 60.0  # Approximate frame time
@@ -22215,6 +22294,17 @@ try:
     else:
         window.GUI.begin("SETTINGS AND NETWORKING", 0.01, 0.01, 0.35, 0.95)
         window.GUI.text(f"FPS: {actual_fps:3.0f}")
+
+        # FFA-LIVES HUD (3-4P matches): lives per slot + winner banner
+        if active_player_count > 2:
+            _slot_names = ("BLUE", "RED", "GREEN", "GOLD")
+            for _ls in range(active_player_count):
+                if eliminated[_ls]:
+                    window.GUI.text(f"{_slot_names[_ls]}: ELIMINATED")
+                else:
+                    window.GUI.text(f"{_slot_names[_ls]}: {lives[_ls]} lives")
+            if win_banner_slot is not None:
+                window.GUI.text(f"*** {_slot_names[win_banner_slot]} WINS! ***")
 
         # Fullscreen toggle button
         fs_text = "FULLSCREEN: ON" if is_fullscreen else "FULLSCREEN: OFF"
