@@ -590,6 +590,7 @@ collision_stats = {
     'max_contact_no_hook': 0,  # same but excluding stag pincer squeezes
     'min_shaft_center_dist': 999.0,  # closest a horn shaft got to a body center (<5 = buried)
     'deep_clip_events': 0,     # shaft-contact steps with shaft within 5 voxels of body center
+    'deep_clip_by_type': {},   # "owner->intruder" horn types -> count (attribution for clip hunts)
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
 }
 
@@ -665,6 +666,8 @@ def save_perf_log():
     _msd = collision_stats['min_shaft_center_dist']
     w(f"  min_shaft_center_dist: {'n/a' if _msd > 900 else f'{_msd:.1f}'} voxels (body core ~7-8; <5 = horn buried)")
     w(f"  deep_clip_events: {collision_stats['deep_clip_events']} (shaft within 5 voxels of body center)")
+    for _ck, _cv in sorted(collision_stats['deep_clip_by_type'].items(), key=lambda kv: -kv[1]):
+        w(f"    {_ck}: {_cv}")
     for pair, hist in sorted(collision_stats['pair_time_ms'].items()):
         if hist:
             w(f"  pair {pair[0]}v{pair[1]}: {_avg(hist):.2f}ms avg, {max(hist):.2f}ms max (per physics step)")
@@ -14229,6 +14232,9 @@ def beetle_collision(b1, b2, params):
                         collision_stats['min_shaft_center_dist'] = _pdist
                     if _pdist < 5.0:
                         collision_stats['deep_clip_events'] += 1
+                        _clip_key = f"{shaft_owner.horn_type}->{intruder.horn_type}"
+                        collision_stats['deep_clip_by_type'][_clip_key] = \
+                            collision_stats['deep_clip_by_type'].get(_clip_key, 0) + 1
                     if _pdist < 0.1:
                         continue
                     # Tip voxels in the contact normally mean a tip battle
