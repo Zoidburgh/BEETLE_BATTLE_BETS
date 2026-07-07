@@ -305,6 +305,82 @@ arrays and the v5 team byte; M3 is configuration.
 - **Gate: kill the guest process mid-brawl; host + bots keep playing.
   Rejoin = new match (reconnect explicitly out of scope).**
 
+## TESTING GUIDE (written 2026-07-07 night — build 6e7dd63+)
+
+### Rung 1 — 2-PC + 2 bots (the workhorse, do this first)
+1. Machine 2: `git pull` (protocol v5 refuses stale builds — a mismatch
+   error means someone didn't pull).
+2. HOST machine (the stronger PC): `py -3.12 beetle_physics.py --bots 2`
+   → HOST ONLINE GAME → COPY LOBBY ID.
+3. Guest machine: JOIN ONLINE GAME → paste ID → connect. (Or launch with
+   `+connect_lobby <id>` to auto-join.)
+4. Host clicks START MATCH (4 players).
+CHECKLIST:
+- [ ] Guest controls the RIGHT beetle (red, slot 1)
+- [ ] All 4 beetles fight smoothly on BOTH screens (bots must not
+      rubber-band on the guest — that's the A3 multi-target correction)
+- [ ] Lives HUD identical on both machines through several deaths
+- [ ] Eliminations stick; winner banner appears on both
+- [ ] Save perf logs on both ends; net CSVs auto-record. Want:
+      game_speed 98-102%, accumulator_drains ~0, snaps low (N-key HUD)
+- [ ] Guest customizes beetle in lobby -> host sees it (config relay)
+### Rung 2 — degraded network
+Same setup + `--simlag 80 --simloss 3` on the host. Playable? Corrections
+visible but not nauseating?
+### Rung 3 — departure
+Kill the guest's process mid-match (Task Manager). Host + bots must keep
+playing; the guest's beetle despawns and is eliminated. Then guest
+rejoins the lobby -> fresh match works.
+### Rung 4 — 3 humans + 1 bot (first friend)
+First test of host fan-out to TWO real guests (the only thing bots can't
+simulate). Friend pulls the build; host `--bots 1`. Guest #2 gets slot 2
+(green) — verify they control the GREEN beetle (A3's my_slot fix).
+### Rung 5 — 4 real Steam accounts
+Everyone on the same build. Full FFA-lives match to a winner. Collect
+perf logs + net CSVs from every machine (friends' GPUs also feed the
+FPSPROBLEM.md data). Celebrate.
+
+## MENU & HOST AUTHORITY DESIGN (agreed 2026-07-07)
+
+Principle: THE HOST OWNS THE MATCH SETTINGS, PLAYERS OWN THEIR BEETLES.
+Already true in the plumbing: arenas/hazards sync host->guests via
+MSG_GAME_OPTIONS (guest arena UI is already is_host_or_local-gated), and
+the v5 options carry game_mode/team_of_slot/lives_per_player. The menu
+work is exposing what the protocol already ships.
+
+### Host controls (lobby, and where sensible mid-match)
+- Board/arena selection + hazard toggles (EXISTS - already host-gated
+  and synced; unchanged)
+- Game mode picker: FFA-LIVES (3-4P default) | 2v2 SCORE | 2v2 BEETLEBALL
+  (2v2 entries appear in M2; 2P defaults to classic score mode until the
+  1v1-lives switch later). Sets the game_mode byte at START.
+- Lives count (1-5, default 3) -> lives_per_player byte
+- Team assignment for 2v2 (M2): host clicks slots to arrange teams ->
+  team_of_slot byte; teammates spawn same side
+- Bot fill: lobby button "ADD BOT" / "REMOVE BOT" replacing the --bots
+  CLI flag (same register_bot_peers path, host-only)
+- START MATCH (N players) — gated on all real guests SYNC_READY (exists)
+### Each player controls (host included)
+- Their own beetle: type, sizes, colors (config relay EXISTS; guests see
+  each other's builds). Beetle editing locks at START.
+- Their own camera/display settings (never synced)
+### Guests see (read-only)
+- Roster with slots/teams, chosen mode + lives, arena/hazard selection
+  (mirrors via game options as today)
+
+### Menu build order
+- PHASE A (now/testing): what exists — text lobby, CLI bots, text lives
+  HUD. Sufficient through Rung 5.
+- PHASE B (before the friends session, small): lobby roster list showing
+  slot colors + player names + chosen beetle types; ADD BOT button;
+  lives count picker; mode label (FFA-LIVES fixed). All host-side UI over
+  existing plumbing — no protocol work.
+- PHASE C (M2 = 2v2): mode picker gains 2v2 SCORE / 2v2 BEETLEBALL,
+  team assignment clicks, team-colored goal digits (the 2 existing digit
+  stations), team spawns, friendly-fire decision. Protocol untouched.
+- PHASE D (cosmetic backlog): 4 rim voxel digits for FFA, per-slot
+  confetti colors, voxel-art lobby.
+
 ## Testing ladder (in order, don't skip rungs)
 
 1. `--local4` regression after every step (bots still brawl, no errors) —
