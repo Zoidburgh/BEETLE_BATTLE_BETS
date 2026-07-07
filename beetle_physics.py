@@ -336,6 +336,13 @@ LOCAL4_MODE, BOT_AI_MODE = get_local4_from_args()
 PERF_AUTO_MODE = '--perfauto' in sys.argv
 _last_perf_auto_save = time.time()
 
+# --spherefloor: start with the mesh floor off (sphere floor), same as the
+# FLAT FLOOR GUI toggle — for A/B perf testing of the floor mesh path
+SPHERE_FLOOR_MODE = '--spherefloor' in sys.argv
+if SPHERE_FLOOR_MODE:
+    renderer.mesh_floor_enabled = False
+    print("[PerfTest] Sphere floor mode (mesh floor disabled)")
+
 FULLSCREEN_ENABLED, FULLSCREEN_RES = get_fullscreen_from_args()
 if FULLSCREEN_ENABLED:
     WINDOW_RESOLUTION = FULLSCREEN_RES
