@@ -586,8 +586,10 @@ collision_stats = {
     'predictive_pushes': 0,    # horn-tip predictive separation events
     'shaft_pushes': 0,         # shaft-cylinder separation events
     'shaft_penetration_fixes': 0,  # horn-side penetration responses (anti-clip)
-    'max_contact_count': 0,    # largest voxel contact cluster seen (penetration depth proxy)
-    'max_contact_no_hook': 0,  # same but excluding stag pincer squeezes (the real clip signal)
+    'max_contact_count': 0,    # largest voxel contact cluster seen (contact area, incl. floor voxels)
+    'max_contact_no_hook': 0,  # same but excluding stag pincer squeezes
+    'min_shaft_center_dist': 999.0,  # closest a horn shaft got to a body center (<5 = buried)
+    'deep_clip_events': 0,     # shaft-contact steps with shaft within 5 voxels of body center
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
 }
 
@@ -658,8 +660,11 @@ def save_perf_log():
     w(f"  predictive_tip_pushes: {collision_stats['predictive_pushes']}")
     w(f"  shaft_cylinder_pushes: {collision_stats['shaft_pushes']}")
     w(f"  shaft_penetration_fixes: {collision_stats['shaft_penetration_fixes']} (horn-side anti-clip responses)")
-    w(f"  max_contact_cluster: {collision_stats['max_contact_count']} voxels (large = deep overlap/clip)")
-    w(f"  max_contact_no_hook: {collision_stats['max_contact_no_hook']} voxels (excludes stag squeezes - the clip signal)")
+    w(f"  max_contact_cluster: {collision_stats['max_contact_count']} voxels (contact area incl. floor - NOT a clip signal)")
+    w(f"  max_contact_no_hook: {collision_stats['max_contact_no_hook']} voxels (excludes stag squeezes)")
+    _msd = collision_stats['min_shaft_center_dist']
+    w(f"  min_shaft_center_dist: {'n/a' if _msd > 900 else f'{_msd:.1f}'} voxels (body core ~7-8; <5 = horn buried)")
+    w(f"  deep_clip_events: {collision_stats['deep_clip_events']} (shaft within 5 voxels of body center)")
     for pair, hist in sorted(collision_stats['pair_time_ms'].items()):
         if hist:
             w(f"  pair {pair[0]}v{pair[1]}: {_avg(hist):.2f}ms avg, {max(hist):.2f}ms max (per physics step)")
@@ -14212,6 +14217,12 @@ def beetle_collision(b1, b2, params):
                     _px = intruder.x - _scx
                     _pz = intruder.z - _scz
                     _pdist = math.sqrt(_px*_px + _pz*_pz)
+                    # Direct clip-depth signal: how close the shaft got to the
+                    # victim's body center (core radius ~7-8; <5 = buried)
+                    if _pdist < collision_stats['min_shaft_center_dist']:
+                        collision_stats['min_shaft_center_dist'] = _pdist
+                    if _pdist < 5.0:
+                        collision_stats['deep_clip_events'] += 1
                     if _pdist < 0.1:
                         continue
                     # Tip voxels in the contact normally mean a tip battle
