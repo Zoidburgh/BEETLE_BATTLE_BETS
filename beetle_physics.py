@@ -14595,7 +14595,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # horn articulation), and feed the crossing depth into
                 # horn_burial so the depth-aware turn clamp engages on
                 # base-vs-base grinds too.
-                if not is_ball_collision and has_horn_tips == 0:
+                if not is_ball_collision:
                     _svs_types = ("rhino", "stag", "hercules", "atlas",
                                   "spider", "bombardier", "scorpion", "giraffe")
                     if b1.horn_type in _svs_types and b2.horn_type in _svs_types:
@@ -14607,10 +14607,18 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                          _ss_s, _ss_t, _ss_d) = closest_points_between_segments(
                             _s1bx, _s1by, _s1bz, _s1tx, _s1ty, _s1tz,
                             _s2bx, _s2by, _s2bz, _s2tx, _s2ty, _s2tz)
-                        _svs_thick = params.get("SHAFT_VS_SHAFT_DIST", 5.0)
+                        # Shafts are thicker at the base: taper the crossing
+                        # threshold from ~6.5 voxels (base-vs-base) to ~4
+                        # toward the tips
+                        _svs_far = max(_ss_s, _ss_t)
+                        _svs_thick = params.get("SHAFT_VS_SHAFT_DIST", 6.5) - 2.5 * _svs_far
                         # Tip-end crossings (s or t near 1) belong to the tip
-                        # physics; this owns base/mid crossings
-                        if 0.01 < _ss_d < _svs_thick and _ss_s < 0.9 and _ss_t < 0.9:
+                        # physics. When tip voxels are in the contact, only
+                        # clearly BASAL crossings fire (a tip touching
+                        # something must not disable base separation - that
+                        # blanket gate was why base merges slipped through)
+                        _svs_param_limit = 0.7 if has_horn_tips == 1 else 0.9
+                        if 0.01 < _ss_d < _svs_thick and _ss_s < _svs_param_limit and _ss_t < _svs_param_limit:
                             _svs_depth = _svs_thick - _ss_d
                             for _bb in (b1, b2):
                                 if _svs_depth > getattr(_bb, 'horn_burial', 0.0):
@@ -14651,7 +14659,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 _v2z = b2.vz + (_c2x - b2.x) * b2.angular_velocity + _a2vz
                                 # Closing along the separation axis (b1 -> b2)
                                 _svs_cl = (_v1x - _v2x) * _hx + (_v1z - _v2z) * _hz
-                                _svs_push = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35) * (0.5 + _svs_depth * 0.2)
+                                # Depth-scaled like the horn-vs-body push-out:
+                                # gentle at first touch, ~2.4x when deep
+                                _svs_push = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35) * (1.0 + _svs_depth * 0.4)
                                 b1.x -= _hx * _svs_push * 0.5
                                 b1.z -= _hz * _svs_push * 0.5
                                 b2.x += _hx * _svs_push * 0.5
