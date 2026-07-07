@@ -1,5 +1,14 @@
 # LAST NETWORK STAGE — What's Left for Full 4-Player
 
+> **SUPERSEDED 2026-07-08 — the "REMAINING WORK" below is ALL DONE.**
+> The Stage A/B items (host bots, roster sizing, guest my_slot,
+> lobby 4, protocol v5, FFA-lives, HUD, config relay, departures)
+> shipped as M1 (commits e281b4f..d741bb5). **Current source of truth:
+> `4_player_steam.md`** — its STATUS section + testing ladder (Rung 1:
+> 2-PC + 2 bots) is the only remaining M1 work. This file stays as a
+> code map: the "Where things stand" section and the per-site code
+> pointers below are still accurate and useful.
+
 Handoff doc for continuing the networking rework. Written 2026-07-07 at commit
 `4fd0834` on branch `arena_mods` (pushed to `networking_host` on GitHub).
 Read this FIRST, then `PHASE4_INVENTORY.md` (GPU/kernel details) and

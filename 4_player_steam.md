@@ -6,6 +6,33 @@ batched pair collision kernel, GGUI buffer cuts, horn anti-clip — brawl frame
 gotchas — READ IT FIRST), `NETWORKING_REWORK_PLAN.md` (architecture),
 `PHASE4_INVENTORY.md` (per-slot GPU details).
 
+## STATUS 2026-07-08 — M1 BUILD COMPLETE + COMBAT-FEEL SPRINT DONE (pushed through 3b35073)
+
+NETWORK CODE IS UNCHANGED since the M1 build below — everything after
+3eef8bd is combat feel + geometry, all offline-canary'd, none of it
+touches protocol/netcode. **THE ONLY REMAINING M1 WORK IS THE TESTING
+LADDER (Rungs 1-5 below) — start at Rung 1 (2-PC + 2 bots).** If picking
+this up cold: read `last_network_stage.md`, then run Rung 1.
+
+Post-M1 combat/geometry commits (e24ff7b..3b35073, pushed 2026-07-08):
+- Predictive horn-tip gate REMOVED entirely (user call; feel + clip
+  metrics both better without it)
+- ALL lift delivery continuous per-step (LIFT_STEP_DIV=9): press-down,
+  evenly-matched, advantage launch — no more 0.1s pulse pops
+- Crisper tip approach (predictive push dist 3.0, contact tolerance +1)
+- Yaw grind (left/right horn into a body) stronger + slider-tunable
+  (YAW_GRIND_PUSH 60 / LIFT 40 / TILT 0.03)
+- Hercules bottom jaw: constant-K curvature (prong slider extends
+  instead of reshaping)
+- Giraffe weevil: steeper neck (~61 deg), half-segment slider growth
+  (every step a visible increase), head attachment climbs every step
+- Giraffe anti-clip REBUILT (52f5b9c+3b35073): TWO-segment horn model
+  (neck + head joined at pivot; the old straight base->tip chord passed
+  ~10 voxels under the elbow = zero coverage there), plus fixed the
+  always-red pivot bug (beetle.color is a voxel id, the string compare
+  never matched — every giraffe used slot 1's pivot). Giraffe-bot
+  canary: deep clips 0.4% of frames (best ever), frame ~18.4ms.
+
 ## STATUS 2026-07-07 EVENING — M1 BUILD WORK COMPLETE (e281b4f..3eef8bd, pushed)
 
 ALL implementation steps below are DONE and committed:
