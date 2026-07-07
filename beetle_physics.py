@@ -2399,22 +2399,39 @@ def send_local_beetle_config(network_mgr, is_host):
         )
 
 
+# Last-applied geometry per remote slot 2/3 (avoids rebuilding every resend)
+_applied_remote_geo = {}
+
 def apply_remote_beetle_config(network_mgr):
-    """Apply received opponent beetle configuration."""
+    """Apply received remote beetle configurations (any slot).
+
+    Slots 0/1 use the legacy blue/red slider globals + rebuild paths;
+    slots 2/3 use the slot-generic rebuild_beetle + p3/p4 palette fields."""
     global blue_horn_type, red_horn_type
 
-    if not network_mgr or not network_mgr.remote_beetle_config:
+    if not network_mgr or not network_mgr.remote_beetle_configs:
         return False
 
-    config = network_mgr.remote_beetle_config
-    network_mgr.remote_beetle_config = None  # Consume it
+    configs = network_mgr.remote_beetle_configs
+    network_mgr.remote_beetle_configs = {}  # Consume them
 
     # Reverse lookup horn type from ID
     horn_names = ["rhino", "stag", "hercules", "scorpion", "atlas", "bombardier", "spider", "giraffe"]
+    applied_any = False
+    for _cfg_pid, config in configs.items():
+        if network_mgr.my_slot == _cfg_pid:
+            continue  # Our own config relayed back - ignore
+        _apply_one_remote_config(network_mgr, config, horn_names)
+        applied_any = True
+    return applied_any
+
+
+def _apply_one_remote_config(network_mgr, config, horn_names):
+    global blue_horn_type, red_horn_type
     horn_type = horn_names[config['horn_type_id']] if config['horn_type_id'] < len(horn_names) else "rhino"
 
     # Determine which beetle to update based on sender's player_id
-    # player_id 0 = host = blue beetle, player_id 1 = guest = red beetle
+    # player_id 0 = host = blue beetle, player_id 1 = first guest = red beetle
     if config['player_id'] == 0:
         # Opponent is host, so update BLUE beetle (opponent's beetle)
         # Check if geometry changed (only rebuild if shape parameters changed, not just colors)
@@ -2458,7 +2475,7 @@ def apply_remote_beetle_config(network_mgr):
             print(f"[Config] Applied opponent's BLUE beetle geometry: {horn_type}")
         else:
             print(f"[Config] Applied opponent's BLUE beetle colors (no geometry change)")
-    else:
+    elif config['player_id'] == 1:
         # Opponent is guest, so update RED beetle (opponent's beetle)
         # Check if geometry changed (only rebuild if shape parameters changed, not just colors)
         geometry_changed = (
@@ -2502,7 +2519,34 @@ def apply_remote_beetle_config(network_mgr):
         else:
             print(f"[Config] Applied opponent's RED beetle colors (no geometry change)")
 
-    return True
+    else:
+        # Slots 2/3 (extra guests in 4P): slot-generic rebuild + p3/p4 palette
+        _slot = config['player_id']
+        if _slot >= active_player_count or _slot >= len(beetles):
+            return
+        _geo_key = (config['horn_type_id'], config['shaft'], config['prong'],
+                    config['back_body'], config['body_len'], config['body_width'],
+                    config['leg_len'])
+        if _applied_remote_geo.get(_slot) != _geo_key:
+            rebuild_beetle(_slot, config['shaft'], config['prong'], 4,
+                           config['back_body'], config['body_len'],
+                           config['body_width'], config['leg_len'], horn_type)
+            beetles[_slot].horn_type = horn_type
+            beetles[_slot].horn_type_id = config['horn_type_id']
+            _applied_remote_geo[_slot] = _geo_key
+            print(f"[Config] Applied slot {_slot} beetle geometry: {horn_type}")
+        if 'body_color' in config:
+            _pal = (simulation.p3_body_color, simulation.p3_leg_color,
+                    simulation.p3_leg_tip_color, simulation.p3_stripe_color,
+                    simulation.p3_horn_tip_color) if _slot == 2 else \
+                   (simulation.p4_body_color, simulation.p4_leg_color,
+                    simulation.p4_leg_tip_color, simulation.p4_stripe_color,
+                    simulation.p4_horn_tip_color)
+            for _field, _ckey in zip(_pal, ('body_color', 'leg_color', 'leg_tip_color',
+                                            'stripe_color', 'horn_tip_color')):
+                _c = config[_ckey]
+                _field[None] = ti.Vector([_c[0], _c[1], _c[2]])
+            _gpu_color_cache.clear()
 
 
 # Create beetles - closer together for smaller arena (horn dimensions set later).
@@ -15351,7 +15395,7 @@ _lwipe_pending_tab = None
 _right_slide_t = 0.0    # Right panel current slide position (start closed, animate open)
 _right_slide_target = 1.0  # Right panel target (0.0 or 1.0)
 _left_slide_t = 0.0
-_left_slide_target = 1.0
+_left_slide_target = 0.0  # Closed until the user opens it (see note above)
 SLIDE_SPEED = 0.45       # Lerp factor per frame (fast but smooth)
 
 # Tab definitions (right panel)
@@ -15363,7 +15407,12 @@ OVL_X0, OVL_X1 = 0.005, 0.36  # Left panel horizontal bounds
 OVL_TAB_Y1 = 0.995
 OVL_TAB_Y0 = 0.96
 OVL_CONTENT_Y0 = 0.63  # Smaller panel - camera/network don't need as much space
-overlay_left_active_tab = 'display'  # 'display', 'network', or None
+# Left overlay panel starts CLOSED: it occupies the same top-left region as
+# the imgui SETTINGS AND NETWORKING box (which draws on top of the canvas),
+# and an open-but-hidden panel intercepts clicks meant for imgui buttons —
+# e.g. HOST ONLINE GAME landing on the invisible fullscreen rect at common
+# window sizes (bug: "clicking host toggles fullscreen")
+overlay_left_active_tab = None  # 'display', 'network', or None
 OVERLAY_LEFT_TABS = ['display', 'network']
 OVERLAY_LEFT_TAB_LABELS = {'display': 'DISPLAY', 'network': 'NETWORK'}
 
@@ -17652,6 +17701,27 @@ try:
                     if opp.active and floor_surface is not None and opp.y < floor_surface:
                         opp.y = floor_surface
 
+        # === PEER DEPARTURES (A8: a guest leaving a 4P match must not end it) ===
+        if network_manager and network_manager.pending_peer_departures:
+            while network_manager.pending_peer_departures:
+                _dep = network_manager.pending_peer_departures.pop(0)
+                if (game_state == GAME_STATE_ONLINE_PLAY and active_player_count > 2
+                        and 0 < _dep < active_player_count and not eliminated[_dep]):
+                    eliminated[_dep] = True
+                    lives[_dep] = 0
+                    beetles[_dep].active = False
+                    beetles[_dep].is_falling = False
+                    print(f"[Game] Player slot {_dep} left the match - beetle removed, match continues")
+                    # Host broadcasts the elimination so guests stay consistent
+                    # (score_type 2 = departure, reuses the MSG_SCORE plumbing)
+                    if network_manager.is_host:
+                        network_manager.send_score(255, score_type=2, death_x=0.0, death_z=0.0, victim=_dep)
+                    _alive = [s for s in range(active_player_count) if not eliminated[s]]
+                    if len(_alive) == 1 and win_banner_slot is None:
+                        win_banner_slot = _alive[0]
+                        win_banner_timer = WIN_BANNER_SECONDS
+                        print(f"BEETLE {_alive[0]} WINS THE MATCH!")
+
         # === DISCONNECT DETECTION ===
         # Check for graceful disconnect first (opponent clicked Disconnect button)
         if network_manager and network_manager.pending_disconnect:
@@ -18615,7 +18685,20 @@ try:
                 if scorer == 255:
                     # FFA-LIVES death (3-4P): victim loses a life, no credit,
                     # no score/confetti ceremony (see 4_player_steam.md)
-                    if is_beetle_death and victim < active_player_count:
+                    if score_type == 2 and victim < active_player_count:
+                        # Departure elimination from host (player left mid-match)
+                        if not eliminated[victim]:
+                            eliminated[victim] = True
+                            lives[victim] = 0
+                            beetles[victim].active = False
+                            beetles[victim].is_falling = False
+                            print(f"[Game] Player slot {victim} left the match (from host)")
+                            _alive = [s for s in range(active_player_count) if not eliminated[s]]
+                            if len(_alive) == 1 and win_banner_slot is None:
+                                win_banner_slot = _alive[0]
+                                win_banner_timer = WIN_BANNER_SECONDS
+                                print(f"BEETLE {_alive[0]} WINS THE MATCH! (from host)")
+                    elif is_beetle_death and victim < active_player_count:
                         vb = beetles[victim]
                         if not vb.has_exploded and not vb.guest_death_falling:
                             vb.x = score_event.get('death_x', vb.x)
@@ -22090,8 +22173,9 @@ try:
                         _left_slide_target = 1.0
                 _overlay_dirty = True
 
-            # Left panel content - display
-            elif overlay_left_active_tab == 'display' and OVL_CONTENT_Y0 <= my <= OVL_TAB_Y0 and OVL_X0 <= mx <= OVL_X1:
+            # Left panel content - display (only when panel is fully open;
+            # a sliding/ghost panel must never intercept clicks)
+            elif overlay_left_active_tab == 'display' and _left_slide_t > 0.9 and OVL_CONTENT_Y0 <= my <= OVL_TAB_Y0 and OVL_X0 <= mx <= OVL_X1:
                 lbtn_h = 0.035
                 lgap = 0.008
                 lbtn_x0 = OVL_X0 + 0.02
@@ -22143,8 +22227,8 @@ try:
                         apply_camera_distance(camera_distance_level)
                         print(f"Camera distance: {camera_distance_level}")
 
-            # Left panel content - network
-            elif overlay_left_active_tab == 'network' and OVL_CONTENT_Y0 <= my <= OVL_TAB_Y0 and OVL_X0 <= mx <= OVL_X1:
+            # Left panel content - network (only when panel is fully open)
+            elif overlay_left_active_tab == 'network' and _left_slide_t > 0.9 and OVL_CONTENT_Y0 <= my <= OVL_TAB_Y0 and OVL_X0 <= mx <= OVL_X1:
                 lbtn_h = 0.035
                 lgap = 0.008
                 lbtn_x0 = OVL_X0 + 0.02

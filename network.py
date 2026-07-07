@@ -146,6 +146,8 @@ class NetworkManager:
         self.player_count = 1   # Total players including us
         self.bot_peers = set()  # Fake steam ids of host-side bots (--bots N);
                                 # counted in the roster but never sent to
+        self.pending_peer_departures = []  # Slots of guests who left mid-match
+                                # (consumed by the game loop; see A8)
 
         # Match config from v5 game options (only mode 0 = FFA-score exists
         # today; fields reserved so 2v2/lives modes need no protocol bump)
@@ -201,7 +203,8 @@ class NetworkManager:
         self.target_frame = None  # Guest: frame counter we should be at (from host)
 
         # Beetle customization sync
-        self.remote_beetle_config = None  # Opponent's beetle settings (horn_type_id, sizes)
+        self.remote_beetle_config = None  # Legacy single-opponent slot (unused; kept for safety)
+        self.remote_beetle_configs = {}   # {slot: config dict} - all remote players' builds
 
         # Score sync (host-authoritative death/goal detection)
         # Guest: QUEUE of score events from host. Must be a list - two events
@@ -430,6 +433,8 @@ class NetworkManager:
         self.player_count = 1
         self.bot_peers = set()
         self.sync_ready_peers = set()
+        self.remote_beetle_configs = {}
+        self.pending_peer_departures = []  # Slots of guests who left mid-match
         self.match_started = False
         self.local_ready = False
         self.remote_ready = False
@@ -550,10 +555,21 @@ class NetworkManager:
 
         elif change_type in ["left", "disconnected", "kicked", "banned", 2, 3, 4]:
             if member_id in self.peers:
+                _left_slot = self.peers.get(member_id)
                 self._unregister_peer(member_id)
                 self.connected = bool(self.peers)
-                print(f"[Network] Opponent left")
-                if self.on_peer_left:
+                print(f"[Network] Peer left (slot {_left_slot})")
+                if _left_slot is not None and _left_slot != 0:
+                    self.pending_peer_departures.append(_left_slot)
+                # Match-over escalation only when it actually is over: for a
+                # guest that means the HOST left; for the host it means no
+                # real guests (and no bots) remain. A guest leaving a 4P
+                # match must NOT end it for the others.
+                if self.is_host:
+                    match_over = not (self.has_real_guests() or self.bot_peers)
+                else:
+                    match_over = (_left_slot == 0)
+                if match_over and self.on_peer_left:
                     self.on_peer_left()
 
     def _on_message_received(self, *args):
@@ -776,8 +792,10 @@ class NetworkManager:
 
     def send_beetle_config(self, horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len,
                            body_color, leg_color, leg_tip_color, stripe_color, horn_tip_color):
-        """Send beetle customization to opponent including colors."""
-        player_id = 0 if self.is_host else 1
+        """Send our beetle customization to all peers, tagged with our slot.
+        The host relays received guest configs to the other guests (see the
+        MSG_BEETLE_CONFIG handler), so every player sees every build."""
+        player_id = self.my_slot
         # Pack sizes (9 bytes) + 5 colors as RGB bytes (15 bytes) = 24 bytes total
         # Colors are floats 0.0-1.0, convert to bytes 0-255
         def color_to_bytes(c):
@@ -791,8 +809,8 @@ class NetworkManager:
                            horn_type_id, shaft, prong, back_body, body_len, body_width, leg_len,
                            bc[0], bc[1], bc[2], lc[0], lc[1], lc[2], ltc[0], ltc[1], ltc[2],
                            sc[0], sc[1], sc[2], htc[0], htc[1], htc[2])
-        self._send_packet(data, reliable=True)
-        print(f"[Network] Sent beetle config: horn={horn_type_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
+        self._broadcast(data, reliable=True)
+        print(f"[Network] Sent beetle config (slot {player_id}): horn={horn_type_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
 
     def send_score(self, scorer, score_type=0, death_x=0.0, death_z=0.0, victim=None):
         """
@@ -1292,7 +1310,7 @@ class NetworkManager:
                 leg_tip_color = (unpacked[15]/255, unpacked[16]/255, unpacked[17]/255)
                 stripe_color = (unpacked[18]/255, unpacked[19]/255, unpacked[20]/255)
                 horn_tip_color = (unpacked[21]/255, unpacked[22]/255, unpacked[23]/255)
-                self.remote_beetle_config = {
+                self.remote_beetle_configs[player_id] = {
                     'player_id': player_id,
                     'horn_type_id': horn_id,
                     'shaft': shaft,
@@ -1311,7 +1329,7 @@ class NetworkManager:
             elif len(data) >= 9:
                 # Legacy format without colors
                 _, player_id, horn_id, shaft, prong, back_body, body_len, body_width, leg_len = struct.unpack('>BBBBBBBBB', data[:9])
-                self.remote_beetle_config = {
+                self.remote_beetle_configs[player_id] = {
                     'player_id': player_id,
                     'horn_type_id': horn_id,
                     'shaft': shaft,
@@ -1322,6 +1340,16 @@ class NetworkManager:
                     'leg_len': leg_len
                 }
                 print(f"[Network] Received beetle config from player {player_id}: horn={horn_id}, sizes={shaft}/{prong}/{back_body}/{body_len}/{body_width}/{leg_len}")
+            # Host relays guest configs to the other real guests so every
+            # player sees every build (bots excluded; sender excluded)
+            if self.is_host and len(data) >= 9:
+                for _pid in self.peers:
+                    if _pid == sender_id or _pid in self.bot_peers:
+                        continue
+                    try:
+                        self.client.send_message_to(_pid, SEND_RELIABLE, GAME_CHANNEL, data)
+                    except Exception as e:
+                        print(f"[Network] Config relay error to {_pid}: {e}")
 
         elif msg_type == MSG_SCORE:
             # Host-authoritative score event (guest receives)
@@ -1406,9 +1434,23 @@ class NetworkManager:
                 print(f"[Network] Received reconnect state: frame={unpacked[1]}")
 
         elif msg_type == MSG_DISCONNECT:
-            # Opponent is leaving gracefully
-            self.pending_disconnect = True
-            print("[Network] Received disconnect message - opponent leaving")
+            # A peer is leaving gracefully. Resolve WHO: for the host a guest
+            # leaving a 4P match must not end it; for a guest any disconnect
+            # is from the host (match over)
+            _dc_slot = self.slot_for_sender(sender_id)
+            if self.is_host and _dc_slot is not None and _dc_slot != 0:
+                if sender_id in self.peers:
+                    self._unregister_peer(sender_id)
+                self.connected = bool(self.peers)
+                self.pending_peer_departures.append(_dc_slot)
+                if self.has_real_guests() or self.bot_peers:
+                    print(f"[Network] Guest slot {_dc_slot} left gracefully - match continues")
+                else:
+                    self.pending_disconnect = True
+                    print("[Network] Received disconnect message - opponent leaving")
+            else:
+                self.pending_disconnect = True
+                print("[Network] Received disconnect message - opponent leaving")
 
         elif msg_type == MSG_BALL_EXPLODE:
             # Host says ball exploded (guest receives)
