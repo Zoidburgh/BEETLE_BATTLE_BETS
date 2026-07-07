@@ -40,7 +40,10 @@ except Exception as e:
 # Protocol version - bump whenever a packet format changes incompatibly.
 # Carried in MSG_READY (guest->host) and MSG_START (host->guest); a mismatch
 # refuses the match with a clear message instead of desyncing silently.
-PROTOCOL_VERSION = 4  # v4: N-player - state sync player_count, MSG_INPUTS_ALL, score victim
+PROTOCOL_VERSION = 5  # v5: 4-player lobby; game options carry game_mode +
+                      # team_of_slot + lives_per_player (reserved for 2v2 and
+                      # lives modes - parsed and stored, only mode 0 ships)
+                      # v4: N-player - state sync player_count, MSG_INPUTS_ALL, score victim
 
 # Network message types
 MSG_INPUT = 0x01        # Frame input data
@@ -144,6 +147,12 @@ class NetworkManager:
         self.bot_peers = set()  # Fake steam ids of host-side bots (--bots N);
                                 # counted in the roster but never sent to
 
+        # Match config from v5 game options (only mode 0 = FFA-score exists
+        # today; fields reserved so 2v2/lives modes need no protocol bump)
+        self.game_mode = 0
+        self.team_of_slot = (0, 0, 0, 0)
+        self.lives_per_player = 0
+
         # Player info
         self.my_name = "Player"
         self.peer_name = "Opponent"
@@ -183,7 +192,8 @@ class NetworkManager:
 
         # Countdown sync state (ensures both players start at same frame)
         self.sync_state = "idle"  # idle -> waiting_for_guest -> go (host) / idle -> received_start -> go (guest)
-        self.guest_sync_ready = False  # Host: has guest sent SYNC_READY?
+        self.guest_sync_ready = False  # Host: have ALL real guests sent SYNC_READY?
+        self.sync_ready_peers = set()  # Host: which peer ids confirmed SYNC_READY
         self.received_go = False  # Guest: has host sent GO?
         self.go_sent_time = 0  # Host: when GO was sent (to delay start by one-way latency)
 
@@ -419,6 +429,7 @@ class NetworkManager:
         self.my_slot = 0
         self.player_count = 1
         self.bot_peers = set()
+        self.sync_ready_peers = set()
         self.match_started = False
         self.local_ready = False
         self.remote_ready = False
@@ -729,6 +740,8 @@ class NetworkManager:
         """Host sends GO to start simulation on all clients."""
         if not self.is_host:
             return
+        if self.sync_state in ("waiting_for_go_delay", "go"):
+            return  # Already going (late SYNC_READY duplicates are fine)
         print("[Network] Sending GO - all players start now!")
         # Send multiple times for reliability
         for _ in range(3):
@@ -801,14 +814,21 @@ class NetworkManager:
         type_str = "death" if score_type == 0 else "ball goal"
         print(f"[Network] Sent score event: slot {scorer} scores ({type_str}), victim slot {victim} at ({death_x:.1f}, {death_z:.1f})")
 
-    def send_game_options(self, referee_enabled, ball_active, donut_mode=False, x_stage_mode=False, barbell_mode=False, yinyang_mode=False, hourglass_mode=False, tornado_mode=False, sandstorm_mode=False, ufo_mode=False, ice_mode=False, figure8_mode=False, squiggle_mode=False, hole_mode=False, comet_mode=False, square_mode=False, cut_square_mode=False, board_break_mode=False, star_mode=False):
+    def send_game_options(self, referee_enabled, ball_active, donut_mode=False, x_stage_mode=False, barbell_mode=False, yinyang_mode=False, hourglass_mode=False, tornado_mode=False, sandstorm_mode=False, ufo_mode=False, ice_mode=False, figure8_mode=False, squiggle_mode=False, hole_mode=False, comet_mode=False, square_mode=False, cut_square_mode=False, board_break_mode=False, star_mode=False,
+                          game_mode=0, team_of_slot=(0, 0, 0, 0), lives_per_player=0):
         """
         Host sends game options to guest.
-        Packet format: [type:1][referee:1][ball:1][donut:1][x_stage:1][barbell:1][yinyang:1][hourglass:1][tornado:1][sandstorm:1][ufo:1][ice:1][figure8:1][squiggle:1][hole:1][comet:1][square:1][cut_square:1][board_break:1][star:1] = 20 bytes
+        Packet (v5, 23 bytes): [type:1] + 19 mode flags + [game_mode:1]
+        [team_of_slot packed 2 bits/slot:1] [lives_per_player:1]
+        game_mode: 0=FFA-score (reserved: 1=FFA-lives, 2=2v2-score, 3=2v2-ball)
+        The trailing 3 fields are parsed/stored but only mode 0 ships today —
+        they exist so 2v2/lives modes are handler work, not a protocol bump.
         """
         if not self.is_host or not self.connected:
             return
-        data = struct.pack('>BBBBBBBBBBBBBBBBBBBB', MSG_GAME_OPTIONS,
+        teams_packed = ((team_of_slot[0] & 3) | ((team_of_slot[1] & 3) << 2) |
+                        ((team_of_slot[2] & 3) << 4) | ((team_of_slot[3] & 3) << 6))
+        data = struct.pack('>BBBBBBBBBBBBBBBBBBBBBBB', MSG_GAME_OPTIONS,
                           1 if referee_enabled else 0,
                           1 if ball_active else 0,
                           1 if donut_mode else 0,
@@ -827,7 +847,10 @@ class NetworkManager:
                           1 if square_mode else 0,
                           1 if cut_square_mode else 0,
                           1 if board_break_mode else 0,
-                          1 if star_mode else 0)
+                          1 if star_mode else 0,
+                          game_mode & 0xFF,
+                          teams_packed,
+                          lives_per_player & 0xFF)
         self._broadcast(data, reliable=True)
 
     def send_ball_explode(self, pos_x, pos_y, pos_z):
@@ -927,7 +950,9 @@ class NetworkManager:
             self._broadcast(data, reliable=True)
             time.sleep(0.05)  # Small delay between sends
 
-        # Don't start yet - wait for guest to confirm ready
+        # Don't start yet - wait for all real guests to confirm ready
+        self.sync_ready_peers = set()
+        self.guest_sync_ready = False
         self.sync_state = "waiting_for_guest"
         self.match_started = True  # Match is "started" but not simulating yet
         print(f"[Network] START sent, waiting for guest SYNC_READY... Seed: {self.random_seed}")
@@ -1222,12 +1247,19 @@ class NetworkManager:
                 }
 
         elif msg_type == MSG_SYNC_READY:
-            # Guest is ready to start - host can send GO
+            # Guest is ready to start - host sends GO once ALL real guests
+            # have confirmed (bots never send SYNC_READY and don't count)
             if self.is_host:
-                print("[Network] Received SYNC_READY from guest")
-                self.guest_sync_ready = True
-                # Send GO to start simulation
-                self.send_go()
+                real_guests = [pid for pid in self.peers if pid not in self.bot_peers]
+                if sender_id is None and len(real_guests) == 1:
+                    sender_id = real_guests[0]  # sole-guest packets may lack sender id
+                if sender_id is not None:
+                    self.sync_ready_peers.add(sender_id)
+                ready = sum(1 for pid in real_guests if pid in self.sync_ready_peers)
+                print(f"[Network] SYNC_READY received ({ready}/{len(real_guests)} real guests ready)")
+                self.guest_sync_ready = ready >= len(real_guests)
+                if self.guest_sync_ready:
+                    self.send_go()
 
         elif msg_type == MSG_GO:
             # Host says GO - start simulating!
@@ -1296,11 +1328,21 @@ class NetworkManager:
                 print(f"[Network] Received score event: slot {scorer} scores ({type_str}), victim slot {victim} at ({death_x:.1f}, {death_z:.1f})")
 
         elif msg_type == MSG_GAME_OPTIONS:
-            # Host sends game options (guest receives)
-            if len(data) >= 20 and not self.is_host:
-                # New format with star
+            # Host sends game options (guest receives). v5: 23 bytes with
+            # trailing game_mode / packed teams / lives (stored for future
+            # 2v2 and lives modes; only mode 0 exists today)
+            if len(data) >= 23 and not self.is_host:
                 _, referee_enabled, ball_active, donut_mode, x_stage_mode, barbell_mode, yinyang_mode, hourglass_mode, tornado_mode, sandstorm_mode, ufo_mode, ice_mode, figure8_mode, squiggle_mode, hole_mode, comet_mode, square_mode, cut_square_mode, board_break_mode, star_mode = struct.unpack('>BBBBBBBBBBBBBBBBBBBB', data[:20])
+                game_mode = data[20]
+                teams_packed = data[21]
+                lives_per_player = data[22]
+                self.game_mode = game_mode
+                self.team_of_slot = tuple((teams_packed >> (2 * s)) & 3 for s in range(4))
+                self.lives_per_player = lives_per_player
                 self.pending_game_options = {
+                    'game_mode': game_mode,
+                    'team_of_slot': self.team_of_slot,
+                    'lives_per_player': lives_per_player,
                     'referee_enabled': referee_enabled == 1,
                     'ball_active': ball_active == 1,
                     'donut_mode': donut_mode == 1,

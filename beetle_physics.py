@@ -346,6 +346,13 @@ if SPHERE_FLOOR_MODE:
 # --bots N: host-side network bots (see 4_player_steam.md A1). With no real
 # guest connected, hosting + START runs a solo bot match on one machine.
 NET_BOTS_REQUESTED = '--bots' in sys.argv
+NET_BOTS_COUNT = 0
+for _bi, _barg in enumerate(sys.argv):
+    if _barg == '--bots' and _bi + 1 < len(sys.argv):
+        try:
+            NET_BOTS_COUNT = max(0, min(3, int(sys.argv[_bi + 1])))
+        except ValueError:
+            NET_BOTS_COUNT = 0
 
 FULLSCREEN_ENABLED, FULLSCREEN_RES = get_fullscreen_from_args()
 if FULLSCREEN_ENABLED:
@@ -22074,7 +22081,7 @@ try:
                             game_state = GAME_STATE_LOBBY_HOST
                             network_manager = NetworkManager()
                             if network_manager.init():
-                                network_manager.create_lobby("public", 2)
+                                network_manager.create_lobby("public", 4)  # 4-player lobby
                                 network_error_msg = ""
                             else:
                                 network_error_msg = "Failed to init Steam"
@@ -22226,7 +22233,7 @@ try:
                 game_state = GAME_STATE_LOBBY_HOST
                 network_manager = NetworkManager()
                 if network_manager.init():
-                    network_manager.create_lobby("public", 2)  # Public lobby (friends-only may fail with test app ID)
+                    network_manager.create_lobby("public", 4)  # 4-player lobby (friends-only may fail with test app ID)
                     network_error_msg = ""
                 else:
                     network_error_msg = "Failed to init Steam"
@@ -22270,11 +22277,14 @@ try:
             _solo_bots_ok = NET_BOTS_REQUESTED and network_manager and not network_manager.connected
             if network_manager and (network_manager.connected or _solo_bots_ok):
                 if network_manager.connected:
-                    window.GUI.text("Opponent connected!")
+                    _real_guests = sum(1 for _pid in network_manager.peers
+                                       if _pid not in network_manager.bot_peers)
+                    _predicted_players = min(4, 1 + _real_guests + NET_BOTS_COUNT)
+                    window.GUI.text(f"Guests connected: {_real_guests}")
                     # Send our beetle config to opponent (do this every few frames to ensure delivery)
                     if physics_frame % 30 == 0:
                         send_local_beetle_config(network_manager, is_host=True)
-                    _start_label = "START MATCH"
+                    _start_label = f"START MATCH ({_predicted_players} players)"
                 else:
                     window.GUI.text("No guest yet - solo bot match available")
                     _start_label = "START BOT MATCH (solo test)"
