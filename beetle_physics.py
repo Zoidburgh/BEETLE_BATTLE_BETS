@@ -581,9 +581,11 @@ _physics_timing_history = {key: deque(maxlen=120) for key in _physics_timing}
 # debugging horn clipping. Cumulative since launch unless noted.
 collision_stats = {
     'pairs_checked': 0,        # beetle_collision() calls
+    'pairs_culled': 0,         # pair checks skipped by the >77 voxel distance cull
     'voxel_collisions': 0,     # calls where the voxel-overlap kernel fired
     'predictive_pushes': 0,    # horn-tip predictive separation events
     'shaft_pushes': 0,         # shaft-cylinder separation events
+    'shaft_penetration_fixes': 0,  # horn-side penetration responses (anti-clip)
     'max_contact_count': 0,    # largest voxel contact cluster seen (penetration depth proxy)
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
 }
@@ -650,9 +652,11 @@ def save_perf_log():
     pf = max(1, physics_frame)
     w(f"  physics_frames: {physics_frame}")
     w(f"  pairs_checked: {collision_stats['pairs_checked']} ({collision_stats['pairs_checked'] / pf:.2f}/frame)")
+    w(f"  pairs_culled: {collision_stats['pairs_culled']} (skipped by >77 voxel distance cull)")
     w(f"  voxel_collisions: {collision_stats['voxel_collisions']} ({collision_stats['voxel_collisions'] / pf * 100:.1f}% of frames)")
     w(f"  predictive_tip_pushes: {collision_stats['predictive_pushes']}")
     w(f"  shaft_cylinder_pushes: {collision_stats['shaft_pushes']}")
+    w(f"  shaft_penetration_fixes: {collision_stats['shaft_penetration_fixes']} (horn-side anti-clip responses)")
     w(f"  max_contact_cluster: {collision_stats['max_contact_count']} voxels (large = deep overlap/clip)")
     for pair, hist in sorted(collision_stats['pair_time_ms'].items()):
         if hist:
@@ -4258,44 +4262,17 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
     if dist_sq > 5776:  # (76 voxels)^2 = 2 * 38 voxel max reach for collision detection
         too_far = 1
 
-    # OPTIMIZATION: Tighter collision bounds based on actual separation distance
-    # Instead of scanning full 38-voxel radius around each beetle, only scan the overlap region
-    dist_between = int(ti.sqrt(float(dist_sq)))
-
-    # Calculate overlap region center (midpoint between beetles)
-    overlap_center_x = (center1_x + center2_x) // 2
-    overlap_center_z = (center1_z + center2_z) // 2
-
-    # Overlap radius calculation:
-    # - When beetles far apart: small overlap region (dist/2 + body_radius)
-    # - When beetles close/touching: larger overlap region to catch all contact
-    # - Max body radius (without horn): ~15 voxels
-    # - With horns: need to add horn reach when close
-    BODY_RADIUS = 15
-    HORN_REACH = 21
-
-    # Initialize overlap_radius (required by Taichi before conditional)
-    overlap_radius = 0
-
-    # Dynamic radius: when far apart use body radius, when close include horn reach
-    # Transition smoothly: if dist > 30, use body only; if dist < 30, add partial horn reach
-    if dist_between > 30:
-        overlap_radius = (dist_between // 2) + BODY_RADIUS
-    else:
-        # When close, need to account for horns extending into overlap region
-        # Linear interpolation: at dist=0, full horn reach; at dist=30, no horn reach
-        horn_factor = (30 - dist_between) / 30.0
-        extra_horn = int(HORN_REACH * horn_factor)
-        overlap_radius = (dist_between // 2) + BODY_RADIUS + extra_horn
-
-    # Ensure minimum scan radius (never smaller than 12 voxels to catch edge cases)
-    overlap_radius = ti.max(12, overlap_radius)
-
-    # Calculate bounds around overlap center (much tighter than 38-voxel radius per beetle)
-    x_min = ti.max(0, overlap_center_x - overlap_radius)
-    x_max = ti.min(simulation.n_grid, overlap_center_x + overlap_radius)
-    z_min = ti.max(0, overlap_center_z - overlap_radius)
-    z_max = ti.min(simulation.n_grid, overlap_center_z + overlap_radius)
+    # Scan only the intersection of the two beetles' reach boxes (+-38 voxels,
+    # the same conservative max reach the too_far check assumes). Any column
+    # holding voxels from BOTH beetles must lie inside both boxes, so this
+    # can't miss contact — it just skips columns only one beetle can reach.
+    # Unlike the old midpoint-radius heuristic, this region shrinks to empty
+    # as beetles separate instead of growing with distance.
+    REACH = 38
+    x_min = ti.max(0, ti.max(center1_x, center2_x) - REACH)
+    x_max = ti.min(simulation.n_grid, ti.min(center1_x, center2_x) + REACH + 1)
+    z_min = ti.max(0, ti.max(center1_z, center2_z) - REACH)
+    z_max = ti.min(simulation.n_grid, ti.min(center1_z, center2_z) + REACH + 1)
 
     # Scan for colliding voxels - TRUE 3D collision detection (only if not too far)
     # Track Y-ranges for each beetle in each XZ column
@@ -8723,6 +8700,33 @@ def point_to_line_segment_distance(px, py, pz, ax, ay, az, bx, by, bz):
     dy = py - closest_y
     dz = pz - closest_z
     return math.sqrt(dx*dx + dy*dy + dz*dz)
+
+
+def closest_point_on_segment(px, py, pz, ax, ay, az, bx, by, bz):
+    """Closest point on segment AB to point P.
+
+    Returns (cx, cy, cz, t, dist) where t is the clamped parameter along AB.
+    """
+    abx = bx - ax
+    aby = by - ay
+    abz = bz - az
+    ab_len_sq = abx*abx + aby*aby + abz*abz
+    if ab_len_sq < 0.001:
+        dx = px - ax
+        dy = py - ay
+        dz = pz - az
+        return ax, ay, az, 0.0, math.sqrt(dx*dx + dy*dy + dz*dz)
+
+    t = ((px - ax)*abx + (py - ay)*aby + (pz - az)*abz) / ab_len_sq
+    t = max(0.0, min(1.0, t))
+
+    cx = ax + t * abx
+    cy = ay + t * aby
+    cz = az + t * abz
+    dx = px - cx
+    dy = py - cy
+    dz = pz - cz
+    return cx, cy, cz, t, math.sqrt(dx*dx + dy*dy + dz*dz)
 
 
 def _giraffe_tip_with_angles(beetle, pitch_angle, yaw_angle):
@@ -14044,7 +14048,7 @@ def beetle_collision(b1, b2, params):
 
             # Check b2's body against b1's shaft/head cylinder
             if b1_has_shaft:
-                dist_to_b1_shaft = point_to_line_segment_distance(
+                b1_shaft_cx, b1_shaft_cy, b1_shaft_cz, _b1_t, dist_to_b1_shaft = closest_point_on_segment(
                     b2.x, b2.y, b2.z,
                     b1_base_x, b1_base_y, b1_base_z,
                     b1_tip_x, b1_tip_y, b1_tip_z
@@ -14052,12 +14056,18 @@ def beetle_collision(b1, b2, params):
                 if dist_to_b1_shaft < b1_radius:
                     collision_stats['shaft_pushes'] += 1
                     # Push b2 away from b1's shaft/head
-                    # Direction: from closest point on shaft toward b2
                     push_strength = shaft_cylinder_push * (1.0 - dist_to_b1_shaft / b1_radius)
-                    # Use direction from b1 center to b2 center as approximation
-                    dx = b2.x - b1.x
-                    dz = b2.z - b1.z
+                    # Direction: perpendicular out of the shaft (closest point on
+                    # shaft toward b2's center). Center-to-center points along the
+                    # horn, which lets sideways motion slide through.
+                    dx = b2.x - b1_shaft_cx
+                    dz = b2.z - b1_shaft_cz
                     dist = math.sqrt(dx*dx + dz*dz)
+                    if dist < 0.1:
+                        # Degenerate (center on shaft axis): fall back to center-to-center
+                        dx = b2.x - b1.x
+                        dz = b2.z - b1.z
+                        dist = math.sqrt(dx*dx + dz*dz)
                     if dist > 0.1:
                         nx = dx / dist
                         nz = dz / dist
@@ -14068,18 +14078,23 @@ def beetle_collision(b1, b2, params):
 
             # Check b1's body against b2's shaft/head cylinder
             if b2_has_shaft:
-                dist_to_b2_shaft = point_to_line_segment_distance(
+                b2_shaft_cx, b2_shaft_cy, b2_shaft_cz, _b2_t, dist_to_b2_shaft = closest_point_on_segment(
                     b1.x, b1.y, b1.z,
                     b2_base_x, b2_base_y, b2_base_z,
                     b2_tip_x, b2_tip_y, b2_tip_z
                 )
                 if dist_to_b2_shaft < b2_radius:
                     collision_stats['shaft_pushes'] += 1
-                    # Push b1 away from b2's shaft/head
+                    # Push b1 away from b2's shaft/head (perpendicular out of the shaft)
                     push_strength = shaft_cylinder_push * (1.0 - dist_to_b2_shaft / b2_radius)
-                    dx = b1.x - b2.x
-                    dz = b1.z - b2.z
+                    dx = b1.x - b2_shaft_cx
+                    dz = b1.z - b2_shaft_cz
                     dist = math.sqrt(dx*dx + dz*dz)
+                    if dist < 0.1:
+                        # Degenerate (center on shaft axis): fall back to center-to-center
+                        dx = b1.x - b2.x
+                        dz = b1.z - b2.z
+                        dist = math.sqrt(dx*dx + dz*dz)
                     if dist > 0.1:
                         nx = dx / dist
                         nz = dz / dist
@@ -14157,6 +14172,54 @@ def beetle_collision(b1, b2, params):
             normal_x = b1.contact_normal_x
             normal_y = b1.contact_normal_y
             normal_z = b1.contact_normal_z
+
+            # HORN-SHAFT PENETRATION RESPONSE: stop bodies sliding sideways
+            # through a horn shaft. The main impulse below acts along the
+            # center-to-center normal, which has no component opposing motion
+            # perpendicular to a horn — so a beetle driving into the side of a
+            # horn slides straight through. Here, when the voxel contact point
+            # sits on a horn shaft (real overlap only — no ghost contacts) and
+            # no tip voxels are involved (tip battles keep existing physics),
+            # push the other beetle perpendicularly out of the shaft and damp
+            # its velocity component into it.
+            if not is_ball_collision and contact_count > 0 and has_horn_tips == 0:
+                shaft_contact_dist = params.get("SHAFT_CONTACT_DIST", 4.5)
+                shaft_pushout = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35)
+                shaft_vel_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5)
+                for shaft_owner, intruder in ((b1, b2), (b2, b1)):
+                    if shaft_owner.horn_type not in ("rhino", "stag", "hercules", "atlas",
+                                                     "spider", "bombardier", "scorpion", "giraffe"):
+                        continue
+                    so_base_x, so_base_y, so_base_z = calculate_horn_shaft_base_position(shaft_owner)
+                    so_tip_x, so_tip_y, so_tip_z = calculate_horn_tip_position(shaft_owner)
+                    _scx, _scy, _scz, _st, _sdist = closest_point_on_segment(
+                        collision_x, collision_y, collision_z,
+                        so_base_x, so_base_y, so_base_z,
+                        so_tip_x, so_tip_y, so_tip_z)
+                    # Contact must sit on the shaft interior (not the base near
+                    # the body, not the tip — those have their own handling)
+                    if _sdist > shaft_contact_dist or _st < 0.1 or _st > 0.95:
+                        continue
+                    _px = intruder.x - _scx
+                    _pz = intruder.z - _scz
+                    _pdist = math.sqrt(_px*_px + _pz*_pz)
+                    if _pdist < 0.1:
+                        continue
+                    _pnx = _px / _pdist
+                    _pnz = _pz / _pdist
+                    # Damp only the velocity component driving INTO the shaft
+                    # (moving away or sliding along it is untouched)
+                    _vn = intruder.vx * _pnx + intruder.vz * _pnz
+                    if _vn < 0.0:
+                        intruder.vx -= _vn * _pnx * shaft_vel_damp
+                        intruder.vz -= _vn * _pnz * shaft_vel_damp
+                    # Small clamped positional separation per step (mirrors the
+                    # floor's capped push-out; slightly outpaces max drive speed)
+                    intruder.x += _pnx * shaft_pushout
+                    intruder.z += _pnz * shaft_pushout
+                    shaft_owner.x -= _pnx * shaft_pushout * 0.3
+                    shaft_owner.z -= _pnz * shaft_pushout * 0.3
+                    collision_stats['shaft_penetration_fixes'] += 1
 
             # HORN LEVERAGE: Strong vertical lift when contact is high (horn collision)
             # Ball collisions now treated like beetle collisions for consistent physics
@@ -20020,6 +20083,22 @@ try:
                     if (beetles[i].active and beetles[j].active and
                         not beetles[i].is_falling and not beetles[j].is_falling and
                         not hovering[i] and not hovering[j]):
+                        # Distance cull: beyond 77 voxels no contact is possible
+                        # (check_collision_kernel itself reports too_far at 76;
+                        # 77 covers float-vs-grid-int rounding). Skipping saves
+                        # the kernel launch + sync and the predictive/shaft math,
+                        # which can't trigger at this range either.
+                        _pair_dx = beetles[i].x - beetles[j].x
+                        _pair_dz = beetles[i].z - beetles[j].z
+                        if _pair_dx * _pair_dx + _pair_dz * _pair_dz > 5929.0:  # 77^2
+                            # Replicate the only far-range side effect of
+                            # beetle_collision(): predictive push decay
+                            beetles[i].predictive_push_x *= 0.8
+                            beetles[i].predictive_push_z *= 0.8
+                            beetles[j].predictive_push_x *= 0.8
+                            beetles[j].predictive_push_z *= 0.8
+                            collision_stats['pairs_culled'] += 1
+                            continue
                         _t_pair_start = time.perf_counter()
                         beetle_collision(beetles[i], beetles[j], physics_params)
                         _pair_hist = collision_stats['pair_time_ms'].setdefault((i, j), deque(maxlen=120))

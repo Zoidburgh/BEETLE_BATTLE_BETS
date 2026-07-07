@@ -1,0 +1,80 @@
+=== SYSTEM INFO ===
+Saved: 20260707_075342
+Backend: CPU (default - use --gpu or --cuda to try GPU)
+Resolution: 1920x1080
+Taichi version: (1, 7, 4)
+GPU(s): (detection failed)
+
+=== GAME MODE ===
+game_state: GAME_STATE_LOCAL_PLAY
+active_player_count: 4
+local4: True (bot_ai: seek)
+  slot 0: rhino active=True pos=(-16.7, 1.1, -9.5)
+  slot 1: rhino active=True pos=(8.6, 1.6, -0.2)
+  slot 2: rhino active=True pos=(7.7, 2.0, 30.0)
+  slot 3: rhino active=True pos=(-6.0, 3.1, 29.8)
+
+FPS: 45
+Frame count: 2709
+
+--- Performance Breakdown (avg ms) ---
+  frame_total: 21.92ms (last: 20.38, max: 29.10)
+  scene_render: 8.57ms (last: 9.27, max: 12.64)
+  physics: 8.47ms (last: 6.44, max: 14.05)
+  beetle_render: 2.27ms (last: 2.25, max: 3.37)
+  gui: 1.02ms (last: 1.13, max: 1.32)
+  background: 0.43ms (last: 0.54, max: 0.75)
+  animation: 0.39ms (last: 0.02, max: 1.11)
+  voxel_clear: 0.23ms (last: 0.19, max: 0.58)
+  camera: 0.04ms (last: 0.04, max: 0.12)
+  physics_iters/frame: 1.4
+
+--- Physics Breakdown (avg over last 120 frames) ---
+  beetle_collision: 6.33ms (last: 7.87, max: 10.43)
+  floor_collision: 1.48ms (last: 2.35, max: 2.95)
+  all_particles_total: 0.44ms (last: 0.51, max: 0.79)
+  debris_update: 0.42ms (last: 0.49, max: 0.77)
+  beetle_physics: 0.03ms (last: 0.04, max: 0.05)
+  input_controls: 0.02ms (last: 0.04, max: 0.04)
+  death_explosions: 0.01ms (last: 0.01, max: 0.02)
+  respawn_timers: 0.01ms (last: 0.01, max: 0.04)
+  ball_physics: 0.00ms (last: 0.00, max: 0.00)
+  spray_update: 0.00ms (last: 0.00, max: 0.00)
+  spray_collision: 0.00ms (last: 0.00, max: 0.00)
+  silk_update: 0.00ms (last: 0.00, max: 0.00)
+  silk_collision: 0.00ms (last: 0.00, max: 0.00)
+
+--- Collision Diagnostics ---
+  physics_frames: 3285
+  pairs_checked: 12247 (3.73/frame)
+  voxel_collisions: 3745 (114.0% of frames)
+  predictive_tip_pushes: 783
+  shaft_cylinder_pushes: 1724
+  max_contact_cluster: 589 voxels (large = deep overlap/clip)
+  pair 0v1: 0.65ms avg, 1.33ms max (per physics step)
+  pair 0v2: 0.70ms avg, 1.22ms max (per physics step)
+  pair 0v3: 0.63ms avg, 1.04ms max (per physics step)
+  pair 1v2: 0.57ms avg, 0.84ms max (per physics step)
+  pair 1v3: 0.59ms avg, 1.00ms max (per physics step)
+  pair 2v3: 1.25ms avg, 1.98ms max (per physics step)
+
+--- Particle Counts ---
+  debris: 1408 / 20000
+  spray: 0 / 500
+  silk: 0 / 600
+  cleanup_freq_debris: every 2 frames
+  cleanup_freq_spray: every 2 frames
+  cleanup_freq_silk: every 5 frames
+
+--- Renderer Breakdown (last frame) ---
+  extract_all: 1.84ms
+  lighting_setup: 0.11ms
+  scene_draw: 4.43ms
+  voxel_count: 3372
+  floor_quads: 1286
+
+--- Notes ---
+scene_draw is the main bottleneck indicator:
+  <3ms = GPU backend working well (data on GPU)
+  8-15ms = CPU->GPU transfer overhead
+  >20ms = CUDA->Vulkan transfer (use --vulkan instead)
