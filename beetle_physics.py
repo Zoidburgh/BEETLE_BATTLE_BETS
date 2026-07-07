@@ -14420,6 +14420,13 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _clip_key = f"{shaft_owner.horn_type}->{intruder.horn_type}"
                         collision_stats['deep_clip_by_type'][_clip_key] = \
                             collision_stats['deep_clip_by_type'].get(_clip_key, 0) + 1
+                    # Track the OWNER's horn burial: drives the depth-aware
+                    # turn clamp (turning stays free at surface contact, the
+                    # hard wall returns as the horn buries into a body —
+                    # radial push-out can't oppose a tangential base sweep)
+                    _burial_now = max(0.0, 8.0 - _pdist)
+                    if _burial_now > getattr(shaft_owner, 'horn_burial', 0.0):
+                        shaft_owner.horn_burial = _burial_now
                     if _pdist < 0.1:
                         continue
                     # Tip voxels in the contact normally mean a tip battle
@@ -17919,8 +17926,9 @@ try:
             opp = beetles[1 - slot]
             p_inputs = frame_inputs[slot]
             if beetle.active and not beetle.is_falling and not hovering[slot]:
-                # Engagement fades once contact ends (collision refreshes it)
+                # Engagement/burial fade once contact ends (collision refreshes them)
                 beetle.horn_engagement = getattr(beetle, 'horn_engagement', 0.0) * 0.85
+                beetle.horn_burial = getattr(beetle, 'horn_burial', 0.0) * 0.85
                 # Rotation controls (F/H) - RESISTED (not hard-blocked) during
                 # horn collision. Engagement-aware: light contact turns near
                 # full speed, a deep horn lock turns at the tunable floor.
@@ -17935,6 +17943,14 @@ try:
                     else:
                         _eng = min(1.0, getattr(beetle, 'horn_engagement', 1.0))
                         horn_lock_mult = _lock_floor + (1.0 - _lock_floor) * (1.0 - _eng)
+                        # DEPTH-AWARE WALL: if our horn is actually burying
+                        # into a body, ramp back to the hard block (burial
+                        # 1.5 voxels = free, 5.5+ = full stop). Surface
+                        # grinding keeps the fast feel; scraping the base
+                        # through a flank does not.
+                        _burial = getattr(beetle, 'horn_burial', 0.0)
+                        if _burial > 1.5:
+                            horn_lock_mult *= max(0.0, 1.0 - (_burial - 1.5) / 4.0)
                 if horn_lock_mult > 0.001:
                     # Check if rotating without moving (skill-based faster turning)
                     is_moving = (p_inputs & INPUT_FORWARD) or (p_inputs & INPUT_BACKWARD)
