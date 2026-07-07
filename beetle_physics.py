@@ -14936,36 +14936,38 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         b2.pending_pitch += (-local_z2 * _f) / b2.pitch_inertia
                         b2.pending_roll += (local_x2 * _f) / b2.roll_inertia
 
-                    elif b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
-                        # TRUE ADVANTAGE LAUNCH (pulsed, unchanged): one beetle
-                        # actively out-lifts the other and launches them
-                        if lift_advantage > ADVANTAGE_THRESHOLD:
-                            b2.pending_lift += min(lift_force_full, 12.0)
-                            b1.vy -= lift_impulse * 0.03  # Reaction
+                    elif lift_advantage > ADVANTAGE_THRESHOLD:
+                        # ADVANTAGE LIFT (continuous, 2026-07-07): b1 actively
+                        # out-lifts b2. Also converted from the 0.1s pulse to
+                        # a per-step stream - same force per unit time, and
+                        # it responds every step instead of waiting out a
+                        # cooldown mid-battle. Whole lift system is smooth now.
+                        _f = lift_force_full / LIFT_STEP_DIV
+                        b2.pending_lift += min(_f, 12.0 / LIFT_STEP_DIV)
+                        b1.vy -= lift_impulse * 0.03 / LIFT_STEP_DIV  # Reaction
 
-                            world_lever_x = collision_x - b2.x
-                            world_lever_z = collision_z - b2.z
-                            cos_r = math.cos(b2.rotation)
-                            sin_r = math.sin(b2.rotation)
-                            local_x = world_lever_x * cos_r + world_lever_z * sin_r
-                            local_z = world_lever_z * cos_r - world_lever_x * sin_r
-                            b2.pending_pitch += (local_z * lift_force_full * tumble_mult) / b2.pitch_inertia
-                            b2.pending_roll += (local_x * lift_force_full * tumble_mult) / b2.roll_inertia
-                        else:
-                            b1.pending_lift += min(lift_force_full, 12.0)
-                            b2.vy -= lift_impulse * 0.03  # Reaction
+                        world_lever_x = collision_x - b2.x
+                        world_lever_z = collision_z - b2.z
+                        cos_r = math.cos(b2.rotation)
+                        sin_r = math.sin(b2.rotation)
+                        local_x = world_lever_x * cos_r + world_lever_z * sin_r
+                        local_z = world_lever_z * cos_r - world_lever_x * sin_r
+                        b2.pending_pitch += (local_z * _f * tumble_mult) / b2.pitch_inertia
+                        b2.pending_roll += (local_x * _f * tumble_mult) / b2.roll_inertia
+                    else:
+                        # b2 actively out-lifts b1 (mirror, continuous)
+                        _f = lift_force_full / LIFT_STEP_DIV
+                        b1.pending_lift += min(_f, 12.0 / LIFT_STEP_DIV)
+                        b2.vy -= lift_impulse * 0.03 / LIFT_STEP_DIV  # Reaction
 
-                            world_lever_x = collision_x - b1.x
-                            world_lever_z = collision_z - b1.z
-                            cos_r = math.cos(b1.rotation)
-                            sin_r = math.sin(b1.rotation)
-                            local_x = world_lever_x * cos_r + world_lever_z * sin_r
-                            local_z = world_lever_z * cos_r - world_lever_x * sin_r
-                            b1.pending_pitch += (local_z * lift_force_full * tumble_mult) / b1.pitch_inertia
-                            b1.pending_roll += (local_x * lift_force_full * tumble_mult) / b1.roll_inertia
-
-                        b1.lift_cooldown = LIFT_COOLDOWN_DURATION
-                        b2.lift_cooldown = LIFT_COOLDOWN_DURATION
+                        world_lever_x = collision_x - b1.x
+                        world_lever_z = collision_z - b1.z
+                        cos_r = math.cos(b1.rotation)
+                        sin_r = math.sin(b1.rotation)
+                        local_x = world_lever_x * cos_r + world_lever_z * sin_r
+                        local_z = world_lever_z * cos_r - world_lever_x * sin_r
+                        b1.pending_pitch += (local_z * _f * tumble_mult) / b1.pitch_inertia
+                        b1.pending_roll += (local_x * _f * tumble_mult) / b1.roll_inertia
 
                     # Add horizontal spin based on where horn hit BOTH beetles
                     # Calculate lever arms from beetle centers to collision point
