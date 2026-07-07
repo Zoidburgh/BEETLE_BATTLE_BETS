@@ -7172,7 +7172,13 @@ def generate_giraffe_weevil_neck(shaft_len, prong_len):
     Coordinate system: x=forward, y=up, z=lateral. Body head is at x~2-3, y=0-2.
     """
     neck_voxels = []
-    length = 9 + round(shaft_len) - 8
+    # Half-segment growth (2026-07-08): each shaft slider step adds HALF a
+    # neck segment - the smallest visible increase - instead of a full
+    # ~2-voxel diagonal jump. Odd totals end in a 2-tall partial tip block
+    # that the next step completes. Slider 1..8 -> 2.5..6 segments.
+    _units = 4 + round(shaft_len)   # half-segments
+    length = _units // 2            # full 3x3 segments
+    half_tip = _units % 2           # 1 = partial tip block present
     head_len = round(prong_len) + 6
     base_y = 2  # Match giraffe body tilt (front elevated by 2)
 
@@ -7197,12 +7203,22 @@ def generate_giraffe_weevil_neck(shaft_len, prong_len):
             neck_voxels.append((dx, dy + 1, dz))
             neck_voxels.append((dx, dy + 2, dz))
 
+    # Partial half-segment tip (odd slider steps): 2-tall nub the next
+    # slider step grows into a full 3x3 section
+    if half_tip:
+        _hx = 3 + length
+        _hy = base_y + 3 + int(length * 1.8)
+        for dz in range(-1, 2):
+            neck_voxels.append((_hx, _hy, dz))
+            neck_voxels.append((_hx, _hy + 1, dz))
+
     # === SEGMENT 2: Movable head piece (controlled by prong slider) ===
     # Attaches at tip of segment 1, angles downward
     # 2 voxels thick (2x3), with 3x3 head knob at the end
 
-    tip_x = 3 + (length - 1)
-    tip_y = base_y + 3 + int((length - 1) * 1.8)  # Must match the neck slope above
+    _tip_i = (length - 1) + half_tip  # Head attaches to the partial tip when present
+    tip_x = 3 + _tip_i
+    tip_y = base_y + 3 + int(_tip_i * 1.8)  # Must match the neck slope above
 
     for i in range(head_len):
         dx = tip_x + 1 + i
