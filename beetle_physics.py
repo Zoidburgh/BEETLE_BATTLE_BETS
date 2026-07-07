@@ -8499,6 +8499,12 @@ def clear_and_render_ball_fast(ball_x, ball_y, ball_z, rotation, pitch, roll):
     grid_y = int(ball_y + RENDER_Y_OFFSET)
     grid_z = int(ball_z + simulation.n_grid / 2.0)
 
+    # Sub-voxel render offset (owner slot 4 = ball): the fraction int() drops
+    renderer.owner_frac_offset[4] = [
+        ball_x + simulation.n_grid / 2.0 - grid_x,
+        ball_y + RENDER_Y_OFFSET - grid_y,
+        ball_z + simulation.n_grid / 2.0 - grid_z]
+
     # Clear old position if ball was previously rendered
     if ball_last_rendered[None] == 1:
         try:
@@ -21291,6 +21297,13 @@ try:
         if not b.active:
             continue
         _body_id, _legs_id, _leg_tip_id = simulation.PLAYER_VOXEL_IDS[slot][:3]
+        # Sub-voxel render offset: the fractional part the kernel's int()
+        # grid placement discards (renderer adds it back to this slot's
+        # voxels, so motion glides instead of stepping voxel-to-voxel)
+        renderer.owner_frac_offset[slot] = [
+            render_x[slot] + 64.0 - math.floor(render_x[slot] + 64.0),
+            render_y[slot] - math.floor(render_y[slot]),
+            render_z[slot] + 64.0 - math.floor(render_z[slot] + 64.0)]
         place_beetle_kernels[slot](
             render_x[slot], render_y[slot], render_z[slot],
             render_rotation[slot], render_pitch[slot], render_roll[slot],

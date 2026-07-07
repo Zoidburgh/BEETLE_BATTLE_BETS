@@ -26,6 +26,12 @@ voxel_positions = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_VOXELS)
 voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for mixed voxel/debris sizes
 
+# Sub-voxel render offsets per owner (slots 0-3 = beetles, 4 = ball): the
+# fractional position that integer voxel-grid placement discards. Applied to
+# rendered particle positions ONLY, so beetle/ball motion glides at sub-voxel
+# resolution instead of stepping voxel-to-voxel. Grid/collision never see it.
+owner_frac_offset = ti.Vector.field(3, dtype=ti.f32, shape=5)
+
 # Floor mesh fields (flat quads + bevel skirts — single merged mesh for one draw call)
 # Capacity kept tight: scene.mesh() uploads the FULL vertex buffer every frame
 # regardless of vertex_count, so slack costs milliseconds. Observed peak across
@@ -1306,7 +1312,15 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                 # Non-floor voxels → particle buffer (spheres)
                 idx = ti.atomic_add(num_voxels[None], 1)
                 if idx < MAX_VOXELS:
-                    voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z)
+                    # Sub-voxel smoothing: beetle/ball voxels carry their
+                    # owner's fractional render offset
+                    off = ti.math.vec3(0.0, 0.0, 0.0)
+                    frac_owner = simulation.beetle_owner(vtype)
+                    if frac_owner >= 0:
+                        off = owner_frac_offset[frac_owner]
+                    elif vtype == 16 or vtype == 17:  # Ball body/stripe
+                        off = owner_frac_offset[4]
+                    voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z) + off
                     voxel_colors[idx] = color
                     if vtype == 23 or vtype == 24:  # SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
                         voxel_radii[idx] = VOXEL_RADIUS * 0.72
