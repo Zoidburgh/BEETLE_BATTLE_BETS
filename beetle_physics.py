@@ -18102,7 +18102,21 @@ try:
         _damp_cap = physics_params.get("HORN_DAMPING_CAP", 1.0)
         for slot in range(active_player_count):
             beetle = beetles[slot]
-            opp = beetles[1 - slot]
+            # Interaction target = NEAREST other active beetle (was the fixed
+            # 1-slot pairing, which made horn physics behave differently
+            # against non-paired beetles - e.g. slot 0 vs the bots in slots
+            # 2/3: no predictive horn gate, no yaw-lift)
+            opp = None
+            _opp_d2 = 1e18
+            for _o in range(active_player_count):
+                if _o == slot or not beetles[_o].active:
+                    continue
+                _od2 = (beetles[_o].x - beetle.x) ** 2 + (beetles[_o].z - beetle.z) ** 2
+                if _od2 < _opp_d2:
+                    _opp_d2 = _od2
+                    opp = beetles[_o]
+            if opp is None:
+                opp = beetles[1 - slot]  # everyone else inactive - harmless fallback
             p_inputs = frame_inputs[slot]
             if beetle.active and not beetle.is_falling and not hovering[slot]:
                 # Engagement/burial fade once contact ends (collision refreshes them)
@@ -18338,23 +18352,24 @@ try:
                         if abs(new_yaw - beetle.horn_yaw) > 0.001:
                             yaw_speed = -effective_speed
 
-                            # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                            # Only apply if horn is actually moving. Contact comes
-                            # from last step's batched pair check (one step stale;
-                            # a fresh kernel launch here cost ~0.5ms per yawing beetle)
-                            if opp.active:
-                                _opp_slot = slot ^ 1  # 0<->1, 2<->3 (matches opp = beetles[1 - slot])
-                                has_real_collision = pair_collision_last.get(
-                                    (min(slot, _opp_slot), max(slot, _opp_slot)), 0)
-                                if has_real_collision:
-                                    # Apply push force to opponent (forward + lift)
-                                    forward_x = math.cos(beetle.rotation)
-                                    forward_z = math.sin(beetle.rotation)
-                                    push_force = 40.0 * PHYSICS_TIMESTEP
-                                    opp.vx += forward_x * push_force
-                                    opp.vz += forward_z * push_force
-                                    opp.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                                    opp.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+                            # YAW LIFT: Apply lift to EVERY beetle in contact
+                            # when yawing (was the fixed slot pairing - bots
+                            # never felt this). Contact from last step's
+                            # batched pair check (one step stale)
+                            for _yl in range(active_player_count):
+                                if _yl == slot or not beetles[_yl].active:
+                                    continue
+                                if not pair_collision_last.get((min(slot, _yl), max(slot, _yl)), 0):
+                                    continue
+                                _ylb = beetles[_yl]
+                                # Apply push force to opponent (forward + lift)
+                                forward_x = math.cos(beetle.rotation)
+                                forward_z = math.sin(beetle.rotation)
+                                push_force = 40.0 * PHYSICS_TIMESTEP
+                                _ylb.vx += forward_x * push_force
+                                _ylb.vz += forward_z * push_force
+                                _ylb.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                                _ylb.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
                     elif p_inputs & INPUT_HORN_RIGHT:
                         # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                         base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else HORN_YAW_SPEED
@@ -18366,22 +18381,22 @@ try:
                         if abs(new_yaw - beetle.horn_yaw) > 0.001:
                             yaw_speed = effective_speed
 
-                            # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                            # Only apply if horn is actually moving. Contact from
-                            # last step's batched pair check (see INPUT_HORN_LEFT)
-                            if opp.active:
-                                _opp_slot = slot ^ 1  # 0<->1, 2<->3 (matches opp = beetles[1 - slot])
-                                has_real_collision = pair_collision_last.get(
-                                    (min(slot, _opp_slot), max(slot, _opp_slot)), 0)
-                                if has_real_collision:
-                                    # Apply push force to opponent (forward + lift)
-                                    forward_x = math.cos(beetle.rotation)
-                                    forward_z = math.sin(beetle.rotation)
-                                    push_force = 40.0 * PHYSICS_TIMESTEP
-                                    opp.vx += forward_x * push_force
-                                    opp.vz += forward_z * push_force
-                                    opp.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                                    opp.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+                            # YAW LIFT: Apply lift to EVERY beetle in contact
+                            # when yawing (see INPUT_HORN_LEFT)
+                            for _yl in range(active_player_count):
+                                if _yl == slot or not beetles[_yl].active:
+                                    continue
+                                if not pair_collision_last.get((min(slot, _yl), max(slot, _yl)), 0):
+                                    continue
+                                _ylb = beetles[_yl]
+                                # Apply push force to opponent (forward + lift)
+                                forward_x = math.cos(beetle.rotation)
+                                forward_z = math.sin(beetle.rotation)
+                                push_force = 40.0 * PHYSICS_TIMESTEP
+                                _ylb.vx += forward_x * push_force
+                                _ylb.vz += forward_z * push_force
+                                _ylb.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
+                                _ylb.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
 
                 # Predictive collision check (optimized for combined movements + dual-pincer tracking)
                 if (pitch_pressed or yaw_pressed) and opp.active:
@@ -18850,8 +18865,8 @@ try:
                         _sb.horn_pitch, _sb.horn_yaw,
                         math.radians(15.0 + _sb.tail_rotation_angle),
                         _sb.horn_type_id, _bl, _bb,
-                        (spray_aim[_ss] if _ss < 2 else 0.0) * SPRAY_AIM_MAX,
-                        (spider_aim[_ss] if _ss < 2 else 0.0) * SPIDER_AIM_MAX,
+                        spray_aim[_ss] * SPRAY_AIM_MAX,
+                        spider_aim[_ss] * SPIDER_AIM_MAX,
                         _def_pitch_tbl[_sb.horn_type_id],
                         1 if _sb.active else 0))
                 check_silk_beetle_collisions(_silk_states)
@@ -21601,8 +21616,8 @@ try:
                 render_rotation[_us], render_pitch[_us], render_roll[_us],
                 render_horn_pitch[_us], render_horn_yaw[_us], render_tail_pitch[_us],
                 _ub.horn_type_id, _ubl, _ubb,
-                (render_spray_aim[_us] if _us < 2 else 0.0) * SPRAY_AIM_MAX,
-                (render_spider_aim[_us] if _us < 2 else 0.0) * SPIDER_AIM_MAX,
+                render_spray_aim[_us] * SPRAY_AIM_MAX,
+                render_spider_aim[_us] * SPIDER_AIM_MAX,
                 _stuck_def_pitch_tbl[_ub.horn_type_id]))
         update_all_stuck_silk_positions(
             _stuck_states,
