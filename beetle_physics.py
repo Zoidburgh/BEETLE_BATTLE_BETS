@@ -14865,102 +14865,107 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     PRESS_DOWN_PUSH_MULT = 0.5   # How much force transfers to opponent as push
 
                     # Check if both beetles are off cooldown before applying lift forces
-                    if b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
-                        # Cooldown expired - can apply lift force
+                    # DELIVERY SPLIT (2026-07-07): the press-down wedge and the
+                    # evenly-matched push are CONTINUOUS per-step forces now.
+                    # They were 0.1s-cooldown pulse trains - pressing your tip
+                    # down onto an idle opponent's tip made you hop in
+                    # awkward, delayed jumps. Same average force (one pulse
+                    # spread over the ~6 steps the cooldown covered), applied
+                    # smoothly from the first contact step, no cooldown. The
+                    # true advantage LAUNCH (lifting the opponent) stays
+                    # pulsed - that one should feel like an event.
+                    LIFT_STEP_DIV = 6.0
+                    lift_force_full = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
+                    tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
+
+                    if lift_advantage > ADVANTAGE_THRESHOLD and b2_pressing_down:
+                        # b2 presses down onto passive b1: smooth self-wedge
+                        # up for b2, continuous horizontal push on b1
+                        _f = lift_force_full / LIFT_STEP_DIV
+                        b2.pending_lift += min(_f * PRESS_DOWN_SELF_MULT, 12.0 / LIFT_STEP_DIV)
+                        push_h = _f * PRESS_DOWN_PUSH_MULT
+                        b1.vx += normal_x * push_h
+                        b1.vz += normal_z * push_h
+                        world_lever_x = collision_x - b2.x
+                        world_lever_z = collision_z - b2.z
+                        cos_r = math.cos(b2.rotation)
+                        sin_r = math.sin(b2.rotation)
+                        local_x = world_lever_x * cos_r + world_lever_z * sin_r
+                        local_z = world_lever_z * cos_r - world_lever_x * sin_r
+                        b2.pending_pitch += (local_z * _f * tumble_mult * PRESS_DOWN_SELF_MULT) / b2.pitch_inertia
+                        b2.pending_roll += (local_x * _f * tumble_mult * PRESS_DOWN_SELF_MULT) / b2.roll_inertia
+
+                    elif lift_advantage < -ADVANTAGE_THRESHOLD and b1_pressing_down:
+                        # b1 presses down onto passive b2 (mirror)
+                        _f = lift_force_full / LIFT_STEP_DIV
+                        b1.pending_lift += min(_f * PRESS_DOWN_SELF_MULT, 12.0 / LIFT_STEP_DIV)
+                        push_h = _f * PRESS_DOWN_PUSH_MULT
+                        b2.vx -= normal_x * push_h
+                        b2.vz -= normal_z * push_h
+                        world_lever_x = collision_x - b1.x
+                        world_lever_z = collision_z - b1.z
+                        cos_r = math.cos(b1.rotation)
+                        sin_r = math.sin(b1.rotation)
+                        local_x = world_lever_x * cos_r + world_lever_z * sin_r
+                        local_z = world_lever_z * cos_r - world_lever_x * sin_r
+                        b1.pending_pitch += (local_z * _f * tumble_mult * PRESS_DOWN_SELF_MULT) / b1.pitch_inertia
+                        b1.pending_roll += (local_x * _f * tumble_mult * PRESS_DOWN_SELF_MULT) / b1.roll_inertia
+
+                    elif abs(lift_advantage) <= ADVANTAGE_THRESHOLD:
+                        # Evenly matched - smooth continuous mutual push
+                        _f = lift_impulse * 0.06 * height_penalty / LIFT_STEP_DIV
+                        _f_cap = min(_f, 12.0 / LIFT_STEP_DIV)
+                        b1.pending_lift += _f_cap
+                        b2.pending_lift += _f_cap
+
+                        world_lever_x1 = collision_x - b1.x
+                        world_lever_z1 = collision_z - b1.z
+                        cos_r1 = math.cos(b1.rotation)
+                        sin_r1 = math.sin(b1.rotation)
+                        local_x1 = world_lever_x1 * cos_r1 + world_lever_z1 * sin_r1
+                        local_z1 = world_lever_z1 * cos_r1 - world_lever_x1 * sin_r1
+                        b1.pending_pitch += (-local_z1 * _f) / b1.pitch_inertia
+                        b1.pending_roll += (local_x1 * _f) / b1.roll_inertia
+
+                        world_lever_x2 = collision_x - b2.x
+                        world_lever_z2 = collision_z - b2.z
+                        cos_r2 = math.cos(b2.rotation)
+                        sin_r2 = math.sin(b2.rotation)
+                        local_x2 = world_lever_x2 * cos_r2 + world_lever_z2 * sin_r2
+                        local_z2 = world_lever_z2 * cos_r2 - world_lever_x2 * sin_r2
+                        b2.pending_pitch += (-local_z2 * _f) / b2.pitch_inertia
+                        b2.pending_roll += (local_x2 * _f) / b2.roll_inertia
+
+                    elif b1.lift_cooldown <= 0.0 and b2.lift_cooldown <= 0.0:
+                        # TRUE ADVANTAGE LAUNCH (pulsed, unchanged): one beetle
+                        # actively out-lifts the other and launches them
                         if lift_advantage > ADVANTAGE_THRESHOLD:
-                            # Blue has advantage - lifts red
-                            lift_force = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
+                            b2.pending_lift += min(lift_force_full, 12.0)
+                            b1.vy -= lift_impulse * 0.03  # Reaction
 
-                            if b2_pressing_down:
-                                # Red is pressing down into blue — reduced self-lift, push blue instead
-                                b2.pending_lift += min(lift_force * PRESS_DOWN_SELF_MULT, 12.0)
-                                # Push blue away horizontally
-                                push_h = lift_force * PRESS_DOWN_PUSH_MULT
-                                b1.vx += normal_x * push_h
-                                b1.vz += normal_z * push_h
-                            else:
-                                b2.pending_lift += min(lift_force, 12.0)
-                                b1.vy -= lift_impulse * 0.03  # Reaction (skip when pressing down)
-
-                            # TORQUE: Apply rotation from off-center force
                             world_lever_x = collision_x - b2.x
                             world_lever_z = collision_z - b2.z
                             cos_r = math.cos(b2.rotation)
                             sin_r = math.sin(b2.rotation)
                             local_x = world_lever_x * cos_r + world_lever_z * sin_r
                             local_z = world_lever_z * cos_r - world_lever_x * sin_r
+                            b2.pending_pitch += (local_z * lift_force_full * tumble_mult) / b2.pitch_inertia
+                            b2.pending_roll += (local_x * lift_force_full * tumble_mult) / b2.roll_inertia
+                        else:
+                            b1.pending_lift += min(lift_force_full, 12.0)
+                            b2.vy -= lift_impulse * 0.03  # Reaction
 
-                            tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
-                            torque_scale = PRESS_DOWN_SELF_MULT if b2_pressing_down else 1.0
-                            b2.pending_pitch += (local_z * lift_force * tumble_mult * torque_scale) / b2.pitch_inertia
-                            b2.pending_roll += (local_x * lift_force * tumble_mult * torque_scale) / b2.roll_inertia
-
-                            b1.lift_cooldown = LIFT_COOLDOWN_DURATION
-                            b2.lift_cooldown = LIFT_COOLDOWN_DURATION
-
-                        elif lift_advantage < -ADVANTAGE_THRESHOLD:
-                            # Red has advantage - lifts blue
-                            lift_force = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
-
-                            if b1_pressing_down:
-                                # Blue is pressing down into red — reduced self-lift, push red instead
-                                b1.pending_lift += min(lift_force * PRESS_DOWN_SELF_MULT, 12.0)
-                                # Push red away horizontally
-                                push_h = lift_force * PRESS_DOWN_PUSH_MULT
-                                b2.vx -= normal_x * push_h
-                                b2.vz -= normal_z * push_h
-                            else:
-                                b1.pending_lift += min(lift_force, 12.0)
-                                b2.vy -= lift_impulse * 0.03  # Reaction (skip when pressing down)
-
-                            # TORQUE: Apply rotation from off-center force
                             world_lever_x = collision_x - b1.x
                             world_lever_z = collision_z - b1.z
                             cos_r = math.cos(b1.rotation)
                             sin_r = math.sin(b1.rotation)
                             local_x = world_lever_x * cos_r + world_lever_z * sin_r
                             local_z = world_lever_z * cos_r - world_lever_x * sin_r
+                            b1.pending_pitch += (local_z * lift_force_full * tumble_mult) / b1.pitch_inertia
+                            b1.pending_roll += (local_x * lift_force_full * tumble_mult) / b1.roll_inertia
 
-                            tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
-                            torque_scale = PRESS_DOWN_SELF_MULT if b1_pressing_down else 1.0
-                            b1.pending_pitch += (local_z * lift_force * tumble_mult * torque_scale) / b1.pitch_inertia
-                            b1.pending_roll += (local_x * lift_force * tumble_mult * torque_scale) / b1.roll_inertia
-
-                            b1.lift_cooldown = LIFT_COOLDOWN_DURATION
-                            b2.lift_cooldown = LIFT_COOLDOWN_DURATION
-
-                        else:
-                            # Evenly matched - both get pushed (with torque)
-                            # print(f"  -> BOTH beetles pushed!")
-                            push_force = lift_impulse * 0.06 * height_penalty
-                            b1.pending_lift += min(push_force, 12.0)
-                            b2.pending_lift += min(push_force, 12.0)
-
-                            # Apply torque to both (using LOCAL coordinates)
-                            world_lever_x1 = collision_x - b1.x
-                            world_lever_z1 = collision_z - b1.z
-                            cos_r1 = math.cos(b1.rotation)
-                            sin_r1 = math.sin(b1.rotation)
-                            local_x1 = world_lever_x1 * cos_r1 + world_lever_z1 * sin_r1
-                            local_z1 = world_lever_z1 * cos_r1 - world_lever_x1 * sin_r1
-                            b1.pending_pitch += (-local_z1 * push_force) / b1.pitch_inertia
-                            b1.pending_roll += (local_x1 * push_force) / b1.roll_inertia
-
-                            world_lever_x2 = collision_x - b2.x
-                            world_lever_z2 = collision_z - b2.z
-                            cos_r2 = math.cos(b2.rotation)
-                            sin_r2 = math.sin(b2.rotation)
-                            local_x2 = world_lever_x2 * cos_r2 + world_lever_z2 * sin_r2
-                            local_z2 = world_lever_z2 * cos_r2 - world_lever_x2 * sin_r2
-                            b2.pending_pitch += (-local_z2 * push_force) / b2.pitch_inertia
-                            b2.pending_roll += (local_x2 * push_force) / b2.roll_inertia
-
-                            # Set cooldown for both beetles
-                            b1.lift_cooldown = LIFT_COOLDOWN_DURATION
-                            b2.lift_cooldown = LIFT_COOLDOWN_DURATION
-                    else:
-                        # Cooldown active - skip lift force but still print debug info
-                        pass  # print(f"  -> COOLDOWN ACTIVE (Blue: {b1.lift_cooldown:.3f}s, Red: {b2.lift_cooldown:.3f}s)")
+                        b1.lift_cooldown = LIFT_COOLDOWN_DURATION
+                        b2.lift_cooldown = LIFT_COOLDOWN_DURATION
 
                     # Add horizontal spin based on where horn hit BOTH beetles
                     # Calculate lever arms from beetle centers to collision point
