@@ -19827,8 +19827,8 @@ try:
                         ground_spawn_y = RENDER_Y_OFFSET + cached_floor + 0.5
                 spawn_tornado_ground_dust(tornado_x, tornado_z, tornado_time, ground_spawn_y)
 
-            # Apply push/lift/tip to both beetles and ball
-            for beetle in (beetles[0], beetles[1], beetle_ball):
+            # Apply push/lift/tip to ALL beetles and the ball (was slots 0/1)
+            for beetle in tuple(beetles[:active_player_count]) + (beetle_ball,):
                 if beetle.active and not beetle.is_falling:
                     dx_t = beetle.x - tornado_x
                     dz_t = beetle.z - tornado_z
@@ -19899,9 +19899,9 @@ try:
             else:
                 sandstorm_force_intensity = max(sandstorm_intensity, sandstorm_force_intensity - PHYSICS_TIMESTEP * 1.2)
 
-            # Apply forces to both beetles and ball (using smoothed intensity)
+            # Apply forces to ALL beetles and the ball (was slots 0/1)
             if sandstorm_force_intensity > 0.0:
-                for beetle in (beetles[0], beetles[1], beetle_ball):
+                for beetle in tuple(beetles[:active_player_count]) + (beetle_ball,):
                     if beetle.active and not beetle.is_falling:
                         # Ball gets 3x force (heavier, needs more push)
                         force_mult = 3.0 if beetle.horn_type == "ball" else 1.0
@@ -20034,11 +20034,11 @@ try:
                 # Only check voxels from beam head down to floor (not above beam head)
                 check_ufo_beam_collision(ufo_x, ufo_z, beam_head_y)
 
-                hit_blue = ufo_beam_hit[0]
-                hit_red = ufo_beam_hit[1]
-
-                # Apply continuous force to hit beetles (like wind but stronger)
-                for beetle, was_hit in [(beetles[0], hit_blue), (beetles[1], hit_red)]:
+                # Apply continuous force to hit beetles (like wind but
+                # stronger) - EVERY slot (kernel fills ufo_beam_hit[4];
+                # the consumer previously read only slots 0/1)
+                for beetle, was_hit in [(beetles[_us], ufo_beam_hit[_us])
+                                        for _us in range(active_player_count)]:
                     if was_hit and beetle.active and not beetle.is_falling:
                         dx_b = beetle.x - ufo_x
                         dz_b = beetle.z - ufo_z
@@ -20283,18 +20283,16 @@ try:
                     hit_beetle = False
                     if impact[2] > 0:
                         check_comet_collision(float(cx), float(cz), float(current_y))
-                        got_blue = comet_hit[0]
-                        got_red = comet_hit[1]
-                        if got_blue or got_red:
+                        # EVERY slot (kernel fills comet_hit[4]; the consumer
+                        # previously read only slots 0/1)
+                        _comet_slots = [(beetles[_cs], comet_hit[_cs],
+                                         comet_hit_pos[_cs] if comet_hit[_cs] else None)
+                                        for _cs in range(active_player_count)]
+                        if any(_ch for _cb, _ch, _cp in _comet_slots):
                             hit_beetle = True
                             impact[3] = True
-                            # Read exact hit positions from GPU
-                            hit_pos_blue = comet_hit_pos[0] if got_blue else None
-                            hit_pos_red = comet_hit_pos[1] if got_red else None
                             # Apply force using exact hit point (like bombardier spray)
-                            for beetle, was_hit, hit_pos in [
-                                (beetles[0], got_blue, hit_pos_blue),
-                                (beetles[1], got_red, hit_pos_red)]:
+                            for beetle, was_hit, hit_pos in _comet_slots:
                                 if was_hit and beetle.active and not beetle.is_falling:
                                     hx, hy, hz = float(hit_pos[0]), float(hit_pos[1]), float(hit_pos[2])
                                     # Big explosion at exact hit voxel
