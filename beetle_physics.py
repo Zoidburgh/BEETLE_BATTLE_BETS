@@ -587,6 +587,7 @@ collision_stats = {
     'shaft_pushes': 0,         # shaft-cylinder separation events
     'shaft_penetration_fixes': 0,  # horn-side penetration responses (anti-clip)
     'max_contact_count': 0,    # largest voxel contact cluster seen (penetration depth proxy)
+    'max_contact_no_hook': 0,  # same but excluding stag pincer squeezes (the real clip signal)
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
 }
 
@@ -658,6 +659,7 @@ def save_perf_log():
     w(f"  shaft_cylinder_pushes: {collision_stats['shaft_pushes']}")
     w(f"  shaft_penetration_fixes: {collision_stats['shaft_penetration_fixes']} (horn-side anti-clip responses)")
     w(f"  max_contact_cluster: {collision_stats['max_contact_count']} voxels (large = deep overlap/clip)")
+    w(f"  max_contact_no_hook: {collision_stats['max_contact_no_hook']} voxels (excludes stag squeezes - the clip signal)")
     for pair, hist in sorted(collision_stats['pair_time_ms'].items()):
         if hist:
             w(f"  pair {pair[0]}v{pair[1]}: {_avg(hist):.2f}ms avg, {max(hist):.2f}ms max (per physics step)")
@@ -14126,6 +14128,10 @@ def beetle_collision(b1, b2, params):
         collision_stats['voxel_collisions'] += 1
         if contact_count > collision_stats['max_contact_count']:
             collision_stats['max_contact_count'] = contact_count
+        # Track separately without stag pincer squeezes (hook interiors), whose
+        # wrap-around contact is legitimately huge — this max is the clip signal
+        if collision_has_hook_interiors[None] == 0 and contact_count > collision_stats['max_contact_no_hook']:
+            collision_stats['max_contact_no_hook'] = contact_count
 
         # Collision detected! Calculate 3D collision geometry
         dx = b1.x - b2.x
@@ -14222,11 +14228,30 @@ def beetle_collision(b1, b2, params):
                             continue  # genuine frontal tip contact — leave it alone
                     _pnx = _px / _pdist
                     _pnz = _pz / _pdist
-                    # Closing speed at the contact: how fast the shaft (including
-                    # the owner's turn sweeping it) and the intruder's body are
-                    # approaching along the outward normal. Positive = closing.
-                    _own_cvx = shaft_owner.vx - (_scz - shaft_owner.z) * shaft_owner.angular_velocity
-                    _own_cvz = shaft_owner.vz + (_scx - shaft_owner.x) * shaft_owner.angular_velocity
+                    # Horn articulation motion at the contact: pitching/yawing
+                    # the horn moves the shaft too, not just body motion.
+                    # Differentiate numerically via the predicted-tip helper
+                    # (same one predictive collision trusts) — the shaft point
+                    # at parameter t moves ~t times the tip's motion, since the
+                    # base is the pivot and barely moves.
+                    _horn_vx = 0.0
+                    _horn_vy = 0.0
+                    _horn_vz = 0.0
+                    if (abs(shaft_owner.horn_pitch_velocity) > 0.02 or
+                            abs(shaft_owner.horn_yaw_velocity) > 0.02):
+                        _pt_x, _pt_y, _pt_z = calculate_horn_tip_position_with_both(
+                            shaft_owner,
+                            shaft_owner.horn_pitch + shaft_owner.horn_pitch_velocity * PHYSICS_TIMESTEP,
+                            shaft_owner.horn_yaw + shaft_owner.horn_yaw_velocity * PHYSICS_TIMESTEP)
+                        _horn_vx = _st * (_pt_x - so_tip_x) / PHYSICS_TIMESTEP
+                        _horn_vy = _st * (_pt_y - so_tip_y) / PHYSICS_TIMESTEP
+                        _horn_vz = _st * (_pt_z - so_tip_z) / PHYSICS_TIMESTEP
+
+                    # Closing speed at the contact: how fast the shaft (body
+                    # motion + turn sweep + horn articulation) and the intruder's
+                    # body are approaching along the outward normal. Positive = closing.
+                    _own_cvx = shaft_owner.vx - (_scz - shaft_owner.z) * shaft_owner.angular_velocity + _horn_vx
+                    _own_cvz = shaft_owner.vz + (_scx - shaft_owner.x) * shaft_owner.angular_velocity + _horn_vz
                     _int_cvx = intruder.vx - (_scz - intruder.z) * intruder.angular_velocity
                     _int_cvz = intruder.vz + (_scx - intruder.x) * intruder.angular_velocity
                     _closing = (_own_cvx - _int_cvx) * _pnx + (_own_cvz - _int_cvz) * _pnz
@@ -14240,12 +14265,6 @@ def beetle_collision(b1, b2, params):
                         shaft_owner.vx -= _pnx * _closing * shaft_vel_damp * 0.3
                         shaft_owner.vz -= _pnz * _closing * shaft_vel_damp * 0.3
 
-                        # NATURAL LIFT: a horn wedging in below the body's
-                        # midline levers it upward (uses the smoothed pending
-                        # drain so it reads as a heave, not a pop)
-                        if _scy < intruder.y + 4.0:
-                            intruder.pending_lift += min(_closing * shaft_lift, 3.0)
-
                         # NATURAL TILT: an off-center shove tips the body away
                         # from the contact (same local-frame pattern as the
                         # horn tipping torque above)
@@ -14258,6 +14277,16 @@ def beetle_collision(b1, b2, params):
                         _tilt_f = min(_closing, 15.0) * shaft_tilt
                         intruder.pending_pitch += _loc_z * _tilt_f / intruder.pitch_inertia
                         intruder.pending_roll -= _loc_x * _tilt_f / intruder.roll_inertia
+
+                    # NATURAL LIFT: a shaft below the body's midline levers it
+                    # upward. Vertical closing counts horn articulation (flicking
+                    # the horn up under a body lifts even with no horizontal
+                    # approach) plus relative body vertical motion. Uses the
+                    # smoothed pending drain so it reads as a heave, not a pop.
+                    _vert_closing = shaft_owner.vy + _horn_vy - intruder.vy
+                    if _scy < intruder.y + 4.0 and (_closing > 0.0 or _vert_closing > 0.5):
+                        _lift_speed = max(_closing, 0.0) + max(_vert_closing, 0.0)
+                        intruder.pending_lift += min(_lift_speed * shaft_lift, 4.0)
                     # Small clamped positional separation per step (mirrors the
                     # floor's capped push-out; slightly outpaces max drive speed)
                     intruder.x += _pnx * shaft_pushout
