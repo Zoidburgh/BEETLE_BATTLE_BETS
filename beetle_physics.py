@@ -16357,9 +16357,10 @@ def reset_network_stats():
     network_stats['last_frame_diff'] = 0
     network_stats['total_wait_time_ms'] = 0.0
 
-# Guest: latest opponent state from host sync, dead-reckoned every frame
-# (dict with x/y/z/rot/vx/vy/vz/active/is_falling/recv_time, or None)
-guest_opp_target = None
+# Guest: latest remote-beetle states from host sync, dead-reckoned every
+# frame. {slot: dict with x/y/z/rot/vx/vy/vz/active/is_falling/recv_time}
+# for every non-own slot (generalized from single-opponent for 4P — A3)
+guest_opp_targets = {}
 
 # Net debug HUD (toggle with N key while in an online session)
 show_net_debug = False
@@ -16417,8 +16418,7 @@ def net_log_tick(actual_fps):
 
 def reset_net_hud():
     """Reset per-match net debug HUD stats and start a fresh CSV log."""
-    global guest_opp_target
-    guest_opp_target = None
+    guest_opp_targets.clear()
     if net_hud['log_fh'] is not None:
         try:
             net_hud['log_fh'].close()
@@ -16869,7 +16869,8 @@ if STEAM_CONNECT_LOBBY and NETWORK_AVAILABLE:
             lobby_id = int(STEAM_CONNECT_LOBBY)
             network_manager.join_lobby(lobby_id)
             game_state = GAME_STATE_LOBBY_CONNECTING
-            local_player_id = 1  # Joiner is red/guest
+            local_player_id = 1  # Provisional (UI label only) - the real slot
+            # comes from MSG_SLOT_ASSIGN and is applied at the START handler
             print(f"[Steam] Joining lobby {lobby_id}...")
         except ValueError:
             print(f"[Steam] Invalid lobby ID: {STEAM_CONNECT_LOBBY}")
@@ -17429,21 +17430,28 @@ try:
             network_manager.pending_state_sync = None  # Consume it
 
             net_hud['last_sync_time'] = time.time()
-            own_idx = local_player_id  # guest's own beetle (1 = red)
-            opp_idx = 1 - own_idx
+            own_idx = local_player_id  # guest's own beetle (= our roster slot)
 
-            # Net debug HUD: prediction error for both beetles at packet arrival
-            sync_errors = [0.0, 0.0]
+            # Net debug HUD: prediction error per beetle at packet arrival
+            sync_errors = [0.0] * max(2, active_player_count)
             for i, b in enumerate(beetles[:active_player_count]):
+                if i >= len(sync['beetles']):
+                    break
                 hb = sync['beetles'][i]
                 sync_errors[i] = math.sqrt((hb['x'] - b.x) ** 2 + (hb['y'] - b.y) ** 2 + (hb['z'] - b.z) ** 2)
             net_hud['corr_blue'] = sync_errors[0]
             net_hud['corr_red'] = sync_errors[1]
             net_hud_record_correction(max(sync_errors))
 
-            # Opponent: just store the target - corrections happen continuously below
-            guest_opp_target = dict(sync['beetles'][opp_idx])
-            guest_opp_target['recv_time'] = time.time()
+            # Remote beetles: store targets for EVERY non-own slot -
+            # corrections happen continuously below (A3: was single-opponent)
+            _sync_recv_time = time.time()
+            for _si in range(min(active_player_count, len(sync['beetles']))):
+                if _si == own_idx:
+                    continue
+                _tgt = dict(sync['beetles'][_si])
+                _tgt['recv_time'] = _sync_recv_time
+                guest_opp_targets[_si] = _tgt
 
             # --- Own beetle (per-sync correction) ---
             beetle = beetles[own_idx]
@@ -17533,84 +17541,87 @@ try:
             # (arena rebuild + snap + bowl rim via queue_arena_switch)
             set_network_ball_mode(host_ball['active'])
 
-        # === OPPONENT CONTINUOUS CORRECTION (guest, every frame) ===
+        # === REMOTE BEETLE CONTINUOUS CORRECTION (guest, every frame) ===
         # Blend a little toward the extrapolated host state every render frame
-        # instead of one firm lerp per sync packet - removes visible skipping
-        if not network_manager.is_host and guest_opp_target is not None:
-            tgt = guest_opp_target
-            opp = beetles[1 - local_player_id]
-            if tgt['is_falling']:
-                pass  # host says falling - hands off, local fall plays out
-            elif opp.is_falling and tgt['active']:
-                # Guest-only fall desync - rescue to host state
-                opp.is_falling = False
-                opp.x = tgt['x']
-                opp.y = tgt['y']
-                opp.z = tgt['z']
-                opp.vx = tgt['vx']
-                opp.vy = tgt['vy']
-                opp.vz = tgt['vz']
-                opp.rotation = tgt['rot']
-                opp.pitch = tgt['pitch']
-                opp.roll = tgt['roll']
-                net_hud['snap_count'] += 1
-            else:
-                # Dead-reckon the target forward by packet age
-                age = min(time.time() - tgt['recv_time'], SYNC_OPP_MAX_EXTRAP)
-                pred_x = tgt['x'] + tgt['vx'] * age
-                pred_y = tgt['y'] + tgt['vy'] * age
-                pred_z = tgt['z'] + tgt['vz'] * age
-                err = math.sqrt((pred_x - opp.x) ** 2 + (pred_y - opp.y) ** 2 + (pred_z - opp.z) ** 2)
-                rot_diff = (tgt['rot'] - opp.rotation) % TWO_PI
-                if rot_diff > math.pi:
-                    rot_diff -= TWO_PI
-
-                # Grounded vs airborne changes who owns the vertical axis:
-                # grounded -> local floor contact owns small y (blending fights
-                # it and shakes); airborne -> host trajectory owns y fully
-                floor_y = check_floor_collision(float(opp.x), float(opp.z))
-                floor_surface = floor_y + 0.5 if floor_y > -100.0 else None
-                airborne = floor_surface is None or opp.y > floor_surface + 0.75 or tgt['y'] > floor_surface + 0.75
-
-                if err > SYNC_SNAP_DIST:
-                    opp.x = pred_x
-                    opp.y = pred_y
-                    opp.z = pred_z
+        # instead of one firm lerp per sync packet - removes visible skipping.
+        # A3: runs for EVERY non-own slot (was single-opponent).
+        if not network_manager.is_host and guest_opp_targets:
+            for _corr_slot, tgt in list(guest_opp_targets.items()):
+                if _corr_slot == local_player_id or _corr_slot >= active_player_count:
+                    continue
+                opp = beetles[_corr_slot]
+                if tgt['is_falling']:
+                    continue  # host says falling - hands off, local fall plays out
+                elif opp.is_falling and tgt['active']:
+                    # Guest-only fall desync - rescue to host state
+                    opp.is_falling = False
+                    opp.x = tgt['x']
+                    opp.y = tgt['y']
+                    opp.z = tgt['z']
+                    opp.vx = tgt['vx']
+                    opp.vy = tgt['vy']
+                    opp.vz = tgt['vz']
                     opp.rotation = tgt['rot']
                     opp.pitch = tgt['pitch']
                     opp.roll = tgt['roll']
                     net_hud['snap_count'] += 1
                 else:
-                    if err >= SYNC_OPP_DEADZONE:
-                        opp.x += (pred_x - opp.x) * SYNC_OPP_RATE
-                        opp.z += (pred_z - opp.z) * SYNC_OPP_RATE
-                        if airborne:
-                            # Full-rate Y in the air - nothing to fight with,
-                            # and lag here reads as skipping on launches
-                            opp.y += (pred_y - opp.y) * SYNC_OPP_RATE
-                        elif abs(pred_y - opp.y) > SYNC_OPP_Y_DEADZONE:
-                            opp.y += (pred_y - opp.y) * SYNC_OPP_RATE_Y
-                    if abs(rot_diff) > SYNC_SNAP_ANGLE:
+                    # Dead-reckon the target forward by packet age
+                    age = min(time.time() - tgt['recv_time'], SYNC_OPP_MAX_EXTRAP)
+                    pred_x = tgt['x'] + tgt['vx'] * age
+                    pred_y = tgt['y'] + tgt['vy'] * age
+                    pred_z = tgt['z'] + tgt['vz'] * age
+                    err = math.sqrt((pred_x - opp.x) ** 2 + (pred_y - opp.y) ** 2 + (pred_z - opp.z) ** 2)
+                    rot_diff = (tgt['rot'] - opp.rotation) % TWO_PI
+                    if rot_diff > math.pi:
+                        rot_diff -= TWO_PI
+
+                    # Grounded vs airborne changes who owns the vertical axis:
+                    # grounded -> local floor contact owns small y (blending fights
+                    # it and shakes); airborne -> host trajectory owns y fully
+                    floor_y = check_floor_collision(float(opp.x), float(opp.z))
+                    floor_surface = floor_y + 0.5 if floor_y > -100.0 else None
+                    airborne = floor_surface is None or opp.y > floor_surface + 0.75 or tgt['y'] > floor_surface + 0.75
+
+                    if err > SYNC_SNAP_DIST:
+                        opp.x = pred_x
+                        opp.y = pred_y
+                        opp.z = pred_z
                         opp.rotation = tgt['rot']
+                        opp.pitch = tgt['pitch']
+                        opp.roll = tgt['roll']
+                        net_hud['snap_count'] += 1
                     else:
-                        opp.rotation += rot_diff * SYNC_OPP_ROT_RATE
-                    # Tilt tracks the host directly (pitch/roll now synced) -
-                    # local collision-driven tilt diverging is what made
-                    # airborne beetles look like they skip
-                    opp.pitch += (tgt['pitch'] - opp.pitch) * SYNC_OPP_ROT_RATE
-                    opp.roll += (tgt['roll'] - opp.roll) * SYNC_OPP_ROT_RATE
+                        if err >= SYNC_OPP_DEADZONE:
+                            opp.x += (pred_x - opp.x) * SYNC_OPP_RATE
+                            opp.z += (pred_z - opp.z) * SYNC_OPP_RATE
+                            if airborne:
+                                # Full-rate Y in the air - nothing to fight with,
+                                # and lag here reads as skipping on launches
+                                opp.y += (pred_y - opp.y) * SYNC_OPP_RATE
+                            elif abs(pred_y - opp.y) > SYNC_OPP_Y_DEADZONE:
+                                opp.y += (pred_y - opp.y) * SYNC_OPP_RATE_Y
+                        if abs(rot_diff) > SYNC_SNAP_ANGLE:
+                            opp.rotation = tgt['rot']
+                        else:
+                            opp.rotation += rot_diff * SYNC_OPP_ROT_RATE
+                        # Tilt tracks the host directly (pitch/roll now synced) -
+                        # local collision-driven tilt diverging is what made
+                        # airborne beetles look like they skip
+                        opp.pitch += (tgt['pitch'] - opp.pitch) * SYNC_OPP_ROT_RATE
+                        opp.roll += (tgt['roll'] - opp.roll) * SYNC_OPP_ROT_RATE
 
-                # Adopt host horizontal velocities so the local sim carries the
-                # target's motion; vertical velocity follows the host when
-                # airborne, else stays local so floor contact resolves cleanly
-                opp.vx = tgt['vx']
-                opp.vz = tgt['vz']
-                if airborne or abs(tgt['vy']) > 1.0:
-                    opp.vy = tgt['vy']
+                    # Adopt host horizontal velocities so the local sim carries the
+                    # target's motion; vertical velocity follows the host when
+                    # airborne, else stays local so floor contact resolves cleanly
+                    opp.vx = tgt['vx']
+                    opp.vz = tgt['vz']
+                    if airborne or abs(tgt['vy']) > 1.0:
+                        opp.vy = tgt['vy']
 
-                # Clamp to floor so corrections never leave the opponent under the arena
-                if opp.active and floor_surface is not None and opp.y < floor_surface:
-                    opp.y = floor_surface
+                    # Clamp to floor so corrections never leave the opponent under the arena
+                    if opp.active and floor_surface is not None and opp.y < floor_surface:
+                        opp.y = floor_surface
 
         # === DISCONNECT DETECTION ===
         # Check for graceful disconnect first (opponent clicked Disconnect button)
@@ -22395,9 +22406,13 @@ try:
                 input_buffer.is_network_mode = True
                 # Host-authoritative: guest predicts locally with zero delay
                 input_buffer.delay = GUEST_INPUT_DELAY_FRAMES
-                input_buffer.local_player_id = 1  # Guest is red
+                # A3: our slot comes from the host's roster (MSG_SLOT_ASSIGN,
+                # reliable, sent at registration - always before START).
+                # Guarded >= 1: a guest must never think it's the host slot.
+                _my_slot = max(1, network_manager.my_slot)
+                input_buffer.local_player_id = _my_slot
                 input_buffer.reset()
-                local_player_id = 1  # Guest is red
+                local_player_id = _my_slot
                 # Match size from the host's roster (MSG_SLOT_ASSIGN arrives
                 # reliably before/with START; includes host-side bots)
                 apply_online_match_size()
