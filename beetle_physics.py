@@ -14177,15 +14177,18 @@ def beetle_collision(b1, b2, params):
             # through a horn shaft. The main impulse below acts along the
             # center-to-center normal, which has no component opposing motion
             # perpendicular to a horn — so a beetle driving into the side of a
-            # horn slides straight through. Here, when the voxel contact point
-            # sits on a horn shaft (real overlap only — no ghost contacts) and
-            # no tip voxels are involved (tip battles keep existing physics),
-            # push the other beetle perpendicularly out of the shaft and damp
-            # its velocity component into it.
-            if not is_ball_collision and contact_count > 0 and has_horn_tips == 0:
+            # horn slides straight through. When the voxel contact point sits
+            # on a horn shaft (real overlap only — no ghost contacts), push
+            # the other beetle perpendicularly out of the shaft, transfer
+            # closing momentum, and apply natural lift/tilt from the shove.
+            # Tip battles (tip voxels in contact, in front of the victim)
+            # keep their existing physics untouched.
+            if not is_ball_collision and contact_count > 0:
                 shaft_contact_dist = params.get("SHAFT_CONTACT_DIST", 4.5)
                 shaft_pushout = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35)
                 shaft_vel_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5)
+                shaft_tilt = params.get("SHAFT_PENETRATION_TILT", 0.15)
+                shaft_lift = params.get("SHAFT_PENETRATION_LIFT", 0.25)
                 for shaft_owner, intruder in ((b1, b2), (b2, b1)):
                     if shaft_owner.horn_type not in ("rhino", "stag", "hercules", "atlas",
                                                      "spider", "bombardier", "scorpion", "giraffe"):
@@ -14205,6 +14208,18 @@ def beetle_collision(b1, b2, params):
                     _pdist = math.sqrt(_px*_px + _pz*_pz)
                     if _pdist < 0.1:
                         continue
+                    # Tip voxels in the contact normally mean a tip battle
+                    # (existing physics handles it) — EXCEPT when the horn is
+                    # burying in from behind the victim, or the shaft already
+                    # sits near their body center (deep clip). Those aren't
+                    # jousts; the push-out must still fire.
+                    if has_horn_tips == 1:
+                        _icos = math.cos(intruder.rotation)
+                        _isin = math.sin(intruder.rotation)
+                        _int_front = ((collision_x - intruder.x) * _icos +
+                                      (collision_z - intruder.z) * _isin)
+                        if _int_front > -1.0 and _pdist > 5.0:
+                            continue  # genuine frontal tip contact — leave it alone
                     _pnx = _px / _pdist
                     _pnz = _pz / _pdist
                     # Closing speed at the contact: how fast the shaft (including
@@ -14224,6 +14239,25 @@ def beetle_collision(b1, b2, params):
                         intruder.vz += _pnz * _closing * shaft_vel_damp
                         shaft_owner.vx -= _pnx * _closing * shaft_vel_damp * 0.3
                         shaft_owner.vz -= _pnz * _closing * shaft_vel_damp * 0.3
+
+                        # NATURAL LIFT: a horn wedging in below the body's
+                        # midline levers it upward (uses the smoothed pending
+                        # drain so it reads as a heave, not a pop)
+                        if _scy < intruder.y + 4.0:
+                            intruder.pending_lift += min(_closing * shaft_lift, 3.0)
+
+                        # NATURAL TILT: an off-center shove tips the body away
+                        # from the contact (same local-frame pattern as the
+                        # horn tipping torque above)
+                        _tcos = math.cos(intruder.rotation)
+                        _tsin = math.sin(intruder.rotation)
+                        _wlx = collision_x - intruder.x
+                        _wlz = collision_z - intruder.z
+                        _loc_x = _wlx * _tcos + _wlz * _tsin
+                        _loc_z = _wlz * _tcos - _wlx * _tsin
+                        _tilt_f = min(_closing, 15.0) * shaft_tilt
+                        intruder.pending_pitch += _loc_z * _tilt_f / intruder.pitch_inertia
+                        intruder.pending_roll -= _loc_x * _tilt_f / intruder.roll_inertia
                     # Small clamped positional separation per step (mirrors the
                     # floor's capped push-out; slightly outpaces max drive speed)
                     intruder.x += _pnx * shaft_pushout
