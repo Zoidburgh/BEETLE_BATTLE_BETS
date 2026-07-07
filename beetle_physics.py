@@ -6854,9 +6854,15 @@ def generate_hercules_horns(top_horn_len, bottom_horn_len, front_body_height, ba
         dx = 3 + i  # Extends forward from pivot
 
         # Simple, clean upward curve formula
-        # Base 20° angle + quadratic upward curve (accelerating rise)
+        # Base 20° angle + quadratic upward curve (accelerating rise).
+        # FIXED CURVATURE (2026-07-08): was i^2 / actual_bottom_len, which
+        # renormalized the whole arc every time the slider changed - each
+        # increment RESHAPED the jaw (flatter sag + the -30° rotation turned
+        # that into less forward reach, so longer settings could look
+        # SHORTER). Constant K anchors the shape at the default length
+        # (12): every increment now extends the SAME path one segment.
         base_angle_rise = int(i * 0.364)  # 20 degree base angle
-        curve_rise = int((i * i) / float(actual_bottom_len) * 0.5)  # Accelerating upward curve
+        curve_rise = int(i * i * 0.0417)  # Accelerating upward curve (K = 0.5/12)
 
         dy = 1 + base_angle_rise + curve_rise
 
