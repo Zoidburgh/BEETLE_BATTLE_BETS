@@ -1170,6 +1170,12 @@ def get_bot_inputs(slot):
         inputs |= INPUT_RIGHT
     elif diff < -0.15:
         inputs |= INPUT_LEFT
+    # Horn work when engaged: cycle raise/press/sweep so bot fights exercise
+    # lifts, tip battles, and articulation sweeps (deterministic, per-slot phase)
+    if best_d < 1600:  # within ~40 voxels
+        hphase = (physics_frame // 30 + slot * 3) % 6  # 0.5s steps, 3s cycle
+        inputs |= (INPUT_HORN_UP, INPUT_HORN_UP, INPUT_HORN_DOWN,
+                   INPUT_HORN_LEFT, INPUT_HORN_RIGHT, 0)[hphase]
     return inputs
 
 
@@ -14298,12 +14304,17 @@ def beetle_collision(b1, b2, params):
                     if _scy < intruder.y + 4.0 and (_closing > 0.0 or _vert_closing > 0.5):
                         _lift_speed = max(_closing, 0.0) + max(_vert_closing, 0.0)
                         intruder.pending_lift += min(_lift_speed * shaft_lift, 4.0)
-                    # Small clamped positional separation per step (mirrors the
-                    # floor's capped push-out; slightly outpaces max drive speed)
-                    intruder.x += _pnx * shaft_pushout
-                    intruder.z += _pnz * shaft_pushout
-                    shaft_owner.x -= _pnx * shaft_pushout * 0.3
-                    shaft_owner.z -= _pnz * shaft_pushout * 0.3
+                    # Depth-proportional positional separation per step: a
+                    # barely-touching shaft gets the gentle base push (mirrors
+                    # the floor's capped push-out), a buried one (near the body
+                    # center) gets up to ~4x so it's expelled in a few steps
+                    # instead of ~20
+                    _burial = max(0.0, 8.0 - _pdist)
+                    _push_amt = shaft_pushout * (1.0 + _burial * 0.4)
+                    intruder.x += _pnx * _push_amt
+                    intruder.z += _pnz * _push_amt
+                    shaft_owner.x -= _pnx * _push_amt * 0.3
+                    shaft_owner.z -= _pnz * _push_amt * 0.3
                     collision_stats['shaft_penetration_fixes'] += 1
 
             # HORN LEVERAGE: Strong vertical lift when contact is high (horn collision)
