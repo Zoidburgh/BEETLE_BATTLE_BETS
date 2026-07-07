@@ -589,6 +589,7 @@ _physics_timing = {
     'all_particles_total': 0.0,
     'death_explosions': 0.0,
     'respawn_timers': 0.0,
+    'hazards': 0.0,
     'floor_collision': 0.0,
     'beetle_collision': 0.0,
 }
@@ -19787,6 +19788,9 @@ try:
                     spawn_downwash_landing_burst(downwash_x[slot], downwash_z[slot])
                     downwash_fade_timer[slot] = DOWNWASH_FADE_TIME
 
+        # === HAZARDS TIMING: tornado/sandstorm/ufo/comet/board break (+ the
+        # downwash block above) previously landed in the floor_collision
+        # bucket - now measured separately so hazard arenas show their cost
         # === ARENA TORNADO HAZARD ===
         if tornado_mode:
             # Update deterministic variable-speed Lissajous path (same on host and guest)
@@ -20549,6 +20553,10 @@ try:
                         spawn_board_break_debris(float(wx), float(wz), 1.0)
             # else: COOLDOWN — nothing happens
 
+        # === HAZARDS TIMING END ===
+        _t_hazards_end = time.perf_counter()
+        _physics_timing['hazards'] = _physics_timing.get('hazards', 0) + (_t_hazards_end - _t_respawn_end) * 1000
+
         # Floor collision per player slot - prevent penetration by pushing
         # beetles upward. CPU OPTIMIZATION: cached floor heights skip kernel
         # calls if the beetle hasn't moved much
@@ -20728,7 +20736,7 @@ try:
 
         # === FLOOR COLLISION TIMING END ===
         _t_floor_end = time.perf_counter()
-        _physics_timing['floor_collision'] += (_t_floor_end - _t_respawn_end) * 1000
+        _physics_timing['floor_collision'] += (_t_floor_end - _t_hazards_end) * 1000
 
         # Beetle collision (voxel-perfect) - only if both beetles are active, not falling, and not hovering
         # Skip first 30 frames to let geometry fully initialize (prevents startup skipping)
