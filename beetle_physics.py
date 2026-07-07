@@ -2210,7 +2210,12 @@ def reset_match():
     # Reset ball render cache (CPU optimization)
     ball_last_render = (None, None, None, None, None, None)
 
-    # Reset spray existence flag (CPU optimization)
+    # Reset spray particles + existence flag. BUG FIX: the flag was cleared
+    # WITHOUT clearing the particles - any venom/spray airborne at reset
+    # froze in mid-air forever (update skipped, render kept drawing):
+    # the "ghost venom persisting between matches" report
+    simulation.num_spray[None] = 0
+    simulation.spray_active.fill(0)
     spray_might_exist = False
 
     # Reset downwash state
@@ -2403,6 +2408,18 @@ def send_local_beetle_config(network_mgr, is_host):
 
 # Last-applied geometry per remote slot 2/3 (avoids rebuilding every resend)
 _applied_remote_geo = {}
+
+def _slot_body_dims(slot):
+    """(body_length, back_body_height) for a slot - slider values for 0/1,
+    applied remote config for 2/3, rebuild defaults otherwise."""
+    if slot == 0:
+        return window.blue_body_length_value, window.blue_back_body_height_value
+    if slot == 1:
+        return window.red_body_length_value, window.red_back_body_height_value
+    _g = _applied_remote_geo.get(slot)
+    if _g:  # (horn_id, shaft, prong, back_body, body_len, body_width, leg_len)
+        return _g[4], _g[3]
+    return 12, 6
 
 def apply_remote_beetle_config(network_mgr):
     """Apply received remote beetle configurations (any slot).
@@ -16975,7 +16992,9 @@ spawn_silk(0.0, -100.0, 0.0, 1.0, 0.0, 50.0, 0.0, 0, 0.0)
 build_silk_spatial_grid()
 update_silk_particles(0.016)
 _warm_silk_state = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 8, 4, 0.0, 0.0, 0.0, 1)
-check_silk_beetle_collisions([_warm_silk_state, _warm_silk_state])
+# Warm ALL FOUR slots' silk kernels (was 2 - slots 2/3 would JIT-spike on
+# first silk contact with a bot now that silk targets every slot)
+check_silk_beetle_collisions([_warm_silk_state] * 4)
 check_silk_ball_collision(0.0, -100.0, 0.0, 4.0, 0.0, 0.0, 0.0)
 count_floor_silk_under_all()
 cleanup_dead_silk()
@@ -16991,7 +17010,7 @@ spawn_score_burst(0.0, -100.0, 0.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5,
 clear_ladybug_bounded(0.0, -100.0, 0.0)
 place_ladybug_kernel(0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 update_all_stuck_silk_positions(
-    [_warm_silk_state[:15], _warm_silk_state[:15]],
+    [_warm_silk_state[:15]] * 4,  # all four slots (see silk warmup note)
     (0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0))
 update_loading(8)
 
@@ -18767,17 +18786,14 @@ try:
                 _physics_timing['spray_update'] = _physics_timing.get('spray_update', 0) + (_t_spray_update - _t_spray_start) * 1000
 
                 # Spray-beetle collision detection (voxel-perfect GPU kernel)
-                # Check if blue's spray hits red (target=RED=1, skip red's own spray=1)
-                if beetles[1].active:
-                    hits = process_spray_collisions(beetles[1], 1, 1)  # target RED, skip owner 1
-                    for hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb in hits:
-                        apply_spray_impact(beetles[1], hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb)
-
-                # Check if red's spray hits blue (target=BLUE=0, skip blue's own spray=0)
-                if beetles[0].active:
-                    hits = process_spray_collisions(beetles[0], 0, 0)  # target BLUE, skip owner 0
-                    for hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb in hits:
-                        apply_spray_impact(beetles[0], hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb)
+                # for EVERY active slot (was hardcoded to slots 0/1 - bots and
+                # extra players were immune to venom/spray), skipping each
+                # target's own spray
+                for _spray_slot in range(active_player_count):
+                    if beetles[_spray_slot].active and not beetles[_spray_slot].is_falling:
+                        hits = process_spray_collisions(beetles[_spray_slot], _spray_slot, _spray_slot)
+                        for hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb in hits:
+                            apply_spray_impact(beetles[_spray_slot], hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb)
 
                 # Check if any spray hits the ball
                 check_spray_ball_collision()
@@ -18803,29 +18819,27 @@ try:
                 _t_silk_update = time.perf_counter()
                 _physics_timing['silk_update'] = _physics_timing.get('silk_update', 0) + (_t_silk_update - _t_silk_start) * 1000
 
-                # Check silk collision with beetles
-                # Calculate tail pitch from tail_rotation_angle (base 15 degrees + rotation)
-                blue_tail_pitch_rad = math.radians(15.0 + beetles[0].tail_rotation_angle)
-                red_tail_pitch_rad = math.radians(15.0 + beetles[1].tail_rotation_angle)
-                # Calculate default horn pitch based on beetle type
-                blue_def_pitch = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
-                                  HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[beetles[0].horn_type_id]
-                red_def_pitch = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
-                                 HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[beetles[1].horn_type_id]
-                check_silk_beetle_collisions([
-                    (beetles[0].x, beetles[0].y, beetles[0].z,
-                     beetles[0].rotation, beetles[0].pitch, beetles[0].roll,
-                     beetles[0].horn_pitch, beetles[0].horn_yaw, blue_tail_pitch_rad,
-                     beetles[0].horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
-                     spray_aim[0] * SPRAY_AIM_MAX, spider_aim[0] * SPIDER_AIM_MAX, blue_def_pitch,
-                     1 if beetles[0].active else 0),
-                    (beetles[1].x, beetles[1].y, beetles[1].z,
-                     beetles[1].rotation, beetles[1].pitch, beetles[1].roll,
-                     beetles[1].horn_pitch, beetles[1].horn_yaw, red_tail_pitch_rad,
-                     beetles[1].horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
-                     spray_aim[1] * SPRAY_AIM_MAX, spider_aim[1] * SPRAY_AIM_MAX, red_def_pitch,
-                     1 if beetles[1].active else 0),
-                ])
+                # Check silk collision with EVERY active slot (was hardcoded
+                # to slots 0/1 - bots and extra players were immune to silk).
+                # Also fixes a copy-paste bug: red's spider aim was scaled by
+                # SPRAY_AIM_MAX instead of SPIDER_AIM_MAX.
+                _def_pitch_tbl = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
+                                  HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)
+                _silk_states = []
+                for _ss in range(active_player_count):
+                    _sb = beetles[_ss]
+                    _bl, _bb = _slot_body_dims(_ss)
+                    _silk_states.append((
+                        _sb.x, _sb.y, _sb.z,
+                        _sb.rotation, _sb.pitch, _sb.roll,
+                        _sb.horn_pitch, _sb.horn_yaw,
+                        math.radians(15.0 + _sb.tail_rotation_angle),
+                        _sb.horn_type_id, _bl, _bb,
+                        (spray_aim[_ss] if _ss < 2 else 0.0) * SPRAY_AIM_MAX,
+                        (spider_aim[_ss] if _ss < 2 else 0.0) * SPIDER_AIM_MAX,
+                        _def_pitch_tbl[_sb.horn_type_id],
+                        1 if _sb.active else 0))
+                check_silk_beetle_collisions(_silk_states)
 
                 # Check silk-ball collision if ball mode is active
                 if beetle_ball.active:
@@ -21550,23 +21564,28 @@ try:
             ball_silk_x, ball_silk_y, ball_silk_z = 0.0, 0.0, 0.0
             ball_silk_rotation, ball_silk_pitch, ball_silk_roll = 0.0, 0.0, 0.0
 
+        # Per-slot states (render values for smooth interpolation) - covers
+        # ALL active slots so silk stuck to bots/extra players tracks them
+        # (was hardcoded to slots 0/1)
+        _stuck_def_pitch_tbl = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
+                                HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)
+        _stuck_states = []
+        for _us in range(active_player_count):
+            _ub = beetles[_us]
+            if not _ub.active:
+                _stuck_states.append(None)
+                continue
+            _ubl, _ubb = _slot_body_dims(_us)
+            _stuck_states.append((
+                render_x[_us], render_y[_us], render_z[_us],
+                render_rotation[_us], render_pitch[_us], render_roll[_us],
+                render_horn_pitch[_us], render_horn_yaw[_us], render_tail_pitch[_us],
+                _ub.horn_type_id, _ubl, _ubb,
+                (render_spray_aim[_us] if _us < 2 else 0.0) * SPRAY_AIM_MAX,
+                (render_spider_aim[_us] if _us < 2 else 0.0) * SPIDER_AIM_MAX,
+                _stuck_def_pitch_tbl[_ub.horn_type_id]))
         update_all_stuck_silk_positions(
-            [
-                # Blue beetle state (use render values for smooth interpolation)
-                (render_x[0], render_y[0], render_z[0],
-                 render_rotation[0], render_pitch[0], render_roll[0],
-                 render_horn_pitch[0], render_horn_yaw[0], render_tail_pitch[0],
-                 blue_horn_type_id, window.blue_body_length_value, window.blue_back_body_height_value,
-                 render_spray_aim[0] * SPRAY_AIM_MAX, render_spider_aim[0] * SPIDER_AIM_MAX,
-                 blue_default_horn_pitch),
-                # Red beetle state
-                (render_x[1], render_y[1], render_z[1],
-                 render_rotation[1], render_pitch[1], render_roll[1],
-                 render_horn_pitch[1], render_horn_yaw[1], render_tail_pitch[1],
-                 red_horn_type_id, window.red_body_length_value, window.red_back_body_height_value,
-                 render_spray_aim[1] * SPRAY_AIM_MAX, render_spider_aim[1] * SPIDER_AIM_MAX,
-                 red_default_horn_pitch),
-            ],
+            _stuck_states,
             (ball_silk_x, ball_silk_y, ball_silk_z,
              ball_silk_rotation, ball_silk_pitch, ball_silk_roll,
              1 if beetle_ball.active else 0),
