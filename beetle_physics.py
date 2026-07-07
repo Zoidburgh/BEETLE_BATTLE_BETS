@@ -14874,7 +14874,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # smoothly from the first contact step, no cooldown. The
                     # true advantage LAUNCH (lifting the opponent) stays
                     # pulsed - that one should feel like an event.
-                    LIFT_STEP_DIV = 6.0
+                    LIFT_STEP_DIV = 8.0  # Higher = gentler continuous lifts (was 6 = exact old average force)
                     lift_force_full = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
                     tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
 
