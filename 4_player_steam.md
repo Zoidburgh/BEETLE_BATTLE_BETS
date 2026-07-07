@@ -110,7 +110,7 @@ extra sync message. (State sync can carry lives later for reconnect.)
 | Digits layout | 2 (above goal ends) | 4 rim digits at N/E/S/W spawn compass points, per-player colors | the SAME 2 goal-end stations become TEAM digits |
 | Respawn | always | only if lives > 0; eliminated[slot] blocks respawn timer | per mode (score: always) |
 | Win check | first to N kills | last beetle standing | first team to N / team elimination |
-| Celebrations/confetti | winner slot (0/1 today) | winner slot (needs per-slot generalization) | winning TEAM pair |
+| Celebrations/confetti | winner slot (0/1 today) | SUPPRESSED at 3+ players for now (color-coded blue/red drops; per-slot colors decided later) | winning TEAM pair (team colors) |
 | Crowd cheer on death | yes | yes (unchanged) | yes |
 | Rematch reset | scores | lives | team totals |
 | HUD text (A7) | 2 scores | lives per active slot, colored | 2 team scores |
@@ -132,6 +132,10 @@ extra sync message. (State sync can carry lives later for reconnect.)
   from day one so digits just plug in.
 
 ### Deliberately NOT decided yet (flagged for later, nothing blocks)
+- Score/victory confetti colors at 3-4P (drops are blue/red-coded today):
+  USER CALL 2026-07-07 — simply DON'T spawn confetti/celebration effects
+  in 3+ player matches for now; design per-slot colors later. A6 gates
+  those effects on active_player_count <= 2.
 - Friendly-fire rule in 2v2 (teammate shove-offs — other team still scores
   per the death rule; question is whether to add any extra penalty)
 - Lives count per mode/UI to change it (host option; byte already in v5)
