@@ -7178,18 +7178,20 @@ def generate_giraffe_weevil_neck(shaft_len, prong_len):
 
     # === SEGMENT 1: Fixed upward neck (controlled by shaft slider) ===
 
-    # Base attachment to body (x=2-5, thick 3x3 cross-section, front raised)
-    for dx in range(2, 6):
+    # Base attachment to body (x=2-4, thick 3x3 cross-section, front raised)
+    # (2026-07-08: one column shorter than before - less bulky base)
+    for dx in range(2, 5):
         y_offset = 2 if dx >= 4 else 0
         for dy in range(base_y + y_offset, base_y + y_offset + 3):
             for dz in range(-1, 2):
                 neck_voxels.append((dx, dy, dz))
 
-    # Main neck — angled forward ~52 degrees
+    # Main neck — angled forward ~61 degrees (2026-07-08: steepened from
+    # ~54; slope 1.8 keeps the 3-tall cross-section gap-free)
     # Consistent 3x3 cross-section the whole way
     for i in range(length):
         dx = 3 + i
-        dy = base_y + 3 + int(i * 1.4)
+        dy = base_y + 3 + int(i * 1.8)
         for dz in range(-1, 2):
             neck_voxels.append((dx, dy, dz))
             neck_voxels.append((dx, dy + 1, dz))
@@ -7200,7 +7202,7 @@ def generate_giraffe_weevil_neck(shaft_len, prong_len):
     # 2 voxels thick (2x3), with 3x3 head knob at the end
 
     tip_x = 3 + (length - 1)
-    tip_y = base_y + 3 + int((length - 1) * 1.4)
+    tip_y = base_y + 3 + int((length - 1) * 1.8)  # Must match the neck slope above
 
     for i in range(head_len):
         dx = tip_x + 1 + i
