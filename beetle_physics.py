@@ -2936,10 +2936,13 @@ FLOOR_CACHE_THRESHOLD = 1.0  # Only re-check if moved more than 1 unit
 floor_cache = [(None, None, -1000.0)] * 4  # Per player slot
 floor_cache_ball = (None, None, -1000.0)
 
-# Ball render cache - skip re-render if ball hasn't moved (CPU optimization)
-# Entry: (last_x, last_y, last_z, last_rotation, last_pitch, last_roll)
-BALL_RENDER_THRESHOLD = 0.3  # Re-render if moved more than 0.3 units or rotated significantly
-BALL_ROTATION_THRESHOLD = 0.05  # ~3 degrees
+# Ball render cache - skip re-render only when the ball is truly at rest.
+# Thresholds were 0.3 units / 3 degrees, which made slow rolls visibly
+# steppy (beetles re-render every frame; the ball's 0.3-unit slideshow on
+# top of voxel quantization was the "choppy ball" report). Sub-voxel
+# thresholds keep the at-rest skip while rendering all real motion.
+BALL_RENDER_THRESHOLD = 0.02  # Re-render on any perceptible movement
+BALL_ROTATION_THRESHOLD = 0.005  # ~0.3 degrees
 ball_last_render = (None, None, None, None, None, None)
 
 # Spray existence flag - skip GPU syncs when no spray exists (CPU optimization)
@@ -14388,7 +14391,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             # closing momentum, and apply natural lift/tilt from the shove.
             # Tip battles (tip voxels in contact, in front of the victim)
             # keep their existing physics untouched.
-            if not is_ball_collision and contact_count > 0:
+            # The BALL is covered too (as intruder only): a horn spearing the
+            # ball gets the same perpendicular push-out + momentum transfer
+            # (the ball previously had NO anti-clip coverage at all).
+            if contact_count > 0:
                 shaft_contact_dist = params.get("SHAFT_CONTACT_DIST", 4.5)
                 shaft_pushout = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35)
                 shaft_vel_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5)
@@ -14412,14 +14418,17 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _pz = intruder.z - _scz
                     _pdist = math.sqrt(_px*_px + _pz*_pz)
                     # Direct clip-depth signal: how close the shaft got to the
-                    # victim's body center (core radius ~7-8; <5 = buried)
-                    if _pdist < collision_stats['min_shaft_center_dist']:
-                        collision_stats['min_shaft_center_dist'] = _pdist
-                    if _pdist < 5.0:
-                        collision_stats['deep_clip_events'] += 1
-                        _clip_key = f"{shaft_owner.horn_type}->{intruder.horn_type}"
-                        collision_stats['deep_clip_by_type'][_clip_key] = \
-                            collision_stats['deep_clip_by_type'].get(_clip_key, 0) + 1
+                    # victim's body center (core radius ~7-8; <5 = buried).
+                    # Ball excluded: its radius is ~4, so ordinary surface
+                    # contact would pollute the beetle clip metrics.
+                    if intruder.horn_type != "ball":
+                        if _pdist < collision_stats['min_shaft_center_dist']:
+                            collision_stats['min_shaft_center_dist'] = _pdist
+                        if _pdist < 5.0:
+                            collision_stats['deep_clip_events'] += 1
+                            _clip_key = f"{shaft_owner.horn_type}->{intruder.horn_type}"
+                            collision_stats['deep_clip_by_type'][_clip_key] = \
+                                collision_stats['deep_clip_by_type'].get(_clip_key, 0) + 1
                     # Track the OWNER's horn burial: drives the depth-aware
                     # turn clamp (turning stays free at surface contact, the
                     # hard wall returns as the horn buries into a body —
@@ -14435,12 +14444,19 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # sits near their body center (deep clip). Those aren't
                     # jousts; the push-out must still fire.
                     if has_horn_tips == 1:
-                        _icos = math.cos(intruder.rotation)
-                        _isin = math.sin(intruder.rotation)
-                        _int_front = ((collision_x - intruder.x) * _icos +
-                                      (collision_z - intruder.z) * _isin)
-                        if _int_front > -1.0 and _pdist > 5.0:
-                            continue  # genuine frontal tip contact — leave it alone
+                        if intruder.horn_type == "ball":
+                            # Tips striking the ball are the normal hit (main
+                            # ball response handles them) — only rescue when
+                            # the shaft is speared into the ball's core
+                            if _pdist > 4.0:
+                                continue
+                        else:
+                            _icos = math.cos(intruder.rotation)
+                            _isin = math.sin(intruder.rotation)
+                            _int_front = ((collision_x - intruder.x) * _icos +
+                                          (collision_z - intruder.z) * _isin)
+                            if _int_front > -1.0 and _pdist > 5.0:
+                                continue  # genuine frontal tip contact — leave it alone
                     _pnx = _px / _pdist
                     _pnz = _pz / _pdist
                     # Horn articulation motion at the contact: pitching/yawing
@@ -14482,26 +14498,34 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
 
                         # NATURAL TILT: an off-center shove tips the body away
                         # from the contact (same local-frame pattern as the
-                        # horn tipping torque above)
-                        _tcos = math.cos(intruder.rotation)
-                        _tsin = math.sin(intruder.rotation)
-                        _wlx = collision_x - intruder.x
-                        _wlz = collision_z - intruder.z
-                        _loc_x = _wlx * _tcos + _wlz * _tsin
-                        _loc_z = _wlz * _tcos - _wlx * _tsin
-                        _tilt_f = min(_closing, 15.0) * shaft_tilt
-                        intruder.pending_pitch += _loc_z * _tilt_f / intruder.pitch_inertia
-                        intruder.pending_roll -= _loc_x * _tilt_f / intruder.roll_inertia
+                        # horn tipping torque above). Ball skips tilt (its
+                        # pitch/roll are rolling animation, not posture).
+                        if intruder.horn_type != "ball":
+                            _tcos = math.cos(intruder.rotation)
+                            _tsin = math.sin(intruder.rotation)
+                            _wlx = collision_x - intruder.x
+                            _wlz = collision_z - intruder.z
+                            _loc_x = _wlx * _tcos + _wlz * _tsin
+                            _loc_z = _wlz * _tcos - _wlx * _tsin
+                            _tilt_f = min(_closing, 15.0) * shaft_tilt
+                            intruder.pending_pitch += _loc_z * _tilt_f / intruder.pitch_inertia
+                            intruder.pending_roll -= _loc_x * _tilt_f / intruder.roll_inertia
 
                     # NATURAL LIFT: a shaft below the body's midline levers it
                     # upward. Vertical closing counts horn articulation (flicking
                     # the horn up under a body lifts even with no horizontal
                     # approach) plus relative body vertical motion. Uses the
                     # smoothed pending drain so it reads as a heave, not a pop.
+                    # Ball: below-center check and a direct vy kick (the ball
+                    # doesn't drain pending_lift) - scooping it launches it.
                     _vert_closing = shaft_owner.vy + _horn_vy - intruder.vy
-                    if _scy < intruder.y + 4.0 and (_closing > 0.0 or _vert_closing > 0.5):
+                    _below_mid = intruder.y if intruder.horn_type == "ball" else intruder.y + 4.0
+                    if _scy < _below_mid and (_closing > 0.0 or _vert_closing > 0.5):
                         _lift_speed = max(_closing, 0.0) + max(_vert_closing, 0.0)
-                        intruder.pending_lift += min(_lift_speed * shaft_lift, 4.0)
+                        if intruder.horn_type == "ball":
+                            intruder.vy += min(_lift_speed * shaft_lift, 4.0)
+                        else:
+                            intruder.pending_lift += min(_lift_speed * shaft_lift, 4.0)
                     # Depth-proportional positional separation per step: a
                     # barely-touching shaft gets the gentle base push (mirrors
                     # the floor's capped push-out), a buried one (near the body
@@ -20480,8 +20504,12 @@ try:
                     if lowest_point_ball < floor_surface:  # Ball penetrating floor
                         # Push ball upward to sit on floor
                         beetle_ball.y = floor_surface + beetle_ball.radius
-                        # Also update prev_y to prevent interpolation artifacts (teleport, not smooth)
-                        beetle_ball.prev_y = beetle_ball.y
+                        # Clamp the interpolation start instead of teleporting
+                        # (prev_y = y killed the interp and made every ground
+                        # contact a visible pop) - the render can never dip
+                        # below the surface but the bounce stays smooth
+                        if beetle_ball.prev_y < beetle_ball.y:
+                            beetle_ball.prev_y = beetle_ball.y
 
                         # Apply bounce (reverse velocity with bounce coefficient)
                         if beetle_ball.vy < 0:
