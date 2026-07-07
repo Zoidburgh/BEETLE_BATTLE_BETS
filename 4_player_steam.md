@@ -55,12 +55,15 @@ now must not have to be torn up for it.
    slot N" — then FFA-lives later = same event, different application; 2v2
    later = same event, sum by `team_of_slot`. Death *credit attribution*
    (who gets the point) stays host-side only.
-3. **Score credit rule for 4P FFA now: killer-credit if known, else no
-   credit.** Victim's death always broadcast (needed for respawn/lives
-   later). Use the existing last-attacker style data if trivially available
-   (contact within last ~3s via `pair_collision_last` / collision events);
-   otherwise ship "fall = no credit" first and iterate — do NOT block
-   plumbing on attribution polish.
+3. **No kill attribution, ever (user decision 2026-07-07).** Tangled deaths
+   (two beetles falling while touching, knocked by a third) make credit
+   heuristics wrong exactly when fights are most chaotic. FFA at 3-4P ships
+   as **game_mode 1: FFA-LIVES** — deaths are victim-only events
+   (MSG_SCORE scorer = NO_CREDIT 255), each death decrements the victim's
+   lives, 0 lives = eliminated (no respawn, spectate), last standing wins.
+   2P online keeps the current kill-score mode for now (tested path; the
+   1v1 lives switch later is just the game_mode byte). Full mode/system
+   matrix in "SCORING & PRESENTATION ACROSS MODES" below.
 4. **4P score HUD: text/GUI first, voxel digits later.** The floating voxel
    digits are blue/red only (types 23/24). For this milestone show 4 scores
    in the existing GUI HUD (colored labels per slot). Voxel digits for P3/P4
@@ -70,6 +73,65 @@ now must not have to be torn up for it.
    humans + 2 bots, every byte a real 4-human match would send is exercised
    except Steam fan-out to >1 real guest — which is exactly what the friends
    test at the end covers.
+
+## SCORING & PRESENTATION ACROSS MODES (planned 2026-07-07)
+
+Every system hooked to score/death events, and what it does per mode. The
+"ladybug shot" = the referee beam: today a death starts a delay timer, at
+~0.15s left the referee fires a spiral beam at the SCORER's floating voxel
+digit, and the +1 (with pop/squash bounce + particle burst) lands when the
+beam hits. Timer fallback covers referee-off / beam-busy / simultaneous
+deaths. That ceremony is gain-oriented and scorer-targeted — both invert
+under lives, hence this matrix.
+
+### The one event, all modes
+`MSG_SCORE(scorer, victim, type, x, z)` — victim-centric, host decides.
+- FFA-score (2P today): scorer = the other slot (unchanged behavior)
+- FFA-lives: scorer = NO_CREDIT (255); the event MEANS "victim lost a life"
+- 2v2-score / 2v2-ball: scorer = slot whose TEAM gets the point (goal
+  scorer for ball; for 2v2 kill-score, if we ever want it, team of the
+  non-victim pair — decided then, protocol carries it either way)
+Lives are derived deterministically from death events on BOTH ends — no
+extra sync message. (State sync can carry lives later for reconnect.)
+
+### System-by-system matrix
+
+| System | FFA-score 2P (today) | FFA-lives 3-4P (A6) | 2v2 score/ball (later) |
+|---|---|---|---|
+| Score state | scores[2] up | lives[4] down, start N (default 3) | team totals from scores[] via team_of_slot |
+| Referee beam target | scorer's digit | VICTIM's digit | scoring team's digit |
+| Digit change on hit | +1, happy burst | -1, downward "deduction" burst | +1, happy burst |
+| Elimination moment | n/a | digit bursts + removed; beetle stays out | n/a (team elim if lives 2v2 later) |
+| Digits layout | 2 (above goal ends) | 4 rim digits at N/E/S/W spawn compass points, per-player colors | the SAME 2 goal-end stations become TEAM digits |
+| Respawn | always | only if lives > 0; eliminated[slot] blocks respawn timer | per mode (score: always) |
+| Win check | first to N kills | last beetle standing | first team to N / team elimination |
+| Celebrations/confetti | winner slot (0/1 today) | winner slot (needs per-slot generalization) | winning TEAM pair |
+| Crowd cheer on death | yes | yes (unchanged) | yes |
+| Rematch reset | scores | lives | team totals |
+| HUD text (A7) | 2 scores | lives per active slot, colored | 2 team scores |
+
+### Refactors this dictates (do once, in A6)
+- `blue_score_pending`/`red_score_pending`, `blue/red_score_delay_timer`,
+  bounce/burst timers → **per-slot arrays [4]** (score_pending[slot] etc.).
+  The beam then takes a SLOT target, not 'blue'/'red'. This is the enabler
+  for every mode; the color names die here.
+- `eliminated[4]` flag + lives[4]; respawn scheduling checks it.
+- Referee beam meaning per mode: mode 0/2/3 -> beam at scorer/team digit
+  (count up); mode 1 -> beam at victim digit (count down). Beam is single
+  (one referee) — per-slot pending + existing timer fallback absorbs
+  death bursts (already proven for simultaneous 2P deaths).
+- Digit rendering: needs P3/P4 digit voxel types (+ palette; next free ids
+  71+) and 4 rim anchor positions. SHIPPING ORDER: text HUD first (A7),
+  beam simply skips slots without a digit station; 4 rim digits are the
+  cosmetic follow-up — the beam/ceremony code is written against slots
+  from day one so digits just plug in.
+
+### Deliberately NOT decided yet (flagged for later, nothing blocks)
+- 2v2 kill-score crediting (if 2v2 ever uses kills, not just ball goals)
+- Friendly-fire rule in 2v2 (teammate shove-offs)
+- Lives count per mode/UI to change it (host option; byte already in v5)
+- Whether eliminated players get a spectator camera (they see the match;
+  fancy cam later)
 
 ## Implementation steps (each has a test gate; commit after each)
 
@@ -136,17 +198,20 @@ now must not have to be torn up for it.
 - **Gate: v4 build vs v5 build refuse to match with a clear message; two v5
   builds match; options (arena modes etc.) still sync.**
 
-### A6. FFA scoring generalization (minimum for a playable 4P match)
-- Death credit: remove the `active_player_count == 2` guards in the
-  explosion/fall paths; host determines scorer per decision #3 and sends
-  MSG_SCORE(scorer, victim) — `NO_CREDIT` sentinel (e.g. 255) allowed.
-- Guest score-apply handler ("pending_scores.pop" site): scorer==0/1
-  branches → `scores[scorer] += 1` for any slot; victim slot drives the
-  respawn/celebration hooks it already drives.
-- Win condition: first to N kills (existing 2P rule generalized: check all
-  4). Rematch resets scores[0..3].
-- **Gate: 2PC+2bots, play to win. Scores identical on host and guest at all
-  times (log both), winner banner correct on both.**
+### A6. FFA-lives for 3-4P matches (see SCORING & PRESENTATION matrix)
+- Per-slot arrays replace blue/red score-pending/delay/bounce/burst state;
+  referee beam takes a slot target. 2P keeps mode-0 behavior through the
+  same arrays (slots 0/1).
+- lives[4] + eliminated[4]; host death paths (fall + explosion) send
+  MSG_SCORE(NO_CREDIT, victim) for 3-4P matches (game_mode 1); both ends
+  decrement lives[victim]; at 0 set eliminated -> respawn timer skips.
+- Win: last standing (mode 1) / first-to-N (mode 0). Rematch resets both.
+- Guest score-apply handler generalized to any slot + mode-aware.
+- host sets game_mode=1 + lives_per_player=3 in game options when
+  active_player_count > 2; --local4 uses the same path offline (canary).
+- **Gate: --local4 plays a full lives match to elimination + winner;
+  solo bot match same over the online path; scores/lives identical on
+  host and guest in the 2PC test.**
 
 ### A7. 4-slot score HUD (text first)
 - In-match GUI: one line per active slot, colored label
