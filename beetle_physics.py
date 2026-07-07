@@ -18102,21 +18102,6 @@ try:
         _damp_cap = physics_params.get("HORN_DAMPING_CAP", 1.0)
         for slot in range(active_player_count):
             beetle = beetles[slot]
-            # Interaction target = NEAREST other active beetle (was the fixed
-            # 1-slot pairing, which made horn physics behave differently
-            # against non-paired beetles - e.g. slot 0 vs the bots in slots
-            # 2/3: no predictive horn gate, no yaw-lift)
-            opp = None
-            _opp_d2 = 1e18
-            for _o in range(active_player_count):
-                if _o == slot or not beetles[_o].active:
-                    continue
-                _od2 = (beetles[_o].x - beetle.x) ** 2 + (beetles[_o].z - beetle.z) ** 2
-                if _od2 < _opp_d2:
-                    _opp_d2 = _od2
-                    opp = beetles[_o]
-            if opp is None:
-                opp = beetles[1 - slot]  # everyone else inactive - harmless fallback
             p_inputs = frame_inputs[slot]
             if beetle.active and not beetle.is_falling and not hovering[slot]:
                 # Engagement/burial fade once contact ends (collision refreshes them)
@@ -18398,30 +18383,15 @@ try:
                                 _ylb.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
                                 _ylb.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
 
-                # Predictive collision check (optimized for combined movements + dual-pincer tracking)
-                if (pitch_pressed or yaw_pressed) and opp.active:
-                    # Calculate minimum distance between horn tips (handles both stag and rhino)
-                    distance = calculate_min_horn_distance(
-                        beetle, opp,
-                        new_pitch, new_yaw,
-                        opp.horn_pitch, opp.horn_yaw
-                    )
-
-                    # Determine minimum distance threshold (use smaller of the two for safety)
-                    min_distance = min(HORN_PITCH_MIN_DISTANCE, HORN_YAW_MIN_DISTANCE) if (pitch_pressed and yaw_pressed) else (HORN_PITCH_MIN_DISTANCE if pitch_pressed else HORN_YAW_MIN_DISTANCE)
-
-                    # Apply changes if safe, otherwise block
-                    if distance >= min_distance:
-                        beetle.horn_pitch = new_pitch
-                        beetle.horn_yaw = new_yaw
-                        beetle.horn_pitch_velocity = pitch_speed
-                        beetle.horn_yaw_velocity = yaw_speed
-                    else:
-                        # Blocked by collision
-                        beetle.horn_pitch_velocity = 0.0
-                        beetle.horn_yaw_velocity = 0.0
-                elif pitch_pressed or yaw_pressed:
-                    # No other beetle - allow rotation freely
+                # PREDICTIVE TIP GATE REMOVED (2026-07-07, user call): the
+                # accidental ablation test proved it dead weight - the old
+                # pairing bug meant it NEVER ran against bots, a full day of
+                # bot combat felt right and produced the best clip metrics on
+                # record. The damping cap, predictive tip push, shaft
+                # penetration and shaft-vs-shaft responses own tip contact
+                # now (and the removed calculate_min_horn_distance call was
+                # most of the horn-input CPU cost).
+                if pitch_pressed or yaw_pressed:
                     beetle.horn_pitch = new_pitch
                     beetle.horn_yaw = new_yaw
                     beetle.horn_pitch_velocity = pitch_speed
