@@ -86,11 +86,16 @@ under lives, hence this matrix.
 
 ### The one event, all modes
 `MSG_SCORE(scorer, victim, type, x, z)` — victim-centric, host decides.
+score_type already distinguishes 0 = death, 1 = ball goal.
 - FFA-score (2P today): scorer = the other slot (unchanged behavior)
 - FFA-lives: scorer = NO_CREDIT (255); the event MEANS "victim lost a life"
-- 2v2-score / 2v2-ball: scorer = slot whose TEAM gets the point (goal
-  scorer for ball; for 2v2 kill-score, if we ever want it, team of the
-  non-victim pair — decided then, protocol carries it either way)
+- 2v2 (both variants): scorer = any slot of the OPPOSING team — no
+  attribution needed in team modes, "the other team" is always the answer.
+  USER RULE (2026-07-07): in 2v2-ball, a PLAYER falling into a goal pit
+  scores for the other team exactly as if they'd scored the ball there —
+  same team digit, same ceremony. (This generalizes today's 2P behavior:
+  any death including goal-pit falls already gives the opponent +1.)
+  Deaths in 2v2-ball cost the point only; respawn is normal (no lives).
 Lives are derived deterministically from death events on BOTH ends — no
 extra sync message. (State sync can carry lives later for reconnect.)
 
@@ -127,11 +132,39 @@ extra sync message. (State sync can carry lives later for reconnect.)
   from day one so digits just plug in.
 
 ### Deliberately NOT decided yet (flagged for later, nothing blocks)
-- 2v2 kill-score crediting (if 2v2 ever uses kills, not just ball goals)
-- Friendly-fire rule in 2v2 (teammate shove-offs)
+- Friendly-fire rule in 2v2 (teammate shove-offs — other team still scores
+  per the death rule; question is whether to add any extra penalty)
 - Lives count per mode/UI to change it (host option; byte already in v5)
 - Whether eliminated players get a spectator camera (they see the match;
   fancy cam later)
+
+## ROADMAP: MILESTONES TO FULL MODES
+
+**M1 — TRUE 4P over Steam (current milestone, FFA-lives).**
+Remaining: A6 lives + per-slot ceremony arrays, A7 text HUD, config relay,
+A8 departure robustness → 2PC+2bots test → 4 real accounts. Ball stays
+disabled at 3-4P (as today at network start). DONE = definition-of-done
+checklist below.
+
+**M2 — 2v2: score + beetleball.** Everything protocol-side already ships
+in v5 (game_mode 2/3, team_of_slot). Work is game logic + UI:
+- Lobby team assignment (host arranges slots into teams; team byte sent)
+- Team spawns (teammates same side), team-colored accents if desired
+- Scoring: victim dies OR ball goal -> opposing team +1 through the
+  existing per-slot ceremony arrays aggregated by team_of_slot; the 2
+  goal-end digit stations become the team digits (no new digit assets)
+- 4P ball physics already works (ball is slot-agnostic; pits are 2-sided
+  which is exactly the team layout)
+- Win: first team to N; rematch resets
+- Decide friendly-fire rule here
+
+**M3 — lives everywhere.** FFA-lives machinery from M1 IS the lives
+system; flipping 1v1 (and 2v2 if wanted) to lives = game_mode byte + a
+host lobby option. No new plumbing.
+
+Ordering rationale: M1 proves 4 real connections with the simplest ruleset
+(nobody argues with "last standing"); M2 reuses M1's per-slot ceremony
+arrays and the v5 team byte; M3 is configuration.
 
 ## Implementation steps (each has a test gate; commit after each)
 
