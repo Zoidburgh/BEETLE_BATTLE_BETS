@@ -607,6 +607,11 @@ collision_stats = {
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
 }
 
+# Last physics step's batched pair-collision results: (i, j) -> 0/1.
+# Lets gameplay gates (e.g. the yaw-lift contact check in input processing)
+# reuse the result instead of launching their own check_collision_kernel.
+pair_collision_last = {}
+
 def save_perf_log():
     """Write perf_log.txt plus a timestamped archive copy under perf_logs/.
 
@@ -17968,13 +17973,13 @@ try:
                             yaw_speed = -effective_speed
 
                             # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                            # Only apply if horn is actually moving
+                            # Only apply if horn is actually moving. Contact comes
+                            # from last step's batched pair check (one step stale;
+                            # a fresh kernel launch here cost ~0.5ms per yawing beetle)
                             if opp.active:
-                                has_real_collision = check_collision_kernel(
-                                    beetle.x, beetle.z, beetle.y,
-                                    opp.x, opp.z, opp.y,
-                                    beetle.color, opp.color
-                                )
+                                _opp_slot = slot ^ 1  # 0<->1, 2<->3 (matches opp = beetles[1 - slot])
+                                has_real_collision = pair_collision_last.get(
+                                    (min(slot, _opp_slot), max(slot, _opp_slot)), 0)
                                 if has_real_collision:
                                     # Apply push force to opponent (forward + lift)
                                     forward_x = math.cos(beetle.rotation)
@@ -17996,13 +18001,12 @@ try:
                             yaw_speed = effective_speed
 
                             # YAW LIFT: Apply lift to opponent when yawing during collision (all beetle types)
-                            # Only apply if horn is actually moving
+                            # Only apply if horn is actually moving. Contact from
+                            # last step's batched pair check (see INPUT_HORN_LEFT)
                             if opp.active:
-                                has_real_collision = check_collision_kernel(
-                                    beetle.x, beetle.z, beetle.y,
-                                    opp.x, opp.z, opp.y,
-                                    beetle.color, opp.color
-                                )
+                                _opp_slot = slot ^ 1  # 0<->1, 2<->3 (matches opp = beetles[1 - slot])
+                                has_real_collision = pair_collision_last.get(
+                                    (min(slot, _opp_slot), max(slot, _opp_slot)), 0)
                                 if has_real_collision:
                                     # Apply push force to opponent (forward + lift)
                                     forward_x = math.cos(beetle.rotation)
@@ -20294,6 +20298,7 @@ try:
             _active_pairs = []
             for i in range(active_player_count):
                 for j in range(i + 1, active_player_count):
+                    pair_collision_last[(i, j)] = 0
                     if (beetles[i].active and beetles[j].active and
                         not beetles[i].is_falling and not beetles[j].is_falling and
                         not hovering[i] and not hovering[j]):
@@ -20326,6 +20331,7 @@ try:
                 _pair_results = pair_check_result.to_numpy()  # single sync for all pairs
                 collision_stats['batch_check_ms'].append((time.perf_counter() - _t_batch_start) * 1000)
                 for _pi, (_bi, _bj) in enumerate(_active_pairs):
+                    pair_collision_last[(_bi, _bj)] = int(_pair_results[_pi])
                     _t_pair_start = time.perf_counter()
                     beetle_collision(beetles[_bi], beetles[_bj], physics_params,
                                      precomputed_collision=int(_pair_results[_pi]))
