@@ -16577,6 +16577,10 @@ physics_params = {
     # Engagement resistance tuning (replaces hard blocks; 0 / 1.0 = old hard-block feel)
     "HORN_LOCK_TURN_FACTOR": 0.35,  # Turn speed floor while horn-locked (0 = hard block like before)
     "HORN_DAMPING_CAP": 0.9,  # Max horn pitch/yaw damping during contact (1.0 = can fully freeze like before)
+    # Yaw grind (holding horn left/right through contact) - was hardcoded 40/25/0.02
+    "YAW_GRIND_PUSH": 60.0,   # Forward shove on contacts while yaw-grinding (units/s)
+    "YAW_GRIND_LIFT": 40.0,   # Lift on contacts while yaw-grinding (units/s)
+    "YAW_GRIND_TILT": 0.03,   # Pitch tilt per step on contacts while yaw-grinding (rad)
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
@@ -18364,11 +18368,11 @@ try:
                                 # Apply push force to opponent (forward + lift)
                                 forward_x = math.cos(beetle.rotation)
                                 forward_z = math.sin(beetle.rotation)
-                                push_force = 40.0 * PHYSICS_TIMESTEP
+                                push_force = physics_params.get("YAW_GRIND_PUSH", 60.0) * PHYSICS_TIMESTEP
                                 _ylb.vx += forward_x * push_force
                                 _ylb.vz += forward_z * push_force
-                                _ylb.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                                _ylb.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+                                _ylb.vy += physics_params.get("YAW_GRIND_LIFT", 40.0) * PHYSICS_TIMESTEP  # Lift up
+                                _ylb.pitch -= physics_params.get("YAW_GRIND_TILT", 0.03)  # Direct pitch tilt (front/grabbed area up)
                     elif p_inputs & INPUT_HORN_RIGHT:
                         # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                         base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else HORN_YAW_SPEED
@@ -18391,11 +18395,11 @@ try:
                                 # Apply push force to opponent (forward + lift)
                                 forward_x = math.cos(beetle.rotation)
                                 forward_z = math.sin(beetle.rotation)
-                                push_force = 40.0 * PHYSICS_TIMESTEP
+                                push_force = physics_params.get("YAW_GRIND_PUSH", 60.0) * PHYSICS_TIMESTEP
                                 _ylb.vx += forward_x * push_force
                                 _ylb.vz += forward_z * push_force
-                                _ylb.vy += 25.0 * PHYSICS_TIMESTEP  # Lift up
-                                _ylb.pitch -= 0.02  # Direct pitch tilt (front/grabbed area up)
+                                _ylb.vy += physics_params.get("YAW_GRIND_LIFT", 40.0) * PHYSICS_TIMESTEP  # Lift up
+                                _ylb.pitch -= physics_params.get("YAW_GRIND_TILT", 0.03)  # Direct pitch tilt (front/grabbed area up)
 
                 # PREDICTIVE TIP GATE REMOVED (2026-07-07, user call): the
                 # accidental ablation test proved it dead weight - the old
@@ -24601,6 +24605,8 @@ try:
             # Engagement resistance (0 / 1.0 = classic hard-block feel)
             physics_params["HORN_LOCK_TURN_FACTOR"] = window.GUI.slider_float("Horn Lock Turn", physics_params["HORN_LOCK_TURN_FACTOR"], 0.0, 1.0)
             physics_params["HORN_DAMPING_CAP"] = window.GUI.slider_float("Horn Damping Cap", physics_params["HORN_DAMPING_CAP"], 0.5, 1.0)
+            physics_params["YAW_GRIND_PUSH"] = window.GUI.slider_float("Yaw Grind Push", physics_params["YAW_GRIND_PUSH"], 0.0, 150.0)
+            physics_params["YAW_GRIND_LIFT"] = window.GUI.slider_float("Yaw Grind Lift", physics_params["YAW_GRIND_LIFT"], 0.0, 100.0)
             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
             physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
