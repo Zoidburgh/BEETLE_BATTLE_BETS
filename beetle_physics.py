@@ -16568,7 +16568,7 @@ physics_params = {
     # Dialed way down 2026-07-08: at 5.0/0.18 it ghost-pushed tips apart
     # while visibly NOT touching and made tip approaches skip - the tip/
     # shaft responses own real contact now, this only backstops fast spins
-    "PREDICTIVE_COLLISION_DIST": 2.0,  # Check if tips will be within this distance next frame
+    "PREDICTIVE_COLLISION_DIST": 3.0,  # Check if tips will be within this distance next frame
     "PREDICTIVE_COLLISION_PUSH": 0.08,  # Gentle preventive push strength
     "PREDICTIVE_COLLISION_SMOOTHING": 0.3,  # How fast push ramps up (0.3 = 30% per frame)
     # Shaft cylinder collision (catches shaft/attachment area that voxels miss)
