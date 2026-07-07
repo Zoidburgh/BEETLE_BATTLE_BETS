@@ -18788,12 +18788,26 @@ try:
                 # Spray-beetle collision detection (voxel-perfect GPU kernel)
                 # for EVERY active slot (was hardcoded to slots 0/1 - bots and
                 # extra players were immune to venom/spray), skipping each
-                # target's own spray
+                # target's own spray.
+                # DISTANCE CULL (behavior-identical): a particle > 30 voxels
+                # away in XZ cannot overlap a beetle's voxels (max reach ~21),
+                # so skip the per-slot kernel when no particle is near - a
+                # burst is localized, and 4 kernel launches per step cost
+                # ~3ms during barrages. Two cheap numpy reads replace them.
+                _spray_pos_np = simulation.spray_pos.to_numpy()[:actual_spray_count]
+                _spray_act_np = simulation.spray_active.to_numpy()[:actual_spray_count]
                 for _spray_slot in range(active_player_count):
-                    if beetles[_spray_slot].active and not beetles[_spray_slot].is_falling:
-                        hits = process_spray_collisions(beetles[_spray_slot], _spray_slot, _spray_slot)
-                        for hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb in hits:
-                            apply_spray_impact(beetles[_spray_slot], hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb)
+                    _tb = beetles[_spray_slot]
+                    if not (_tb.active and not _tb.is_falling):
+                        continue
+                    _near_mask = ((_spray_act_np == 1) &
+                                  (abs(_spray_pos_np[:, 0] - _tb.x) < 30.0) &
+                                  (abs(_spray_pos_np[:, 2] - _tb.z) < 30.0))
+                    if not _near_mask.any():
+                        continue  # No particle can possibly touch this slot
+                    hits = process_spray_collisions(_tb, _spray_slot, _spray_slot)
+                    for hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb in hits:
+                        apply_spray_impact(_tb, hit_idx, hit_x, hit_y, hit_z, vx, vy, vz, cr, cg, cb)
 
                 # Check if any spray hits the ball
                 check_spray_ball_collision()
