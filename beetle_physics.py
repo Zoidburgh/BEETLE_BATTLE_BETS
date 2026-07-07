@@ -8691,12 +8691,7 @@ def calculate_horn_tip_position(beetle):
     # Giraffe weevil: custom two-segment collision (fixed shaft + rotating prong at dynamic pivot)
     if beetle.horn_type == "giraffe":
         # Get dynamic pivot (shaft tip where prong attaches)
-        if beetle.color == "blue":
-            pivot_x = float(giraffe_blue_pivot_x[None])
-            pivot_y = float(giraffe_blue_pivot_y[None])
-        else:
-            pivot_x = float(giraffe_red_pivot_x[None])
-            pivot_y = float(giraffe_red_pivot_y[None])
+        pivot_x, pivot_y = _giraffe_pivot_local(beetle)
 
         # Head knob tip: prong extends head_len voxels from pivot, angling down ~45deg
         head_len = round(beetle.horn_prong_len) + 6
@@ -8802,6 +8797,53 @@ def calculate_horn_tip_position(beetle):
     world_z = beetle.z + rotated_z
 
     return world_x, world_y, world_z
+
+_COLOR_TO_SLOT = None
+
+def _giraffe_pivot_local(beetle):
+    """Beetle-local (x, y) of the giraffe neck/head pivot from the beetle's
+    OWN slot geometry. beetle.color is a voxel id (5/6/51/58), NOT a string —
+    the old `color == "blue"` compare was always False, so every giraffe
+    silently read slot 1's pivot fields (garbage tip for blue/P3/P4)."""
+    global _COLOR_TO_SLOT
+    if _COLOR_TO_SLOT is None:
+        _COLOR_TO_SLOT = {simulation.BEETLE_BLUE: 0, simulation.BEETLE_RED: 1,
+                          simulation.BEETLE_P3: 2, simulation.BEETLE_P4: 3}
+    _geo = beetle_geo[_COLOR_TO_SLOT.get(beetle.color, 0)]
+    return float(_geo['giraffe_pivot_x'][None]), float(_geo['giraffe_pivot_y'][None])
+
+def calculate_giraffe_elbow_position(beetle):
+    """World position of the giraffe neck/head pivot (the horn's bend).
+    Body yaw only — the pivot itself doesn't move with horn pitch/yaw."""
+    pivot_x, pivot_y = _giraffe_pivot_local(beetle)
+    cos_r = math.cos(beetle.rotation)
+    sin_r = math.sin(beetle.rotation)
+    return (beetle.x + pivot_x * cos_r, beetle.y + pivot_y, beetle.z + pivot_x * sin_r)
+
+def horn_collision_segments(beetle):
+    """Segment list approximating the horn for the anti-clip layers.
+    Every type is one straight base->tip segment EXCEPT the giraffe: its horn
+    is a bent polyline (neck up ~61 deg, head arcing back down), so the
+    straight chord passes ~10 voxels UNDER the elbow at long sliders and the
+    upper neck/head had no anti-clip coverage at all. It gets two segments
+    joined at the pivot."""
+    bx, by, bz = calculate_horn_shaft_base_position(beetle)
+    tx, ty, tz = calculate_horn_tip_position(beetle)
+    if beetle.horn_type == "giraffe":
+        ex, ey, ez = calculate_giraffe_elbow_position(beetle)
+        return [(bx, by, bz, ex, ey, ez), (ex, ey, ez, tx, ty, tz)]
+    return [(bx, by, bz, tx, ty, tz)]
+
+def _closest_on_horn_segments(segments, px, py, pz):
+    """Closest point to (px,py,pz) across a horn's segment list.
+    Returns (cx, cy, cz, seg_index, t_in_segment, dist)."""
+    best = None
+    for _i in range(len(segments)):
+        ax, ay, az, bx, by, bz = segments[_i]
+        cx, cy, cz, t, d = closest_point_on_segment(px, py, pz, ax, ay, az, bx, by, bz)
+        if best is None or d < best[5]:
+            best = (cx, cy, cz, _i, t, d)
+    return best
 
 def calculate_horn_shaft_base_position(beetle):
     """Calculate world position of horn shaft base (attachment point) for cylinder collision"""
@@ -9027,12 +9069,7 @@ def closest_points_between_segments(ax, ay, az, bx, by, bz, cx, cy, cz, dx_, dy_
 
 def _giraffe_tip_with_angles(beetle, pitch_angle, yaw_angle):
     """Giraffe weevil tip position with given pitch/yaw (shared by predictive collision helpers)"""
-    if beetle.color == "blue":
-        pivot_x = float(giraffe_blue_pivot_x[None])
-        pivot_y = float(giraffe_blue_pivot_y[None])
-    else:
-        pivot_x = float(giraffe_red_pivot_x[None])
-        pivot_y = float(giraffe_red_pivot_y[None])
+    pivot_x, pivot_y = _giraffe_pivot_local(beetle)
 
     head_len = round(beetle.horn_prong_len) + 6
     tip_local_x = pivot_x + 1.0 + head_len + 3.0
@@ -14332,26 +14369,17 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
         b2_has_shaft = b2.horn_type in ("rhino", "stag", "hercules", "atlas", "spider", "bombardier", "scorpion", "giraffe")
 
         # Larger radius for hornless/short-reach types to prevent body clipping
-        # Giraffe gets +2.0 since its long neck has a wide sweep arc
-        b1_radius = shaft_cylinder_radius + 2.0 if b1.horn_type == "giraffe" else shaft_cylinder_radius + 1.5 if b1.horn_type in ("spider", "bombardier", "scorpion") else shaft_cylinder_radius
-        b2_radius = shaft_cylinder_radius + 2.0 if b2.horn_type == "giraffe" else shaft_cylinder_radius + 1.5 if b2.horn_type in ("spider", "bombardier", "scorpion") else shaft_cylinder_radius
+        # (Giraffe used to get +2.0 to fudge its bad straight-chord segment;
+        # the two-segment model covers the real neck+head now, so standard
+        # +1.5 like the other special types)
+        b1_radius = shaft_cylinder_radius + 1.5 if b1.horn_type in ("spider", "bombardier", "scorpion", "giraffe") else shaft_cylinder_radius
+        b2_radius = shaft_cylinder_radius + 1.5 if b2.horn_type in ("spider", "bombardier", "scorpion", "giraffe") else shaft_cylinder_radius
 
         if b1_has_shaft or b2_has_shaft:
-            # Get shaft endpoints for beetles with horns
-            if b1_has_shaft:
-                b1_base_x, b1_base_y, b1_base_z = calculate_horn_shaft_base_position(b1)
-                b1_tip_x, b1_tip_y, b1_tip_z = calculate_horn_tip_position(b1)
-            if b2_has_shaft:
-                b2_base_x, b2_base_y, b2_base_z = calculate_horn_shaft_base_position(b2)
-                b2_tip_x, b2_tip_y, b2_tip_z = calculate_horn_tip_position(b2)
-
             # Check b2's body against b1's shaft/head cylinder
             if b1_has_shaft:
-                b1_shaft_cx, b1_shaft_cy, b1_shaft_cz, _b1_t, dist_to_b1_shaft = closest_point_on_segment(
-                    b2.x, b2.y, b2.z,
-                    b1_base_x, b1_base_y, b1_base_z,
-                    b1_tip_x, b1_tip_y, b1_tip_z
-                )
+                b1_shaft_cx, b1_shaft_cy, b1_shaft_cz, _b1_seg, _b1_t, dist_to_b1_shaft = \
+                    _closest_on_horn_segments(horn_collision_segments(b1), b2.x, b2.y, b2.z)
                 if dist_to_b1_shaft < b1_radius:
                     collision_stats['shaft_pushes'] += 1
                     # Push b2 away from b1's shaft/head
@@ -14377,11 +14405,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
 
             # Check b1's body against b2's shaft/head cylinder
             if b2_has_shaft:
-                b2_shaft_cx, b2_shaft_cy, b2_shaft_cz, _b2_t, dist_to_b2_shaft = closest_point_on_segment(
-                    b1.x, b1.y, b1.z,
-                    b2_base_x, b2_base_y, b2_base_z,
-                    b2_tip_x, b2_tip_y, b2_tip_z
-                )
+                b2_shaft_cx, b2_shaft_cy, b2_shaft_cz, _b2_seg, _b2_t, dist_to_b2_shaft = \
+                    _closest_on_horn_segments(horn_collision_segments(b2), b1.x, b1.y, b1.z)
                 if dist_to_b2_shaft < b2_radius:
                     collision_stats['shaft_pushes'] += 1
                     # Push b1 away from b2's shaft/head (perpendicular out of the shaft)
@@ -14503,12 +14528,12 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     if shaft_owner.horn_type not in ("rhino", "stag", "hercules", "atlas",
                                                      "spider", "bombardier", "scorpion", "giraffe"):
                         continue
-                    so_base_x, so_base_y, so_base_z = calculate_horn_shaft_base_position(shaft_owner)
-                    so_tip_x, so_tip_y, so_tip_z = calculate_horn_tip_position(shaft_owner)
-                    _scx, _scy, _scz, _st, _sdist = closest_point_on_segment(
-                        collision_x, collision_y, collision_z,
-                        so_base_x, so_base_y, so_base_z,
-                        so_tip_x, so_tip_y, so_tip_z)
+                    _so_segs = horn_collision_segments(shaft_owner)
+                    _scx, _scy, _scz, _sseg, _st_local, _sdist = _closest_on_horn_segments(
+                        _so_segs, collision_x, collision_y, collision_z)
+                    _nseg = len(_so_segs)
+                    _st = (_sseg + _st_local) / _nseg  # global 0..1 along the whole horn
+                    so_tip_x, so_tip_y, so_tip_z = _so_segs[-1][3], _so_segs[-1][4], _so_segs[-1][5]
                     # Contact must sit on the shaft (base through mid included —
                     # that's where bodies slip through; tip end has own handling)
                     if _sdist > shaft_contact_dist or _st < 0.02 or _st > 0.95:
@@ -14567,15 +14592,20 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _horn_vx = 0.0
                     _horn_vy = 0.0
                     _horn_vz = 0.0
-                    if (abs(shaft_owner.horn_pitch_velocity) > 0.02 or
+                    # Articulation only moves the ROTATING segment: for most
+                    # types that's the whole shaft (t from the base pivot);
+                    # for the giraffe the neck is fixed and only the head
+                    # segment sweeps, scaling with t from the elbow pivot.
+                    _artic_t = _st_local if _sseg == _nseg - 1 else 0.0
+                    if _artic_t > 0.0 and (abs(shaft_owner.horn_pitch_velocity) > 0.02 or
                             abs(shaft_owner.horn_yaw_velocity) > 0.02):
                         _pt_x, _pt_y, _pt_z = calculate_horn_tip_position_with_both(
                             shaft_owner,
                             shaft_owner.horn_pitch + shaft_owner.horn_pitch_velocity * PHYSICS_TIMESTEP,
                             shaft_owner.horn_yaw + shaft_owner.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                        _horn_vx = _st * (_pt_x - so_tip_x) / PHYSICS_TIMESTEP
-                        _horn_vy = _st * (_pt_y - so_tip_y) / PHYSICS_TIMESTEP
-                        _horn_vz = _st * (_pt_z - so_tip_z) / PHYSICS_TIMESTEP
+                        _horn_vx = _artic_t * (_pt_x - so_tip_x) / PHYSICS_TIMESTEP
+                        _horn_vy = _artic_t * (_pt_y - so_tip_y) / PHYSICS_TIMESTEP
+                        _horn_vz = _artic_t * (_pt_z - so_tip_z) / PHYSICS_TIMESTEP
 
                     # Closing speed at the contact: how fast the shaft (body
                     # motion + turn sweep + horn articulation) and the intruder's
@@ -14652,14 +14682,24 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _svs_types = ("rhino", "stag", "hercules", "atlas",
                                   "spider", "bombardier", "scorpion", "giraffe")
                     if b1.horn_type in _svs_types and b2.horn_type in _svs_types:
-                        _s1bx, _s1by, _s1bz = calculate_horn_shaft_base_position(b1)
-                        _s1tx, _s1ty, _s1tz = calculate_horn_tip_position(b1)
-                        _s2bx, _s2by, _s2bz = calculate_horn_shaft_base_position(b2)
-                        _s2tx, _s2ty, _s2tz = calculate_horn_tip_position(b2)
+                        # Closest crossing across all segment combos (1x1 for
+                        # ordinary horns; the giraffe contributes neck + head
+                        # segments so elbow-region crossings are covered too)
+                        _segs1 = horn_collision_segments(b1)
+                        _segs2 = horn_collision_segments(b2)
+                        _svs_best = None
+                        for _i1 in range(len(_segs1)):
+                            for _i2 in range(len(_segs2)):
+                                _res = closest_points_between_segments(
+                                    *_segs1[_i1], *_segs2[_i2])
+                                if _svs_best is None or _res[8] < _svs_best[0][8]:
+                                    _svs_best = (_res, _i1, _i2)
                         (_c1x, _c1y, _c1z, _c2x, _c2y, _c2z,
-                         _ss_s, _ss_t, _ss_d) = closest_points_between_segments(
-                            _s1bx, _s1by, _s1bz, _s1tx, _s1ty, _s1tz,
-                            _s2bx, _s2by, _s2bz, _s2tx, _s2ty, _s2tz)
+                         _ss_s_loc, _ss_t_loc, _ss_d) = _svs_best[0]
+                        # Map to global 0..1 along each whole horn so the
+                        # base->tip taper and tip-crossing limits keep meaning
+                        _ss_s = (_svs_best[1] + _ss_s_loc) / len(_segs1)
+                        _ss_t = (_svs_best[2] + _ss_t_loc) / len(_segs2)
                         # Shafts are thicker at the base: taper the crossing
                         # threshold from ~6.5 voxels (base-vs-base) to ~4
                         # toward the tips
