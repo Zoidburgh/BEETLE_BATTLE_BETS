@@ -4086,9 +4086,9 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
             t = ti.min(ti.max((d - fog_start) / ti.max(fog_end - fog_start, 1.0), 0.0), 1.0)
             f = t * t * (3.0 - 2.0 * t) * fog_max * fogp
             # Same horizon->zenith curve as renderer.set_sky_dome
-            # (SKY_GRADIENT_BAND=1.0, SKY_GRADIENT_GAMMA=1.9 — keep in sync)
-            up = ti.min(ti.max((dyy / ti.max(d, 0.001)) / 1.0, 0.0), 1.0)
-            sky_t = ti.pow(up, 1.9)
+            # (SKY_GRADIENT_BAND=0.60, SKY_GRADIENT_GAMMA=1.35 — keep in sync)
+            up = ti.min(ti.max((dyy / ti.max(d, 0.001)) / 0.60, 0.0), 1.0)
+            sky_t = ti.pow(up, 1.35)
         if f < 0.97:  # fully fogged voxels never enter the render buffer
             hor = ti.Vector([hor_r, hor_g, hor_b])
             zen = ti.Vector([zen_r, zen_g, zen_b])

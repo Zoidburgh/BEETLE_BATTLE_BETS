@@ -165,8 +165,12 @@ def _write_dome_colors(cols: ti.types.ndarray()):
 # near the top — a fuller, stronger, smoother gradient than a smoothstep
 # (whose flat shoulders dump most of the sky to zenith early and read weak).
 # update_bg_cache's fog target MUST use this SAME curve — change both.
-SKY_GRADIENT_BAND = 1.0    # sin(elev) at which the sky reaches full zenith
-SKY_GRADIENT_GAMMA = 1.9   # >1 = glow climbs higher; bigger = more sky colored
+SKY_GRADIENT_BAND = 0.60   # sin(elev) at which the sky reaches full zenith
+SKY_GRADIENT_GAMMA = 1.35  # >1 = glow climbs higher; bigger = more sky colored
+# Band 0.60 (not 1.0) so the full horizon->zenith shift completes within the
+# sky visible at gameplay camera angles — otherwise the contrasting zenith
+# hue only appears when looking straight up. Gamma 1.35 keeps the warm glow
+# dominant in the lower sky, then swings to the cool zenith near frame-top.
 
 def set_sky_dome(horizon, zenith):
     """Enable the dome with a horizon->zenith gradient (final on-screen colors).

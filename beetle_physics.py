@@ -16544,19 +16544,22 @@ window.board_color = (0.42, 0.3, 0.16)  # Warm amber wood default
 # the user dialed in by feel 2026-07-08 (screenshot-confirmed). Stars stay
 # unchanged (bg_fog=0). Sliders in the BACKGROUND GUI panel. Fog fades bg
 # voxels toward the sky color with camera distance; MUTE scales biome mute.
-BG_FOG_START = 20.0
+BG_FOG_START = 78.0
 BG_FOG_END = 231.0
 BG_FOG_MAX = 0.62
 BG_MUTE_STRENGTH = 1.65
 DEFAULT_SKY_COLOR = (0.04, 0.04, 0.06)
-# Biome skies: fog fades toward these, which is what makes each biome's
-# air read as real (warm dust, murk, deep sea, ember glow)
+# Biome ZENITH colors (top of the dome; also the flat clear color when the
+# dome is off, and the fog target for high-elevation voxels). Deliberately a
+# COOL hue that CONTRASTS the warm horizon glow below — the warm->cool shift
+# is what makes the gradient read as a dramatic sunset sky rather than one
+# hue just getting darker. Kept dark so the sky never competes with beetles.
 THEME_SKY_COLORS = {
-    simulation.THEME_DESERT: (0.10, 0.07, 0.05),
-    simulation.THEME_GRASS: (0.03, 0.05, 0.04),
-    simulation.THEME_WAVES: (0.02, 0.04, 0.08),
-    simulation.THEME_SWAMP: (0.03, 0.05, 0.03),
-    simulation.THEME_LAVA: (0.08, 0.03, 0.02),
+    simulation.THEME_DESERT: (0.05, 0.04, 0.14),   # deep indigo dusk
+    simulation.THEME_GRASS: (0.02, 0.06, 0.13),    # twilight blue
+    simulation.THEME_WAVES: (0.02, 0.03, 0.17),    # abyssal navy
+    simulation.THEME_SWAMP: (0.07, 0.03, 0.13),    # dark violet murk
+    simulation.THEME_LAVA: (0.07, 0.02, 0.07),     # charred plum-black
 }
 # Sky dome (renderer.set_sky_dome): per-biome horizon glow grading up into
 # the THEME_SKY_COLORS zenith. The dome is a world-anchored mesh, so the
@@ -16565,11 +16568,11 @@ THEME_SKY_COLORS = {
 SKY_DOME_ON = '--nodome' not in sys.argv  # GUI toggle (ATMOSPHERE panel); --nodome for perf A/B
 CURRENT_BIOME_THEME = None  # active biome theme id (None = default flat sky)
 THEME_HORIZON_COLORS = {
-    simulation.THEME_DESERT: (0.60, 0.28, 0.09),   # burnt-orange dusk glow
-    simulation.THEME_GRASS: (0.38, 0.28, 0.10),    # golden-hour meadow
-    simulation.THEME_WAVES: (0.10, 0.42, 0.62),    # glowing teal sea-line
-    simulation.THEME_SWAMP: (0.16, 0.36, 0.10),    # eerie bog phosphor
-    simulation.THEME_LAVA: (0.70, 0.14, 0.03),     # ember inferno rim
+    simulation.THEME_DESERT: (0.72, 0.32, 0.08),   # blazing orange dusk glow
+    simulation.THEME_GRASS: (0.46, 0.34, 0.10),    # golden-hour meadow
+    simulation.THEME_WAVES: (0.10, 0.50, 0.70),    # glowing teal sea-line
+    simulation.THEME_SWAMP: (0.22, 0.46, 0.10),    # eerie bog phosphor
+    simulation.THEME_LAVA: (0.90, 0.24, 0.03),     # white-hot ember rim
 }
 
 def apply_biome_sky(theme_id):

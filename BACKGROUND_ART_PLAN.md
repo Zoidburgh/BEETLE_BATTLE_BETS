@@ -55,15 +55,20 @@
    desaturation curve.
 4. Slider persistence across sessions (currently reset to defaults each
    boot) — only if the user asks.
-5. Tune THEME_HORIZON_COLORS per biome while walking them (see SKY DOME
-   below). 2026-07-08: user pushed for MUCH stronger — horizons now near-
-   saturated + the gradient uses a GAMMA curve (SKY_GRADIENT_GAMMA=1.9,
-   BAND=1.0 in renderer.set_sky_dome) so the glow fills most of the sky and
-   only darkens near the top. Screenshot-tuned all 5. Err dramatic.
-   Fog defaults are now the user's dialed-in values (FOG_START 20 /
-   FOG_END 231 / FOG_MAX 0.62 / MUTE 1.65); FOG START slider floor dropped
-   to 0 (was pinned at the old 20 rail). If a biome reads too uniform,
-   LOWER gamma (toward 1.0) to pull the glow back down to the horizon.
+5. Tune THEME_HORIZON_COLORS / THEME_SKY_COLORS per biome (see SKY DOME
+   below). 2026-07-08 final pass: dome is now a WARM->COOL sunset shift —
+   THEME_SKY_COLORS (zenith) were changed from murky same-hue darks to
+   CONTRASTING cool hues (desert orange->indigo, ocean teal->navy, lava
+   ember->plum, swamp green->violet, grass gold->twilight-blue). The hue
+   contrast is what makes the shift read as dramatic. Curve tightened to
+   BAND=0.60 / GAMMA=1.35 so the full shift completes within the sky
+   visible at gameplay angles (band 1.0 pushed the cool zenith out of
+   frame — only visible looking straight up). Fog defaults FOG_START 78 /
+   FOG_END 231 / FOG_MAX 0.62 / MUTE 1.65. If the shift is too abrupt or
+   the cool top appears too low, RAISE band toward 0.8; if not dramatic
+   enough, push zenith hues further from the horizon hue (not just darker).
+   NOTE: THEME_SKY_COLORS is also the flat clear color (dome off) + the
+   fog target for high voxels — all three move together by design.
 
 ## STATUS 2026-07-08 LATE: SKY DOME SHIPPED (3D gradient sky per biome)
 
