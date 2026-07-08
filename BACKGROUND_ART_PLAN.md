@@ -55,6 +55,53 @@
    desaturation curve.
 4. Slider persistence across sessions (currently reset to defaults each
    boot) — only if the user asks.
+5. Tune THEME_HORIZON_COLORS per biome while walking them (see SKY DOME
+   below) — current values are a first guess (~1.7x zenith brightness).
+
+## STATUS 2026-07-08 LATE: SKY DOME SHIPPED (3D gradient sky per biome)
+
+The flat clear color carries zero depth (identical in every direction), so
+biomes got a real sky: a low-poly sphere (r=300, 312 verts) with per-vertex
+horizon->zenith gradient. World-anchored => the gradient PANS with camera
+pitch/yaw. STARS/default keep the flat sky untouched (dome off).
+
+### How it works (and the probe findings that make it deterministic)
+- GGUI probe (offscreen, scratchpad dome_probe.py, 2026-07-08): scene.mesh
+  shades as EXACTLY albedo * ambient_light when normals face AWAY from all
+  point lights — zero diffuse/specular leak, no attenuation, linear, and
+  backface winding is NOT culled even with two_sided=False. So dome albedo
+  is baked as desired_color / (AMBIENT_BASE * base_light_brightness) and
+  re-baked when brightness changes; on-screen color is exact.
+- PERF: a separate scene.mesh call costs ~2ms FIXED overhead on this iGPU
+  (measured; shadow mesh with 198 verts also ~2.2ms). So the dome rides
+  the FLOOR mesh call: verts live in the floor-field TAIL
+  (MAX_FLOOR_VERTS..+312), dome index block sits FIRST in the merged index
+  array (index_count = SKY_DOME_INDEX_COUNT + floor_count*6 stays
+  contiguous). Measured: floor_mesh_draw unchanged (~1.9-2.1ms) with dome
+  on. Same merge pattern as projectiles-into-voxel-buffer.
+- Fog target is now DIRECTIONAL: update_bg_cache takes horizon+zenith
+  colors and blends by up-ness of the camera->voxel ray with the SAME
+  smoothstep(0..0.55) curve as the dome, so fogged voxels melt into it.
+  Dome off => same color passed twice => bit-identical to old behavior
+  (stars contract re-verified: diff 0.0).
+
+### Knobs
+- THEME_HORIZON_COLORS (beetle_physics.py, next to THEME_SKY_COLORS):
+  horizon glow per biome; zenith = THEME_SKY_COLORS. apply_biome_sky() is
+  the single entry point (GUI panel + canvas overlay both route through
+  it — the overlay previously didn't set sky colors at all, now fixed).
+- SKY DOME ON/OFF button in ATMOSPHERE panel (live A/B while tuning).
+- Gradient curve: smoothstep over sin(elev) 0..0.55 in
+  renderer.set_sky_dome + matching curve in update_bg_cache — change BOTH.
+- Dev flags: `--biome desert|grass|ocean|swamp|lava` boots straight into a
+  biome (canaries/tuning); `--nodome` disables the dome for perf A/B.
+
+### Verification (reuse)
+- scratchpad verify_dome.py pattern: stars contract 0.0 diff; positions
+  independent of sky colors; directional blend sign-checked from low/high
+  cameras; bake roundtrip exact; floor quad region untouched by dome bake.
+- Offscreen screenshots via renderer.render() + window.save_image on a
+  hidden ti.ui.Window work headless (scratchpad dome_screenshot.py).
 
 Research done 2026-07-08. Problem statement (user): background themes look
 cool but their voxels are DISTRACTING next to the beetle voxels — want a

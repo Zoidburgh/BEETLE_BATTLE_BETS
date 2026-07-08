@@ -727,6 +727,7 @@ def save_perf_log():
         w(f"    particles_draw: {rt.get('particles_draw', 0):.2f}ms (scene.particles upload+draw)")
         w(f"    floor_mesh_draw: {rt.get('floor_mesh_draw', 0):.2f}ms (floor mesh upload+draw)")
         w(f"    shadow_draw: {rt.get('shadow_draw', 0):.2f}ms")
+        w(f"    sky_dome: {'ON (rides floor mesh call)' if rt.get('sky_dome_on', 0) else 'off'}")
         w(f"  voxel_count: {rt.get('voxel_count', 0)}")
         w(f"  floor_quads: {rt.get('floor_quads', 0)}")
 
@@ -16557,6 +16558,40 @@ THEME_SKY_COLORS = {
     simulation.THEME_SWAMP: (0.03, 0.05, 0.03),
     simulation.THEME_LAVA: (0.08, 0.03, 0.02),
 }
+# Sky dome (renderer.set_sky_dome): per-biome horizon glow grading up into
+# the THEME_SKY_COLORS zenith. The dome is a world-anchored mesh, so the
+# gradient pans with camera pitch/yaw — real 3D sky, unlike the flat clear
+# color. STARS/default keep the flat sky (dome off) — tuning contract.
+SKY_DOME_ON = '--nodome' not in sys.argv  # GUI toggle (ATMOSPHERE panel); --nodome for perf A/B
+CURRENT_BIOME_THEME = None  # active biome theme id (None = default flat sky)
+THEME_HORIZON_COLORS = {
+    simulation.THEME_DESERT: (0.17, 0.11, 0.06),
+    simulation.THEME_GRASS: (0.06, 0.10, 0.07),
+    simulation.THEME_WAVES: (0.04, 0.09, 0.14),
+    simulation.THEME_SWAMP: (0.07, 0.10, 0.05),
+    simulation.THEME_LAVA: (0.18, 0.05, 0.02),
+}
+
+def apply_biome_sky(theme_id):
+    """Set clear color + sky dome for a biome (None = default flat sky).
+    The single entry point for sky state — both the GUI panel and the
+    canvas overlay biome buttons route through here."""
+    global CURRENT_BIOME_THEME
+    CURRENT_BIOME_THEME = theme_id
+    window.background_color = THEME_SKY_COLORS.get(theme_id, DEFAULT_SKY_COLOR)
+    if SKY_DOME_ON and theme_id in THEME_HORIZON_COLORS:
+        renderer.set_sky_dome(THEME_HORIZON_COLORS[theme_id], THEME_SKY_COLORS[theme_id])
+    else:
+        renderer.disable_sky_dome()
+
+def get_fog_sky_colors():
+    """(horizon, zenith) fog targets for update_bg_cache: the dome gradient
+    when the dome is up, else the flat clear color twice (old behavior,
+    keeps the stars contract and the user's custom bg color working)."""
+    if renderer.sky_dome_enabled and CURRENT_BIOME_THEME in THEME_HORIZON_COLORS:
+        return THEME_HORIZON_COLORS[CURRENT_BIOME_THEME], THEME_SKY_COLORS[CURRENT_BIOME_THEME]
+    bg = window.background_color
+    return bg, bg
 
 camera = renderer.Camera()
 # Start camera at title screen position (will transition to game view on start)
@@ -17188,10 +17223,11 @@ simulation.bg_flush()  # Warm up all 14 from_numpy() transfers
 simulation.bg_theme_active[None] = 1  # Enable so renderer PHASE 6 compiles
 simulation.star_ripple_time[None] = -999.0  # No ripple at startup
 simulation.animate_background(0.0)  # Now hits all animation branches
+_fog_hor, _fog_zen = get_fog_sky_colors()
 simulation.update_bg_cache(
     float(camera.pos_x), float(camera.pos_y), float(camera.pos_z),
-    float(window.background_color[0]), float(window.background_color[1]),
-    float(window.background_color[2]),
+    float(_fog_hor[0]), float(_fog_hor[1]), float(_fog_hor[2]),
+    float(_fog_zen[0]), float(_fog_zen[1]), float(_fog_zen[2]),
     float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
     float(BG_MUTE_STRENGTH))  # Warm up cache kernel
 # Quick render pass to compile renderer's split kernels (PHASE 6 path)
@@ -17272,6 +17308,20 @@ if STEAM_CONNECT_LOBBY and NETWORK_AVAILABLE:
 
 # Enable stars theme by default for better visuals
 simulation.toggle_theme(simulation.THEME_STARS)
+
+# --biome <name>: boot straight into a biome (dev flag for perf canaries /
+# atmosphere tuning — same path as clicking the GUI button)
+if '--biome' in sys.argv:
+    _biome_arg = sys.argv[sys.argv.index('--biome') + 1].lower() if sys.argv.index('--biome') + 1 < len(sys.argv) else ''
+    _biome_map = {'desert': simulation.THEME_DESERT, 'grass': simulation.THEME_GRASS,
+                  'ocean': simulation.THEME_WAVES, 'swamp': simulation.THEME_SWAMP,
+                  'lava': simulation.THEME_LAVA}
+    if _biome_arg in _biome_map:
+        simulation.toggle_theme(_biome_map[_biome_arg])
+        apply_biome_sky(_biome_map[_biome_arg])
+        print(f"[Dev] --biome {_biome_arg}: theme + sky dome active")
+    else:
+        print(f"[Dev] --biome: unknown biome '{_biome_arg}' (use desert/grass/ocean/swamp/lava)")
 
 try:
   while window.running:
@@ -22064,10 +22114,11 @@ try:
                 if ripple_age > 8.0 + (background_time * 7.3 % 7.0):  # Pseudo-random interval
                     simulation.trigger_star_ripple(background_time)
             simulation.animate_background(background_time)
+            _fog_hor, _fog_zen = get_fog_sky_colors()
             simulation.update_bg_cache(
                 float(camera.pos_x), float(camera.pos_y), float(camera.pos_z),
-                float(window.background_color[0]), float(window.background_color[1]),
-                float(window.background_color[2]),
+                float(_fog_hor[0]), float(_fog_hor[1]), float(_fog_hor[2]),
+                float(_fog_zen[0]), float(_fog_zen[1]), float(_fog_zen[2]),
                 float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
                 float(BG_MUTE_STRENGTH))
         simulation.decay_stadium_excitement(frame_dt)
@@ -22475,11 +22526,13 @@ try:
                     if bx0 <= mx <= bx1 and by0 <= my <= by1:
                         if simulation.is_theme_active(theme_id):
                             simulation.toggle_theme(theme_id)
+                            apply_biome_sky(None)
                         else:
                             for b_id in biome_ids_set:
                                 if b_id != theme_id and simulation.is_theme_active(b_id):
                                     simulation.remove_theme(b_id)
                             simulation.toggle_theme(theme_id)
+                            apply_biome_sky(theme_id)
                         print(f"Biome {label} toggled")
                         break
 
@@ -22506,6 +22559,7 @@ try:
                 clear_x1 = _wcx + 0.06
                 if clear_x0 <= mx <= clear_x1 and clear_y0 <= my <= clear_y1:
                     simulation.clear_all_themes()
+                    apply_biome_sky(None)
                     print("All background themes cleared")
 
             # === LEFT PANEL CLICKS ===
@@ -24176,16 +24230,16 @@ try:
 
         def toggle_biome(theme_id):
             """Only one biome at a time — clear others before toggling.
-            Biomes also set their sky color (fog fades toward it)."""
+            Biomes also set their sky (clear color + dome gradient)."""
             if simulation.is_theme_active(theme_id):
                 simulation.toggle_theme(theme_id)
-                window.background_color = DEFAULT_SKY_COLOR
+                apply_biome_sky(None)
             else:
                 for b in biome_ids:
                     if b != theme_id and simulation.is_theme_active(b):
                         simulation.remove_theme(b)
                 simulation.toggle_theme(theme_id)
-                window.background_color = THEME_SKY_COLORS.get(theme_id, DEFAULT_SKY_COLOR)
+                apply_biome_sky(theme_id)
 
         if window.GUI.button(theme_label("DESERT", simulation.THEME_DESERT)):
             toggle_biome(simulation.THEME_DESERT)
@@ -24228,7 +24282,7 @@ try:
 
         if window.GUI.button("CLEAR ALL"):
             simulation.clear_all_themes()
-            window.background_color = DEFAULT_SKY_COLOR
+            apply_biome_sky(None)
             print("All background themes cleared")
 
         # === ATMOSPHERE (BACKGROUND_ART_PLAN.md) ===
@@ -24237,6 +24291,9 @@ try:
         BG_FOG_START = window.GUI.slider_float("FOG START", BG_FOG_START, 20.0, 250.0)
         BG_FOG_END = window.GUI.slider_float("FOG END", BG_FOG_END, 60.0, 400.0)
         BG_FOG_MAX = window.GUI.slider_float("FOG MAX", BG_FOG_MAX, 0.0, 1.0)
+        if window.GUI.button("SKY DOME: ON" if SKY_DOME_ON else "SKY DOME: OFF"):
+            SKY_DOME_ON = not SKY_DOME_ON
+            apply_biome_sky(CURRENT_BIOME_THEME)
 
         # === PERFORMANCE MONITORING DISPLAY (commented out - use Save Perf Log at bottom) ===
         # if perf_monitor.show_stats:

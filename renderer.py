@@ -39,10 +39,20 @@ owner_frac_offset = ti.Vector.field(3, dtype=ti.f32, shape=5)
 MAX_FLOOR_QUADS = 4000
 MAX_FLOOR_VERTS = MAX_FLOOR_QUADS * 4
 
+# Sky dome vertices ride in the TAIL of the floor mesh fields (indices
+# MAX_FLOOR_VERTS..+SKY_DOME_VERTS) so the dome adds ZERO draw calls — a
+# separate scene.mesh call costs ~2ms fixed overhead on iGPUs (measured
+# 2026-07-08, same as the shadow mesh call). Floor quad writes are all
+# guarded < MAX_FLOOR_QUADS so they never touch the tail.
+SKY_DOME_SEGS = 24
+SKY_DOME_RINGS = 13
+SKY_DOME_RADIUS = 300.0  # bg voxels top out ~220; must stay inside far plane
+SKY_DOME_VERTS = SKY_DOME_SEGS * SKY_DOME_RINGS  # 312 verts — upload cost is noise
+
 num_floor_quads = ti.field(dtype=ti.i32, shape=())
-floor_vertices = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
-floor_normals = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
-floor_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS)
+floor_vertices = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS + SKY_DOME_VERTS)
+floor_normals = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS + SKY_DOME_VERTS)
+floor_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS + SKY_DOME_VERTS)
 
 # Floor texture contrast (runtime-tunable — changing these won't trigger kernel recompilation)
 stone_coarse_strength = ti.field(dtype=ti.f32, shape=())   # ±coarse patch variation
@@ -88,6 +98,100 @@ for _d in range(MAX_SHADOW_DISCS):
         _shadow_indices_np[_ti_base] = _center
         _shadow_indices_np[_ti_base + 1] = _center + 1 + _s
         _shadow_indices_np[_ti_base + 2] = _center + 1 + (_s + 1) % SHADOW_DISC_SEGMENTS
+
+# === Sky dome mesh (BACKGROUND_ART_PLAN.md) ===
+# A low-poly sphere far behind the background voxels with a per-vertex
+# horizon->zenith gradient per biome. World-anchored, so the gradient pans
+# with camera pitch/yaw — the depth cue a flat clear color can't give.
+# Probe result (2026-07-08, offscreen GGUI test): scene.mesh shades as
+# EXACTLY albedo * ambient_light when normals face away from all point
+# lights (zero diffuse/specular leak, no attenuation, linear, and winding
+# is not culled). Dome albedo is therefore baked as
+# desired_color / (AMBIENT_BASE * base_light_brightness) and re-baked
+# whenever the brightness changes — the on-screen color is deterministic.
+# Geometry lives in the floor-field TAIL (see SKY_DOME_SEGS above): the
+# dome block sits FIRST in the merged index array so index_count =
+# SKY_DOME_INDEX_COUNT + floor_count * 6 stays contiguous from 0.
+AMBIENT_BASE = (0.26, 0.26, 0.29)  # scene.ambient_light = AMBIENT_BASE * base_light_brightness
+
+_dome_verts_np = np.zeros((SKY_DOME_VERTS, 3), dtype=np.float32)
+_dome_sin_elev_np = np.zeros(SKY_DOME_VERTS, dtype=np.float32)
+for _ri in range(SKY_DOME_RINGS):
+    _elev = -0.5 * np.pi + np.pi * _ri / (SKY_DOME_RINGS - 1)
+    for _si in range(SKY_DOME_SEGS):
+        _az = 2.0 * np.pi * _si / SKY_DOME_SEGS
+        _vi = _ri * SKY_DOME_SEGS + _si
+        _dome_verts_np[_vi] = (np.cos(_az) * np.cos(_elev) * SKY_DOME_RADIUS,
+                               np.sin(_elev) * SKY_DOME_RADIUS,
+                               np.sin(_az) * np.cos(_elev) * SKY_DOME_RADIUS)
+        _dome_sin_elev_np[_vi] = np.sin(_elev)
+
+_dome_indices_np = np.zeros((SKY_DOME_RINGS - 1) * SKY_DOME_SEGS * 6, dtype=np.int32)
+_di = 0
+for _ri in range(SKY_DOME_RINGS - 1):
+    for _si in range(SKY_DOME_SEGS):
+        _v00 = _ri * SKY_DOME_SEGS + _si
+        _v01 = _ri * SKY_DOME_SEGS + (_si + 1) % SKY_DOME_SEGS
+        _dome_indices_np[_di:_di + 6] = [_v00, _v00 + SKY_DOME_SEGS, _v01 + SKY_DOME_SEGS,
+                                         _v00, _v01 + SKY_DOME_SEGS, _v01]
+        _di += 6
+SKY_DOME_INDEX_COUNT = len(_dome_indices_np)
+
+# Dome-only indices (sphere-floor fallback) and merged dome+floor indices
+_dome_only_indices_np = (_dome_indices_np + MAX_FLOOR_VERTS).astype(np.int32)
+_floor_dome_indices_np = np.concatenate([_dome_only_indices_np, _floor_indices_np])
+
+# Write dome verts + outward normals (away from interior lights -> ambient-
+# only shading) into the floor-field tail once; quad kernels never touch it.
+_dome_init_np = np.zeros((MAX_FLOOR_VERTS + SKY_DOME_VERTS, 3), dtype=np.float32)
+_dome_init_np[MAX_FLOOR_VERTS:] = _dome_verts_np
+floor_vertices.from_numpy(_dome_init_np)
+_dome_init_np[MAX_FLOOR_VERTS:] = _dome_verts_np / SKY_DOME_RADIUS
+floor_normals.from_numpy(_dome_init_np)
+del _dome_init_np
+
+sky_dome_enabled = False
+_dome_desired_np = np.zeros((SKY_DOME_VERTS, 3), dtype=np.float32)  # target on-screen colors
+_dome_baked_b = -1.0  # base_light_brightness the albedo was last baked for
+
+@ti.kernel
+def _write_dome_colors(cols: ti.types.ndarray()):
+    for i in range(SKY_DOME_VERTS):
+        floor_colors[MAX_FLOOR_VERTS + i] = ti.math.vec3(cols[i, 0], cols[i, 1], cols[i, 2])
+
+def set_sky_dome(horizon, zenith):
+    """Enable the dome with a horizon->zenith gradient (final on-screen colors).
+
+    Above the horizon the blend is smoothstep over sin(elev) 0..0.55 —
+    update_bg_cache uses the SAME curve for its fog target so fogged bg
+    voxels melt into the dome instead of ghosting against it. Below the
+    horizon (mostly floor-occluded) it eases slightly darker.
+    """
+    global sky_dome_enabled, _dome_baked_b
+    hor = np.array(horizon, dtype=np.float32)
+    zen = np.array(zenith, dtype=np.float32)
+    s = _dome_sin_elev_np
+    t_up = np.clip(s / 0.55, 0.0, 1.0)
+    t_up = t_up * t_up * (3.0 - 2.0 * t_up)
+    t_dn = np.clip(-s / 0.5, 0.0, 1.0)
+    dn = 1.0 - 0.45 * (t_dn * t_dn * (3.0 - 2.0 * t_dn))
+    above = hor[None, :] + (zen - hor)[None, :] * t_up[:, None]
+    _dome_desired_np[:] = np.where(s[:, None] >= 0.0, above, hor[None, :] * dn[:, None])
+    sky_dome_enabled = True
+    _dome_baked_b = -1.0  # force re-bake on next render
+
+def disable_sky_dome():
+    global sky_dome_enabled
+    sky_dome_enabled = False
+
+def _bake_dome_albedo(b):
+    """Meshes render as albedo * ambient, so divide the desired colors out."""
+    global _dome_baked_b
+    amb = np.array(AMBIENT_BASE, dtype=np.float32) * max(b, 0.02)
+    _write_dome_colors(np.ascontiguousarray(_dome_desired_np / amb[None, :]))
+    _dome_baked_b = b
+
+_write_dome_colors(np.zeros((SKY_DOME_VERTS, 3), dtype=np.float32))  # compile at import (avoids a mid-game JIT hitch)
 
 # Particle radius constants
 VOXEL_RADIUS = 0.407  # Standard voxel size (10% bigger)
@@ -1627,10 +1731,16 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         spot_x, spot_y, spot_z = spotlight_pos
         scene.point_light(pos=(spot_x, spot_y, spot_z), color=(spotlight_strength * 1.15, spotlight_strength, spotlight_strength * 0.85))
 
-    # Ambient light for even base illumination
-    scene.ambient_light((0.26 * b, 0.26 * b, 0.29 * b))
+    # Ambient light for even base illumination (AMBIENT_BASE — the sky dome
+    # bake divides by this exact value, keep them in sync)
+    scene.ambient_light((AMBIENT_BASE[0] * b, AMBIENT_BASE[1] * b, AMBIENT_BASE[2] * b))
 
     _t5 = time.perf_counter()
+
+    # Sky dome color re-bake (biome toggle or brightness change only). The
+    # dome DRAW is merged into the floor mesh call below — zero extra calls.
+    if sky_dome_enabled and abs(b - _dome_baked_b) > 0.01:
+        _bake_dome_albedo(b)
 
     # Render non-floor particles as spheres
     # (beetles, steel, goals, debris, spray, silk, projectiles, etc.)
@@ -1648,16 +1758,29 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         )
     _t_particles1 = time.perf_counter()
 
-    # Mesh floor quads (only when mesh floor enabled)
+    # Mesh floor quads (only when mesh floor enabled). The sky dome rides in
+    # this same call (dome index block first, then floor quads) so it costs
+    # no extra scene.mesh call — only its 312 verts of upload.
     floor_count = 0
     _t_mesh0 = time.perf_counter()
     if mesh_floor_enabled:
         floor_count = cached_floor_count if floor_cache_valid else num_floor_quads[None]
         floor_count = min(floor_count, MAX_FLOOR_QUADS)  # same buffer-overrun guard
-        if floor_count > 0:
+        if sky_dome_enabled:
+            scene.mesh(floor_vertices, indices=_floor_dome_indices_np, normals=floor_normals,
+                       per_vertex_color=floor_colors, two_sided=False,
+                       vertex_count=MAX_FLOOR_VERTS + SKY_DOME_VERTS,
+                       index_count=SKY_DOME_INDEX_COUNT + floor_count * 6)
+        elif floor_count > 0:
             scene.mesh(floor_vertices, indices=_floor_indices_np, normals=floor_normals,
                        per_vertex_color=floor_colors, two_sided=False,
                        vertex_count=floor_count * 4, index_count=floor_count * 6)
+    elif sky_dome_enabled:
+        # Sphere-floor fallback: no floor mesh call to ride, dome pays its own
+        scene.mesh(floor_vertices, indices=_dome_only_indices_np, normals=floor_normals,
+                   per_vertex_color=floor_colors, two_sided=False,
+                   vertex_count=MAX_FLOOR_VERTS + SKY_DOME_VERTS,
+                   index_count=SKY_DOME_INDEX_COUNT)
     _t_mesh1 = time.perf_counter()
 
     # Shadow discs (always — works on both mesh and sphere floors)
@@ -1684,8 +1807,9 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         'lighting_setup': (_t5 - _t2) * 1000,
         'scene_draw': (_t6 - _t5) * 1000,  # particles + mesh
         'particles_draw': (_t_particles1 - _t_particles0) * 1000,  # scene.particles (uploads voxel fields)
-        'floor_mesh_draw': (_t_mesh1 - _t_mesh0) * 1000,  # scene.mesh floor (uploads floor fields)
+        'floor_mesh_draw': (_t_mesh1 - _t_mesh0) * 1000,  # scene.mesh floor+sky dome (uploads floor fields)
         'shadow_draw': (_t_shadow1 - _t_shadow0) * 1000,  # shadow disc build + mesh
+        'sky_dome_on': 1 if sky_dome_enabled else 0,  # dome rides the floor mesh call
         'voxel_count': count,
         'floor_quads': floor_count,
     }

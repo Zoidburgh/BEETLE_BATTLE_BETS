@@ -3997,7 +3997,8 @@ def animate_background(time: ti.f32):
 
 @ti.kernel
 def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
-                    sky_r: ti.f32, sky_g: ti.f32, sky_b: ti.f32,
+                    hor_r: ti.f32, hor_g: ti.f32, hor_b: ti.f32,
+                    zen_r: ti.f32, zen_g: ti.f32, zen_b: ti.f32,
                     fog_start: ti.f32, fog_end: ti.f32, fog_max: ti.f32,
                     mute_strength: ti.f32):
     """Pre-compute renderer-ready bg data. Only call at animation frequency.
@@ -4005,8 +4006,14 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
     Atmosphere pass (per-voxel, GGUI has no shaders so it's baked into
     vertex colors): presence mute (desaturate/dim/calm biome decor via
     bg_mute x mute_strength) then distance fog (lerp toward the sky color
-    - visually identical to alpha against the flat clear color; bg_fog=0
-    exempts celestial themes). Fully fogged voxels are culled entirely."""
+    - visually identical to alpha against the sky; bg_fog=0 exempts
+    celestial themes). Fully fogged voxels are culled entirely.
+
+    The fog target is DIRECTIONAL: horizon->zenith blended by the up-ness
+    of the camera->voxel ray, with the SAME smoothstep(0..0.55) curve the
+    renderer's sky dome uses, so fogged voxels melt into the dome. Pass
+    the same color for both when the dome is off (flat sky = the exact
+    old single-color behavior)."""
     num_visible_bg[None] = 0
     for idx in range(num_bg_voxels[None]):
         if bg_active[idx] == 0:
@@ -4069,6 +4076,7 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
 
         # Distance fog toward the sky color (fake alpha; bg_fog gates it)
         f = 0.0
+        sky_t = 0.0  # up-ness blend factor (declared pre-branch — Taichi scoping)
         fogp = bg_fog[idx]
         if fogp > 0.001 and fog_max > 0.001:
             dxx = pos.x - cam_x
@@ -4077,8 +4085,13 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
             d = ti.sqrt(dxx * dxx + dyy * dyy + dzz * dzz)
             t = ti.min(ti.max((d - fog_start) / ti.max(fog_end - fog_start, 1.0), 0.0), 1.0)
             f = t * t * (3.0 - 2.0 * t) * fog_max * fogp
+            # Same horizon->zenith curve as renderer.set_sky_dome
+            up = ti.min(ti.max((dyy / ti.max(d, 0.001)) / 0.55, 0.0), 1.0)
+            sky_t = up * up * (3.0 - 2.0 * up)
         if f < 0.97:  # fully fogged voxels never enter the render buffer
-            sky = ti.Vector([sky_r, sky_g, sky_b])
+            hor = ti.Vector([hor_r, hor_g, hor_b])
+            zen = ti.Vector([zen_r, zen_g, zen_b])
+            sky = hor + (zen - hor) * sky_t
             color = color * (1.0 - f) + sky * f
             out_radius = out_radius * (1.0 - 0.35 * f)
 
