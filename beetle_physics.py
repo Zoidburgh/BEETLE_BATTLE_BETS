@@ -16540,14 +16540,14 @@ window.red_horn_tip_color = (0.4, 0.1, 0.1)
 window.background_color = (0.04, 0.04, 0.06)  # Dark background default
 window.board_color = (0.42, 0.3, 0.16)  # Warm amber wood default
 
-# Background atmosphere (BACKGROUND_ART_PLAN.md): defaults chosen so the
-# STARS look is effectively unchanged (stars have bg_fog=0). Sliders in the
-# BACKGROUND GUI panel. Fog fades bg voxels toward the sky color with
-# camera distance; MUTE scales how strongly biome decor is muted.
-BG_FOG_START = 100.0
-BG_FOG_END = 240.0
-BG_FOG_MAX = 0.85
-BG_MUTE_STRENGTH = 1.0
+# Background atmosphere (BACKGROUND_ART_PLAN.md): defaults are the values
+# the user dialed in by feel 2026-07-08 (screenshot-confirmed). Stars stay
+# unchanged (bg_fog=0). Sliders in the BACKGROUND GUI panel. Fog fades bg
+# voxels toward the sky color with camera distance; MUTE scales biome mute.
+BG_FOG_START = 20.0
+BG_FOG_END = 231.0
+BG_FOG_MAX = 0.62
+BG_MUTE_STRENGTH = 1.65
 DEFAULT_SKY_COLOR = (0.04, 0.04, 0.06)
 # Biome skies: fog fades toward these, which is what makes each biome's
 # air read as real (warm dust, murk, deep sea, ember glow)
@@ -24287,9 +24287,9 @@ try:
 
         # === ATMOSPHERE (BACKGROUND_ART_PLAN.md) ===
         window.GUI.text("--- ATMOSPHERE ---")
-        BG_MUTE_STRENGTH = window.GUI.slider_float("BIOME MUTE", BG_MUTE_STRENGTH, 0.0, 2.0)
-        BG_FOG_START = window.GUI.slider_float("FOG START", BG_FOG_START, 20.0, 250.0)
-        BG_FOG_END = window.GUI.slider_float("FOG END", BG_FOG_END, 60.0, 400.0)
+        BG_MUTE_STRENGTH = window.GUI.slider_float("BIOME MUTE", BG_MUTE_STRENGTH, 0.0, 3.0)
+        BG_FOG_START = window.GUI.slider_float("FOG START", BG_FOG_START, 0.0, 250.0)
+        BG_FOG_END = window.GUI.slider_float("FOG END", BG_FOG_END, 40.0, 400.0)
         BG_FOG_MAX = window.GUI.slider_float("FOG MAX", BG_FOG_MAX, 0.0, 1.0)
         if window.GUI.button("SKY DOME: ON" if SKY_DOME_ON else "SKY DOME: OFF"):
             SKY_DOME_ON = not SKY_DOME_ON

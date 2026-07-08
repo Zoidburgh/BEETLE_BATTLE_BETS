@@ -159,10 +159,19 @@ def _write_dome_colors(cols: ti.types.ndarray()):
     for i in range(SKY_DOME_VERTS):
         floor_colors[MAX_FLOOR_VERTS + i] = ti.math.vec3(cols[i, 0], cols[i, 1], cols[i, 2])
 
+# Sky gradient curve: blend factor from horizon(0) to zenith(1) is
+# (clamp(sin(elev)/BAND))^GAMMA. GAMMA > 1 keeps the bright horizon glow
+# dominant across the low-to-mid sky and rolls it into the dark zenith only
+# near the top — a fuller, stronger, smoother gradient than a smoothstep
+# (whose flat shoulders dump most of the sky to zenith early and read weak).
+# update_bg_cache's fog target MUST use this SAME curve — change both.
+SKY_GRADIENT_BAND = 1.0    # sin(elev) at which the sky reaches full zenith
+SKY_GRADIENT_GAMMA = 1.9   # >1 = glow climbs higher; bigger = more sky colored
+
 def set_sky_dome(horizon, zenith):
     """Enable the dome with a horizon->zenith gradient (final on-screen colors).
 
-    Above the horizon the blend is smoothstep over sin(elev) 0..0.85 —
+    Above the horizon the blend is (sin(elev)/BAND)^GAMMA (see constants) —
     update_bg_cache uses the SAME curve for its fog target so fogged bg
     voxels melt into the dome instead of ghosting against it. Below the
     horizon (mostly floor-occluded) it eases slightly darker.
@@ -171,8 +180,7 @@ def set_sky_dome(horizon, zenith):
     hor = np.array(horizon, dtype=np.float32)
     zen = np.array(zenith, dtype=np.float32)
     s = _dome_sin_elev_np
-    t_up = np.clip(s / 0.85, 0.0, 1.0)
-    t_up = t_up * t_up * (3.0 - 2.0 * t_up)
+    t_up = np.clip(s / SKY_GRADIENT_BAND, 0.0, 1.0) ** SKY_GRADIENT_GAMMA
     t_dn = np.clip(-s / 0.5, 0.0, 1.0)
     dn = 1.0 - 0.45 * (t_dn * t_dn * (3.0 - 2.0 * t_dn))
     above = hor[None, :] + (zen - hor)[None, :] * t_up[:, None]

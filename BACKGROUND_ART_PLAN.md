@@ -56,9 +56,14 @@
 4. Slider persistence across sessions (currently reset to defaults each
    boot) — only if the user asks.
 5. Tune THEME_HORIZON_COLORS per biome while walking them (see SKY DOME
-   below). 2026-07-08: user said first pass "not dramatic enough" —
-   horizons are now 4-6x zenith with real hue shifts (burnt-orange desert
-   dusk, teal ocean line, ember lava rim), screenshot-tuned. Err dramatic.
+   below). 2026-07-08: user pushed for MUCH stronger — horizons now near-
+   saturated + the gradient uses a GAMMA curve (SKY_GRADIENT_GAMMA=1.9,
+   BAND=1.0 in renderer.set_sky_dome) so the glow fills most of the sky and
+   only darkens near the top. Screenshot-tuned all 5. Err dramatic.
+   Fog defaults are now the user's dialed-in values (FOG_START 20 /
+   FOG_END 231 / FOG_MAX 0.62 / MUTE 1.65); FOG START slider floor dropped
+   to 0 (was pinned at the old 20 rail). If a biome reads too uniform,
+   LOWER gamma (toward 1.0) to pull the glow back down to the horizon.
 
 ## STATUS 2026-07-08 LATE: SKY DOME SHIPPED (3D gradient sky per biome)
 
