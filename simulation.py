@@ -4010,7 +4010,7 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
     celestial themes). Fully fogged voxels are culled entirely.
 
     The fog target is DIRECTIONAL: horizon->zenith blended by the up-ness
-    of the camera->voxel ray, with the SAME smoothstep(0..0.55) curve the
+    of the camera->voxel ray, with the SAME smoothstep(0..0.85) curve the
     renderer's sky dome uses, so fogged voxels melt into the dome. Pass
     the same color for both when the dome is off (flat sky = the exact
     old single-color behavior)."""
@@ -4086,7 +4086,7 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
             t = ti.min(ti.max((d - fog_start) / ti.max(fog_end - fog_start, 1.0), 0.0), 1.0)
             f = t * t * (3.0 - 2.0 * t) * fog_max * fogp
             # Same horizon->zenith curve as renderer.set_sky_dome
-            up = ti.min(ti.max((dyy / ti.max(d, 0.001)) / 0.55, 0.0), 1.0)
+            up = ti.min(ti.max((dyy / ti.max(d, 0.001)) / 0.85, 0.0), 1.0)
             sky_t = up * up * (3.0 - 2.0 * up)
         if f < 0.97:  # fully fogged voxels never enter the render buffer
             hor = ti.Vector([hor_r, hor_g, hor_b])

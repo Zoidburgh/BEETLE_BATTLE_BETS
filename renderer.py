@@ -162,7 +162,7 @@ def _write_dome_colors(cols: ti.types.ndarray()):
 def set_sky_dome(horizon, zenith):
     """Enable the dome with a horizon->zenith gradient (final on-screen colors).
 
-    Above the horizon the blend is smoothstep over sin(elev) 0..0.55 —
+    Above the horizon the blend is smoothstep over sin(elev) 0..0.85 —
     update_bg_cache uses the SAME curve for its fog target so fogged bg
     voxels melt into the dome instead of ghosting against it. Below the
     horizon (mostly floor-occluded) it eases slightly darker.
@@ -171,7 +171,7 @@ def set_sky_dome(horizon, zenith):
     hor = np.array(horizon, dtype=np.float32)
     zen = np.array(zenith, dtype=np.float32)
     s = _dome_sin_elev_np
-    t_up = np.clip(s / 0.55, 0.0, 1.0)
+    t_up = np.clip(s / 0.85, 0.0, 1.0)
     t_up = t_up * t_up * (3.0 - 2.0 * t_up)
     t_dn = np.clip(-s / 0.5, 0.0, 1.0)
     dn = 1.0 - 0.45 * (t_dn * t_dn * (3.0 - 2.0 * t_dn))
