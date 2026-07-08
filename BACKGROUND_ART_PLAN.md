@@ -122,6 +122,16 @@ pitch/yaw. STARS/default keep the flat sky untouched (dome off).
   approximates world elevation well enough for the blend.)
 - Dev flags: `--biome desert|grass|ocean|swamp|lava` boots into a biome;
   `--nodome` disables the dome for perf A/B.
+- WATER declutter (simulation.py WATER_HAZE / WATER_CULL, applied in
+  update_bg_cache to BG_ANIM_WAVE/WATER voxels): ocean's dense blue dot grid
+  read as a distracting solid wall. HAZE (lerp toward sky) barely helps
+  because water and ocean-sky are both blue; the real fix is CULL — a stable
+  index-hash dither that drops ~30% of the dots so the field reads porous/
+  translucent (and draws fewer spheres). Defaults HAZE 0.40 / CULL 0.30.
+  Not sliders yet — two constants; wire up if the user wants live tuning.
+
+Current user-dialed defaults (beetle_physics.py): FOG_START 48.6 / FOG_END
+240.5 / FOG_MAX 0.668 / BIOME MUTE 1.436 / SKY LEVEL -0.15 / SKY SPREAD 0.679.
 
 ### Verification (reuse)
 - scratchpad verify_dome.py pattern: stars contract 0.0 diff; positions

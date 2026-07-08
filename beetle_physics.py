@@ -16544,10 +16544,10 @@ window.board_color = (0.42, 0.3, 0.16)  # Warm amber wood default
 # the user dialed in by feel 2026-07-08 (screenshot-confirmed). Stars stay
 # unchanged (bg_fog=0). Sliders in the BACKGROUND GUI panel. Fog fades bg
 # voxels toward the sky color with camera distance; MUTE scales biome mute.
-BG_FOG_START = 78.0
-BG_FOG_END = 231.0
-BG_FOG_MAX = 0.62
-BG_MUTE_STRENGTH = 1.65
+BG_FOG_START = 48.6
+BG_FOG_END = 240.5
+BG_FOG_MAX = 0.668
+BG_MUTE_STRENGTH = 1.436
 # Sky gradient placement (live SKY LEVEL / SKY SPREAD sliders).
 # LEVEL = where the warm->cool sunset sits in the sky. The gameplay camera
 # pitches DOWN at the arena and sees the LOWER sky, so LEVEL must be NEGATIVE
@@ -16555,7 +16555,7 @@ BG_MUTE_STRENGTH = 1.65
 # out of the gameplay frame (looks great on the title screen, flat in-game).
 # SPREAD = how gradual the transition (small = a hard sunset line, big = soft).
 BG_SKY_LEVEL = -0.15
-BG_SKY_SPREAD = 0.40
+BG_SKY_SPREAD = 0.679
 DEFAULT_SKY_COLOR = (0.04, 0.04, 0.06)
 # Biome ZENITH colors (top of the dome; also the flat clear color when the
 # dome is off, and the fog target for high-elevation voxels). Deliberately a
