@@ -16548,6 +16548,12 @@ BG_FOG_START = 78.0
 BG_FOG_END = 231.0
 BG_FOG_MAX = 0.62
 BG_MUTE_STRENGTH = 1.65
+# Sky gradient shape (live SKY BAND / SKY CURVE sliders). BAND = how much of
+# the sky the warm->cool shift spans: LOWER packs the whole gradient into the
+# thin sky strip visible when the camera looks level/down, so the shift is
+# obvious in gameplay. GAMMA biases the curve (lower = cool reaches down sooner).
+BG_SKY_BAND = 0.38
+BG_SKY_GAMMA = 1.0
 DEFAULT_SKY_COLOR = (0.04, 0.04, 0.06)
 # Biome ZENITH colors (top of the dome; also the flat clear color when the
 # dome is off, and the fog target for high-elevation voxels). Deliberately a
@@ -16583,7 +16589,8 @@ def apply_biome_sky(theme_id):
     CURRENT_BIOME_THEME = theme_id
     window.background_color = THEME_SKY_COLORS.get(theme_id, DEFAULT_SKY_COLOR)
     if SKY_DOME_ON and theme_id in THEME_HORIZON_COLORS:
-        renderer.set_sky_dome(THEME_HORIZON_COLORS[theme_id], THEME_SKY_COLORS[theme_id])
+        renderer.set_sky_dome(THEME_HORIZON_COLORS[theme_id], THEME_SKY_COLORS[theme_id],
+                              BG_SKY_BAND, BG_SKY_GAMMA)
     else:
         renderer.disable_sky_dome()
 
@@ -17232,6 +17239,7 @@ simulation.update_bg_cache(
     float(_fog_hor[0]), float(_fog_hor[1]), float(_fog_hor[2]),
     float(_fog_zen[0]), float(_fog_zen[1]), float(_fog_zen[2]),
     float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
+    float(BG_SKY_BAND), float(BG_SKY_GAMMA),
     float(BG_MUTE_STRENGTH))  # Warm up cache kernel
 # Quick render pass to compile renderer's split kernels (PHASE 6 path)
 renderer.num_voxels[None] = 0
@@ -22123,6 +22131,7 @@ try:
                 float(_fog_hor[0]), float(_fog_hor[1]), float(_fog_hor[2]),
                 float(_fog_zen[0]), float(_fog_zen[1]), float(_fog_zen[2]),
                 float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
+                float(BG_SKY_BAND), float(BG_SKY_GAMMA),
                 float(BG_MUTE_STRENGTH))
         simulation.decay_stadium_excitement(frame_dt)
     perf_monitor.stop('background')
@@ -24294,6 +24303,15 @@ try:
         BG_FOG_START = window.GUI.slider_float("FOG START", BG_FOG_START, 0.0, 250.0)
         BG_FOG_END = window.GUI.slider_float("FOG END", BG_FOG_END, 40.0, 400.0)
         BG_FOG_MAX = window.GUI.slider_float("FOG MAX", BG_FOG_MAX, 0.0, 1.0)
+        # Sky gradient shape. Dragging either re-bakes the dome live (the fog
+        # target reads the globals every frame, so it follows automatically).
+        _new_band = window.GUI.slider_float("SKY BAND", BG_SKY_BAND, 0.15, 1.20)
+        _new_gamma = window.GUI.slider_float("SKY CURVE", BG_SKY_GAMMA, 0.40, 2.50)
+        if _new_band != BG_SKY_BAND or _new_gamma != BG_SKY_GAMMA:
+            BG_SKY_BAND = _new_band
+            BG_SKY_GAMMA = _new_gamma
+            if CURRENT_BIOME_THEME is not None:
+                apply_biome_sky(CURRENT_BIOME_THEME)  # rebuild dome gradient
         if window.GUI.button("SKY DOME: ON" if SKY_DOME_ON else "SKY DOME: OFF"):
             SKY_DOME_ON = not SKY_DOME_ON
             apply_biome_sky(CURRENT_BIOME_THEME)

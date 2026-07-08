@@ -98,15 +98,22 @@ pitch/yaw. STARS/default keep the flat sky untouched (dome off).
   (stars contract re-verified: diff 0.0).
 
 ### Knobs
-- THEME_HORIZON_COLORS (beetle_physics.py, next to THEME_SKY_COLORS):
-  horizon glow per biome; zenith = THEME_SKY_COLORS. apply_biome_sky() is
-  the single entry point (GUI panel + canvas overlay both route through
-  it — the overlay previously didn't set sky colors at all, now fixed).
-- SKY DOME ON/OFF button in ATMOSPHERE panel (live A/B while tuning).
-- Gradient curve: smoothstep over sin(elev) 0..0.55 in
-  renderer.set_sky_dome + matching curve in update_bg_cache — change BOTH.
-- Dev flags: `--biome desert|grass|ocean|swamp|lava` boots straight into a
-  biome (canaries/tuning); `--nodome` disables the dome for perf A/B.
+- THEME_HORIZON_COLORS + THEME_SKY_COLORS (beetle_physics.py): per-biome
+  horizon glow + zenith (warm->cool sunset). apply_biome_sky() is the
+  single entry point (GUI panel + canvas overlay both route through it).
+- ATMOSPHERE panel sliders: BIOME MUTE, FOG START/END/MAX, and the gradient
+  shape — **SKY BAND** (0.15-1.2) and **SKY CURVE** (0.4-2.5). BAND is the
+  big one: LOW packs the whole warm->cool shift into the thin sky strip
+  visible at a level/downward gameplay camera (obvious shift); HIGH spreads
+  it up the dome so the cool zenith only shows when you look up. Default
+  BAND 0.38 / CURVE 1.0. Sliders live-rebake the dome (BG_SKY_BAND/GAMMA
+  globals; the fog target reads them every frame so it follows for free).
+- SKY DOME ON/OFF button (live A/B while tuning).
+- Curve is (sin(elev)/band)^gamma in BOTH renderer.set_sky_dome and the
+  update_bg_cache kernel — the sliders pass band+gamma to both; the module
+  constants SKY_GRADIENT_BAND/GAMMA are just the fallback defaults.
+- Dev flags: `--biome desert|grass|ocean|swamp|lava` boots into a biome;
+  `--nodome` disables the dome for perf A/B.
 
 ### Verification (reuse)
 - scratchpad verify_dome.py pattern: stars contract 0.0 diff; positions

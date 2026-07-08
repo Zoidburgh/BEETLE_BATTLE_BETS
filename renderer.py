@@ -172,19 +172,24 @@ SKY_GRADIENT_GAMMA = 1.35  # >1 = glow climbs higher; bigger = more sky colored
 # hue only appears when looking straight up. Gamma 1.35 keeps the warm glow
 # dominant in the lower sky, then swings to the cool zenith near frame-top.
 
-def set_sky_dome(horizon, zenith):
+def set_sky_dome(horizon, zenith, band=None, gamma=None):
     """Enable the dome with a horizon->zenith gradient (final on-screen colors).
 
-    Above the horizon the blend is (sin(elev)/BAND)^GAMMA (see constants) —
+    Above the horizon the blend is (sin(elev)/band)^gamma (band/gamma default
+    to the module constants; the GUI passes live slider values) —
     update_bg_cache uses the SAME curve for its fog target so fogged bg
     voxels melt into the dome instead of ghosting against it. Below the
     horizon (mostly floor-occluded) it eases slightly darker.
     """
     global sky_dome_enabled, _dome_baked_b
+    if band is None:
+        band = SKY_GRADIENT_BAND
+    if gamma is None:
+        gamma = SKY_GRADIENT_GAMMA
     hor = np.array(horizon, dtype=np.float32)
     zen = np.array(zenith, dtype=np.float32)
     s = _dome_sin_elev_np
-    t_up = np.clip(s / SKY_GRADIENT_BAND, 0.0, 1.0) ** SKY_GRADIENT_GAMMA
+    t_up = np.clip(s / max(band, 0.01), 0.0, 1.0) ** gamma
     t_dn = np.clip(-s / 0.5, 0.0, 1.0)
     dn = 1.0 - 0.45 * (t_dn * t_dn * (3.0 - 2.0 * t_dn))
     above = hor[None, :] + (zen - hor)[None, :] * t_up[:, None]
