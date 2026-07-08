@@ -16565,11 +16565,11 @@ THEME_SKY_COLORS = {
 SKY_DOME_ON = '--nodome' not in sys.argv  # GUI toggle (ATMOSPHERE panel); --nodome for perf A/B
 CURRENT_BIOME_THEME = None  # active biome theme id (None = default flat sky)
 THEME_HORIZON_COLORS = {
-    simulation.THEME_DESERT: (0.17, 0.11, 0.06),
-    simulation.THEME_GRASS: (0.06, 0.10, 0.07),
-    simulation.THEME_WAVES: (0.04, 0.09, 0.14),
-    simulation.THEME_SWAMP: (0.07, 0.10, 0.05),
-    simulation.THEME_LAVA: (0.18, 0.05, 0.02),
+    simulation.THEME_DESERT: (0.42, 0.20, 0.07),   # burnt-orange dusk glow
+    simulation.THEME_GRASS: (0.27, 0.20, 0.08),    # golden-hour meadow
+    simulation.THEME_WAVES: (0.08, 0.32, 0.48),    # glowing teal sea-line
+    simulation.THEME_SWAMP: (0.12, 0.26, 0.08),    # eerie bog phosphor
+    simulation.THEME_LAVA: (0.50, 0.10, 0.02),     # ember inferno rim
 }
 
 def apply_biome_sky(theme_id):

@@ -56,7 +56,9 @@
 4. Slider persistence across sessions (currently reset to defaults each
    boot) — only if the user asks.
 5. Tune THEME_HORIZON_COLORS per biome while walking them (see SKY DOME
-   below) — current values are a first guess (~1.7x zenith brightness).
+   below). 2026-07-08: user said first pass "not dramatic enough" —
+   horizons are now 4-6x zenith with real hue shifts (burnt-orange desert
+   dusk, teal ocean line, ember lava rim), screenshot-tuned. Err dramatic.
 
 ## STATUS 2026-07-08 LATE: SKY DOME SHIPPED (3D gradient sky per biome)
 
