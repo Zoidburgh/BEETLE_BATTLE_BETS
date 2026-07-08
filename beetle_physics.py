@@ -1171,54 +1171,185 @@ def get_local_inputs(window, player='blue', network_mode=False, horn_type_id=0):
     return keyboard_inputs | controller_inputs
 
 
-def get_bot_inputs(slot):
-    """Simple bot input driver for slots 2/3 (--local4 testing, and later
-    host-side network bots). Modes: idle (nothing), random (wander),
-    seek (turn toward nearest beetle and charge)."""
+# ===== Bot AI (local --local4 slots 2/3; NOT used in network play) ===========
+# Structured as _bot_observe() -> get_bot_inputs() so the heuristic can later
+# be swapped for a trained policy behind the same observation (see plan for
+# training bots on real levels). Per-bot persistent state carries a heading-
+# noise random walk, a stuck-detector history, short break/feint timers, a
+# held horn move, and a fixed personality so slots 2 and 3 differ. Bots are
+# local-only, so this nondeterminism is safe (no host/guest desync).
+_bot_ai_state = {}
+
+def _bot_state(slot):
+    st = _bot_ai_state.get(slot)
+    if st is None:
+        rng = random.Random((slot * 100003) ^ (int(time.time() * 1000) & 0xffffff))
+        st = {
+            'rng': rng,
+            'wander': 0.0,        # heading-noise random walk (rad)
+            'hist': [],           # sampled positions for stuck detection
+            'break_timer': 0,     # frames left in a disengage/unstick maneuver
+            'break_turn': 1,      # turn direction during a break
+            'feint_timer': 0,     # frames left in a feint juke
+            'horn': 0,            # currently held horn move
+            'horn_timer': 0,      # frames left holding it
+            'pers': {
+                'wander_max': rng.uniform(0.25, 0.60),  # how curvy the charges are
+                'edge_caution': rng.uniform(6.0, 10.0), # how early to flee the rim (units)
+                'charge_cone': rng.uniform(1.00, 1.30), # facing tolerance to commit forward
+                'aggression': rng.uniform(0.55, 1.00),  # horn frequency / commitment
+            },
+        }
+        _bot_ai_state[slot] = st
+    return st
+
+def _wrap_pi(a):
+    a = a % (2.0 * math.pi)
+    if a > math.pi:
+        a -= 2.0 * math.pi
+    return a
+
+def _bot_observe(slot):
+    """Build the observation a trained policy would also consume: own edge
+    situation + nearest opponent. Circular arena, so distance-to-rim is just
+    ARENA_RADIUS - |pos|. (For non-circular training levels this should read
+    the arena SDF instead.)"""
     b = beetles[slot]
-    if not b.active or b.is_falling or hovering[slot]:
-        return 0
-    if BOT_AI_MODE == "idle":
-        return 0
-    if BOT_AI_MODE == "random":
-        # Deterministic wander: direction flips every ~1.5s, per-slot phase
-        phase = int((time.time() * 0.66 + slot * 7.3)) % 4
-        return (INPUT_FORWARD,
-                INPUT_FORWARD | INPUT_LEFT,
-                INPUT_FORWARD,
-                INPUT_FORWARD | INPUT_RIGHT)[phase]
-    # seek: head for the nearest other active beetle
-    best = None
-    best_d = 1e18
+    dist_c = math.hypot(b.x, b.z)
+    if dist_c > 0.01:
+        ux, uz = b.x / dist_c, b.z / dist_c
+    else:
+        ux, uz = math.cos(b.rotation), math.sin(b.rotation)
+    best, best_d2 = None, 1e18
     for other in range(active_player_count):
         if other == slot:
             continue
         ob = beetles[other]
         if not ob.active or ob.is_falling:
             continue
-        d = (ob.x - b.x) ** 2 + (ob.z - b.z) ** 2
-        if d < best_d:
-            best_d = d
-            best = ob
-    if best is None:
+        d2 = (ob.x - b.x) ** 2 + (ob.z - b.z) ** 2
+        if d2 < best_d2:
+            best_d2, best = d2, ob
+    return {
+        'b': b,
+        'dist_center': dist_c,
+        'margin': ARENA_RADIUS - dist_c,        # distance to the rim
+        'radial_out': b.vx * ux + b.vz * uz,    # >0 = drifting toward the rim
+        'to_center_ang': math.atan2(-b.z, -b.x),
+        'target': best,
+        'target_d2': best_d2,
+    }
+
+def get_bot_inputs(slot):
+    """Bot input driver for local --local4 slots 2/3. Modes: idle, random,
+    seek (default). 'seek' adds edge-avoidance with strategic reverse, heading
+    noise, and stuck/loop breaking so bots stop looping and stop self-ejecting."""
+    b = beetles[slot]
+    if not b.active or b.is_falling or hovering[slot]:
         return 0
-    target_ang = math.atan2(best.z - b.z, best.x - b.x)
-    diff = (target_ang - b.rotation) % (2.0 * math.pi)
-    if diff > math.pi:
-        diff -= 2.0 * math.pi
+    if BOT_AI_MODE == "idle":
+        return 0
+    if BOT_AI_MODE == "random":
+        phase = int((time.time() * 0.66 + slot * 7.3)) % 4
+        return (INPUT_FORWARD, INPUT_FORWARD | INPUT_LEFT,
+                INPUT_FORWARD, INPUT_FORWARD | INPUT_RIGHT)[phase]
+
+    st = _bot_state(slot)
+    rng = st['rng']
+    p = st['pers']
+    obs = _bot_observe(slot)
+    margin = obs['margin']
+    radial_out = obs['radial_out']
+    center_diff = _wrap_pi(obs['to_center_ang'] - b.rotation)  # turn needed to face center
     inputs = 0
-    if abs(diff) < 1.2:
-        inputs |= INPUT_FORWARD  # Roughly facing target - charge
-    if diff > 0.15:
+
+    # Heading-noise random walk — drifts the charge angle so approaches curve
+    # and two bots never re-derive an identical head-on orbit.
+    st['wander'] += rng.uniform(-0.05, 0.05)
+    st['wander'] = max(-p['wander_max'], min(p['wander_max'], st['wander']))
+
+    # Stuck detector: sample position every 12 frames, keep a ~1.6s window.
+    if physics_frame % 12 == 0:
+        st['hist'].append((b.x, b.z))
+        if len(st['hist']) > 8:
+            st['hist'].pop(0)
+
+    # --- Priority 1: EDGE DANGER — flee to center, REVERSE if facing the rim.
+    # Triggered by proximity, or by drifting outward fast a bit further in.
+    danger = margin < p['edge_caution'] or (margin < p['edge_caution'] * 1.9 and radial_out > 3.5)
+    if danger:
+        st['break_timer'] = 0  # edge overrides any in-progress maneuver
+        if center_diff > 0.10:
+            inputs |= INPUT_RIGHT
+        elif center_diff < -0.10:
+            inputs |= INPUT_LEFT
+        if abs(center_diff) < 1.4:
+            inputs |= INPUT_FORWARD    # already facing inward — drive to safety
+        else:
+            inputs |= INPUT_BACKWARD   # facing the rim — back away rather than turn into it
+        return inputs
+
+    # --- Priority 2: active break maneuver (reverse out of a loop/shove).
+    if st['break_timer'] > 0:
+        st['break_timer'] -= 1
+        inputs |= INPUT_BACKWARD
+        inputs |= INPUT_RIGHT if st['break_turn'] > 0 else INPUT_LEFT
+        return inputs
+
+    target = obs['target']
+    if target is None:
+        # No one to fight: ease back toward center, don't thrash.
+        if abs(center_diff) > 0.2:
+            inputs |= INPUT_RIGHT if center_diff > 0 else INPUT_LEFT
+        if abs(center_diff) < 1.2 and obs['dist_center'] > 6.0:
+            inputs |= INPUT_FORWARD
+        return inputs
+
+    # Detect a stuck shove (little movement over the window with a foe close) and
+    # break it by reversing + turning a random way to re-approach from elsewhere.
+    if len(st['hist']) >= 8:
+        ox, oz = st['hist'][0]
+        if math.hypot(b.x - ox, b.z - oz) < 3.0 and obs['target_d2'] < 900:
+            st['break_timer'] = rng.randint(22, 34)
+            st['break_turn'] = 1 if rng.random() < 0.5 else -1
+            inputs |= INPUT_BACKWARD
+            inputs |= INPUT_RIGHT if st['break_turn'] > 0 else INPUT_LEFT
+            return inputs
+
+    # --- Normal seek, with heading noise so the charge isn't dead straight.
+    want = math.atan2(target.z - b.z, target.x - b.x) + st['wander']
+    diff = _wrap_pi(want - b.rotation)
+    if abs(diff) < p['charge_cone']:
+        inputs |= INPUT_FORWARD
+    if diff > 0.12:
         inputs |= INPUT_RIGHT
-    elif diff < -0.15:
+    elif diff < -0.12:
         inputs |= INPUT_LEFT
-    # Horn work when engaged: cycle raise/press/sweep so bot fights exercise
-    # lifts, tip battles, and articulation sweeps (deterministic, per-slot phase)
-    if best_d < 1600:  # within ~40 voxels
-        hphase = (physics_frame // 30 + slot * 3) % 6  # 0.5s steps, 3s cycle
-        inputs |= (INPUT_HORN_UP, INPUT_HORN_UP, INPUT_HORN_DOWN,
-                   INPUT_HORN_LEFT, INPUT_HORN_RIGHT, 0)[hphase]
+
+    # Strategic reverse in melee: if we're being out-shoved toward the rim, stop
+    # pushing and back off to reset the angle instead of riding it to the edge.
+    if obs['target_d2'] < 1400 and radial_out > 3.0 and margin < 16.0:
+        inputs &= ~INPUT_FORWARD
+        inputs |= INPUT_BACKWARD
+
+    # Occasional feint: a brief reverse juke to bait/be unpredictable.
+    if st['feint_timer'] > 0:
+        st['feint_timer'] -= 1
+        inputs &= ~INPUT_FORWARD
+        inputs |= INPUT_BACKWARD
+    elif obs['target_d2'] < 2500 and rng.random() < 0.006:
+        st['feint_timer'] = rng.randint(6, 12)
+
+    # Horn work when engaged — a randomly chosen move held a short while (not a
+    # fixed cycle), frequency scaled by aggression.
+    if obs['target_d2'] < 1600:
+        if st['horn_timer'] > 0:
+            st['horn_timer'] -= 1
+            inputs |= st['horn']
+        elif rng.random() < 0.05 * (0.5 + p['aggression']):
+            st['horn'] = rng.choice((INPUT_HORN_UP, INPUT_HORN_DOWN,
+                                     INPUT_HORN_LEFT, INPUT_HORN_RIGHT))
+            st['horn_timer'] = rng.randint(8, 20)
     return inputs
 
 
