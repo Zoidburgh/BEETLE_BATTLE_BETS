@@ -16556,6 +16556,12 @@ BG_MUTE_STRENGTH = 1.436
 # SPREAD = how gradual the transition (small = a hard sunset line, big = soft).
 BG_SKY_LEVEL = -0.15
 BG_SKY_SPREAD = 0.679
+# Contrast ceiling: caps the peak brightness of biome decor (stage dressing)
+# so it can never out-shine the beetles — enforces the art rule that the
+# brightest things on screen are the fighters, not the scenery. Only touches
+# themes muted in THEME_TREATMENT (biomes); stars/comet/clouds are exempt.
+# 1.5 = OFF (slider max). Lower = biomes pushed further back.
+BG_CONTRAST_CEIL = 0.85
 DEFAULT_SKY_COLOR = (0.04, 0.04, 0.06)
 # Biome ZENITH colors (top of the dome; also the flat clear color when the
 # dome is off, and the fog target for high-elevation voxels). Deliberately a
@@ -17242,7 +17248,7 @@ simulation.update_bg_cache(
     float(_fog_zen[0]), float(_fog_zen[1]), float(_fog_zen[2]),
     float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
     float(BG_SKY_LEVEL), float(BG_SKY_SPREAD),
-    float(BG_MUTE_STRENGTH))  # Warm up cache kernel
+    float(BG_MUTE_STRENGTH), float(BG_CONTRAST_CEIL))  # Warm up cache kernel
 # Quick render pass to compile renderer's split kernels (PHASE 6 path)
 renderer.num_voxels[None] = 0
 _t_ev = time.perf_counter()
@@ -22134,7 +22140,7 @@ try:
                 float(_fog_zen[0]), float(_fog_zen[1]), float(_fog_zen[2]),
                 float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
                 float(BG_SKY_LEVEL), float(BG_SKY_SPREAD),
-                float(BG_MUTE_STRENGTH))
+                float(BG_MUTE_STRENGTH), float(BG_CONTRAST_CEIL))
         simulation.decay_stadium_excitement(frame_dt)
     perf_monitor.stop('background')
 
@@ -24315,6 +24321,8 @@ try:
             BG_SKY_SPREAD = _new_spread
             if CURRENT_BIOME_THEME is not None:
                 apply_biome_sky(CURRENT_BIOME_THEME)  # rebuild dome gradient
+        # Biome brightness cap (1.5 = off). Fed straight to the kernel, no rebake.
+        BG_CONTRAST_CEIL = window.GUI.slider_float("BG CEILING", BG_CONTRAST_CEIL, 0.30, 1.50)
         if window.GUI.button("SKY DOME: ON" if SKY_DOME_ON else "SKY DOME: OFF"):
             SKY_DOME_ON = not SKY_DOME_ON
             apply_biome_sky(CURRENT_BIOME_THEME)

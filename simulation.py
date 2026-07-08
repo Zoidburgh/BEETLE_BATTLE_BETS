@@ -361,17 +361,6 @@ THEME_TREATMENT = {
     17: (0.7, 1.0),   # DESERT biome
 }
 
-# Fake-transparency for dense water fields (BG_ANIM_WAVE/WATER) in update_bg_cache.
-# Two knobs, because water and its (blue) sky are similar colors so a haze-toward-
-# sky alone barely reads:
-#   WATER_HAZE — fraction each water dot lerps toward the sky behind it (recede).
-#   WATER_CULL — fraction of water dots dropped entirely, via a stable per-index
-#     dither. This is what actually declutters "lots of dots": gaps let you see
-#     through the field so it reads porous/translucent, and it draws fewer spheres.
-# 0 = off (solid wall), higher = sparser/hazier. Tune to taste.
-WATER_HAZE = 0.40
-WATER_CULL = 0.30
-
 # Stadium crowd excitement (for score reactions)
 stadium_excitement = ti.field(dtype=ti.f32, shape=())  # 0-1, current excitement level
 stadium_excitement_target = ti.field(dtype=ti.f32, shape=())  # Target to ramp toward
@@ -4012,7 +4001,7 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
                     zen_r: ti.f32, zen_g: ti.f32, zen_b: ti.f32,
                     fog_start: ti.f32, fog_end: ti.f32, fog_max: ti.f32,
                     sky_level: ti.f32, sky_spread: ti.f32,
-                    mute_strength: ti.f32):
+                    mute_strength: ti.f32, bg_ceil: ti.f32):
     """Pre-compute renderer-ready bg data. Only call at animation frequency.
 
     Atmosphere pass (per-voxel, GGUI has no shaders so it's baked into
@@ -4086,43 +4075,39 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
             grey = ti.Vector([luma, luma, luma])
             color = (grey + (color - grey) * m) * (0.6 + 0.4 * m)
 
-        # Camera distance + directional sky color (horizon->zenith by the
-        # up-ness of the camera->voxel ray). Same mapping as
-        # renderer.set_sky_dome (linear between level-spread/2 and
-        # level+spread/2, live via SKY LEVEL / SKY SPREAD). Computed for every
-        # voxel so both the water haze and the distance fog can lerp toward it.
-        dxx = pos.x - cam_x
-        dyy = pos.y - cam_y
-        dzz = pos.z - cam_z
-        d = ti.sqrt(dxx * dxx + dyy * dyy + dzz * dzz)
-        low_s = sky_level - sky_spread * 0.5
-        sky_t = ti.min(ti.max((dyy / ti.max(d, 0.001) - low_s) / ti.max(sky_spread, 0.01), 0.0), 1.0)
-        hor = ti.Vector([hor_r, hor_g, hor_b])
-        zen = ti.Vector([zen_r, zen_g, zen_b])
-        sky = hor + (zen - hor) * sky_t
-
-        # Fake transparency for dense water fields (opaque GGUI has no alpha).
-        # Keyed on the wave/water anim types, so only water gets it — beetles
-        # and other decor are untouched.
-        water_cull = 0  # declared pre-branch (Taichi scoping)
-        if anim == BG_ANIM_WAVE or anim == BG_ANIM_WATER:
-            # (1) recede toward the sky behind it
-            color = color * (1.0 - WATER_HAZE) + sky * WATER_HAZE
-            # (2) stable dither cull: drop a fixed fraction of dots so the field
-            # reads porous. Hash is index-only (time-independent) so the gaps are
-            # fixed — no shimmering — and the same every frame.
-            hsh = ti.sin(ti.cast(idx, ti.f32) * 12.9898) * 43758.5453
-            hsh = hsh - ti.floor(hsh)
-            if hsh < WATER_CULL:
-                water_cull = 1
+        # Contrast ceiling: stage-dressing (biome) decor must never out-shine
+        # the beetles, so cap its brightest channel (scaling the whole color
+        # to preserve hue). Gated on the per-voxel BASE mute (biomes < 1.0),
+        # independent of the live BIOME MUTE slider — so it holds even at
+        # mute 0 — and never touches stars/comet/clouds (base mute 1.0 =
+        # designed set pieces). bg_ceil >= 1.5 from the slider = off.
+        if bg_mute[idx] < 0.999 and bg_ceil < 1.49:
+            peak = ti.max(color.x, ti.max(color.y, color.z))
+            if peak > bg_ceil:
+                color = color * (bg_ceil / peak)
 
         # Distance fog toward the sky color (fake alpha; bg_fog gates it)
         f = 0.0
+        sky_t = 0.0  # up-ness blend factor (declared pre-branch — Taichi scoping)
         fogp = bg_fog[idx]
         if fogp > 0.001 and fog_max > 0.001:
+            dxx = pos.x - cam_x
+            dyy = pos.y - cam_y
+            dzz = pos.z - cam_z
+            d = ti.sqrt(dxx * dxx + dyy * dyy + dzz * dzz)
             t = ti.min(ti.max((d - fog_start) / ti.max(fog_end - fog_start, 1.0), 0.0), 1.0)
             f = t * t * (3.0 - 2.0 * t) * fog_max * fogp
-        if f < 0.97 and water_cull == 0:  # fully fogged / culled voxels never enter the render buffer
+            # Same mapping as renderer.set_sky_dome (linear in elevation
+            # between level-spread/2 and level+spread/2), driven live by the
+            # SKY LEVEL / SKY SPREAD sliders. Uses camera-relative up-ness of
+            # the voxel — approximates the world-elevation the dome uses, and
+            # keeps near-horizon decor fading to the warm horizon color.
+            low_s = sky_level - sky_spread * 0.5
+            sky_t = ti.min(ti.max((dyy / ti.max(d, 0.001) - low_s) / ti.max(sky_spread, 0.01), 0.0), 1.0)
+        if f < 0.97:  # fully fogged voxels never enter the render buffer
+            hor = ti.Vector([hor_r, hor_g, hor_b])
+            zen = ti.Vector([zen_r, zen_g, zen_b])
+            sky = hor + (zen - hor) * sky_t
             color = color * (1.0 - f) + sky * f
             out_radius = out_radius * (1.0 - 0.35 * f)
 

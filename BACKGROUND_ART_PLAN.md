@@ -122,16 +122,45 @@ pitch/yaw. STARS/default keep the flat sky untouched (dome off).
   approximates world elevation well enough for the blend.)
 - Dev flags: `--biome desert|grass|ocean|swamp|lava` boots into a biome;
   `--nodome` disables the dome for perf A/B.
-- WATER declutter (simulation.py WATER_HAZE / WATER_CULL, applied in
-  update_bg_cache to BG_ANIM_WAVE/WATER voxels): ocean's dense blue dot grid
-  read as a distracting solid wall. HAZE (lerp toward sky) barely helps
-  because water and ocean-sky are both blue; the real fix is CULL — a stable
-  index-hash dither that drops ~30% of the dots so the field reads porous/
-  translucent (and draws fewer spheres). Defaults HAZE 0.40 / CULL 0.30.
-  Not sliders yet — two constants; wire up if the user wants live tuning.
+- BG CEILING slider (BG_CONTRAST_CEIL, kernel arg bg_ceil): caps the peak
+  albedo channel of biome decor (gated on per-voxel base mute < 1.0, so
+  stars/comet/clouds exempt) — art rule that scenery never out-shines the
+  beetles. 1.5 = off. NOTE: at a high BIOME MUTE (user runs 1.436) decor is
+  already dimmed below the cap so it's a near-invisible SAFETY RAIL; it only
+  bites if MUTE is lowered. The visible declutter levers are MUTE (bright/
+  sat) and, still TODO, motion-calming + parallax depth (see below).
+- TRIED + REVERTED: ocean water haze/dither-cull to fake transparency. Cull
+  made the dot grid look scattered/worse (user rejected). Water and its blue
+  sky are too similar for haze to read. If revisited: reduce water density/
+  size at generation, or calm the wave motion — not per-dot alpha tricks.
 
 Current user-dialed defaults (beetle_physics.py): FOG_START 48.6 / FOG_END
-240.5 / FOG_MAX 0.668 / BIOME MUTE 1.436 / SKY LEVEL -0.15 / SKY SPREAD 0.679.
+240.5 / FOG_MAX 0.668 / BIOME MUTE 1.436 / SKY LEVEL -0.15 / SKY SPREAD 0.679
+/ BG CEILING 0.85.
+
+## PLANNED: parallax silhouette layers (depth upgrade, non-distracting)
+Goal: sell "the arena floats in a huge world" via the strongest depth cue —
+differential parallax — without adding contrast/motion that competes.
+- Idea: 2-3 concentric RINGS of large, dark, near-silhouette shapes at
+  staggered radii (e.g. r=140 / 200 / 270): dune ridges (desert), mountain
+  teeth (lava), kelp/atoll (ocean), tree line (grass/swamp). Each ring a
+  handful of big voxels from the spare bg budget (cap 8000; biomes use
+  ~5-6k, extras small — measure headroom before adding).
+- Why it reads as depth: world-anchored, so as the follow-camera orbits the
+  rings slide at different screen rates (near ring moves more). That motion
+  parallax is unmistakable "distance" and needs no per-frame anim.
+- Why it stays non-distracting: rendered DARK and heavily fogged (high
+  bg_fog so distance-fog fades them toward the sky) = low contrast, no
+  bright edges, no independent motion. Basically painted atmosphere.
+- Fits existing systems: just more bg voxels with big bg_size, low
+  brightness, bg_fog=1.0, anim_type NONE (static — re-cached each frame but
+  cheap). No new fields, no new draw calls (rides the bg particles buffer).
+- Open questions to settle first: (1) exact radii vs the camera's far reach
+  and FOG_END 240 (rings past FOG_END vanish — keep inner rings <240);
+  (2) shape authoring — procedural ridge (sine-perturbed arc of spheres) is
+  simplest; (3) budget headroom (log num_bg_voxels per biome first);
+  (4) do rings rotate with the biome or stay world-fixed (world-fixed =
+  more parallax). Prototype desert dune ring first, screenshot, iterate.
 
 ### Verification (reuse)
 - scratchpad verify_dome.py pattern: stars contract 0.0 diff; positions
