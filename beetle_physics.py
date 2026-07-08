@@ -2062,12 +2062,16 @@ class Beetle:
 
         # === HORIZONTAL PHYSICS (existing) ===
         # Apply linear friction (skip for ball when airborne to allow proper arc)
-        # Ice only affects ground friction — airborne beetles use normal physics
+        # Airborne: much lighter friction so launch knockback keeps its momentum
+        # (at ground FRICTION 0.88 a launch decayed to nothing in ~90ms)
         if self.horn_type == "ball":
             # Ball uses its own rolling friction only when on ground (applied in main loop)
             pass
         else:
-            linear_friction = ICE_LINEAR_FRICTION if (on_ice and self.on_ground) else FRICTION
+            if self.on_ground:
+                linear_friction = ICE_LINEAR_FRICTION if on_ice else FRICTION
+            else:
+                linear_friction = physics_params.get("AIR_FRICTION", 0.985)
             self.vx *= linear_friction
             self.vz *= linear_friction
 
@@ -16831,6 +16835,8 @@ physics_params = {
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
 
     # Airborne tumbling physics parameters
+    "AIR_CONTROL": 0.25,  # Drive force multiplier while airborne (turning stays full; 1.0 = old full air control)
+    "AIR_FRICTION": 0.985,  # Horizontal friction while airborne (vs ground 0.88 — launches keep their momentum)
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
@@ -18484,31 +18490,38 @@ try:
                 beetle.silk_speed_mult = speed_mult[slot]  # Set on beetle for max speed cap
 
                 # Speed boost system - track hold time and calculate bonus
+                # Ramp pauses (doesn't reset) while airborne — no charging up mid-flight
                 if p_inputs & INPUT_FORWARD:
-                    beetle.forward_hold_time += PHYSICS_TIMESTEP
+                    if beetle.on_ground:
+                        beetle.forward_hold_time += PHYSICS_TIMESTEP
                 else:
                     beetle.forward_hold_time = 0.0
                 if p_inputs & INPUT_BACKWARD:
-                    beetle.backward_hold_time += PHYSICS_TIMESTEP
+                    if beetle.on_ground:
+                        beetle.backward_hold_time += PHYSICS_TIMESTEP
                 else:
                     beetle.backward_hold_time = 0.0
                 # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
                 beetle.forward_bonus = min(1.50, beetle.forward_hold_time / 3.0 * 1.50)
                 beetle.backward_bonus = min(0.80, beetle.backward_hold_time / 3.0 * 0.80)
 
+                # Air control: airborne beetles keep full turning but barely any
+                # drive force — a launch owns your trajectory until you land
+                drive_mult = 1.0 if beetle.on_ground else physics_params.get("AIR_CONTROL", 0.25)
+
                 if p_inputs & INPUT_FORWARD:
                     # Move forward in facing direction
                     move_x = math.cos(beetle.rotation)
                     move_z = math.sin(beetle.rotation)
                     # Force scales with speed bonus to reach higher cap
-                    forward_force_mult = speed_mult[slot] * (1.0 + beetle.forward_bonus)
+                    forward_force_mult = speed_mult[slot] * (1.0 + beetle.forward_bonus) * drive_mult
                     beetle.apply_force(move_x * MOVE_FORCE * forward_force_mult, move_z * MOVE_FORCE * forward_force_mult, PHYSICS_TIMESTEP)
                 if p_inputs & INPUT_BACKWARD:
                     # Move backward in facing direction
                     move_x = -math.cos(beetle.rotation)
                     move_z = -math.sin(beetle.rotation)
                     # Force scales with speed bonus to reach higher cap
-                    backward_force_mult = speed_mult[slot] * (1.0 + beetle.backward_bonus)
+                    backward_force_mult = speed_mult[slot] * (1.0 + beetle.backward_bonus) * drive_mult
                     beetle.apply_force(move_x * BACKWARD_MOVE_FORCE * backward_force_mult, move_z * BACKWARD_MOVE_FORCE * backward_force_mult, PHYSICS_TIMESTEP)
 
                 # BOMBARDIER SPRAY CONTROLS (only for bombardier type)
@@ -24948,6 +24961,8 @@ try:
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
 
             window.GUI.text("--- Airborne Tumbling ---")
+            physics_params["AIR_CONTROL"] = window.GUI.slider_float("Air Control", physics_params["AIR_CONTROL"], 0.0, 1.0)
+            physics_params["AIR_FRICTION"] = window.GUI.slider_float("Air Friction", physics_params["AIR_FRICTION"], 0.88, 1.0)
             physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
             physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
             physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
