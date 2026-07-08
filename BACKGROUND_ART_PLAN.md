@@ -102,16 +102,24 @@ pitch/yaw. STARS/default keep the flat sky untouched (dome off).
   horizon glow + zenith (warm->cool sunset). apply_biome_sky() is the
   single entry point (GUI panel + canvas overlay both route through it).
 - ATMOSPHERE panel sliders: BIOME MUTE, FOG START/END/MAX, and the gradient
-  shape — **SKY BAND** (0.15-1.2) and **SKY CURVE** (0.4-2.5). BAND is the
-  big one: LOW packs the whole warm->cool shift into the thin sky strip
-  visible at a level/downward gameplay camera (obvious shift); HIGH spreads
-  it up the dome so the cool zenith only shows when you look up. Default
-  BAND 0.38 / CURVE 1.0. Sliders live-rebake the dome (BG_SKY_BAND/GAMMA
-  globals; the fog target reads them every frame so it follows for free).
+  placement — **SKY LEVEL** (-0.5..0.4) and **SKY SPREAD** (0.1..1.2).
+  CRITICAL LESSON (2026-07-08): the gradient is placed in WORLD elevation
+  and the gameplay camera pitches DOWN ~31deg, so it sees the LOWER dome
+  hemisphere. A gradient centered at the world equator (the earlier "band"
+  model) put the cool zenith entirely ABOVE the gameplay frame — the sky
+  looked flat warm in-game even though it was a gorgeous sunset on the
+  title screen (which pitches up). Fix: SKY LEVEL is the transition CENTER
+  in sin(elev) and defaults NEGATIVE (-0.15) to pull the sunset down into
+  the gameplay view. Raise it toward 0 for the title-screen look, lower it
+  if the cool top still sits too high. SPREAD = transition width (small =
+  hard sunset line). Default LEVEL -0.15 / SPREAD 0.40 (calibrated at the
+  real gameplay camera pos 0,74.7,76.35 pitch -30.85). Sliders live-rebake.
 - SKY DOME ON/OFF button (live A/B while tuning).
-- Curve is (sin(elev)/band)^gamma in BOTH renderer.set_sky_dome and the
-  update_bg_cache kernel — the sliders pass band+gamma to both; the module
-  constants SKY_GRADIENT_BAND/GAMMA are just the fallback defaults.
+- Mapping is linear: t = clip((sin(elev) - (level-spread/2)) / spread, 0,1)
+  in BOTH renderer.set_sky_dome and update_bg_cache — sliders pass
+  level+spread to both; module constants SKY_GRADIENT_LEVEL/SPREAD are the
+  fallback defaults. (The fog kernel uses camera-relative up-ness, which
+  approximates world elevation well enough for the blend.)
 - Dev flags: `--biome desert|grass|ocean|swamp|lava` boots into a biome;
   `--nodome` disables the dome for perf A/B.
 

@@ -165,35 +165,35 @@ def _write_dome_colors(cols: ti.types.ndarray()):
 # near the top — a fuller, stronger, smoother gradient than a smoothstep
 # (whose flat shoulders dump most of the sky to zenith early and read weak).
 # update_bg_cache's fog target MUST use this SAME curve — change both.
-SKY_GRADIENT_BAND = 0.60   # sin(elev) at which the sky reaches full zenith
-SKY_GRADIENT_GAMMA = 1.35  # >1 = glow climbs higher; bigger = more sky colored
-# Band 0.60 (not 1.0) so the full horizon->zenith shift completes within the
-# sky visible at gameplay camera angles — otherwise the contrasting zenith
-# hue only appears when looking straight up. Gamma 1.35 keeps the warm glow
-# dominant in the lower sky, then swings to the cool zenith near frame-top.
+# Gradient placement in WORLD elevation sin(elev) (vertex.y / radius):
+# horizon(warm) at LEVEL-SPREAD/2, zenith(cool) at LEVEL+SPREAD/2, linear
+# between. LEVEL can be NEGATIVE to push the whole sunset below the world
+# horizon — REQUIRED for the gameplay camera, which pitches down ~31deg and
+# therefore sees the LOWER dome hemisphere; a gradient that starts at the
+# equator (the old "band" model) shows that camera only the flat warm base.
+# update_bg_cache's fog target uses the SAME level/spread — change both.
+SKY_GRADIENT_LEVEL = -0.15   # center of the warm->cool transition
+SKY_GRADIENT_SPREAD = 0.40   # width of the transition (bigger = softer)
 
-def set_sky_dome(horizon, zenith, band=None, gamma=None):
+def set_sky_dome(horizon, zenith, level=None, spread=None):
     """Enable the dome with a horizon->zenith gradient (final on-screen colors).
 
-    Above the horizon the blend is (sin(elev)/band)^gamma (band/gamma default
-    to the module constants; the GUI passes live slider values) —
-    update_bg_cache uses the SAME curve for its fog target so fogged bg
-    voxels melt into the dome instead of ghosting against it. Below the
-    horizon (mostly floor-occluded) it eases slightly darker.
+    Blend is linear in WORLD sin(elev): full horizon at level-spread/2, full
+    zenith at level+spread/2 (level/spread default to the module constants;
+    the GUI passes live slider values). update_bg_cache uses the SAME
+    mapping for its fog target so fogged bg voxels melt into the dome.
     """
     global sky_dome_enabled, _dome_baked_b
-    if band is None:
-        band = SKY_GRADIENT_BAND
-    if gamma is None:
-        gamma = SKY_GRADIENT_GAMMA
+    if level is None:
+        level = SKY_GRADIENT_LEVEL
+    if spread is None:
+        spread = SKY_GRADIENT_SPREAD
     hor = np.array(horizon, dtype=np.float32)
     zen = np.array(zenith, dtype=np.float32)
     s = _dome_sin_elev_np
-    t_up = np.clip(s / max(band, 0.01), 0.0, 1.0) ** gamma
-    t_dn = np.clip(-s / 0.5, 0.0, 1.0)
-    dn = 1.0 - 0.45 * (t_dn * t_dn * (3.0 - 2.0 * t_dn))
-    above = hor[None, :] + (zen - hor)[None, :] * t_up[:, None]
-    _dome_desired_np[:] = np.where(s[:, None] >= 0.0, above, hor[None, :] * dn[:, None])
+    low = level - spread * 0.5
+    t = np.clip((s - low) / max(spread, 0.01), 0.0, 1.0)
+    _dome_desired_np[:] = hor[None, :] + (zen - hor)[None, :] * t[:, None]
     sky_dome_enabled = True
     _dome_baked_b = -1.0  # force re-bake on next render
 

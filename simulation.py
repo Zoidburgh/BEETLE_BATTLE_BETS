@@ -4000,7 +4000,7 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
                     hor_r: ti.f32, hor_g: ti.f32, hor_b: ti.f32,
                     zen_r: ti.f32, zen_g: ti.f32, zen_b: ti.f32,
                     fog_start: ti.f32, fog_end: ti.f32, fog_max: ti.f32,
-                    sky_band: ti.f32, sky_gamma: ti.f32,
+                    sky_level: ti.f32, sky_spread: ti.f32,
                     mute_strength: ti.f32):
     """Pre-compute renderer-ready bg data. Only call at animation frequency.
 
@@ -4086,10 +4086,13 @@ def update_bg_cache(cam_x: ti.f32, cam_y: ti.f32, cam_z: ti.f32,
             d = ti.sqrt(dxx * dxx + dyy * dyy + dzz * dzz)
             t = ti.min(ti.max((d - fog_start) / ti.max(fog_end - fog_start, 1.0), 0.0), 1.0)
             f = t * t * (3.0 - 2.0 * t) * fog_max * fogp
-            # Same horizon->zenith curve as renderer.set_sky_dome, driven
-            # live by the SKY BAND / SKY CURVE sliders (passed in each frame)
-            up = ti.min(ti.max((dyy / ti.max(d, 0.001)) / ti.max(sky_band, 0.01), 0.0), 1.0)
-            sky_t = ti.pow(up, sky_gamma)
+            # Same mapping as renderer.set_sky_dome (linear in elevation
+            # between level-spread/2 and level+spread/2), driven live by the
+            # SKY LEVEL / SKY SPREAD sliders. Uses camera-relative up-ness of
+            # the voxel — approximates the world-elevation the dome uses, and
+            # keeps near-horizon decor fading to the warm horizon color.
+            low_s = sky_level - sky_spread * 0.5
+            sky_t = ti.min(ti.max((dyy / ti.max(d, 0.001) - low_s) / ti.max(sky_spread, 0.01), 0.0), 1.0)
         if f < 0.97:  # fully fogged voxels never enter the render buffer
             hor = ti.Vector([hor_r, hor_g, hor_b])
             zen = ti.Vector([zen_r, zen_g, zen_b])

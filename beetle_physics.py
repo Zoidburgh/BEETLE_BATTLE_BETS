@@ -16548,12 +16548,14 @@ BG_FOG_START = 78.0
 BG_FOG_END = 231.0
 BG_FOG_MAX = 0.62
 BG_MUTE_STRENGTH = 1.65
-# Sky gradient shape (live SKY BAND / SKY CURVE sliders). BAND = how much of
-# the sky the warm->cool shift spans: LOWER packs the whole gradient into the
-# thin sky strip visible when the camera looks level/down, so the shift is
-# obvious in gameplay. GAMMA biases the curve (lower = cool reaches down sooner).
-BG_SKY_BAND = 0.38
-BG_SKY_GAMMA = 1.0
+# Sky gradient placement (live SKY LEVEL / SKY SPREAD sliders).
+# LEVEL = where the warm->cool sunset sits in the sky. The gameplay camera
+# pitches DOWN at the arena and sees the LOWER sky, so LEVEL must be NEGATIVE
+# to bring the sunset into view — raise it toward 0 and the cool top climbs
+# out of the gameplay frame (looks great on the title screen, flat in-game).
+# SPREAD = how gradual the transition (small = a hard sunset line, big = soft).
+BG_SKY_LEVEL = -0.15
+BG_SKY_SPREAD = 0.40
 DEFAULT_SKY_COLOR = (0.04, 0.04, 0.06)
 # Biome ZENITH colors (top of the dome; also the flat clear color when the
 # dome is off, and the fog target for high-elevation voxels). Deliberately a
@@ -16590,7 +16592,7 @@ def apply_biome_sky(theme_id):
     window.background_color = THEME_SKY_COLORS.get(theme_id, DEFAULT_SKY_COLOR)
     if SKY_DOME_ON and theme_id in THEME_HORIZON_COLORS:
         renderer.set_sky_dome(THEME_HORIZON_COLORS[theme_id], THEME_SKY_COLORS[theme_id],
-                              BG_SKY_BAND, BG_SKY_GAMMA)
+                              BG_SKY_LEVEL, BG_SKY_SPREAD)
     else:
         renderer.disable_sky_dome()
 
@@ -17239,7 +17241,7 @@ simulation.update_bg_cache(
     float(_fog_hor[0]), float(_fog_hor[1]), float(_fog_hor[2]),
     float(_fog_zen[0]), float(_fog_zen[1]), float(_fog_zen[2]),
     float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
-    float(BG_SKY_BAND), float(BG_SKY_GAMMA),
+    float(BG_SKY_LEVEL), float(BG_SKY_SPREAD),
     float(BG_MUTE_STRENGTH))  # Warm up cache kernel
 # Quick render pass to compile renderer's split kernels (PHASE 6 path)
 renderer.num_voxels[None] = 0
@@ -22131,7 +22133,7 @@ try:
                 float(_fog_hor[0]), float(_fog_hor[1]), float(_fog_hor[2]),
                 float(_fog_zen[0]), float(_fog_zen[1]), float(_fog_zen[2]),
                 float(BG_FOG_START), float(BG_FOG_END), float(BG_FOG_MAX),
-                float(BG_SKY_BAND), float(BG_SKY_GAMMA),
+                float(BG_SKY_LEVEL), float(BG_SKY_SPREAD),
                 float(BG_MUTE_STRENGTH))
         simulation.decay_stadium_excitement(frame_dt)
     perf_monitor.stop('background')
@@ -24303,13 +24305,14 @@ try:
         BG_FOG_START = window.GUI.slider_float("FOG START", BG_FOG_START, 0.0, 250.0)
         BG_FOG_END = window.GUI.slider_float("FOG END", BG_FOG_END, 40.0, 400.0)
         BG_FOG_MAX = window.GUI.slider_float("FOG MAX", BG_FOG_MAX, 0.0, 1.0)
-        # Sky gradient shape. Dragging either re-bakes the dome live (the fog
-        # target reads the globals every frame, so it follows automatically).
-        _new_band = window.GUI.slider_float("SKY BAND", BG_SKY_BAND, 0.15, 1.20)
-        _new_gamma = window.GUI.slider_float("SKY CURVE", BG_SKY_GAMMA, 0.40, 2.50)
-        if _new_band != BG_SKY_BAND or _new_gamma != BG_SKY_GAMMA:
-            BG_SKY_BAND = _new_band
-            BG_SKY_GAMMA = _new_gamma
+        # Sky gradient placement. Dragging either re-bakes the dome live (the
+        # fog target reads the globals every frame, so it follows). SKY LEVEL
+        # is the one to move if the sunset sits too high to see in gameplay.
+        _new_level = window.GUI.slider_float("SKY LEVEL", BG_SKY_LEVEL, -0.50, 0.40)
+        _new_spread = window.GUI.slider_float("SKY SPREAD", BG_SKY_SPREAD, 0.10, 1.20)
+        if _new_level != BG_SKY_LEVEL or _new_spread != BG_SKY_SPREAD:
+            BG_SKY_LEVEL = _new_level
+            BG_SKY_SPREAD = _new_spread
             if CURRENT_BIOME_THEME is not None:
                 apply_biome_sky(CURRENT_BIOME_THEME)  # rebuild dome gradient
         if window.GUI.button("SKY DOME: ON" if SKY_DOME_ON else "SKY DOME: OFF"):
