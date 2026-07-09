@@ -20990,8 +20990,11 @@ try:
                     elif lowest_point < floor_surface + 0.5:  # Close to ground
                         beetles[slot].on_ground = True
                 else:
-                    # No floor below (over edge / hole / broken board) — full air nerf
-                    beetles[slot].air_gap = 999.0
+                    # No floor below (over edge / hole / broken board): keep the
+                    # last real measurement. The air nerf is about being POPPED UP
+                    # over the board — hanging over the rim or sliding off the
+                    # ledge is not "in the air" and must not trigger the slow
+                    pass
         # Ball floor collision (same as beetles, but skip in goal pit areas)
         if beetle_ball.active:
             # Check if ball is in goal pit area (no floor there) — with rounded corners
