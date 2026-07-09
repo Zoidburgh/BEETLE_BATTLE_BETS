@@ -2146,8 +2146,8 @@ class Beetle:
                 base_backward = physics_params.get("BACKWARD_SPEED", 5.0)
             # Silk speed multiplier adjusts max speed (spider boost on floor silk)
             # Speed boost from holding: forward up to 70%, backward up to 30%
-            # Popped up = "go to base speed": held-boost bonus drops out of the cap
-            # (clamp-down only; the bonus itself is preserved and returns on landing)
+            # Popped up = base speed: hold-time is wiped in the input block; this
+            # clamp just covers the one tick before that lands (belt-and-braces)
             ice_speed_mult = 2.0 if (on_ice and self.on_ground) else 1.0
             bonus_scale = 0.0 if self.air_no_traction else 1.0
             forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus * bonus_scale) * ice_speed_mult
@@ -18512,17 +18512,21 @@ try:
                 beetle.silk_speed_mult = speed_mult[slot]  # Set on beetle for max speed cap
 
                 # Speed boost system - track hold time and calculate bonus
-                # Ramp pauses (doesn't reset) while popped up — no charging mid-flight
-                if p_inputs & INPUT_FORWARD:
-                    if on_board:
-                        beetle.forward_hold_time += PHYSICS_TIMESTEP
-                else:
+                # Getting popped up WIPES the built-up boost — you land at base
+                # speed and only start rebuilding once actually on the ground
+                # (holding through the flight doesn't preserve or rebuild it)
+                if not on_board:
                     beetle.forward_hold_time = 0.0
-                if p_inputs & INPUT_BACKWARD:
-                    if on_board:
-                        beetle.backward_hold_time += PHYSICS_TIMESTEP
-                else:
                     beetle.backward_hold_time = 0.0
+                else:
+                    if p_inputs & INPUT_FORWARD:
+                        beetle.forward_hold_time += PHYSICS_TIMESTEP
+                    else:
+                        beetle.forward_hold_time = 0.0
+                    if p_inputs & INPUT_BACKWARD:
+                        beetle.backward_hold_time += PHYSICS_TIMESTEP
+                    else:
+                        beetle.backward_hold_time = 0.0
                 # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
                 beetle.forward_bonus = min(1.50, beetle.forward_hold_time / 3.0 * 1.50)
                 beetle.backward_bonus = min(0.80, beetle.backward_hold_time / 3.0 * 0.80)
