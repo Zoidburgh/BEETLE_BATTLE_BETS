@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import math
+import json
 import random
 import atexit
 from collections import deque
@@ -863,8 +864,8 @@ BEETLE_TYPE_STATS = [  # indexed by horn_type_id (NOTE: BEETLE_STATS is taken â€
          pitch_up=42.0, pitch_dn=-5.0,  yaw_max=20.0, yaw_min=-20.0),
     dict(name="stag",       fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.15, yaw=1.15,  # snappier pincers
          pitch_up=55.0, pitch_dn=2.0,   yaw_max=35.0, yaw_min=-5.0),
-    dict(name="hercules",   fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,
-         pitch_up=35.0, pitch_dn=2.0,   yaw_max=23.0, yaw_min=-23.0),
+    dict(name="hercules",   fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.2,  yaw=1.6,   # faster jaws (2026-07-09 tune)
+         pitch_up=40.0, pitch_dn=2.0,   yaw_max=28.0, yaw_min=-28.0),
     dict(name="scorpion",   fwd=9.0/12.5, back=6.0/7.0,  turn=1.0,  tilt=0.92, yaw=1.0,   # slower claws; yaw unused (tail)
          pitch_up=58.0, pitch_dn=-18.0, yaw_max=20.0, yaw_min=-20.0),
     dict(name="atlas",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,
@@ -887,6 +888,44 @@ def rebuild_horn_limit_tables():
 
 # Pitch limits (max, min) and yaw limits (max, min) indexed by horn_type_id
 rebuild_horn_limit_tables()
+
+# --- Tuning persistence: beetle_tuning.json next to the game overrides the
+# --- code defaults above. SAVE TUNING button in the BEETLE TUNING panel
+# --- writes it; it auto-loads here at startup.
+BEETLE_TUNING_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "beetle_tuning.json")
+
+def save_beetle_tuning():
+    """Write the whole per-type stats table to beetle_tuning.json."""
+    try:
+        with open(BEETLE_TUNING_FILE, "w") as f:
+            json.dump(BEETLE_TYPE_STATS, f, indent=2)
+        print(f"[Tuning] Saved {BEETLE_TUNING_FILE}")
+        return True
+    except Exception as e:
+        print(f"[Tuning] Save failed: {e}")
+        return False
+
+def load_beetle_tuning():
+    """Merge beetle_tuning.json over the code defaults (per-key, so rows or
+    keys missing from an older file keep their code values)."""
+    try:
+        if not os.path.exists(BEETLE_TUNING_FILE):
+            return False
+        with open(BEETLE_TUNING_FILE) as f:
+            rows = json.load(f)
+        for i, row in enumerate(rows):
+            if i < len(BEETLE_TYPE_STATS) and isinstance(row, dict):
+                for k, v in row.items():
+                    if k != "name" and k in BEETLE_TYPE_STATS[i]:
+                        BEETLE_TYPE_STATS[i][k] = float(v)
+        rebuild_horn_limit_tables()
+        print(f"[Tuning] Loaded {BEETLE_TUNING_FILE}")
+        return True
+    except Exception as e:
+        print(f"[Tuning] Load failed: {e}")
+        return False
+
+load_beetle_tuning()
 
 # ============================================================================
 # INPUT ABSTRACTION SYSTEM (for networking and controller support)
@@ -16827,6 +16866,7 @@ show_advanced_settings = False
 show_settings_panel = False  # Hide settings panel until game starts
 show_beetle_tuning = False  # Standalone BEETLE TUNING window (per-type stats sliders)
 beetle_tuning_sel = 0  # Which horn_type_id the tuning window is editing
+beetle_tuning_note = ""  # Last save/load feedback line in the tuning window
 
 # NOTE: renderer.init_gradient_background() and renderer.init_shimmer_lut() are
 # called during the loading bar warmup (Phase 0) so the user sees progress feedback.
@@ -25138,6 +25178,14 @@ try:
         if _bs["yaw_min"] > _bs["yaw_max"]:
             _bs["yaw_min"] = _bs["yaw_max"]
         rebuild_horn_limit_tables()  # Apply range edits to the physics lookup tables
+
+        window.GUI.text("")
+        if window.GUI.button("SAVE TUNING TO FILE"):
+            beetle_tuning_note = "saved beetle_tuning.json (all types)" if save_beetle_tuning() else "SAVE FAILED - see console"
+        if window.GUI.button("RELOAD TUNING FILE"):
+            beetle_tuning_note = "reloaded from file" if load_beetle_tuning() else "no file found"
+        if beetle_tuning_note:
+            window.GUI.text(beetle_tuning_note)
         window.GUI.end()
 
     # === OPPONENT DISCONNECTED BANNER (center screen, impossible to miss) ===
