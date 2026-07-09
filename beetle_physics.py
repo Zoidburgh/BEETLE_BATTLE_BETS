@@ -1849,7 +1849,9 @@ class Beetle:
         self.vz = 0.0
         self.y = 1.0  # Vertical position (floor level)
         self.vy = 0.0  # Vertical velocity
-        self.on_ground = True  # Ground contact state
+        self.on_ground = True  # Ground contact state (STICKY: only death/respawn/hover clear it — use air_gap for "airborne")
+        self.air_gap = 0.0  # Lowest geometry point height above floor surface (999 = no floor below); cached from floor block each step
+        self.air_no_traction = False  # True when popped up past AIR_GRACE_LIFT — drive nerfed, speed cap drops to base
         # Yaw rotation (spin around vertical axis)
         self.rotation = rotation
         self.target_rotation = rotation
@@ -2062,14 +2064,15 @@ class Beetle:
 
         # === HORIZONTAL PHYSICS (existing) ===
         # Apply linear friction (skip for ball when airborne to allow proper arc)
-        # Airborne: much lighter friction so launch knockback keeps its momentum
-        # (at ground FRICTION 0.88 a launch decayed to nothing in ~90ms)
+        # Popped up (air_gap past grace): much lighter friction so launch knockback
+        # keeps its momentum (at ground FRICTION 0.88 a launch decayed in ~90ms).
+        # NOTE: on_ground is sticky through launches — air_gap is the real signal.
         if self.horn_type == "ball":
             # Ball uses its own rolling friction only when on ground (applied in main loop)
             pass
         else:
-            if self.on_ground:
-                linear_friction = ICE_LINEAR_FRICTION if on_ice else FRICTION
+            if self.air_gap <= physics_params.get("AIR_GRACE_LIFT", 1.0):
+                linear_friction = ICE_LINEAR_FRICTION if (on_ice and self.on_ground) else FRICTION
             else:
                 linear_friction = physics_params.get("AIR_FRICTION", 0.985)
             self.vx *= linear_friction
@@ -2143,9 +2146,12 @@ class Beetle:
                 base_backward = physics_params.get("BACKWARD_SPEED", 5.0)
             # Silk speed multiplier adjusts max speed (spider boost on floor silk)
             # Speed boost from holding: forward up to 70%, backward up to 30%
+            # Popped up = "go to base speed": held-boost bonus drops out of the cap
+            # (clamp-down only; the bonus itself is preserved and returns on landing)
             ice_speed_mult = 2.0 if (on_ice and self.on_ground) else 1.0
-            forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus) * ice_speed_mult
-            backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus) * ice_speed_mult
+            bonus_scale = 0.0 if self.air_no_traction else 1.0
+            forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus * bonus_scale) * ice_speed_mult
+            backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus * bonus_scale) * ice_speed_mult
             if dot_product >= 0:  # Moving forward
                 if speed > forward_max:
                     self.vx = (self.vx / speed) * forward_max
@@ -16834,9 +16840,13 @@ physics_params = {
     "FORWARD_SPEED": 12.5,  # Forward top speed (base before momentum bonus)
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
 
+    # Air traction (pop-up nerf): lift measured as air_gap = lowest geometry
+    # point above floor surface, so thresholds are build/leg-length independent
+    "AIR_CONTROL": 0.0,  # MINIMUM drive floor once past AIR_DEAD_LIFT (0 = ballistic; raise toward 1.0 to soften)
+    "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
+    "AIR_DEAD_LIFT": 2.5,  # At/above this lift: drive at the AIR_CONTROL floor until landing
+    "AIR_FRICTION": 0.985,  # Horizontal friction while popped up (vs ground 0.88 — launches keep their momentum)
     # Airborne tumbling physics parameters
-    "AIR_CONTROL": 0.25,  # Drive force multiplier while airborne (turning stays full; 1.0 = old full air control)
-    "AIR_FRICTION": 0.985,  # Horizontal friction while airborne (vs ground 0.88 — launches keep their momentum)
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
@@ -18473,14 +18483,26 @@ try:
                     if p_inputs & INPUT_RIGHT:
                         beetle.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
 
+                # Air traction: air_gap (lowest geometry point above floor, cached
+                # from the floor block; 999 = no floor below) is the real airborne
+                # signal — on_ground is sticky through launches. At/below the grace
+                # lift, hops feel identical to ground. Past it, traction is lost
+                # until the beetle touches down again.
+                _grace_lift = physics_params.get("AIR_GRACE_LIFT", 1.0)
+                _dead_lift = physics_params.get("AIR_DEAD_LIFT", 2.5)
+                on_board = beetle.air_gap <= _grace_lift
+
                 # Movement controls (T/G) - move in facing direction
                 # Silk slowdown: 1% slower per silk particle attached to body
                 # silk_counts fetched once per frame before physics loop (GPU sync optimization)
                 if silk_might_exist and silk_counts is not None:
-                    silk_slowdown[slot] = max(0.0, 1.0 - 0.01 * silk_counts[slot * 2])
-                    # Floor silk effect: spiders get boost, others get slowed
+                    silk_slowdown[slot] = max(0.0, 1.0 - 0.01 * silk_counts[slot * 2])  # Body silk: applies at any height
+                    # Floor silk only grips while on/near the board. Popped up =
+                    # off the board: no floor slow for others AND no boost for spiders
                     floor_silk_count = silk_counts[slot * 2 + 1]
-                    if beetle.horn_type_id == 6:  # Spider
+                    if not on_board:
+                        floor_modifier[slot] = 1.0
+                    elif beetle.horn_type_id == 6:  # Spider
                         floor_modifier[slot] = 1.0 + 0.05 * floor_silk_count  # +5% speed per floor silk
                     else:
                         floor_modifier[slot] = max(0.0, 1.0 - 0.01 * floor_silk_count)  # -1% speed per floor silk
@@ -18490,14 +18512,14 @@ try:
                 beetle.silk_speed_mult = speed_mult[slot]  # Set on beetle for max speed cap
 
                 # Speed boost system - track hold time and calculate bonus
-                # Ramp pauses (doesn't reset) while airborne — no charging up mid-flight
+                # Ramp pauses (doesn't reset) while popped up — no charging mid-flight
                 if p_inputs & INPUT_FORWARD:
-                    if beetle.on_ground:
+                    if on_board:
                         beetle.forward_hold_time += PHYSICS_TIMESTEP
                 else:
                     beetle.forward_hold_time = 0.0
                 if p_inputs & INPUT_BACKWARD:
-                    if beetle.on_ground:
+                    if on_board:
                         beetle.backward_hold_time += PHYSICS_TIMESTEP
                 else:
                     beetle.backward_hold_time = 0.0
@@ -18505,9 +18527,19 @@ try:
                 beetle.forward_bonus = min(1.50, beetle.forward_hold_time / 3.0 * 1.50)
                 beetle.backward_bonus = min(0.80, beetle.backward_hold_time / 3.0 * 0.80)
 
-                # Air control: airborne beetles keep full turning but barely any
-                # drive force — a launch owns your trajectory until you land
-                drive_mult = 1.0 if beetle.on_ground else physics_params.get("AIR_CONTROL", 0.25)
+                # Height-graded drive: full for small hops, fading to the AIR_CONTROL
+                # floor once lifted past AIR_DEAD_LIFT voxels of daylight. Turning
+                # stays full — you can aim your landing, not fly to it
+                _air_floor = physics_params.get("AIR_CONTROL", 0.0)
+                if on_board:
+                    drive_mult = 1.0
+                elif beetle.air_gap >= _dead_lift:
+                    drive_mult = _air_floor
+                else:
+                    t = (beetle.air_gap - _grace_lift) / max(1e-6, _dead_lift - _grace_lift)
+                    drive_mult = 1.0 + (_air_floor - 1.0) * t
+                # While popped up, the speed cap also drops to base (update_physics)
+                beetle.air_no_traction = not on_board
 
                 if p_inputs & INPUT_FORWARD:
                     # Move forward in facing direction
@@ -19919,6 +19951,7 @@ try:
                         beetles[slot].has_exploded = False
                         beetles[slot].is_falling = False
                         beetles[slot].on_ground = False
+                        beetles[slot].air_gap = 999.0  # Airborne until floor block re-measures
                         spawn_immunity[slot] = SPAWN_IMMUNITY_DURATION
                         print(f"Beetle {slot} hovering to spawn point!")
                     else:
@@ -19940,6 +19973,7 @@ try:
                         beetles[slot].is_falling = False
                         beetles[slot].guest_death_falling = False
                         beetles[slot].on_ground = False
+                        beetles[slot].air_gap = 999.0  # Airborne until floor block re-measures
                         beetles[slot].forward_hold_time = 0.0
                         beetles[slot].backward_hold_time = 0.0
                         beetles[slot].forward_bonus = 0.0
@@ -20013,6 +20047,7 @@ try:
                     beetles[slot].roll_velocity = 0.0
                     beetles[slot].guest_death_falling = False
                     beetles[slot].on_ground = False
+                    beetles[slot].air_gap = 999.0  # Airborne until floor block re-measures
                     # Reset speed boost state
                     beetles[slot].forward_hold_time = 0.0
                     beetles[slot].backward_hold_time = 0.0
@@ -20914,6 +20949,8 @@ try:
 
                     # Check if beetle penetrates floor (lowest point goes into or below floor)
                     floor_surface = floor_y_by_slot[slot] + 0.5  # Top of floor voxel surface
+                    # Cache lift for the air-traction nerf (input block reads it next step)
+                    beetles[slot].air_gap = max(0.0, lowest_point - floor_surface)
                     if lowest_point < floor_surface:
                         # Penetration detected - use small instant correction to prevent sinking
                         penetration_depth = floor_surface - lowest_point
@@ -20929,6 +20966,9 @@ try:
                         beetles[slot].on_ground = True
                     elif lowest_point < floor_surface + 0.5:  # Close to ground
                         beetles[slot].on_ground = True
+                else:
+                    # No floor below (over edge / hole / broken board) — full air nerf
+                    beetles[slot].air_gap = 999.0
         # Ball floor collision (same as beetles, but skip in goal pit areas)
         if beetle_ball.active:
             # Check if ball is in goal pit area (no floor there) — with rounded corners
@@ -24961,7 +25001,9 @@ try:
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
 
             window.GUI.text("--- Airborne Tumbling ---")
-            physics_params["AIR_CONTROL"] = window.GUI.slider_float("Air Control", physics_params["AIR_CONTROL"], 0.0, 1.0)
+            physics_params["AIR_CONTROL"] = window.GUI.slider_float("Air Drive Floor", physics_params["AIR_CONTROL"], 0.0, 1.0)
+            physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
+            physics_params["AIR_DEAD_LIFT"] = window.GUI.slider_float("Air Dead Lift", physics_params["AIR_DEAD_LIFT"], 1.5, 7.0)
             physics_params["AIR_FRICTION"] = window.GUI.slider_float("Air Friction", physics_params["AIR_FRICTION"], 0.88, 1.0)
             physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
             physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
