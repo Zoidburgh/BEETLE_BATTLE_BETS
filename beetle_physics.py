@@ -2079,15 +2079,16 @@ class Beetle:
             self.vx *= linear_friction
             self.vz *= linear_friction
 
-            # One-shot airborne speed cut: the moment the beetle is CLEARLY in
-            # the air (lowest point >= AIR_DEAD_LIFT voxels of daylight, same
-            # threshold as full drive loss), horizontal speed drops by
-            # AIR_POP_SLOW (40%). Fires once per flight; re-arms only after
-            # landing back inside the grace band, so bouncing around the
-            # threshold can't double-dip. Vertical launch height untouched.
-            if self.air_gap >= physics_params.get("AIR_DEAD_LIFT", 2.5):
+            # One-shot airborne speed cut: the moment the beetle is clearly in
+            # the air (lowest point >= AIR_SLOW_LIFT voxels of daylight),
+            # horizontal speed drops by AIR_POP_SLOW. Fires once per flight;
+            # re-arms only after landing back inside the grace band, so
+            # bouncing around the threshold can't double-dip. Vertical launch
+            # height untouched. (AIR_SLOW_LIFT must stay > AIR_GRACE_LIFT or
+            # the re-arm hysteresis collapses.)
+            if self.air_gap >= physics_params.get("AIR_SLOW_LIFT", 1.5):
                 if not self.air_speed_cut_done:
-                    keep = 1.0 - physics_params.get("AIR_POP_SLOW", 0.40)
+                    keep = 1.0 - physics_params.get("AIR_POP_SLOW", 0.50)
                     self.vx *= keep
                     self.vz *= keep
                     self.air_speed_cut_done = True
@@ -16861,7 +16862,8 @@ physics_params = {
     "AIR_CONTROL": 0.0,  # MINIMUM drive floor once past AIR_DEAD_LIFT (0 = ballistic; raise toward 1.0 to soften)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
     "AIR_DEAD_LIFT": 2.5,  # At/above this lift: drive at the AIR_CONTROL floor until landing
-    "AIR_POP_SLOW": 0.40,  # One-shot horizontal speed cut when crossing AIR_DEAD_LIFT (0.40 = lose 40%)
+    "AIR_SLOW_LIFT": 1.5,  # Lift (daylight under leg tips) that triggers the one-shot speed cut
+    "AIR_POP_SLOW": 0.50,  # One-shot horizontal speed cut when crossing AIR_SLOW_LIFT (0.50 = lose half)
     "AIR_FRICTION": 0.985,  # Horizontal friction while popped up (vs ground 0.88 — launches keep their momentum)
     # Airborne tumbling physics parameters
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
@@ -25025,6 +25027,7 @@ try:
             physics_params["AIR_CONTROL"] = window.GUI.slider_float("Air Drive Floor", physics_params["AIR_CONTROL"], 0.0, 1.0)
             physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
             physics_params["AIR_DEAD_LIFT"] = window.GUI.slider_float("Air Dead Lift", physics_params["AIR_DEAD_LIFT"], 1.5, 7.0)
+            physics_params["AIR_SLOW_LIFT"] = window.GUI.slider_float("Air Slow Lift", physics_params["AIR_SLOW_LIFT"], 1.1, 5.0)
             physics_params["AIR_POP_SLOW"] = window.GUI.slider_float("Air Pop Slow", physics_params["AIR_POP_SLOW"], 0.0, 0.8)
             physics_params["AIR_FRICTION"] = window.GUI.slider_float("Air Friction", physics_params["AIR_FRICTION"], 0.88, 1.0)
             physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
