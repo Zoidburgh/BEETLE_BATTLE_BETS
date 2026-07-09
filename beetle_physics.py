@@ -819,8 +819,8 @@ HORN_DEFAULT_PITCH_STAG = math.radians(18)  # Start at +18 degrees (raised) - fo
 HORN_DEFAULT_PITCH_HERCULES = math.radians(15)  # Start at +15 degrees (jaws slightly open) - for hercules
 HORN_DEFAULT_PITCH_SCORPION = math.radians(20)  # Start at +20 degrees (raised) - for scorpion claws
 HORN_DEFAULT_PITCH_ATLAS = math.radians(-33)  # Start at -33 degrees (angled down toward ground) - for atlas beetle
-HORN_MAX_PITCH = math.radians(45)  # +45 degrees vertical (up) - increased 5° more for stag pincers
-HORN_MIN_PITCH = math.radians(5)  # +5 degrees vertical (down) - reduced downward by 15° total for stag pincers
+HORN_MAX_PITCH = math.radians(55)  # +55 degrees vertical (up) - raised another 10° for bigger stag flick range
+HORN_MIN_PITCH = math.radians(2)  # +2 degrees vertical (down) - 3° more downward reach (hercules jaws live at +2 without floor clip)
 # Rhino-specific limits (shifted 5° higher to keep horn from going too low)
 HORN_MAX_PITCH_RHINO = math.radians(42)  # +42 degrees vertical (up) - 7° more than previous 35°
 HORN_MIN_PITCH_RHINO = math.radians(-5)  # -5 degrees vertical (down) - 5° less downward than default -10°
@@ -18656,8 +18656,16 @@ try:
                 # OPTIMIZATION: Use lookup table instead of string comparisons
                 max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle.horn_type_id]
 
-                # Scorpion claws move slower (horn_type_id == 3)
-                base_tilt_speed = HORN_TILT_SPEED * 0.92 if beetle.horn_type_id == 3 else (HORN_YAW_SPEED if beetle.horn_type_id == 7 else HORN_TILT_SPEED)
+                # Per-type pitch speeds: scorpion claws slower, giraffe neck uses
+                # yaw speed, stag pincers snappier (agile flicker)
+                if beetle.horn_type_id == 3:  # scorpion
+                    base_tilt_speed = HORN_TILT_SPEED * 0.92
+                elif beetle.horn_type_id == 7:  # giraffe
+                    base_tilt_speed = HORN_YAW_SPEED
+                elif beetle.horn_type_id == 1:  # stag
+                    base_tilt_speed = HORN_TILT_SPEED * 1.15
+                else:
+                    base_tilt_speed = HORN_TILT_SPEED
 
                 if p_inputs & INPUT_HORN_UP:
                     effective_speed = base_tilt_speed * (1.0 - min(beetle.horn_pitch_damping, _damp_cap))
