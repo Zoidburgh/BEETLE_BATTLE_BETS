@@ -18722,7 +18722,7 @@ try:
 
                     if p_inputs & INPUT_HORN_LEFT:
                         # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
-                        base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else HORN_YAW_SPEED
+                        base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else (HORN_YAW_SPEED * 1.15 if beetle.horn_type_id == 1 else HORN_YAW_SPEED)  # stag pincers open/close 15% faster
                         effective_speed = base_yaw_speed * (1.0 - min(beetle.horn_yaw_damping, _damp_cap))
 
                         new_yaw = beetle.horn_yaw - effective_speed * PHYSICS_TIMESTEP
@@ -18751,7 +18751,7 @@ try:
                                 _ylb.pitch -= physics_params.get("YAW_GRIND_TILT", 0.03)  # Direct pitch tilt (front/grabbed area up)
                     elif p_inputs & INPUT_HORN_RIGHT:
                         # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
-                        base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else HORN_YAW_SPEED
+                        base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else (HORN_YAW_SPEED * 1.15 if beetle.horn_type_id == 1 else HORN_YAW_SPEED)  # stag pincers open/close 15% faster
                         effective_speed = base_yaw_speed * (1.0 - min(beetle.horn_yaw_damping, _damp_cap))
 
                         new_yaw = beetle.horn_yaw + effective_speed * PHYSICS_TIMESTEP
