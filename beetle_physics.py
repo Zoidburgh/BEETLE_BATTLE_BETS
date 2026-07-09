@@ -851,28 +851,42 @@ HORN_PITCH_MIN_DISTANCE = 0.5  # Minimum distance between horn tips (voxels) to 
 # OPTIMIZATION: Horn type ID mapping and pitch/yaw limit lookup tables
 # Eliminates string comparisons in the physics loop (120 checks/sec -> integer lookup)
 HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4, "bombardier": 5, "spider": 6, "giraffe": 7}
-# Pitch limits: (max_pitch, min_pitch) indexed by horn_type_id
-HORN_PITCH_LIMITS = [
-    (HORN_MAX_PITCH_RHINO, HORN_MIN_PITCH_RHINO),       # 0: rhino
-    (HORN_MAX_PITCH, HORN_MIN_PITCH),                   # 1: stag
-    (HORN_MAX_PITCH_HERCULES, HORN_MIN_PITCH_HERCULES), # 2: hercules
-    (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 3: scorpion (symmetric ±17° around 20° default)
-    (HORN_MAX_PITCH_ATLAS, HORN_MIN_PITCH_ATLAS),       # 4: atlas
-    (0.0, 0.0),                                         # 5: bombardier (no horn - uses firing controls)
-    (HORN_MAX_PITCH_SCORPION, HORN_MIN_PITCH_SCORPION), # 6: spider (fangs)
-    (math.radians(25), math.radians(-40)),               # 7: giraffe weevil (+25° up, -40° down)
+# ============================================================================
+# PER-BEETLE STATS TABLE — single source for per-type tuning. The BEETLE
+# TUNING panel edits these live. Speeds are MULTIPLIERS on the global bases
+# (physics_params FORWARD/BACKWARD_SPEED, ROTATION_SPEED, HORN_TILT_SPEED,
+# HORN_YAW_SPEED); horn ranges are DEGREES, converted to the radian lookup
+# tables the physics loop reads via rebuild_horn_limit_tables().
+# ============================================================================
+BEETLE_STATS = [  # indexed by horn_type_id
+    dict(name="rhino",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,
+         pitch_up=42.0, pitch_dn=-5.0,  yaw_max=20.0, yaw_min=-20.0),
+    dict(name="stag",       fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.15, yaw=1.15,  # snappier pincers
+         pitch_up=55.0, pitch_dn=2.0,   yaw_max=35.0, yaw_min=-5.0),
+    dict(name="hercules",   fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,
+         pitch_up=35.0, pitch_dn=2.0,   yaw_max=23.0, yaw_min=-23.0),
+    dict(name="scorpion",   fwd=9.0/12.5, back=6.0/7.0,  turn=1.0,  tilt=0.92, yaw=1.0,   # slower claws; yaw unused (tail)
+         pitch_up=58.0, pitch_dn=-18.0, yaw_max=20.0, yaw_min=-20.0),
+    dict(name="atlas",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,
+         pitch_up=20.0, pitch_dn=-40.0, yaw_max=20.0, yaw_min=-20.0),
+    dict(name="bombardier", fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,   # no horn (ranges unused)
+         pitch_up=0.0,  pitch_dn=0.0,   yaw_max=0.0,  yaw_min=0.0),
+    dict(name="spider",     fwd=8.0/12.5, back=6.0/7.0,  turn=1.35, tilt=1.0,  yaw=1.0,   # slow mover, agile turner
+         pitch_up=58.0, pitch_dn=-18.0, yaw_max=20.0, yaw_min=-20.0),
+    dict(name="giraffe",    fwd=1.0,      back=1.0,      turn=1.0,
+         tilt=HORN_YAW_SPEED/HORN_TILT_SPEED, yaw=HORN_TILT_SPEED/HORN_YAW_SPEED,         # neck: pitch at yaw speed & vice versa
+         pitch_up=25.0, pitch_dn=-40.0, yaw_max=55.0, yaw_min=-55.0),                     # ±55° yaw compensates pitch compression
 ]
-# Yaw limits: (max_yaw, min_yaw) indexed by horn_type_id
-HORN_YAW_LIMITS = [
-    (HORN_MAX_YAW, HORN_MIN_YAW),           # 0: rhino
-    (HORN_MAX_YAW_STAG, HORN_MIN_YAW_STAG), # 1: stag
-    (HORN_MAX_YAW_HERCULES, HORN_MIN_YAW_HERCULES), # 2: hercules
-    (HORN_MAX_YAW, HORN_MIN_YAW),           # 3: scorpion
-    (HORN_MAX_YAW, HORN_MIN_YAW),           # 4: atlas
-    (0.0, 0.0),                             # 5: bombardier (no horn - uses firing controls)
-    (HORN_MAX_YAW, HORN_MIN_YAW),           # 6: spider
-    (math.radians(55), math.radians(-55)),   # 7: giraffe weevil (±55° to compensate pitch compression)
-]
+
+def rebuild_horn_limit_tables():
+    """Regenerate the radian lookup tables the physics loop reads from
+    BEETLE_STATS degrees (tuning panel calls this after slider edits)."""
+    global HORN_PITCH_LIMITS, HORN_YAW_LIMITS
+    HORN_PITCH_LIMITS = [(math.radians(s["pitch_up"]), math.radians(s["pitch_dn"])) for s in BEETLE_STATS]
+    HORN_YAW_LIMITS = [(math.radians(s["yaw_max"]), math.radians(s["yaw_min"])) for s in BEETLE_STATS]
+
+# Pitch limits (max, min) and yaw limits (max, min) indexed by horn_type_id
+rebuild_horn_limit_tables()
 
 # ============================================================================
 # INPUT ABSTRACTION SYSTEM (for networking and controller support)
@@ -2150,17 +2164,12 @@ class Beetle:
             forward_z = math.sin(self.rotation)
             dot_product = self.vx * forward_x + self.vz * forward_z
 
-            # Apply different speed caps based on direction (use tunable params)
-            # Spider has lower base speed, Scorpion is medium
-            if self.horn_type_id == 6:  # Spider
-                base_forward = 8.0
-                base_backward = 6.0
-            elif self.horn_type_id == 3:  # Scorpion
-                base_forward = 9.0
-                base_backward = 6.0
-            else:
-                base_forward = physics_params.get("FORWARD_SPEED", 7.0)
-                base_backward = physics_params.get("BACKWARD_SPEED", 5.0)
+            # Apply different speed caps based on direction: global base
+            # (physics sliders) x per-type multiplier (BEETLE TUNING panel;
+            # spider/scorpion ship slower than the rest)
+            _bstats = BEETLE_STATS[self.horn_type_id]
+            base_forward = physics_params.get("FORWARD_SPEED", 7.0) * _bstats["fwd"]
+            base_backward = physics_params.get("BACKWARD_SPEED", 5.0) * _bstats["back"]
             # Silk speed multiplier adjusts max speed (spider boost on floor silk)
             # Speed boost from holding: forward up to 70%, backward up to 30%
             # Popped up = base speed: hold-time is wiped in the input block; this
@@ -16816,6 +16825,8 @@ dynamic_lighting_enabled = False  # Camera-relative lighting for cinematic effec
 # Advanced settings panel (collapsed by default for performance)
 show_advanced_settings = False
 show_settings_panel = False  # Hide settings panel until game starts
+show_beetle_tuning = False  # Standalone BEETLE TUNING window (per-type stats sliders)
+beetle_tuning_sel = 0  # Which horn_type_id the tuning window is editing
 
 # NOTE: renderer.init_gradient_background() and renderer.init_shimmer_lut() are
 # called during the loading bar warmup (Phase 0) so the user sees progress feedback.
@@ -18493,9 +18504,8 @@ try:
                         normalized_bonus = beetle.backward_bonus / 0.80
                     turn_penalty = max(0.65, 1.0 - normalized_bonus * 0.35)  # Scales to 65% turn speed (35% penalty) over 3 sec
                     rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty * horn_lock_mult
-                    # Spider gets 35% faster turning (agile hunter)
-                    if beetle.horn_type_id == 6:
-                        rotation_multiplier *= 1.35
+                    # Per-type turn speed (BEETLE TUNING panel; spider ships 1.35)
+                    rotation_multiplier *= BEETLE_STATS[beetle.horn_type_id]["turn"]
 
                     if p_inputs & INPUT_LEFT:
                         beetle.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
@@ -18656,16 +18666,9 @@ try:
                 # OPTIMIZATION: Use lookup table instead of string comparisons
                 max_pitch_limit, min_pitch_limit = HORN_PITCH_LIMITS[beetle.horn_type_id]
 
-                # Per-type pitch speeds: scorpion claws slower, giraffe neck uses
-                # yaw speed, stag pincers snappier (agile flicker)
-                if beetle.horn_type_id == 3:  # scorpion
-                    base_tilt_speed = HORN_TILT_SPEED * 0.92
-                elif beetle.horn_type_id == 7:  # giraffe
-                    base_tilt_speed = HORN_YAW_SPEED
-                elif beetle.horn_type_id == 1:  # stag
-                    base_tilt_speed = HORN_TILT_SPEED * 1.15
-                else:
-                    base_tilt_speed = HORN_TILT_SPEED
+                # Per-type pitch speed multiplier (BEETLE TUNING panel; scorpion
+                # slower, stag snappier, giraffe neck runs at yaw speed)
+                base_tilt_speed = HORN_TILT_SPEED * BEETLE_STATS[beetle.horn_type_id]["tilt"]
 
                 if p_inputs & INPUT_HORN_UP:
                     effective_speed = base_tilt_speed * (1.0 - min(beetle.horn_pitch_damping, _damp_cap))
@@ -18722,7 +18725,7 @@ try:
 
                     if p_inputs & INPUT_HORN_LEFT:
                         # V key DECREASES yaw = CLOSES pincers (toward min_yaw_limit)
-                        base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else (HORN_YAW_SPEED * 1.15 if beetle.horn_type_id == 1 else HORN_YAW_SPEED)  # stag pincers open/close 15% faster
+                        base_yaw_speed = HORN_YAW_SPEED * BEETLE_STATS[beetle.horn_type_id]["yaw"]  # per-type yaw speed (BEETLE TUNING panel)
                         effective_speed = base_yaw_speed * (1.0 - min(beetle.horn_yaw_damping, _damp_cap))
 
                         new_yaw = beetle.horn_yaw - effective_speed * PHYSICS_TIMESTEP
@@ -18751,7 +18754,7 @@ try:
                                 _ylb.pitch -= physics_params.get("YAW_GRIND_TILT", 0.03)  # Direct pitch tilt (front/grabbed area up)
                     elif p_inputs & INPUT_HORN_RIGHT:
                         # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
-                        base_yaw_speed = HORN_TILT_SPEED if beetle.horn_type_id == 7 else (HORN_YAW_SPEED * 1.15 if beetle.horn_type_id == 1 else HORN_YAW_SPEED)  # stag pincers open/close 15% faster
+                        base_yaw_speed = HORN_YAW_SPEED * BEETLE_STATS[beetle.horn_type_id]["yaw"]  # per-type yaw speed (BEETLE TUNING panel)
                         effective_speed = base_yaw_speed * (1.0 - min(beetle.horn_yaw_damping, _damp_cap))
 
                         new_yaw = beetle.horn_yaw + effective_speed * PHYSICS_TIMESTEP
@@ -23048,6 +23051,11 @@ try:
         if window.GUI.button(fs_text):
             toggle_fullscreen_windows()
 
+        # Standalone per-beetle stats window toggle
+        bt_text = "BEETLE TUNING: ON" if show_beetle_tuning else "BEETLE TUNING: OFF"
+        if window.GUI.button(bt_text):
+            show_beetle_tuning = not show_beetle_tuning
+
     # === NETWORK / ONLINE PLAY SECTION ===
     if NETWORK_AVAILABLE and not gui_skip_content:
         window.GUI.text("")
@@ -25100,6 +25108,37 @@ try:
     # === NET STATS CSV LOG (automatic during online play, 1 row/sec) ===
     if network_manager is not None and game_state == GAME_STATE_ONLINE_PLAY:
         net_log_tick(actual_fps)
+
+    # === BEETLE TUNING WINDOW (standalone, toggled from settings panel) ===
+    if show_beetle_tuning and not gui_skip_content:
+        window.GUI.begin("BEETLE TUNING", 0.37, 0.01, 0.26, 0.62)
+        beetle_tuning_sel = window.GUI.slider_int("Type", beetle_tuning_sel, 0, len(BEETLE_STATS) - 1)
+        _bs = BEETLE_STATS[beetle_tuning_sel]
+        window.GUI.text(f">>> {_bs['name'].upper()} <<<")
+
+        window.GUI.text("--- Movement (x global base) ---")
+        _bs["fwd"] = window.GUI.slider_float("Fwd Speed x", _bs["fwd"], 0.3, 1.5)
+        _bs["back"] = window.GUI.slider_float("Back Speed x", _bs["back"], 0.3, 1.5)
+        window.GUI.text(f"  = {physics_params['FORWARD_SPEED'] * _bs['fwd']:.1f} fwd / "
+                        f"{physics_params['BACKWARD_SPEED'] * _bs['back']:.1f} back u/s")
+        _bs["turn"] = window.GUI.slider_float("Turn Speed x", _bs["turn"], 0.5, 2.0)
+
+        window.GUI.text("--- Horn Speed (x global base) ---")
+        _bs["tilt"] = window.GUI.slider_float("Pitch Speed x", _bs["tilt"], 0.3, 2.5)
+        _bs["yaw"] = window.GUI.slider_float("Yaw Speed x", _bs["yaw"], 0.3, 2.5)
+
+        window.GUI.text("--- Horn Range (degrees) ---")
+        _bs["pitch_up"] = window.GUI.slider_float("Pitch Up Max", _bs["pitch_up"], -45.0, 75.0)
+        _bs["pitch_dn"] = window.GUI.slider_float("Pitch Down Min", _bs["pitch_dn"], -60.0, 30.0)
+        _bs["yaw_max"] = window.GUI.slider_float("Yaw Max", _bs["yaw_max"], -10.0, 60.0)
+        _bs["yaw_min"] = window.GUI.slider_float("Yaw Min", _bs["yaw_min"], -60.0, 10.0)
+        # Keep min <= max so the physics clamps can't cross
+        if _bs["pitch_dn"] > _bs["pitch_up"]:
+            _bs["pitch_dn"] = _bs["pitch_up"]
+        if _bs["yaw_min"] > _bs["yaw_max"]:
+            _bs["yaw_min"] = _bs["yaw_max"]
+        rebuild_horn_limit_tables()  # Apply range edits to the physics lookup tables
+        window.GUI.end()
 
     # === OPPONENT DISCONNECTED BANNER (center screen, impossible to miss) ===
     if opponent_disconnected and game_state == GAME_STATE_ONLINE_PLAY and not gui_skip_content:
