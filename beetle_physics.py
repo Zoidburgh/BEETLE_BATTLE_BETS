@@ -20389,6 +20389,10 @@ try:
                 beetle_ball.pitch = 0.0
                 beetle_ball.roll = 0.0
                 beetle_ball.visible = True  # Make ball visible again
+                # Sync the interp snapshot to the spawn — without this, one
+                # render frame lerps the ball from the goal pit to center
+                # (the "1-frame flash" streak)
+                beetle_ball.save_previous_state()
                 print("Ball respawned!")
 
         # Stage 2: Full removal - deactivate completely
@@ -20495,6 +20499,8 @@ try:
                         beetles[slot].on_ground = False
                         beetles[slot].air_gap = 999.0  # Airborne until floor block re-measures
                         spawn_immunity[slot] = SPAWN_IMMUNITY_DURATION
+                        # Sync interp snapshot (kills the 1-frame death->spawn streak)
+                        beetles[slot].save_previous_state()
                         print(f"Beetle {slot} hovering to spawn point!")
                     else:
                         # Normal mode - spawn directly
@@ -20522,6 +20528,8 @@ try:
                         beetles[slot].backward_bonus = 0.0
                         beetles[slot].silk_speed_mult = 1.0
                         spawn_immunity[slot] = SPAWN_IMMUNITY_DURATION
+                        # Sync interp snapshot (kills the 1-frame death->spawn streak)
+                        beetles[slot].save_previous_state()
                         if active_player_count == 2 and slot == 0:
                             red_celebrating = False
                             red_pulse_timer = 0.0
