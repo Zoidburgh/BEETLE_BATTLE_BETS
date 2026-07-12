@@ -11013,52 +11013,6 @@ def spawn_death_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                 simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.5  # 0.5-1.0 sec - varied lifetime for more random fade timing
 
 @ti.kernel
-def spawn_death_voxel_batch(slot: ti.i32, center_x: ti.f32, center_y: ti.f32, center_z: ti.f32,
-                            body_r: ti.f32, body_g: ti.f32, body_b: ti.f32,
-                            leg_r: ti.f32, leg_g: ti.f32, leg_b: ti.f32,
-                            stripe_r: ti.f32, stripe_g: ti.f32, stripe_b: ti.f32,
-                            tip_r: ti.f32, tip_g: ti.f32, tip_b: ti.f32,
-                            batch_offset: ti.i32, batch_size: ti.i32):
-    """Death disintegration: debris spawns FROM the captured body voxels (see
-    death_capture_kernels) flying outward from the body center — the beetle
-    tears apart in place. Same speed/lifetime/pacing as the old point burst."""
-    total = death_cap_count[slot]
-    for batch_idx in range(batch_size):
-        seq = batch_offset + batch_idx
-        if seq < total:
-            # Stride-shuffle: each batch tears voxels from the WHOLE body,
-            # not one end first
-            i = (seq * 401 + 13) % total
-            pos = death_cap_pos[slot, i]
-            d = pos - ti.math.vec3(center_x, center_y, center_z)
-            dl = d.norm()
-            dirv = ti.math.vec3(0.0, 1.0, 0.0)
-            if dl > 0.5:
-                dirv = d / dl
-            speed = 140.4 + ti.random() * 171.6  # same range as the old burst
-            vx = dirv[0] * speed
-            vy = ti.abs(dirv[1]) * speed * 1.5 + 20.0  # upward bias like before
-            vz = dirv[2] * speed
-            cls = death_cap_cls[slot, i]
-            particle_color = ti.math.vec3(body_r, body_g, body_b)
-            if cls == 1:
-                particle_color = ti.math.vec3(stripe_r, stripe_g, stripe_b)
-            elif cls == 2:
-                particle_color = ti.math.vec3(tip_r, tip_g, tip_b)
-            elif ti.random() < 0.18:
-                # Legs aren't in the body cache — sprinkle leg color into the
-                # body debris so the palette variety matches the old burst
-                particle_color = ti.math.vec3(leg_r, leg_g, leg_b)
-            idx = ti.atomic_add(simulation.num_debris[None], 1)
-            if idx < simulation.MAX_DEBRIS:
-                simulation.debris_active[idx] = 1
-                ti.atomic_add(simulation.debris_active_count[None], 1)
-                simulation.debris_pos[idx] = pos
-                simulation.debris_vel[idx] = ti.math.vec3(vx, vy, vz)
-                simulation.debris_material[idx] = particle_color
-                simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.5
-
-@ti.kernel
 def spawn_ball_explosion_batch(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                                 batch_offset: ti.i32, batch_size: ti.i32, total_particles: ti.i32):
     """Spawn a batch of ball explosion particles with dung ball colors"""
@@ -12155,59 +12109,6 @@ def make_transform_func(slot):
 
 
 transform_funcs = [make_transform_func(_s) for _s in range(4)]
-
-# ===== DEATH DISINTEGRATION CAPTURE =====
-# At the death-explosion trigger, the dying beetle's CURRENT body voxel world
-# positions (+ color class) are snapshotted; the explosion batches then spawn
-# debris FROM those voxels — the beetle visibly tears apart instead of a
-# point burst. Speeds/lifetimes/pacing match the old burst (stays snappy).
-MAX_DEATH_CAP = 2000  # = MAX_BODY_VOXELS
-death_cap_pos = ti.Vector.field(3, dtype=ti.f32, shape=(4, MAX_DEATH_CAP))
-death_cap_cls = ti.field(dtype=ti.i32, shape=(4, MAX_DEATH_CAP))  # 0 body, 1 stripe, 2 horn tip
-death_cap_count = ti.field(dtype=ti.i32, shape=4)
-
-def make_death_capture_kernel(slot):
-    geo = beetle_geo[slot]
-    tf = transform_funcs[slot]
-    stripe_flags = geo['body_stripe_flags']
-    horn_tip_flags = geo['body_horn_tip_flags']
-
-    @ti.kernel
-    def capture_death_voxels(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32,
-                             rotation: ti.f32, pitch: ti.f32, roll: ti.f32,
-                             horn_pitch: ti.f32, horn_yaw: ti.f32,
-                             horn_type_id: ti.i32, body_length: ti.i32,
-                             back_body_height: ti.i32, default_horn_pitch: ti.f32,
-                             num_voxels: ti.i32):
-        death_cap_count[slot] = num_voxels
-        for i in range(num_voxels):
-            death_cap_pos[slot, i] = tf(i, world_x, world_y, world_z,
-                                        rotation, pitch, roll,
-                                        horn_pitch, horn_yaw, 0.0,
-                                        horn_type_id, body_length, back_body_height,
-                                        0.0, 0.0, default_horn_pitch)
-            cls = 0
-            if horn_tip_flags[i] == 1:
-                cls = 2
-            elif stripe_flags[i] == 1:
-                cls = 1
-            death_cap_cls[slot, i] = cls
-
-    return capture_death_voxels
-
-death_capture_kernels = [make_death_capture_kernel(_s) for _s in range(4)]
-
-def capture_death_disintegration(slot, b):
-    """Snapshot the dying beetle's pose for voxel-true disintegration debris."""
-    _bl, _bb = _slot_body_dims(slot)
-    _dhp = (HORN_DEFAULT_PITCH, HORN_DEFAULT_PITCH_STAG, HORN_DEFAULT_PITCH_HERCULES,
-            HORN_DEFAULT_PITCH_SCORPION, HORN_DEFAULT_PITCH_ATLAS, 0.0, 0.0, 0.0)[b.horn_type_id]
-    _nv = int(beetle_geo[slot]['body_cache_size'][None])
-    death_capture_kernels[slot](float(b.x), float(b.y), float(b.z),
-                                float(b.rotation), float(b.pitch), float(b.roll),
-                                float(b.horn_pitch), float(b.horn_yaw),
-                                b.horn_type_id, int(_bl), int(_bb), float(_dhp), _nv)
-    b.explosion_total = _nv
 
 @ti.kernel
 def spawn_silk(origin_x: ti.f32, origin_y: ti.f32, origin_z: ti.f32,
@@ -17900,12 +17801,6 @@ for _asm_slot in range(4):
     render_beetle_assembly_fast(_asm_slot, 0.0, -100.0, 0.0, 0.5)
 render_ball_assembly_fast(0.0, -100.0, 0.0, 0.5)  # Ball kernel too (0 voxels pre-cache, still compiles)
 renderer.num_assembly_particles[None] = 0  # Drop the warmup particles
-# Death-disintegration kernels (first death otherwise pays the JIT)
-for _dc_slot in range(4):
-    death_capture_kernels[_dc_slot](0.0, -100.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0, 12, 6, 0.0, 0)
-spawn_death_voxel_batch(0, 0.0, -100.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                        1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0, 0)
-death_cap_count.fill(0)
 clear_assembly_voxels()
 spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
 update_loading(5)
@@ -20316,9 +20211,7 @@ try:
         for slot in range(active_player_count):
             b = beetles[slot]
             if is_host_or_local and b.is_falling and not b.has_exploded and b.y < EXPLOSION_TRIGGER_Y:
-                # Start explosion - store position + snapshot the body voxels
-                # so the debris tears off the actual beetle shape
-                capture_death_disintegration(slot, b)
+                # Start explosion - store position
                 b.explosion_pos_x = b.x
                 b.explosion_pos_y = b.y + 30.0
                 b.explosion_pos_z = b.z
@@ -20364,7 +20257,6 @@ try:
 
             # Guest-side explosion (triggered after receiving death event from host)
             if b.guest_death_falling and not b.has_exploded and b.y < EXPLOSION_TRIGGER_Y:
-                capture_death_disintegration(slot, b)
                 b.explosion_pos_x = b.x
                 b.explosion_pos_y = b.y + 30.0
                 b.explosion_pos_z = b.z
@@ -20381,15 +20273,11 @@ try:
                     b.explosion_delay -= PHYSICS_TIMESTEP
                 elif b.explosion_timer > 0.0:
                     b.explosion_timer -= PHYSICS_TIMESTEP
-                    # Calculate which batch to spawn (total = captured body
-                    # voxels; same duration/pacing as the old point burst)
-                    _etotal = getattr(b, 'explosion_total', 0)
-                    if _etotal <= 0:
-                        _etotal = TOTAL_PARTICLES
+                    # Calculate which batch to spawn
                     progress = 1.0 - (b.explosion_timer / EXPLOSION_DURATION)
-                    particles_spawned = int(progress * _etotal)
+                    particles_spawned = int(progress * TOTAL_PARTICLES)
                     batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
-                    batch_size = min(PARTICLES_PER_FRAME, _etotal - batch_offset)
+                    batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
 
                     if batch_size > 0:
                         # Per-slot death explosion colors (slots 2/3: static green/yellow)
@@ -20401,13 +20289,13 @@ try:
                             body_c, leg_c, stripe_c, tip_c = (0.2, 0.75, 0.3), (0.45, 0.95, 0.5), (0.7, 1.0, 0.6), (0.0, 0.25, 0.05)
                         else:
                             body_c, leg_c, stripe_c, tip_c = (0.95, 0.8, 0.15), (1.0, 0.9, 0.45), (1.0, 0.95, 0.7), (0.3, 0.22, 0.0)
-                        spawn_death_voxel_batch(slot, b.explosion_pos_x, b.explosion_pos_y,
-                                                b.explosion_pos_z,
-                                                body_c[0], body_c[1], body_c[2],
-                                                leg_c[0], leg_c[1], leg_c[2],
-                                                stripe_c[0], stripe_c[1], stripe_c[2],
-                                                tip_c[0], tip_c[1], tip_c[2],
-                                                batch_offset, batch_size)
+                        spawn_death_explosion_batch(b.explosion_pos_x, b.explosion_pos_y,
+                                                   b.explosion_pos_z,
+                                                   body_c[0], body_c[1], body_c[2],
+                                                   leg_c[0], leg_c[1], leg_c[2],
+                                                   stripe_c[0], stripe_c[1], stripe_c[2],
+                                                   tip_c[0], tip_c[1], tip_c[2],
+                                                   batch_offset, batch_size, TOTAL_PARTICLES)
 
         # Ball explosion - trigger when ball falls to same level as beetles
         # Host-authoritative: only host detects, then sends to guest
