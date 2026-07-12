@@ -100,6 +100,16 @@ Extend `horn_collision_segments(beetle)` to return a list of
   stag battles will feel "wider". That's the point, but user playtests before
   Phase 2. Watch: bots wedging pincers (loop artifact) — grain of salt.
 
+### Phase 1 RESULTS (2026-07-12, implemented)
+Config A canary after multi-segment skeletons: shaft_vs_shaft_pushes 1139->2155
+(responses now fire on the arms that were invisible), beetle_collision ms
+unchanged. IMPORTANT METRIC CAVEAT: horn_cross_clip_events (298->737) and
+deep_clip_events (260->380) are measured FROM the segment model — Phase 0's
+baseline undercounted because the old model couldn't see left-pincer/top-jaw
+contacts. **Phase 1 numbers are the honest reference for Phases 2/3**
+(geometry now fixed; only responses change): config A = 737 hh-clips,
+380 deep, min_shaft_shaft 0.0, 2155 svs pushes / 4618 frames.
+
 ## Phase 2 — True 3D separation (perpendicular crossings)
 
 In shaft-vs-shaft response (~14928):

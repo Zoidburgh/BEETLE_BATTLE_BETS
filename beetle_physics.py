@@ -9062,19 +9062,92 @@ def calculate_giraffe_elbow_position(beetle):
     sin_r = math.sin(beetle.rotation)
     return (beetle.x + pivot_x * cos_r, beetle.y + pivot_y, beetle.z + pivot_x * sin_r)
 
-def horn_collision_segments(beetle):
+def _atlas_pronotum_segments(beetle):
+    """The atlas beetle's two STATIONARY pronotum horns (body geometry — they
+    never follow horn pitch/yaw). Straight chords matching
+    generate_atlas_pronotum_horns: base (3,5,±4) -> tip (3+L-1, 5+curve, ±6).
+    The mid-arc bows to ±8 (~3 voxels outside the chord) — covered by the
+    contact-distance threshold, not the chord itself."""
+    _L = max(2, int(beetle.horn_prong_len * 2))
+    _i = _L - 1
+    _tx = 3.0 + _i
+    _ty = 5.0 + int(_i * 0.67 + (_i * _i) * 0.02) + 1.0
+    _cr = math.cos(beetle.rotation)
+    _sr = math.sin(beetle.rotation)
+    segs = []
+    for _side in (-1.0, 1.0):
+        _bz = 4.0 * _side
+        _tz = 6.0 * _side
+        segs.append((beetle.x + 3.0 * _cr - _bz * _sr, beetle.y + 5.0,
+                     beetle.z + 3.0 * _sr + _bz * _cr,
+                     beetle.x + _tx * _cr - _tz * _sr, beetle.y + _ty,
+                     beetle.z + _tx * _sr + _tz * _cr))
+    return segs
+
+def horn_collision_segments(beetle, pitch=None, yaw=None):
     """Segment list approximating the horn for the anti-clip layers.
-    Every type is one straight base->tip segment EXCEPT the giraffe: its horn
-    is a bent polyline (neck up ~61 deg, head arcing back down), so the
-    straight chord passes ~10 voxels UNDER the elbow at long sliders and the
-    upper neck/head had no anti-clip coverage at all. It gets two segments
-    joined at the pivot."""
+    Phase 1 of horn_collision_plan.md: multi-arm horns get one segment PER
+    ARM, all sharing the base attachment point — stag = left+right pincer,
+    hercules = top+bottom jaw, rhino = left+right prong, atlas = movable
+    cephalic + 2 stationary pronotum chords. Giraffe keeps its CHAINED
+    neck+head polyline (2026-07-08). Single-arm types stay one chord.
+    Use horn_segment_param()/horn_segment_articulates() to interpret a
+    segment index — arm segments each span the full base->tip 0..1; only
+    the giraffe's segments chain.
+    pitch/yaw default to the beetle's current horn angles; pass explicit
+    values to build the skeleton at predicted angles (articulation velocity)."""
+    _p = beetle.horn_pitch if pitch is None else pitch
+    _y = beetle.horn_yaw if yaw is None else yaw
+    _current = pitch is None and yaw is None
     bx, by, bz = calculate_horn_shaft_base_position(beetle)
-    tx, ty, tz = calculate_horn_tip_position(beetle)
-    if beetle.horn_type == "giraffe":
+    ht = beetle.horn_type
+    if ht == "giraffe":
         ex, ey, ez = calculate_giraffe_elbow_position(beetle)
+        if _current:
+            tx, ty, tz = calculate_horn_tip_position(beetle)
+        else:
+            tx, ty, tz = _giraffe_tip_with_angles(beetle, _p, _y)
         return [(bx, by, bz, ex, ey, ez), (ex, ey, ez, tx, ty, tz)]
+    if ht == "stag":
+        lt, rt = calculate_stag_pincer_tips(beetle, _p, _y)
+        return [(bx, by, bz) + lt, (bx, by, bz) + rt]
+    if ht == "hercules":
+        tt, bt = calculate_hercules_jaw_tips(beetle, _p, _y)
+        return [(bx, by, bz) + tt, (bx, by, bz) + bt]
+    if ht == "rhino":
+        lt, rt = calculate_rhino_prong_tips(beetle, _p, _y)
+        return [(bx, by, bz) + lt, (bx, by, bz) + rt]
+    if ht == "atlas":
+        if _current:
+            tx, ty, tz = calculate_horn_tip_position(beetle)
+        else:
+            tx, ty, tz = calculate_horn_tip_position_with_both(beetle, _p, _y)
+        return [(bx, by, bz, tx, ty, tz)] + _atlas_pronotum_segments(beetle)
+    if _current:
+        tx, ty, tz = calculate_horn_tip_position(beetle)
+    else:
+        tx, ty, tz = calculate_horn_tip_position_with_both(beetle, _p, _y)
     return [(bx, by, bz, tx, ty, tz)]
+
+def horn_segment_param(beetle, seg_index, t_local, n_segs):
+    """Map a segment-local 0..1 param to the horn's global base->tip space.
+    Giraffe segments CHAIN (neck then head): global = (i+t)/n. Every other
+    multi-segment type is PARALLEL ARMS sharing one base — each arm spans
+    the full 0..1 by itself (a pincer-tip contact IS a tip contact)."""
+    if beetle.horn_type == "giraffe" and n_segs > 1:
+        return (seg_index + t_local) / n_segs
+    return t_local
+
+def horn_segment_articulates(beetle, seg_index, n_segs):
+    """Whether this segment moves with horn pitch/yaw input.
+    Giraffe: only the head (last) segment sweeps — the neck is fixed.
+    Atlas: only the cephalic horn (segment 0) — pronotum horns are body.
+    All other types: every arm articulates."""
+    if beetle.horn_type == "giraffe":
+        return seg_index == n_segs - 1
+    if beetle.horn_type == "atlas":
+        return seg_index == 0
+    return True
 
 def _closest_on_horn_segments(segments, px, py, pz):
     """Closest point to (px,py,pz) across a horn's segment list.
@@ -14774,8 +14847,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _scx, _scy, _scz, _sseg, _st_local, _sdist = _closest_on_horn_segments(
                         _so_segs, collision_x, collision_y, collision_z)
                     _nseg = len(_so_segs)
-                    _st = (_sseg + _st_local) / _nseg  # global 0..1 along the whole horn
-                    so_tip_x, so_tip_y, so_tip_z = _so_segs[-1][3], _so_segs[-1][4], _so_segs[-1][5]
+                    _st = horn_segment_param(shaft_owner, _sseg, _st_local, _nseg)  # global 0..1 along the horn
+                    # Tip of the CONTACT segment (arm), not the last in the list
+                    so_tip_x, so_tip_y, so_tip_z = _so_segs[_sseg][3], _so_segs[_sseg][4], _so_segs[_sseg][5]
                     # Contact must sit on the shaft (base through mid included —
                     # that's where bodies slip through; tip end has own handling)
                     if _sdist > shaft_contact_dist or _st < 0.02 or _st > 0.95:
@@ -14940,8 +15014,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                          _ss_s_loc, _ss_t_loc, _ss_d) = _svs_best[0]
                         # Map to global 0..1 along each whole horn so the
                         # base->tip taper and tip-crossing limits keep meaning
-                        _ss_s = (_svs_best[1] + _ss_s_loc) / len(_segs1)
-                        _ss_t = (_svs_best[2] + _ss_t_loc) / len(_segs2)
+                        _ss_s = horn_segment_param(b1, _svs_best[1], _ss_s_loc, len(_segs1))
+                        _ss_t = horn_segment_param(b2, _svs_best[2], _ss_t_loc, len(_segs2))
                         # Canary metric: horn-vs-horn proximity, recorded BEFORE
                         # the response gates so gated dead zones still count
                         if _ss_d < collision_stats['min_shaft_shaft_dist']:
@@ -14982,26 +15056,34 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 _hz = _sepz / _seph
                                 # Contact-point velocities: body + turn sweep +
                                 # horn articulation (numeric tip diff x param).
-                                # Articulation only moves the ROTATING segment
-                                # (whole shaft for most types; head only for
-                                # giraffe - the neck segment is fixed)
-                                _svs_as = _ss_s_loc if _svs_best[1] == len(_segs1) - 1 else 0.0
-                                _svs_at = _ss_t_loc if _svs_best[2] == len(_segs2) - 1 else 0.0
+                                # Articulation credit goes to segments that
+                                # actually move with horn input (all arms for
+                                # pincer/jaw/prong types; head-only for giraffe,
+                                # cephalic-only for atlas) — velocity measured
+                                # on the CONTACT arm's own tip, so a left
+                                # pincer no longer inherits the right tip's
+                                # mirrored (wrong-direction) sweep
+                                _svs_as = _ss_s_loc if horn_segment_articulates(b1, _svs_best[1], len(_segs1)) else 0.0
+                                _svs_at = _ss_t_loc if horn_segment_articulates(b2, _svs_best[2], len(_segs2)) else 0.0
                                 _a1vx = _a1vz = _a2vx = _a2vz = 0.0
                                 if _svs_as > 0.0 and (abs(b1.horn_pitch_velocity) > 0.02 or
                                         abs(b1.horn_yaw_velocity) > 0.02):
-                                    _p1x, _p1y, _p1z = calculate_horn_tip_position_with_both(
+                                    _adv1 = horn_collision_segments(
                                         b1, b1.horn_pitch + b1.horn_pitch_velocity * PHYSICS_TIMESTEP,
                                         b1.horn_yaw + b1.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                                    _a1vx = _svs_as * (_p1x - _segs1[-1][3]) / PHYSICS_TIMESTEP
-                                    _a1vz = _svs_as * (_p1z - _segs1[-1][5]) / PHYSICS_TIMESTEP
+                                    _si1 = _svs_best[1]
+                                    if _si1 < len(_adv1):
+                                        _a1vx = _svs_as * (_adv1[_si1][3] - _segs1[_si1][3]) / PHYSICS_TIMESTEP
+                                        _a1vz = _svs_as * (_adv1[_si1][5] - _segs1[_si1][5]) / PHYSICS_TIMESTEP
                                 if _svs_at > 0.0 and (abs(b2.horn_pitch_velocity) > 0.02 or
                                         abs(b2.horn_yaw_velocity) > 0.02):
-                                    _p2x, _p2y, _p2z = calculate_horn_tip_position_with_both(
+                                    _adv2 = horn_collision_segments(
                                         b2, b2.horn_pitch + b2.horn_pitch_velocity * PHYSICS_TIMESTEP,
                                         b2.horn_yaw + b2.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                                    _a2vx = _svs_at * (_p2x - _segs2[-1][3]) / PHYSICS_TIMESTEP
-                                    _a2vz = _svs_at * (_p2z - _segs2[-1][5]) / PHYSICS_TIMESTEP
+                                    _si2 = _svs_best[2]
+                                    if _si2 < len(_adv2):
+                                        _a2vx = _svs_at * (_adv2[_si2][3] - _segs2[_si2][3]) / PHYSICS_TIMESTEP
+                                        _a2vz = _svs_at * (_adv2[_si2][5] - _segs2[_si2][5]) / PHYSICS_TIMESTEP
                                 _v1x = b1.vx - (_c1z - b1.z) * b1.angular_velocity + _a1vx
                                 _v1z = b1.vz + (_c1x - b1.x) * b1.angular_velocity + _a1vz
                                 _v2x = b2.vx - (_c2z - b2.z) * b2.angular_velocity + _a2vx
