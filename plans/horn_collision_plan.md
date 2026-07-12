@@ -174,6 +174,17 @@ proximity events <2 vox — geometry changes rebaseline it; response changes
   visually apart) — expansion cap + closing-velocity requirement (only expand when
   segments are approaching) prevent this; verify in playtest.
 
+### Phase 3 RESULTS (2026-07-12, implemented)
+3a controlled-turn credit, 3b sweep-expanded window (pre-contact band =
+velocity damp + engagement floor 0.5, NO position push), 3c svs runs without
+voxel contact (40-vox cull) — block extracted to shaft_vs_shaft_response().
+Medians of 3 config-A runs: deep body clips 255 (vs Phase 2 ref 296, -14%,
+same measuring stick), hh-clips 1931 — NOT comparable to Phase 2's 1114:
+3c made the metric sample every near pair every tick (stable stick from now
+on). Pushes ~3178 (early-band responses firing). collision ms ~6.6 (fine).
+METRIC LESSON for future phases: deep_clip_events is the only counter that
+stayed on one stick throughout; hh-clips is stable ONLY from Phase 3 onward.
+
 ## Explicitly OUT of scope (don't drift into these)
 
 - Tip-vs-tip battle / lift-advantage system — untouched.
