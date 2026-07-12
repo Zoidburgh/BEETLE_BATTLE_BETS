@@ -4422,11 +4422,12 @@ for _i in range(MAX_ASSEMBLY_VOXELS):
     assembly_scatter_x[_i] = _random.uniform(-20, 20)
     assembly_scatter_y[_i] = _random.uniform(25, 45)
     assembly_scatter_z[_i] = _random.uniform(-20, 20)
-    # Ball scatter - more compact (smaller range)
+    # Ball scatter - was +-8/10-20 (tuned tight for the old choppy grid path);
+    # widened once flights became smooth: cramped at the old ranges
     _random.seed(_i * 31337 + 1)  # Different seed for variation
-    ball_scatter_x[_i] = _random.uniform(-8, 8)
-    ball_scatter_y[_i] = _random.uniform(10, 20)
-    ball_scatter_z[_i] = _random.uniform(-8, 8)
+    ball_scatter_x[_i] = _random.uniform(-18, 18)
+    ball_scatter_y[_i] = _random.uniform(20, 40)
+    ball_scatter_z[_i] = _random.uniform(-18, 18)
 
 @ti.kernel
 def clear_assembly_voxels():
