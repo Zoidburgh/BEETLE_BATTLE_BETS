@@ -17098,7 +17098,7 @@ physics_params = {
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
-    "TUMBLE_MULTIPLIER": 4.2,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
+    "TUMBLE_MULTIPLIER": 5.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
     "HORN_LIFT_STRENGTH": 1.3,  # Multiplier for horn combat lift force (higher = more intense lifts)
     "HORN_TIP_STRENGTH": 1.5,  # Tipping torque strength for horn collisions (replaces separation)
     "COLLISION_SPIN_BIAS": 0.8,  # Strength of away-from-attacker spin bias (prevents turning into collisions)
@@ -17121,8 +17121,8 @@ physics_params = {
     "HORN_LOCK_TURN_FACTOR": 0.35,  # Turn speed floor while horn-locked (0 = hard block like before)
     "HORN_DAMPING_CAP": 0.9,  # Max horn pitch/yaw damping during contact (1.0 = can fully freeze like before)
     # Yaw grind (holding horn left/right through contact) - was hardcoded 40/25/0.02
-    "YAW_GRIND_PUSH": 68.0,   # Forward shove on contacts while yaw-grinding (units/s) — 2026-07-12 tune
-    "YAW_GRIND_LIFT": 40.0,   # Lift on contacts while yaw-grinding (units/s)
+    "YAW_GRIND_PUSH": 75.0,   # Forward shove on contacts while yaw-grinding (units/s) — 2026-07-12 tune
+    "YAW_GRIND_LIFT": 80.0,   # Lift on contacts while yaw-grinding (units/s) — 2026-07-12 tune
     "YAW_GRIND_TILT": 0.03,   # Pitch tilt per step on contacts while yaw-grinding (rad)
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
@@ -25275,8 +25275,8 @@ try:
             physics_params["HORN_DAMPING_CAP"] = window.GUI.slider_float("Horn Damping Cap", physics_params["HORN_DAMPING_CAP"], 0.5, 1.0)
             # Vertical share of horn-vs-horn separation (0 = old horizontal-only)
             physics_params["SVS_VERTICAL_SCALE"] = window.GUI.slider_float("Horn Sep Vertical", physics_params.get("SVS_VERTICAL_SCALE", 1.0), 0.0, 1.0)
-            physics_params["YAW_GRIND_PUSH"] = window.GUI.slider_float("Yaw Grind Push", physics_params["YAW_GRIND_PUSH"], 0.0, 150.0)
-            physics_params["YAW_GRIND_LIFT"] = window.GUI.slider_float("Yaw Grind Lift", physics_params["YAW_GRIND_LIFT"], 0.0, 100.0)
+            physics_params["YAW_GRIND_PUSH"] = window.GUI.slider_float("Yaw Grind Push", physics_params["YAW_GRIND_PUSH"], 0.0, 250.0)
+            physics_params["YAW_GRIND_LIFT"] = window.GUI.slider_float("Yaw Grind Lift", physics_params["YAW_GRIND_LIFT"], 0.0, 200.0)
             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
             physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
@@ -25291,7 +25291,7 @@ try:
             physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
             physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
             physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
-            physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 5.0)
+            physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 8.0)
             physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
             physics_params["WEAK_RESTORING"] = window.GUI.slider_float("Restoring (Bouncing)", physics_params["WEAK_RESTORING"], 5.0, 50.0)
 
