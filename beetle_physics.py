@@ -2239,8 +2239,17 @@ class Beetle:
                 self.roll_velocity -= self.roll * WEAK_RESTORING * dt
 
         # Clamp linear speed (different max for forward vs backward)
+        # Ball is exempt from the DIRECTIONAL cap: its rotation is SPIN, not
+        # facing, so the facing-based clamp randomly treated flights as
+        # "moving backward" and cut horizontal speed to 7.0 mid-air (user:
+        # "horizontal instantly gone on a bounce"). Generous safety cap only
         speed = math.sqrt(self.vx**2 + self.vz**2)
-        if speed > 0.01:  # Avoid division by zero
+        if self.horn_type == "ball":
+            _ball_max = physics_params.get("BALL_MAX_SPEED", 40.0)
+            if speed > _ball_max:
+                self.vx = (self.vx / speed) * _ball_max
+                self.vz = (self.vz / speed) * _ball_max
+        elif speed > 0.01:  # Avoid division by zero
             # Calculate direction beetle is moving relative to facing direction
             forward_x = math.cos(self.rotation)
             forward_z = math.sin(self.rotation)
