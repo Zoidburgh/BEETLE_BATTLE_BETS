@@ -22420,11 +22420,10 @@ try:
                 render_beetle_assembly_fast(slot, 0.0, HOVER_HEIGHT + RENDER_Y_OFFSET, 0.0, progress, 0.0)
             else:
                 # Direct spawn: ghost forms AT the chosen spawn point, already
-                # facing the spawn rotation — seamless handoff. Height is the
-                # 16.5 drop-in minus 1 (empirical: the materialized beetle
-                # rendered one voxel below the ghost; user-verified offset)
+                # facing the spawn rotation, at the exact 16.5 drop-in render
+                # height — seamless handoff (user-verified match)
                 _asx, _asz, _asrot = assembly_spawn[slot]
-                render_beetle_assembly_fast(slot, _asx, 15.5 + RENDER_Y_OFFSET, _asz, progress, _asrot)
+                render_beetle_assembly_fast(slot, _asx, 16.5 + RENDER_Y_OFFSET, _asz, progress, _asrot)
 
     # Render ball assembly animation (voxel rain effect)
     if g['ball_assembling'] and ball_cache_size[None] > 0:
