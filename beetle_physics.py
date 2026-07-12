@@ -337,6 +337,32 @@ LOCAL4_MODE, BOT_AI_MODE = get_local4_from_args()
 PERF_AUTO_MODE = '--perfauto' in sys.argv
 _last_perf_auto_save = time.time()
 
+# --canary [seconds]: hands-off clip/perf canary. Implies --local4, drives ALL
+# 4 slots with bot AI (no human input), auto-starts from the title screen,
+# saves the perf log and exits after N seconds of gameplay (default 75).
+# Combine with --bot-types to pick the matchup.
+CANARY_MODE = '--canary' in sys.argv
+CANARY_SECONDS = 75.0
+_canary_play_start = None  # Set when gameplay begins (canary end timer)
+if CANARY_MODE:
+    _ci = sys.argv.index('--canary')
+    if _ci + 1 < len(sys.argv):
+        try:
+            CANARY_SECONDS = max(10.0, float(sys.argv[_ci + 1]))
+        except ValueError:
+            pass
+    if not LOCAL4_MODE:
+        LOCAL4_MODE = True
+        print(f"[Canary] Implies --local4 (bot AI: {BOT_AI_MODE})")
+    print(f"[Canary] Hands-off run: {CANARY_SECONDS:.0f}s of play, then save perf log + exit")
+
+# --bot-types a,b,c,d: horn types for slots 0-3 in --local4/--canary
+# (rhino, stag, hercules, scorpion, atlas, bombardier, spider, giraffe)
+BOT_TYPES = []
+for _bti, _btarg in enumerate(sys.argv):
+    if _btarg == '--bot-types' and _bti + 1 < len(sys.argv):
+        BOT_TYPES = [t.strip().lower() for t in sys.argv[_bti + 1].split(',')][:4]
+
 # --spherefloor: start with the mesh floor off (sphere floor), same as the
 # FLAT FLOOR GUI toggle — for A/B perf testing of the floor mesh path
 SPHERE_FLOOR_MODE = '--spherefloor' in sys.argv
@@ -618,6 +644,9 @@ collision_stats = {
     'min_shaft_center_dist': 999.0,  # closest a horn shaft got to a body center (<5 = buried)
     'deep_clip_events': 0,     # shaft-contact steps with shaft within 5 voxels of body center
     'deep_clip_by_type': {},   # "owner->intruder" horn types -> count (attribution for clip hunts)
+    'min_shaft_shaft_dist': 999.0,  # closest horn-vs-horn segment crossing (<2 = visually clipping)
+    'horn_cross_clip_events': 0,    # horn-horn crossings within 2 voxels (counted PRE-gate: dead zones included)
+    'horn_cross_by_type': {},       # "typeXtype" -> count
     'batch_check_ms': deque(maxlen=120),  # batched all-pairs kernel time per physics step
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
 }
@@ -700,6 +729,11 @@ def save_perf_log():
     _msd = collision_stats['min_shaft_center_dist']
     w(f"  min_shaft_center_dist: {'n/a' if _msd > 900 else f'{_msd:.1f}'} voxels (body core ~7-8; <5 = horn buried)")
     w(f"  deep_clip_events: {collision_stats['deep_clip_events']} (shaft within 5 voxels of body center)")
+    _mss = collision_stats['min_shaft_shaft_dist']
+    w(f"  min_shaft_shaft_dist: {'n/a' if _mss > 900 else f'{_mss:.1f}'} voxels (horn-vs-horn crossing; <2 = clipping)")
+    w(f"  horn_cross_clip_events: {collision_stats['horn_cross_clip_events']} (horn-horn within 2 voxels, pre-gate)")
+    for _hk, _hv in sorted(collision_stats['horn_cross_by_type'].items(), key=lambda kv: -kv[1]):
+        w(f"    {_hk}: {_hv}")
     for _ck, _cv in sorted(collision_stats['deep_clip_by_type'].items(), key=lambda kv: -kv[1]):
         w(f"    {_ck}: {_cv}")
     _bh = collision_stats['batch_check_ms']
@@ -14908,6 +14942,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         # base->tip taper and tip-crossing limits keep meaning
                         _ss_s = (_svs_best[1] + _ss_s_loc) / len(_segs1)
                         _ss_t = (_svs_best[2] + _ss_t_loc) / len(_segs2)
+                        # Canary metric: horn-vs-horn proximity, recorded BEFORE
+                        # the response gates so gated dead zones still count
+                        if _ss_d < collision_stats['min_shaft_shaft_dist']:
+                            collision_stats['min_shaft_shaft_dist'] = _ss_d
+                        if _ss_d < 2.0:
+                            collision_stats['horn_cross_clip_events'] += 1
+                            _hh_key = f"{b1.horn_type}X{b2.horn_type}"
+                            collision_stats['horn_cross_by_type'][_hh_key] = \
+                                collision_stats['horn_cross_by_type'].get(_hh_key, 0) + 1
                         # Shafts are thicker at the base: taper the crossing
                         # threshold from ~6.5 voxels (base-vs-base) to ~4
                         # toward the tips
@@ -17129,6 +17172,20 @@ if LOCAL4_MODE:
     rebuild_beetle(2, 12, 5)
     rebuild_beetle(3, 12, 5)
     print("[Local4] Slots 2/3 geometry built (default rhino)")
+    # --bot-types: per-slot horn types for the canary matchup
+    if BOT_TYPES:
+        for _bt_slot, _bt in enumerate(BOT_TYPES):
+            if _bt in HORN_TYPE_IDS and _bt_slot < active_player_count:
+                rebuild_beetle(_bt_slot, 12, 5, horn_type=_bt)
+                apply_horn_defaults(beetles[_bt_slot], _bt)
+            elif _bt not in HORN_TYPE_IDS:
+                print(f"[Canary] Unknown horn type '{_bt}' (slot {_bt_slot} keeps rhino)")
+        # Keep slot 0/1 types across reset_match (FFA auto-rematch mid-run)
+        if len(BOT_TYPES) > 0 and BOT_TYPES[0] in HORN_TYPE_IDS:
+            blue_horn_type = BOT_TYPES[0]
+        if len(BOT_TYPES) > 1 and BOT_TYPES[1] in HORN_TYPE_IDS:
+            red_horn_type = BOT_TYPES[1]
+        print(f"[Local4] Bot horn types applied: {BOT_TYPES}")
 
 print("Warming up kernels...")
 _t_warmup_start = time.perf_counter()
@@ -17629,8 +17686,9 @@ try:
                 except:
                     pass
 
-        if space_pressed or a_button_pressed:
+        if space_pressed or a_button_pressed or CANARY_MODE:
             # Start transition to game - explode title immediately
+            # (--canary auto-starts without input)
             explode_title_screen()
             game_state = GAME_STATE_TITLE_TRANSITION
             title_transition_timer = 0.0
@@ -18474,9 +18532,13 @@ try:
                 input_buffer.debug_total_frames = 0
         else:
             # LOCAL MODE: keyboard drives slot 0, controller/hotseat drives slot 1,
-            # bots drive slots 2/3 (--local4)
-            input_buffer.add_local(frame_blue_inputs)
-            input_buffer.add_remote(1, input_buffer.current_frame, frame_red_inputs)
+            # bots drive slots 2/3 (--local4). --canary: bots drive ALL slots
+            if CANARY_MODE:
+                input_buffer.add_local(get_bot_inputs(0))
+                input_buffer.add_remote(1, input_buffer.current_frame, get_bot_inputs(1))
+            else:
+                input_buffer.add_local(frame_blue_inputs)
+                input_buffer.add_remote(1, input_buffer.current_frame, frame_red_inputs)
             for _bot_slot in range(2, active_player_count):
                 input_buffer.add_remote(_bot_slot, input_buffer.current_frame, get_bot_inputs(_bot_slot))
             frame_inputs = input_buffer.get_frame_inputs(input_buffer.current_frame, active_player_count)
@@ -25232,6 +25294,15 @@ try:
     if PERF_AUTO_MODE and time.time() - _last_perf_auto_save > 30.0:
         _last_perf_auto_save = time.time()
         save_perf_log()
+
+    # --canary: save the log and exit after N seconds of gameplay
+    if CANARY_MODE and game_state == GAME_STATE_LOCAL_PLAY:
+        if _canary_play_start is None:
+            _canary_play_start = time.time()
+        elif time.time() - _canary_play_start > CANARY_SECONDS:
+            save_perf_log()
+            print(f"[Canary] Complete ({CANARY_SECONDS:.0f}s of play) — perf log saved, exiting")
+            break
 
     # === END FRAME TIMING ===
     perf_monitor.stop('frame_total')
