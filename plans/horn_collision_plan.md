@@ -139,6 +139,15 @@ phase: rhino midline shaft chord restored (Phase 1 had dropped it — user
 noticed horn/body clipping); slider "Horn Sep Vertical" (SVS_VERTICAL_SCALE,
 0 = old horizontal-only).
 
+### PHASE 2 FINAL LOCKED REFERENCE (2026-07-12, commit c2d10d1 geometry —
+### hercules bottom jaw re-rooted; metric rebaselined AGAIN by that coverage)
+Config A (stag,stag,herc,herc), 3 runs, median: **hh-clips 1114**
+(1114/1393/1104), **deep body clips 296** (241/296/336), svs pushes 2413
+(2413/2766/2212), min body approach ~0.5. Phase 3 must be compared against
+THESE numbers (same geometry). Reminder: hh-clip metric counts pre-gate
+proximity events <2 vox — geometry changes rebaseline it; response changes
+(Phase 3) move it honestly.
+
 ## Phase 3 — Velocity-expanded thresholds + controlled-turn credit (tunneling)
 
 - **3a. Credit the controlled turn.** Track `beetle.controlled_turn_rate`
