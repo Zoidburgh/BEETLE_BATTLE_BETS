@@ -4429,13 +4429,12 @@ for _i in range(MAX_ASSEMBLY_VOXELS):
     assembly_scatter_x[_i] = _random.uniform(-38, 38)
     assembly_scatter_y[_i] = _random.uniform(18, 32)
     assembly_scatter_z[_i] = _random.uniform(-38, 38)
-    # Ball scatter - was +-8 horizontal (tuned tight for the old choppy grid
-    # path): cramped once flights became smooth. Wide HORIZONTAL sweep-in;
-    # height kept modest (user: height was never the issue)
+    # Ball scatter - same flat-pancake shape as the beetles: strong horizontal
+    # spread, squished vertical band (still starts above) for a dramatic gather
     _random.seed(_i * 31337 + 1)  # Different seed for variation
-    ball_scatter_x[_i] = _random.uniform(-30, 30)
-    ball_scatter_y[_i] = _random.uniform(10, 20)
-    ball_scatter_z[_i] = _random.uniform(-30, 30)
+    ball_scatter_x[_i] = _random.uniform(-38, 38)
+    ball_scatter_y[_i] = _random.uniform(8, 18)
+    ball_scatter_z[_i] = _random.uniform(-38, 38)
 
 @ti.kernel
 def clear_assembly_voxels():
