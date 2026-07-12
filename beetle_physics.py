@@ -4581,29 +4581,36 @@ def make_assembly_particle_kernel(slot):
     leg_cache_x_f = geo['leg_cache_x']
     leg_cache_y_f = geo['leg_cache_y']
     leg_cache_z_f = geo['leg_cache_z']
+    tip_cache_x_f = geo['leg_tip_cache_x']
+    tip_cache_y_f = geo['leg_tip_cache_y']
+    tip_cache_z_f = geo['leg_tip_cache_z']
     horn_tip_flags = geo['body_horn_tip_flags']
     stripe_flags = geo['body_stripe_flags']
     _colors = [
         (simulation.blue_body_color, simulation.blue_stripe_color,
-         simulation.blue_horn_tip_color, simulation.blue_leg_color),
+         simulation.blue_horn_tip_color, simulation.blue_leg_color,
+         simulation.blue_leg_tip_color),
         (simulation.red_body_color, simulation.red_stripe_color,
-         simulation.red_horn_tip_color, simulation.red_leg_color),
+         simulation.red_horn_tip_color, simulation.red_leg_color,
+         simulation.red_leg_tip_color),
         (simulation.p3_body_color, simulation.p3_stripe_color,
-         simulation.p3_horn_tip_color, simulation.p3_leg_color),
+         simulation.p3_horn_tip_color, simulation.p3_leg_color,
+         simulation.p3_leg_tip_color),
         (simulation.p4_body_color, simulation.p4_stripe_color,
-         simulation.p4_horn_tip_color, simulation.p4_leg_color),
+         simulation.p4_horn_tip_color, simulation.p4_leg_color,
+         simulation.p4_leg_tip_color),
     ]
-    body_col, stripe_col, horn_col, leg_col = _colors[slot]
+    body_col, stripe_col, horn_col, leg_col, tip_col = _colors[slot]
 
     @ti.kernel
     def assembly_particles(center_x: ti.f32, center_y: ti.f32, center_z: ti.f32,
                            rot: ti.f32, t: ti.f32, num_voxels: ti.i32,
-                           num_legs: ti.i32):
+                           num_legs: ti.i32, num_tips: ti.i32):
         cos_r = ti.cos(rot)
         sin_r = ti.sin(rot)
-        for i in range(num_voxels + num_legs):
-            # First num_voxels motes are body cache; the rest are the legs
-            # at rest stance (lift/sweep 0) so the ghost lands with feet on
+        for i in range(num_voxels + num_legs + num_tips):
+            # Mote order: body cache, then legs, then leg tips — legs/tips at
+            # rest stance (lift/sweep 0) so the ghost lands with feet on
             lx0 = 0.0
             ly = 0.0
             lz0 = 0.0
@@ -4612,11 +4619,16 @@ def make_assembly_particle_kernel(slot):
                 lx0 = float(body_cache_x[i])
                 ly = float(body_cache_y[i])
                 lz0 = float(body_cache_z[i])
-            else:
+            elif i < num_voxels + num_legs:
                 lx0 = float(leg_cache_x_f[i - num_voxels])
                 ly = float(leg_cache_y_f[i - num_voxels])
                 lz0 = float(leg_cache_z_f[i - num_voxels])
                 is_leg = 1
+            else:
+                lx0 = float(tip_cache_x_f[i - num_voxels - num_legs])
+                ly = float(tip_cache_y_f[i - num_voxels - num_legs])
+                lz0 = float(tip_cache_z_f[i - num_voxels - num_legs])
+                is_leg = 2
             # Rotate targets to the spawn facing so the ghost forms already
             # oriented like the beetle that materializes (no rotation snap).
             # Replaces the old slot-1 180-degree flip (rot pi covers it)
@@ -4625,11 +4637,14 @@ def make_assembly_particle_kernel(slot):
             target_x = center_x + lx
             target_y = center_y + ly
             target_z = center_z + lz
-            # Start position (scattered above; legs read the scatter table
-            # from the far end so they don't fly in lockstep with body motes)
+            # Start position (scattered above; legs/tips read the scatter
+            # table from other regions so they don't fly in lockstep with
+            # body motes)
             si = i
             if is_leg == 1:
                 si = MAX_ASSEMBLY_VOXELS - 1 - (i - num_voxels)
+            elif is_leg == 2:
+                si = MAX_ASSEMBLY_VOXELS // 2 + (i - num_voxels - num_legs)
             start_x = target_x + assembly_scatter_x[si]
             start_y = target_y + assembly_scatter_y[si]
             start_z = target_z + assembly_scatter_z[si]
@@ -4647,6 +4662,8 @@ def make_assembly_particle_kernel(slot):
                 col = body_col[None]
                 if is_leg == 1:
                     col = leg_col[None]
+                elif is_leg == 2:
+                    col = tip_col[None]
                 elif horn_tip_flags[i] == 1:
                     col = horn_col[None]
                 elif stripe_flags[i] == 1:
@@ -4667,13 +4684,14 @@ def render_beetle_assembly_fast(slot, spawn_x, spawn_y, spawn_z, progress, rot=0
         slot = 1
     # World coordinates (int-snapped center for parity with the old grid path)
     num_voxels = beetle_geo[slot]['body_cache_size'][None]
-    # Total leg voxels = MAX of the cumulative end offsets ([7] is ZEROED for
-    # 6-legged beetles — only scorpions use slots 6/7, so [7] alone read 0
-    # and the ghost assembled leg-less)
+    # Total leg/tip voxels = MAX of the cumulative end offsets ([7] is ZEROED
+    # for 6-legged beetles — only scorpions use slots 6/7, so [7] alone read
+    # 0 and the ghost assembled leg-less)
     num_legs = int(beetle_geo[slot]['leg_end_idx'].to_numpy().max())
+    num_tips = int(beetle_geo[slot]['leg_tip_end_idx'].to_numpy().max())
     assembly_particle_kernels[slot](float(int(spawn_x)), float(int(spawn_y)),
                                     float(int(spawn_z)), float(rot),
-                                    float(progress), num_voxels, num_legs)
+                                    float(progress), num_voxels, num_legs, num_tips)
 
 @ti.kernel
 def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
