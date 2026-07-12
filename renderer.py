@@ -1448,9 +1448,29 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                     else:
                         voxel_radii[idx] = VOXEL_RADIUS
 
+# Beetle respawn-assembly flight particles: FLOAT positions so the voxel rain
+# glides instead of ticking cell-to-cell on the integer grid (the old path
+# stamped assembly voxels into voxel_type each frame — visibly choppy at the
+# slow flight speeds). Filled per frame by beetle_physics' per-slot assembly
+# kernels; count reset each frame by the caller. Drawn through the existing
+# shared particle buffer: no new draw call, no new GGUI upload.
+MAX_ASSEMBLY_PARTICLES = 8000  # 4 slots x MAX_BODY_VOXELS(2000)
+num_assembly_particles = ti.field(ti.i32, shape=())
+assembly_pt_pos = ti.Vector.field(3, dtype=ti.f32, shape=MAX_ASSEMBLY_PARTICLES)
+assembly_pt_color = ti.Vector.field(3, dtype=ti.f32, shape=MAX_ASSEMBLY_PARTICLES)
+
 @ti.kernel
 def extract_particles():
     """Extract debris, spray, silk, projectiles, background into render buffer."""
+    # ===== Beetle assembly flight particles (respawn voxel rain) =====
+    asm_count = ti.min(num_assembly_particles[None], MAX_ASSEMBLY_PARTICLES)
+    for aidx in range(asm_count):
+        asm_write = ti.atomic_add(num_voxels[None], 1)
+        if asm_write < MAX_VOXELS:
+            voxel_positions[asm_write] = assembly_pt_pos[aidx]
+            voxel_colors[asm_write] = assembly_pt_color[aidx]
+            voxel_radii[asm_write] = VOXEL_RADIUS
+
     # ===== PHASE 2: Extract debris particles =====
     debris_count = simulation.num_debris[None]
     debris_check = ti.min(debris_count, MAX_DEBRIS_CHECK)

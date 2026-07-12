@@ -4555,25 +4555,80 @@ def make_render_assembly_kernel(slot):
 
 
 # render_assembly_kernels is populated after beetle_geo is defined (below)
+# (legacy grid-stamp path — kept for reference, beetles now use the particle
+# kernels below; the ball assembly still stamps the grid)
 render_assembly_kernels = []
+assembly_particle_kernels = []  # populated after beetle_geo is defined
+
+def make_assembly_particle_kernel(slot):
+    """Per-slot respawn-assembly PARTICLE kernel. Same voxel-rain math as the
+    old grid-stamp kernel, but emits FLOAT positions into renderer's shared
+    particle buffer — motes glide and decelerate into place instead of
+    ticking one grid cell at a time (the old path re-stamped truncated
+    integer cells every frame, which read as chop at these flight speeds)."""
+    geo = beetle_geo[slot]
+    body_cache_x = geo['body_cache_x']
+    body_cache_y = geo['body_cache_y']
+    body_cache_z = geo['body_cache_z']
+    horn_tip_flags = geo['body_horn_tip_flags']
+    stripe_flags = geo['body_stripe_flags']
+    _colors = [
+        (simulation.blue_body_color, simulation.blue_stripe_color, simulation.blue_horn_tip_color),
+        (simulation.red_body_color, simulation.red_stripe_color, simulation.red_horn_tip_color),
+        (simulation.p3_body_color, simulation.p3_stripe_color, simulation.p3_horn_tip_color),
+        (simulation.p4_body_color, simulation.p4_stripe_color, simulation.p4_horn_tip_color),
+    ]
+    body_col, stripe_col, horn_col = _colors[slot]
+    _flip = -1 if slot == 1 else 1
+
+    @ti.kernel
+    def assembly_particles(center_x: ti.f32, center_y: ti.f32, center_z: ti.f32,
+                           t: ti.f32, num_voxels: ti.i32):
+        for i in range(num_voxels):
+            lx = float(body_cache_x[i] * _flip)
+            ly = float(body_cache_y[i])
+            lz = float(body_cache_z[i] * _flip)
+            target_x = center_x + lx
+            target_y = center_y + ly
+            target_z = center_z + lz
+            # Start position (scattered above, same fields as the old path)
+            start_x = target_x + assembly_scatter_x[i]
+            start_y = target_y + assembly_scatter_y[i]
+            start_z = target_z + assembly_scatter_z[i]
+            # Per-mote stagger (reuses scatter randomness) so arrivals
+            # desync, + smoothstep so each mote eases in AND settles softly
+            stagger = ti.min(ti.abs(assembly_scatter_x[i]) * 0.02
+                             + ti.abs(assembly_scatter_z[i]) * 0.013, 0.35)
+            tt = ti.min(ti.max((t - stagger) / (1.0 - stagger), 0.0), 1.0)
+            ease = tt * tt * (3.0 - 2.0 * tt)
+            px = start_x + (target_x - start_x) * ease
+            py = start_y + (target_y - start_y) * ease
+            pz = start_z + (target_z - start_z) * ease
+            aidx = ti.atomic_add(renderer.num_assembly_particles[None], 1)
+            if aidx < renderer.MAX_ASSEMBLY_PARTICLES:
+                col = body_col[None]
+                if horn_tip_flags[i] == 1:
+                    col = horn_col[None]
+                elif stripe_flags[i] == 1:
+                    col = stripe_col[None]
+                renderer.assembly_pt_pos[aidx] = ti.math.vec3(px, py, pz)
+                renderer.assembly_pt_color[aidx] = col
+
+    return assembly_particles
 
 def render_beetle_assembly_fast(slot, spawn_x, spawn_y, spawn_z, progress):
-    """Fast assembly rendering using GPU kernel. slot: 0-3 (True/False legacy
-    values map to blue/red)."""
+    """Respawn assembly voxel rain (particle path — see
+    make_assembly_particle_kernel). slot: 0-3 (True/False legacy map to
+    blue/red). Caller must reset renderer.num_assembly_particles once per
+    frame before the per-slot calls."""
     if slot is True:
         slot = 0
     elif slot is False:
         slot = 1
-    # Cubic ease-in
-    t = progress * progress * progress
-
-    # Convert to grid coordinates
-    center_x = int(spawn_x) + 64
-    center_y = int(spawn_y)
-    center_z = int(spawn_z) + 64
-
+    # World coordinates (int-snapped center for parity with the old grid path)
     num_voxels = beetle_geo[slot]['body_cache_size'][None]
-    render_assembly_kernels[slot](center_x, center_y, center_z, t, num_voxels)
+    assembly_particle_kernels[slot](float(int(spawn_x)), float(int(spawn_y)),
+                                    float(int(spawn_z)), float(progress), num_voxels)
 
 @ti.kernel
 def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
@@ -6478,6 +6533,7 @@ leg_tip_end_idx = beetle_geo[0]['leg_tip_end_idx']
 
 # Instantiate the per-slot assembly kernels now that beetle_geo exists
 render_assembly_kernels.extend(make_render_assembly_kernel(_s) for _s in range(4))
+assembly_particle_kernels.extend(make_assembly_particle_kernel(_s) for _s in range(4))
 
 # Collision detection fields - store occupied voxels for each beetle (GPU-resident)
 # Each beetle can occupy up to ~1600 voxels in a 40x40 area
@@ -17529,9 +17585,11 @@ renderer.num_shadow_discs[None] = 1
 renderer.shadow_disc_params[0] = [0.0, 0.0, 5.0]
 renderer.build_shadow_discs(float(RENDER_Y_OFFSET), simulation.voxel_type, 128, 1)
 renderer.num_shadow_discs[None] = 0
-# Warm up beetle assembly animation kernels (first beetle death otherwise)
-render_beetle_assembly_fast(True, 0.0, -100.0, 0.0, 0.5)
-render_beetle_assembly_fast(False, 0.0, -100.0, 0.0, 0.5)
+# Warm up beetle assembly animation kernels (first beetle death otherwise).
+# All 4 slots: bots die too (slots 2/3 compile fine with empty geometry)
+for _asm_slot in range(4):
+    render_beetle_assembly_fast(_asm_slot, 0.0, -100.0, 0.0, 0.5)
+renderer.num_assembly_particles[None] = 0  # Drop the warmup particles
 clear_assembly_voxels()
 spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
 update_loading(5)
@@ -22124,6 +22182,8 @@ try:
     if any_assembling or g['assembly_needs_final_clear']:
         clear_assembly_voxels()  # Clear previous frame's assembly voxels
         g['assembly_needs_final_clear'] = any_assembling  # Set flag for next frame if still assembling
+    # Assembly flight particles are rebuilt from scratch each frame
+    renderer.num_assembly_particles[None] = 0
     for slot in range(active_player_count):
         if assembling[slot]:
             progress = min(assembly_timers[slot] / ASSEMBLY_DURATION, 1.0)
