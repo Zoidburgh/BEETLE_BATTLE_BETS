@@ -1490,6 +1490,16 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                             p = ti.math.vec3(p[0], p[1] * cr - p[2] * sr,
                                              p[1] * sr + p[2] * cr)
                             pos = p + pv
+                        # Squash & stretch: gravity-aligned scale around the
+                        # contact point (x/z about the center, y about the
+                        # owner's bottom so the top compresses down)
+                        sq = owner_squash[frac_owner]
+                        if sq[1] != 1.0:
+                            pv2 = owner_rot_pivot[frac_owner]
+                            spy = owner_squash_pivot_y[frac_owner]
+                            pos = ti.math.vec3(pv2[0] + (pos[0] - pv2[0]) * sq[0],
+                                               spy + (pos[1] - spy) * sq[1],
+                                               pv2[2] + (pos[2] - pv2[2]) * sq[2])
                     voxel_positions[idx] = pos + off
                     voxel_colors[idx] = color
                     if vtype == 23 or vtype == 24:  # SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
@@ -1505,6 +1515,14 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
 # [yaw, pitch, roll] residuals — beetles use yaw only; ball uses all three
 owner_rot_residual = ti.Vector.field(3, dtype=ti.f32, shape=6)  # 0-3 beetles, 4 ball, 5 ladybug (referee)
 owner_rot_pivot = ti.Vector.field(3, dtype=ti.f32, shape=6)
+
+# Squash & stretch (ball bounce): applied in the FLOAT extract stage around
+# the owner's contact point, so the deformation is sub-voxel smooth — the
+# stamped grid stays a perfect sphere. [sx, sy, sz] scale, 1 = none
+owner_squash = ti.Vector.field(3, dtype=ti.f32, shape=6)
+owner_squash_pivot_y = ti.field(dtype=ti.f32, shape=6)
+for _sq_i in range(6):
+    owner_squash[_sq_i] = [1.0, 1.0, 1.0]
 
 # Beetle respawn-assembly flight particles: FLOAT positions so the voxel rain
 # glides instead of ticking cell-to-cell on the integer grid (the old path
