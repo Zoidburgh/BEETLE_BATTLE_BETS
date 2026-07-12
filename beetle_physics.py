@@ -4667,7 +4667,10 @@ def render_beetle_assembly_fast(slot, spawn_x, spawn_y, spawn_z, progress, rot=0
         slot = 1
     # World coordinates (int-snapped center for parity with the old grid path)
     num_voxels = beetle_geo[slot]['body_cache_size'][None]
-    num_legs = beetle_geo[slot]['leg_end_idx'][7]  # end of last leg = total leg voxels
+    # Total leg voxels = MAX of the cumulative end offsets ([7] is ZEROED for
+    # 6-legged beetles — only scorpions use slots 6/7, so [7] alone read 0
+    # and the ghost assembled leg-less)
+    num_legs = int(beetle_geo[slot]['leg_end_idx'].to_numpy().max())
     assembly_particle_kernels[slot](float(int(spawn_x)), float(int(spawn_y)),
                                     float(int(spawn_z)), float(rot),
                                     float(progress), num_voxels, num_legs)
