@@ -4423,11 +4423,12 @@ ball_scatter_z = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
 import random as _random
 for _i in range(MAX_ASSEMBLY_VOXELS):
     _random.seed(_i * 31337)
-    # Beetle scatter - wide horizontal sweep-in (was +-20; widened with the
-    # smooth particle path, same as the ball)
-    assembly_scatter_x[_i] = _random.uniform(-30, 30)
-    assembly_scatter_y[_i] = _random.uniform(25, 45)
-    assembly_scatter_z[_i] = _random.uniform(-30, 30)
+    # Beetle scatter - wide flat pancake sweep-in: strong horizontal spread,
+    # squished vertical band (still starts above) so the convergence reads
+    # as a dramatic gather rather than a tall rain column
+    assembly_scatter_x[_i] = _random.uniform(-38, 38)
+    assembly_scatter_y[_i] = _random.uniform(18, 32)
+    assembly_scatter_z[_i] = _random.uniform(-38, 38)
     # Ball scatter - was +-8 horizontal (tuned tight for the old choppy grid
     # path): cramped once flights became smooth. Wide HORIZONTAL sweep-in;
     # height kept modest (user: height was never the issue)
