@@ -19283,7 +19283,7 @@ try:
                 # (there was NONE — with the directional cap gone, hits flew
                 # flat forever). Vertical arc untouched
                 if not beetle_ball.on_ground:
-                    _air_drag = physics_params.get("BALL_AIR_DRAG", 0.995)
+                    _air_drag = physics_params.get("BALL_AIR_DRAG", 0.99)
                     beetle_ball.vx *= _air_drag
                     beetle_ball.vz *= _air_drag
 
@@ -21530,7 +21530,7 @@ try:
                                 # Bounce grip: contact friction scrubs some
                                 # horizontal speed on every bounce (real balls
                                 # lose tangential energy at each hop)
-                                _grip = physics_params.get("BALL_BOUNCE_GRIP", 0.85)
+                                _grip = physics_params.get("BALL_BOUNCE_GRIP", 0.899)
                                 beetle_ball.vx *= _grip
                                 beetle_ball.vz *= _grip
                                 # If bounce is very small, stop bouncing and settle
@@ -25455,8 +25455,8 @@ try:
                 if new_ground_bounce != physics_params["BALL_GROUND_BOUNCE"]:
                     physics_params["BALL_GROUND_BOUNCE"] = new_ground_bounce
                 # Horizontal slow-down: per-tick air drag + per-bounce grip scrub
-                physics_params["BALL_AIR_DRAG"] = window.GUI.slider_float("Air Drag", physics_params.get("BALL_AIR_DRAG", 0.995), 0.97, 1.0)
-                physics_params["BALL_BOUNCE_GRIP"] = window.GUI.slider_float("Bounce Grip", physics_params.get("BALL_BOUNCE_GRIP", 0.85), 0.5, 1.0)
+                physics_params["BALL_AIR_DRAG"] = window.GUI.slider_float("Air Drag", physics_params.get("BALL_AIR_DRAG", 0.99), 0.97, 1.0)
+                physics_params["BALL_BOUNCE_GRIP"] = window.GUI.slider_float("Bounce Grip", physics_params.get("BALL_BOUNCE_GRIP", 0.899), 0.5, 1.0)
 
                 window.GUI.text("")
                 window.GUI.text("--- Ball Contact Physics ---")
