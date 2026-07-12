@@ -7684,24 +7684,35 @@ def apply_bowl_slide(entity, params):
 
     Uses exponential force scaling - gentle near arena, very strong at far edges.
     Also dampens outward velocity to prevent escape.
-    Works on grounded and airborne entities.
+    Works on grounded and airborne entities — EXCEPT the ball above
+    BOWL_BALL_TOP: a high ball sails over the edge instead of bouncing off
+    invisible air (the side-fall fallback respawns a lost ball).
     """
     dist_from_center = math.sqrt(entity.x**2 + entity.z**2)
-    if dist_from_center > ARENA_RADIUS:
-        # Check if in goal pit area (no ice there, so no slide)
-        # Goal pits: x <= -32 or x >= 32, and z within ±12 of center (z=0 in physics space)
+    _is_ball = entity.horn_type == "ball"
+    if _is_ball and entity.y > params.get("BOWL_BALL_TOP", 9.0):
+        return  # Flying over the wall — out of play, not a ghost bounce
+    # Ball grace band: play extends a few voxels closer to the edge before
+    # the slide bites (beetles keep the original radius)
+    _start_r = ARENA_RADIUS + (params.get("BOWL_BALL_GRACE", 3.0) if _is_ball else 0.0)
+    if dist_from_center > _start_r:
+        # Check if in goal pit area (no ice there, so no slide).
+        # Goal mouth FUNNEL: the lane starts at |x|>=30 (was 32) — the old
+        # sharp rectangle left an un-exempt crescent between the circular rim
+        # and the lane, so angled shots at the goal bounced off empty air
         goal_pit_half_width = 12
-        in_goal_pit = abs(entity.z) < goal_pit_half_width and (entity.x <= -32 or entity.x >= 32)
+        in_goal_pit = abs(entity.z) < goal_pit_half_width and (entity.x <= -30.0 or entity.x >= 30.0)
         if in_goal_pit:
             return  # No slide in goal pit areas
 
         # On the bowl - apply exponential inward force
         slide_strength = params.get("BOWL_SLIDE_STRENGTH", BOWL_SLIDE_STRENGTH)
-        dist_into_bowl = dist_from_center - ARENA_RADIUS
+        dist_into_bowl = dist_from_center - _start_r
 
         # Exponential force scaling - gentle near edge, very strong far out
-        # normalized_dist goes from 0 (at arena edge) to 1 (at max distance)
-        normalized_dist = min(dist_into_bowl / BOWL_MAX_DISTANCE, 1.0)
+        # normalized_dist goes from 0 (at slide start) to 1 (at the hard cap)
+        _bowl_span = max(1.0, (ARENA_RADIUS + BOWL_MAX_DISTANCE) - _start_r)
+        normalized_dist = min(dist_into_bowl / _bowl_span, 1.0)
         force_multiplier = (normalized_dist ** BOWL_SLIDE_EXPONENT) * 10.0 + 1.0
 
         # Direction toward center (normalized)
@@ -7727,8 +7738,9 @@ def apply_bowl_slide(entity, params):
             entity.prev_x += dir_x * slide_amount
             entity.prev_z += dir_z * slide_amount
 
-        # Hard cap - can't go beyond max distance
-        if dist_into_bowl > BOWL_MAX_DISTANCE:
+        # Hard cap - can't go beyond max distance (absolute radius, so the
+        # ball grace band doesn't move the outer wall)
+        if dist_from_center > ARENA_RADIUS + BOWL_MAX_DISTANCE:
             cap_dist = ARENA_RADIUS + BOWL_MAX_DISTANCE
             entity.x = (entity.x / dist_from_center) * cap_dist
             entity.z = (entity.z / dist_from_center) * cap_dist
