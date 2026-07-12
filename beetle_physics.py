@@ -7684,14 +7684,11 @@ def apply_bowl_slide(entity, params):
 
     Uses exponential force scaling - gentle near arena, very strong at far edges.
     Also dampens outward velocity to prevent escape.
-    Works on grounded and airborne entities — EXCEPT the ball above
-    BOWL_BALL_TOP: a high ball sails over the edge instead of bouncing off
-    invisible air (the side-fall fallback respawns a lost ball).
+    Works on grounded and airborne entities at ANY height — the ball always
+    stays in play (user call: no fly-overs).
     """
     dist_from_center = math.sqrt(entity.x**2 + entity.z**2)
     _is_ball = entity.horn_type == "ball"
-    if _is_ball and entity.y > params.get("BOWL_BALL_TOP", 9.0):
-        return  # Flying over the wall — out of play, not a ghost bounce
     # Ball grace band: play extends a few voxels closer to the edge before
     # the slide bites (beetles keep the original radius)
     _start_r = ARENA_RADIUS + (params.get("BOWL_BALL_GRACE", 3.0) if _is_ball else 0.0)
