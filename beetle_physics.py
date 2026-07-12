@@ -7689,9 +7689,10 @@ def apply_bowl_slide(entity, params):
     """
     dist_from_center = math.sqrt(entity.x**2 + entity.z**2)
     _is_ball = entity.horn_type == "ball"
-    # Ball grace band: play extends a few voxels closer to the edge before
-    # the slide bites (beetles keep the original radius)
-    _start_r = ARENA_RADIUS + (params.get("BOWL_BALL_GRACE", 3.0) if _is_ball else 0.0)
+    # Grace bands: play extends closer to the edge before the slide bites
+    # (2026-07-12 user tune: ball +2 -> 5, beetles 0 -> 2)
+    _start_r = ARENA_RADIUS + (params.get("BOWL_BALL_GRACE", 5.0) if _is_ball
+                               else params.get("BOWL_BEETLE_GRACE", 2.0))
     if dist_from_center > _start_r:
         # Check if in goal pit area (no ice there, so no slide).
         # Goal mouth FUNNEL: the lane starts at |x|>=30 (was 32) — the old
