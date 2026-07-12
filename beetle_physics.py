@@ -1941,7 +1941,6 @@ class Beetle:
         self.air_gap = 0.0  # Lowest geometry point height above floor surface (999 = no floor below); cached from floor block each step
         self.air_no_traction = False  # True when popped up past AIR_GRACE_LIFT — drive nerfed, speed cap drops to base
         self.air_speed_cut_done = False  # One-shot: 40% horizontal slow already applied this flight (re-arms on landing)
-        self.controlled_turn_rate = 0.0  # Player-input turn rate this tick (rad/s) — written straight to rotation, so collision sweep math needs it separately
         # Yaw rotation (spin around vertical axis)
         self.rotation = rotation
         self.target_rotation = rotation
@@ -9163,212 +9162,6 @@ def horn_segment_articulates(beetle, seg_index, n_segs):
         return seg_index == 0
     return True
 
-def shaft_vs_shaft_response(b1, b2, params, has_horn_tips, voxel_contact=True):
-    """SHAFT-VS-SHAFT RESPONSE (Layer B): horn-vs-horn crossing separation.
-    Push both shafts apart along their closest-point line (true 3D — Phase 2),
-    damp the closing velocity (incl. body turn sweep + controlled turn + horn
-    articulation), and feed crossing depth into horn_burial/engagement so the
-    depth-aware turn clamp engages on grinds.
-    Phase 3: the detection window expands with the pair's relative sweep speed
-    (body turn + collision spin + horn articulation can cross the whole base
-    window in one 60Hz tick), and a fast pre-contact approach engages the turn
-    resistance one tick early — the brake that actually stops rotational
-    tunneling. Called both on voxel-contact frames AND (Phase 3c) without
-    voxel contact: the grid is stamped once per rendered frame from
-    interpolated angles, so fast sweeps tunnel between snapshots, while this
-    segment math always uses current-tick horn angles."""
-    _svs_types = ("rhino", "stag", "hercules", "atlas",
-                  "spider", "bombardier", "scorpion", "giraffe")
-    if b1.horn_type not in _svs_types or b2.horn_type not in _svs_types:
-        return
-    # Closest crossing across all segment combos (arms/jaws/prongs each
-    # contribute; the giraffe contributes neck + head)
-    _segs1 = horn_collision_segments(b1)
-    _segs2 = horn_collision_segments(b2)
-    _svs_best = None
-    for _i1 in range(len(_segs1)):
-        for _i2 in range(len(_segs2)):
-            _res = closest_points_between_segments(
-                *_segs1[_i1], *_segs2[_i2])
-            if _svs_best is None or _res[8] < _svs_best[0][8]:
-                _svs_best = (_res, _i1, _i2)
-    (_c1x, _c1y, _c1z, _c2x, _c2y, _c2z,
-     _ss_s_loc, _ss_t_loc, _ss_d) = _svs_best[0]
-    # Map to global 0..1 along each whole horn so the base->tip taper and
-    # tip-crossing limits keep meaning
-    _ss_s = horn_segment_param(b1, _svs_best[1], _ss_s_loc, len(_segs1))
-    _ss_t = horn_segment_param(b2, _svs_best[2], _ss_t_loc, len(_segs2))
-    # Canary metric: horn-vs-horn proximity, recorded BEFORE the response
-    # gates so gated dead zones still count
-    if _ss_d < collision_stats['min_shaft_shaft_dist']:
-        collision_stats['min_shaft_shaft_dist'] = _ss_d
-    if _ss_d < 2.0:
-        collision_stats['horn_cross_clip_events'] += 1
-        _hh_key = f"{b1.horn_type}X{b2.horn_type}"
-        collision_stats['horn_cross_by_type'][_hh_key] = \
-            collision_stats['horn_cross_by_type'].get(_hh_key, 0) + 1
-    # Shafts are thicker at the base: taper the crossing threshold from
-    # ~6.5 voxels (base-vs-base) to ~4 toward the tips
-    _svs_far = max(_ss_s, _ss_t)
-    _svs_thick = params.get("SHAFT_VS_SHAFT_DIST", 6.5) - 2.5 * _svs_far
-    # Without voxel-contact backing (Phase 3c path), the generous threshold
-    # fires on horns passing with VISIBLE air between them = ghost pushes
-    # (user report). Tighten to ~real horn half-thickness sums; the voxel-
-    # backed path keeps the full window
-    if not voxel_contact:
-        _svs_thick *= params.get("SVS_NO_CONTACT_SCALE", 0.6)
-    # Phase 3: expand the window by how far the horns can sweep past each
-    # other in ONE tick (body turn incl. controlled turn + collision spin at
-    # the contact tip radius, plus horn articulation at horn length)
-    _w1r = abs(b1.angular_velocity + getattr(b1, 'controlled_turn_rate', 0.0))
-    _w2r = abs(b2.angular_velocity + getattr(b2, 'controlled_turn_rate', 0.0))
-    _r1t = math.hypot(_segs1[_svs_best[1]][3] - b1.x, _segs1[_svs_best[1]][5] - b1.z)
-    _r2t = math.hypot(_segs2[_svs_best[2]][3] - b2.x, _segs2[_svs_best[2]][5] - b2.z)
-    _hv1 = (abs(b1.horn_pitch_velocity) + abs(b1.horn_yaw_velocity)) * b1.horn_length
-    _hv2 = (abs(b2.horn_pitch_velocity) + abs(b2.horn_yaw_velocity)) * b2.horn_length
-    _sweep_vox = (_w1r * _r1t + _w2r * _r2t + _hv1 + _hv2) * PHYSICS_TIMESTEP
-    _expand = min(_sweep_vox, params.get("SVS_EXPANSION_CAP", 6.0))
-    # Tip-end crossings (s or t near 1) belong to the tip physics. When tip
-    # voxels are in the contact, only clearly BASAL crossings fire (a tip
-    # touching something must not disable base separation)
-    _svs_param_limit = 0.7 if has_horn_tips == 1 else 0.9
-    if _ss_d < _svs_thick + _expand and _ss_s < _svs_param_limit and _ss_t < _svs_param_limit:
-        # Early band: inside the sweep-expanded window but not yet touching.
-        # Real depth (and burial) only accrue on true overlap
-        _svs_early = _ss_d >= _svs_thick
-        _svs_depth = max(0.0, _svs_thick - _ss_d)
-        if not _svs_early:
-            for _bb in (b1, b2):
-                if _svs_depth > getattr(_bb, 'horn_burial', 0.0):
-                    _bb.horn_burial = _svs_depth
-        # TRUE 3D separation axis between crossing points (Phase 2): a horn
-        # lying across another separates vertically instead of a sideways
-        # body shove. SVS_VERTICAL_SCALE 0 restores horizontal-only.
-        _vscale = params.get("SVS_VERTICAL_SCALE", 1.0)
-        _sepx = _c2x - _c1x
-        _sepy = (_c2y - _c1y) * _vscale
-        _sepz = _c2z - _c1z
-        _seph = math.sqrt(_sepx*_sepx + _sepy*_sepy + _sepz*_sepz)
-        if _seph < 0.05:
-            # Segments essentially INTERSECT (the old code excluded this case
-            # entirely -> perfectly crossed shafts got no response). Axis =
-            # the mutual perpendicular of the two horn directions, oriented
-            # from b1 toward b2
-            _s1 = _segs1[_svs_best[1]]
-            _s2 = _segs2[_svs_best[2]]
-            _d1x, _d1y, _d1z = _s1[3]-_s1[0], _s1[4]-_s1[1], _s1[5]-_s1[2]
-            _d2x, _d2y, _d2z = _s2[3]-_s2[0], _s2[4]-_s2[1], _s2[5]-_s2[2]
-            _sepx = _d1y * _d2z - _d1z * _d2y
-            _sepy = (_d1z * _d2x - _d1x * _d2z) * _vscale
-            _sepz = _d1x * _d2y - _d1y * _d2x
-            _seph = math.sqrt(_sepx*_sepx + _sepy*_sepy + _sepz*_sepz)
-            if _seph > 0.05 and (_sepx * (b2.x - b1.x) + _sepy * (b2.y - b1.y)
-                                 + _sepz * (b2.z - b1.z)) < 0.0:
-                _sepx, _sepy, _sepz = -_sepx, -_sepy, -_sepz
-        if _seph < 0.05:
-            # Parallel AND coincident - last resort: center-to-center horizontal
-            _sepx = b2.x - b1.x
-            _sepy = 0.0
-            _sepz = b2.z - b1.z
-            _seph = math.sqrt(_sepx*_sepx + _sepz*_sepz)
-        if _seph > 0.05:
-            _hx = _sepx / _seph
-            _hy = _sepy / _seph
-            _hz = _sepz / _seph
-            # Contact-point velocities: body + turn sweep (collision spin AND
-            # the controlled turn — the player's turn is written straight to
-            # rotation and was invisible here, so controlled grinds got no
-            # velocity damping and re-penetrated every tick) + horn
-            # articulation (numeric tip diff x param, on the CONTACT arm's
-            # own tip)
-            _svs_as = _ss_s_loc if horn_segment_articulates(b1, _svs_best[1], len(_segs1)) else 0.0
-            _svs_at = _ss_t_loc if horn_segment_articulates(b2, _svs_best[2], len(_segs2)) else 0.0
-            _a1vx = _a1vy = _a1vz = _a2vx = _a2vy = _a2vz = 0.0
-            if _svs_as > 0.0 and (abs(b1.horn_pitch_velocity) > 0.02 or
-                    abs(b1.horn_yaw_velocity) > 0.02):
-                _adv1 = horn_collision_segments(
-                    b1, b1.horn_pitch + b1.horn_pitch_velocity * PHYSICS_TIMESTEP,
-                    b1.horn_yaw + b1.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                _si1 = _svs_best[1]
-                if _si1 < len(_adv1):
-                    _a1vx = _svs_as * (_adv1[_si1][3] - _segs1[_si1][3]) / PHYSICS_TIMESTEP
-                    _a1vy = _svs_as * (_adv1[_si1][4] - _segs1[_si1][4]) / PHYSICS_TIMESTEP
-                    _a1vz = _svs_as * (_adv1[_si1][5] - _segs1[_si1][5]) / PHYSICS_TIMESTEP
-            if _svs_at > 0.0 and (abs(b2.horn_pitch_velocity) > 0.02 or
-                    abs(b2.horn_yaw_velocity) > 0.02):
-                _adv2 = horn_collision_segments(
-                    b2, b2.horn_pitch + b2.horn_pitch_velocity * PHYSICS_TIMESTEP,
-                    b2.horn_yaw + b2.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                _si2 = _svs_best[2]
-                if _si2 < len(_adv2):
-                    _a2vx = _svs_at * (_adv2[_si2][3] - _segs2[_si2][3]) / PHYSICS_TIMESTEP
-                    _a2vy = _svs_at * (_adv2[_si2][4] - _segs2[_si2][4]) / PHYSICS_TIMESTEP
-                    _a2vz = _svs_at * (_adv2[_si2][5] - _segs2[_si2][5]) / PHYSICS_TIMESTEP
-            _w1 = b1.angular_velocity + getattr(b1, 'controlled_turn_rate', 0.0)
-            _w2 = b2.angular_velocity + getattr(b2, 'controlled_turn_rate', 0.0)
-            _v1x = b1.vx - (_c1z - b1.z) * _w1 + _a1vx
-            _v1y = b1.vy + _a1vy
-            _v1z = b1.vz + (_c1x - b1.x) * _w1 + _a1vz
-            _v2x = b2.vx - (_c2z - b2.z) * _w2 + _a2vx
-            _v2y = b2.vy + _a2vy
-            _v2z = b2.vz + (_c2x - b2.x) * _w2 + _a2vz
-            # Closing along the (3D) separation axis (b1 -> b2)
-            _svs_cl = ((_v1x - _v2x) * _hx + (_v1y - _v2y) * _hy
-                       + (_v1z - _v2z) * _hz)
-            if _svs_early:
-                # Pre-contact band: respond ONLY if the crossing actually
-                # lands next tick — the band itself is wide, and braking at
-                # visual distance read as ghost pushes (user report)
-                if _svs_cl > 0.0 and (_ss_d - _svs_cl * PHYSICS_TIMESTEP) < _svs_thick:
-                    for _bb in (b1, b2):
-                        if _bb.horn_type != "ball":
-                            _bb.horn_engagement = max(getattr(_bb, 'horn_engagement', 0.0), 0.5)
-                            _bb.in_horn_collision = True
-                    # Attribute the brake to what's causing the approach:
-                    # body-driven closing damps BODY velocity; horn-driven
-                    # closing brakes the HORN articulation itself (damping
-                    # the body for a horn flick was the ghost push)
-                    _cl_art = ((_a1vx - _a2vx) * _hx + (_a1vy - _a2vy) * _hy
-                               + (_a1vz - _a2vz) * _hz)
-                    _cl_body = _svs_cl - _cl_art
-                    if _cl_body > 0.0:
-                        _svs_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5) * 0.5
-                        b1.vx -= _hx * _cl_body * _svs_damp
-                        b1.vz -= _hz * _cl_body * _svs_damp
-                        b2.vx += _hx * _cl_body * _svs_damp
-                        b2.vz += _hz * _cl_body * _svs_damp
-                    if _cl_art > 0.5:
-                        for _bb, _aav in ((b1, abs(_a1vx) + abs(_a1vy) + abs(_a1vz)),
-                                          (b2, abs(_a2vx) + abs(_a2vy) + abs(_a2vz))):
-                            if _aav > 0.5 and _bb.horn_type != "ball":
-                                _bb.horn_pitch_damping = max(getattr(_bb, 'horn_pitch_damping', 0.0), 0.5)
-                                _bb.horn_yaw_damping = max(getattr(_bb, 'horn_yaw_damping', 0.0), 0.5)
-                return
-            # Depth-scaled like the horn-vs-body push-out: gentle at first
-            # touch, ~2.4x when deep
-            _svs_push = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35) * (1.0 + _svs_depth * 0.4)
-            # Vertical is POSITION-only and never pushes a grounded beetle
-            # down (the floor just fights it)
-            _p1y = -_hy * _svs_push * 0.5
-            _p2y = _hy * _svs_push * 0.5
-            if _p1y < 0.0 and b1.air_gap <= 1.0:
-                _p1y = 0.0
-            if _p2y < 0.0 and b2.air_gap <= 1.0:
-                _p2y = 0.0
-            b1.x -= _hx * _svs_push * 0.5
-            b1.y += _p1y
-            b1.z -= _hz * _svs_push * 0.5
-            b2.x += _hx * _svs_push * 0.5
-            b2.y += _p2y
-            b2.z += _hz * _svs_push * 0.5
-            if _svs_cl > 0.0:
-                _svs_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5) * 0.5
-                b1.vx -= _hx * _svs_cl * _svs_damp
-                b1.vz -= _hz * _svs_cl * _svs_damp
-                b2.vx += _hx * _svs_cl * _svs_damp
-                b2.vz += _hz * _svs_cl * _svs_damp
-            collision_stats['shaft_vs_shaft_pushes'] += 1
-
 def _closest_on_horn_segments(segments, px, py, pz):
     """Closest point to (px,py,pz) across a horn's segment list.
     Returns (cx, cy, cz, seg_index, t_in_segment, dist)."""
@@ -14969,17 +14762,6 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
     else:
         has_collision = precomputed_collision
 
-    # Phase 3c: horn-vs-horn check runs even WITHOUT voxel contact — the
-    # voxel grid is stamped once per rendered frame from interpolated angles,
-    # so fast sweeps tunnel between its snapshots, while the segment math
-    # always sees current-tick horn angles. Cheap cull: horns must plausibly
-    # be able to reach (40 voxels center-to-center)
-    if not has_collision and b1.horn_type != "ball" and b2.horn_type != "ball":
-        _pcdx = b1.x - b2.x
-        _pcdz = b1.z - b2.z
-        if _pcdx * _pcdx + _pcdz * _pcdz < 1600.0:
-            shaft_vs_shaft_response(b1, b2, params, 0, voxel_contact=False)
-
     if has_collision:
         # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
         calculate_occupied_voxels_kernel(b1.x, b1.z, b1.color,
@@ -15215,12 +14997,165 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     shaft_owner.z -= _pnz * _push_amt * 0.3
                     collision_stats['shaft_penetration_fixes'] += 1
 
-                # SHAFT-VS-SHAFT RESPONSE (Layer B) — moved to
-                # shaft_vs_shaft_response() so it can ALSO run without voxel
-                # contact (Phase 3c: the voxel grid is a frame stale; fast
-                # sweeps tunnel between its snapshots)
+                # SHAFT-VS-SHAFT RESPONSE: base/shaft crossings (horn-vs-horn
+                # with no tips in contact) previously had NO dedicated
+                # separation - everything above resolves horn-vs-BODY, and
+                # the center-to-center impulse can't oppose a tangential base
+                # sweep, so bases ground through each other when turning or
+                # articulating. Push both shafts apart along their closest-
+                # point line, damp the closing velocity (incl. turn sweep +
+                # horn articulation), and feed the crossing depth into
+                # horn_burial so the depth-aware turn clamp engages on
+                # base-vs-base grinds too.
                 if not is_ball_collision:
-                    shaft_vs_shaft_response(b1, b2, params, has_horn_tips)
+                    _svs_types = ("rhino", "stag", "hercules", "atlas",
+                                  "spider", "bombardier", "scorpion", "giraffe")
+                    if b1.horn_type in _svs_types and b2.horn_type in _svs_types:
+                        # Closest crossing across all segment combos (1x1 for
+                        # ordinary horns; the giraffe contributes neck + head
+                        # segments so elbow-region crossings are covered too)
+                        _segs1 = horn_collision_segments(b1)
+                        _segs2 = horn_collision_segments(b2)
+                        _svs_best = None
+                        for _i1 in range(len(_segs1)):
+                            for _i2 in range(len(_segs2)):
+                                _res = closest_points_between_segments(
+                                    *_segs1[_i1], *_segs2[_i2])
+                                if _svs_best is None or _res[8] < _svs_best[0][8]:
+                                    _svs_best = (_res, _i1, _i2)
+                        (_c1x, _c1y, _c1z, _c2x, _c2y, _c2z,
+                         _ss_s_loc, _ss_t_loc, _ss_d) = _svs_best[0]
+                        # Map to global 0..1 along each whole horn so the
+                        # base->tip taper and tip-crossing limits keep meaning
+                        _ss_s = horn_segment_param(b1, _svs_best[1], _ss_s_loc, len(_segs1))
+                        _ss_t = horn_segment_param(b2, _svs_best[2], _ss_t_loc, len(_segs2))
+                        # Canary metric: horn-vs-horn proximity, recorded BEFORE
+                        # the response gates so gated dead zones still count
+                        if _ss_d < collision_stats['min_shaft_shaft_dist']:
+                            collision_stats['min_shaft_shaft_dist'] = _ss_d
+                        if _ss_d < 2.0:
+                            collision_stats['horn_cross_clip_events'] += 1
+                            _hh_key = f"{b1.horn_type}X{b2.horn_type}"
+                            collision_stats['horn_cross_by_type'][_hh_key] = \
+                                collision_stats['horn_cross_by_type'].get(_hh_key, 0) + 1
+                        # Shafts are thicker at the base: taper the crossing
+                        # threshold from ~6.5 voxels (base-vs-base) to ~4
+                        # toward the tips
+                        _svs_far = max(_ss_s, _ss_t)
+                        _svs_thick = params.get("SHAFT_VS_SHAFT_DIST", 6.5) - 2.5 * _svs_far
+                        # Tip-end crossings (s or t near 1) belong to the tip
+                        # physics. When tip voxels are in the contact, only
+                        # clearly BASAL crossings fire (a tip touching
+                        # something must not disable base separation - that
+                        # blanket gate was why base merges slipped through)
+                        _svs_param_limit = 0.7 if has_horn_tips == 1 else 0.9
+                        if _ss_d < _svs_thick and _ss_s < _svs_param_limit and _ss_t < _svs_param_limit:
+                            _svs_depth = _svs_thick - _ss_d
+                            for _bb in (b1, b2):
+                                if _svs_depth > getattr(_bb, 'horn_burial', 0.0):
+                                    _bb.horn_burial = _svs_depth
+                            # TRUE 3D separation axis between crossing points
+                            # (Phase 2): a horn lying across another separates
+                            # vertically instead of a sideways body shove.
+                            # SVS_VERTICAL_SCALE 0 restores horizontal-only.
+                            _vscale = params.get("SVS_VERTICAL_SCALE", 1.0)
+                            _sepx = _c2x - _c1x
+                            _sepy = (_c2y - _c1y) * _vscale
+                            _sepz = _c2z - _c1z
+                            _seph = math.sqrt(_sepx*_sepx + _sepy*_sepy + _sepz*_sepz)
+                            if _seph < 0.05:
+                                # Segments essentially INTERSECT (the old code
+                                # excluded this case entirely -> perfectly
+                                # crossed shafts got no response). Axis = the
+                                # mutual perpendicular of the two horn
+                                # directions, oriented from b1 toward b2
+                                _s1 = _segs1[_svs_best[1]]
+                                _s2 = _segs2[_svs_best[2]]
+                                _d1x, _d1y, _d1z = _s1[3]-_s1[0], _s1[4]-_s1[1], _s1[5]-_s1[2]
+                                _d2x, _d2y, _d2z = _s2[3]-_s2[0], _s2[4]-_s2[1], _s2[5]-_s2[2]
+                                _sepx = _d1y * _d2z - _d1z * _d2y
+                                _sepy = (_d1z * _d2x - _d1x * _d2z) * _vscale
+                                _sepz = _d1x * _d2y - _d1y * _d2x
+                                _seph = math.sqrt(_sepx*_sepx + _sepy*_sepy + _sepz*_sepz)
+                                if _seph > 0.05 and (_sepx * (b2.x - b1.x) + _sepy * (b2.y - b1.y)
+                                                     + _sepz * (b2.z - b1.z)) < 0.0:
+                                    _sepx, _sepy, _sepz = -_sepx, -_sepy, -_sepz
+                            if _seph < 0.05:
+                                # Parallel AND coincident - last resort:
+                                # center-to-center horizontal
+                                _sepx = b2.x - b1.x
+                                _sepy = 0.0
+                                _sepz = b2.z - b1.z
+                                _seph = math.sqrt(_sepx*_sepx + _sepz*_sepz)
+                            if _seph > 0.05:
+                                _hx = _sepx / _seph
+                                _hy = _sepy / _seph
+                                _hz = _sepz / _seph
+                                # Contact-point velocities: body + turn sweep +
+                                # horn articulation (numeric tip diff x param).
+                                # Articulation credit goes to segments that
+                                # actually move with horn input (all arms for
+                                # pincer/jaw/prong types; head-only for giraffe,
+                                # cephalic-only for atlas) — velocity measured
+                                # on the CONTACT arm's own tip, so a left
+                                # pincer no longer inherits the right tip's
+                                # mirrored (wrong-direction) sweep
+                                _svs_as = _ss_s_loc if horn_segment_articulates(b1, _svs_best[1], len(_segs1)) else 0.0
+                                _svs_at = _ss_t_loc if horn_segment_articulates(b2, _svs_best[2], len(_segs2)) else 0.0
+                                _a1vx = _a1vy = _a1vz = _a2vx = _a2vy = _a2vz = 0.0
+                                if _svs_as > 0.0 and (abs(b1.horn_pitch_velocity) > 0.02 or
+                                        abs(b1.horn_yaw_velocity) > 0.02):
+                                    _adv1 = horn_collision_segments(
+                                        b1, b1.horn_pitch + b1.horn_pitch_velocity * PHYSICS_TIMESTEP,
+                                        b1.horn_yaw + b1.horn_yaw_velocity * PHYSICS_TIMESTEP)
+                                    _si1 = _svs_best[1]
+                                    if _si1 < len(_adv1):
+                                        _a1vx = _svs_as * (_adv1[_si1][3] - _segs1[_si1][3]) / PHYSICS_TIMESTEP
+                                        _a1vy = _svs_as * (_adv1[_si1][4] - _segs1[_si1][4]) / PHYSICS_TIMESTEP
+                                        _a1vz = _svs_as * (_adv1[_si1][5] - _segs1[_si1][5]) / PHYSICS_TIMESTEP
+                                if _svs_at > 0.0 and (abs(b2.horn_pitch_velocity) > 0.02 or
+                                        abs(b2.horn_yaw_velocity) > 0.02):
+                                    _adv2 = horn_collision_segments(
+                                        b2, b2.horn_pitch + b2.horn_pitch_velocity * PHYSICS_TIMESTEP,
+                                        b2.horn_yaw + b2.horn_yaw_velocity * PHYSICS_TIMESTEP)
+                                    _si2 = _svs_best[2]
+                                    if _si2 < len(_adv2):
+                                        _a2vx = _svs_at * (_adv2[_si2][3] - _segs2[_si2][3]) / PHYSICS_TIMESTEP
+                                        _a2vy = _svs_at * (_adv2[_si2][4] - _segs2[_si2][4]) / PHYSICS_TIMESTEP
+                                        _a2vz = _svs_at * (_adv2[_si2][5] - _segs2[_si2][5]) / PHYSICS_TIMESTEP
+                                _v1x = b1.vx - (_c1z - b1.z) * b1.angular_velocity + _a1vx
+                                _v1y = b1.vy + _a1vy
+                                _v1z = b1.vz + (_c1x - b1.x) * b1.angular_velocity + _a1vz
+                                _v2x = b2.vx - (_c2z - b2.z) * b2.angular_velocity + _a2vx
+                                _v2y = b2.vy + _a2vy
+                                _v2z = b2.vz + (_c2x - b2.x) * b2.angular_velocity + _a2vz
+                                # Closing along the (3D) separation axis (b1 -> b2)
+                                _svs_cl = ((_v1x - _v2x) * _hx + (_v1y - _v2y) * _hy
+                                           + (_v1z - _v2z) * _hz)
+                                # Depth-scaled like the horn-vs-body push-out:
+                                # gentle at first touch, ~2.4x when deep
+                                _svs_push = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35) * (1.0 + _svs_depth * 0.4)
+                                # Vertical is POSITION-only and never pushes a
+                                # grounded beetle down (the floor just fights it)
+                                _p1y = -_hy * _svs_push * 0.5
+                                _p2y = _hy * _svs_push * 0.5
+                                if _p1y < 0.0 and b1.air_gap <= 1.0:
+                                    _p1y = 0.0
+                                if _p2y < 0.0 and b2.air_gap <= 1.0:
+                                    _p2y = 0.0
+                                b1.x -= _hx * _svs_push * 0.5
+                                b1.y += _p1y
+                                b1.z -= _hz * _svs_push * 0.5
+                                b2.x += _hx * _svs_push * 0.5
+                                b2.y += _p2y
+                                b2.z += _hz * _svs_push * 0.5
+                                if _svs_cl > 0.0:
+                                    _svs_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5) * 0.5
+                                    b1.vx -= _hx * _svs_cl * _svs_damp
+                                    b1.vz -= _hz * _svs_cl * _svs_damp
+                                    b2.vx += _hx * _svs_cl * _svs_damp
+                                    b2.vz += _hz * _svs_cl * _svs_damp
+                                collision_stats['shaft_vs_shaft_pushes'] += 1
 
             # HORN LEVERAGE: Strong vertical lift when contact is high (horn collision)
             # Ball collisions now treated like beetle collisions for consistent physics
@@ -17163,7 +17098,7 @@ physics_params = {
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
-    "TUMBLE_MULTIPLIER": 3.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips)
+    "TUMBLE_MULTIPLIER": 4.2,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
     "HORN_LIFT_STRENGTH": 1.3,  # Multiplier for horn combat lift force (higher = more intense lifts)
     "HORN_TIP_STRENGTH": 1.5,  # Tipping torque strength for horn collisions (replaces separation)
     "COLLISION_SPIN_BIAS": 0.8,  # Strength of away-from-attacker spin bias (prevents turning into collisions)
@@ -17186,7 +17121,7 @@ physics_params = {
     "HORN_LOCK_TURN_FACTOR": 0.35,  # Turn speed floor while horn-locked (0 = hard block like before)
     "HORN_DAMPING_CAP": 0.9,  # Max horn pitch/yaw damping during contact (1.0 = can fully freeze like before)
     # Yaw grind (holding horn left/right through contact) - was hardcoded 40/25/0.02
-    "YAW_GRIND_PUSH": 60.0,   # Forward shove on contacts while yaw-grinding (units/s)
+    "YAW_GRIND_PUSH": 68.0,   # Forward shove on contacts while yaw-grinding (units/s) — 2026-07-12 tune
     "YAW_GRIND_LIFT": 40.0,   # Lift on contacts while yaw-grinding (units/s)
     "YAW_GRIND_TILT": 0.03,   # Pitch tilt per step on contacts while yaw-grinding (rad)
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
@@ -18773,7 +18708,6 @@ try:
                 # Engagement/burial fade once contact ends (collision refreshes them)
                 beetle.horn_engagement = getattr(beetle, 'horn_engagement', 0.0) * 0.85
                 beetle.horn_burial = getattr(beetle, 'horn_burial', 0.0) * 0.85
-                beetle.controlled_turn_rate = 0.0  # Set below when turn keys held
                 # Rotation controls (F/H) - RESISTED (not hard-blocked) during
                 # horn collision. Engagement-aware: light contact turns near
                 # full speed, a deep horn lock turns at the tunable floor.
@@ -18812,10 +18746,8 @@ try:
 
                     if p_inputs & INPUT_LEFT:
                         beetle.rotation -= ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
-                        beetle.controlled_turn_rate -= ROTATION_SPEED * rotation_multiplier
                     if p_inputs & INPUT_RIGHT:
                         beetle.rotation += ROTATION_SPEED * rotation_multiplier * PHYSICS_TIMESTEP
-                        beetle.controlled_turn_rate += ROTATION_SPEED * rotation_multiplier
 
                 # Air traction: air_gap (lowest geometry point above floor, cached
                 # from the floor block; 999 = no floor below) is the real airborne
