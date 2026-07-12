@@ -1458,19 +1458,49 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                 idx = ti.atomic_add(num_voxels[None], 1)
                 if idx < MAX_VOXELS:
                     # Sub-voxel smoothing: beetle/ball voxels carry their
-                    # owner's fractional render offset
+                    # owner's fractional render offset + rotation residual
                     off = ti.math.vec3(0.0, 0.0, 0.0)
                     frac_owner = simulation.beetle_owner(vtype)
+                    if vtype == 16 or vtype == 17:  # Ball body/stripe
+                        frac_owner = 4
+                    pos = ti.math.vec3(world_x, world_y, world_z)
                     if frac_owner >= 0:
                         off = owner_frac_offset[frac_owner]
-                    elif vtype == 16 or vtype == 17:  # Ball body/stripe
-                        off = owner_frac_offset[4]
-                    voxel_positions[idx] = ti.math.vec3(world_x, world_y, world_z) + off
+                        rr = owner_rot_residual[frac_owner]
+                        if rr[0] != 0.0 or rr[1] != 0.0 or rr[2] != 0.0:
+                            pv = owner_rot_pivot[frac_owner]
+                            p = pos - pv
+                            # Yaw (Y axis) — same convention as the place kernels
+                            cy = ti.cos(rr[0])
+                            sy = ti.sin(rr[0])
+                            p = ti.math.vec3(p[0] * cy - p[2] * sy, p[1],
+                                             p[0] * sy + p[2] * cy)
+                            # Pitch (Z axis) + roll (X axis) — ball spin; residuals
+                            # are tiny so axis-order error is negligible
+                            cp = ti.cos(rr[1])
+                            sp = ti.sin(rr[1])
+                            p = ti.math.vec3(p[0] * cp - p[1] * sp,
+                                             p[0] * sp + p[1] * cp, p[2])
+                            cr = ti.cos(rr[2])
+                            sr = ti.sin(rr[2])
+                            p = ti.math.vec3(p[0], p[1] * cr - p[2] * sr,
+                                             p[1] * sr + p[2] * cr)
+                            pos = p + pv
+                    voxel_positions[idx] = pos + off
                     voxel_colors[idx] = color
                     if vtype == 23 or vtype == 24:  # SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
                         voxel_radii[idx] = VOXEL_RADIUS * 0.72
                     else:
                         voxel_radii[idx] = VOXEL_RADIUS
+
+# Rotation-residual smoothing: beetles/ball are STAMPED into the grid at a
+# QUANTIZED rotation; the leftover angle (continuous render rotation minus
+# stamped rotation) rotates each owner's voxels around its pivot here in the
+# extract. Slow turns glide as a rigid body between stamp steps instead of
+# re-snapping every voxel to the lattice each frame (rotation shimmer).
+# [yaw, pitch, roll] residuals — beetles use yaw only; ball uses all three
+owner_rot_residual = ti.Vector.field(3, dtype=ti.f32, shape=5)
+owner_rot_pivot = ti.Vector.field(3, dtype=ti.f32, shape=5)
 
 # Beetle respawn-assembly flight particles: FLOAT positions so the voxel rain
 # glides instead of ticking cell-to-cell on the integer grid (the old path

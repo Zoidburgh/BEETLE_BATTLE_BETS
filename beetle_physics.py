@@ -8982,6 +8982,16 @@ def clear_and_render_ball_fast(ball_x, ball_y, ball_z, rotation, pitch, roll):
         ball_y + RENDER_Y_OFFSET - grid_y,
         ball_z + simulation.n_grid / 2.0 - grid_z]
 
+    # Rotation-residual smoothing: stamp the ball at quantized spin angles
+    # (~2.9 deg steps) and glide the remainder in the extract — kills the
+    # stripe's per-voxel rotation shimmer
+    _rq = round(rotation / 0.05) * 0.05
+    _pq = round(pitch / 0.05) * 0.05
+    _lq = round(roll / 0.05) * 0.05
+    renderer.owner_rot_residual[4] = [rotation - _rq, pitch - _pq, roll - _lq]
+    renderer.owner_rot_pivot[4] = [float(grid_x) - 64.0, float(grid_y), float(grid_z) - 64.0]
+    rotation, pitch, roll = _rq, _pq, _lq
+
     # Clear old position if ball was previously rendered
     if ball_last_rendered[None] == 1:
         try:
@@ -22382,9 +22392,18 @@ try:
             render_x[slot] + 64.0 - math.floor(render_x[slot] + 64.0),
             0.0,
             render_z[slot] + 64.0 - math.floor(render_z[slot] + 64.0)]
+        # Rotation-residual smoothing: stamp at a quantized yaw (~2.9 deg
+        # steps), glide the remainder in the extract — slow turns rotate as a
+        # rigid body instead of per-voxel lattice-snapping every frame
+        _rot_q = round(render_rotation[slot] / 0.05) * 0.05
+        renderer.owner_rot_residual[slot] = [render_rotation[slot] - _rot_q, 0.0, 0.0]
+        renderer.owner_rot_pivot[slot] = [
+            float(int(render_x[slot] + 64.0)) - 64.0,
+            0.0,
+            float(int(render_z[slot] + 64.0)) - 64.0]
         place_beetle_kernels[slot](
             render_x[slot], render_y[slot], render_z[slot],
-            render_rotation[slot], render_pitch[slot], render_roll[slot],
+            _rot_q, render_pitch[slot], render_roll[slot],
             render_horn_pitch[slot], render_horn_yaw[slot], render_tail_pitch[slot],
             b.horn_type_id, b.body_pitch_offset,
             _body_id, _legs_id, _leg_tip_id,
