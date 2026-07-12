@@ -804,6 +804,18 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
                 if cvt == CONCRETE_T or cvt == SLIPPERY_T:
                     center_on_floor = 1
                     c_lift = float(jj)
+        # A straddling disc rides the HIGHER layer entirely: the triangle fan
+        # sloping between per-vertex layers submerged into the step (only the
+        # outer sliver showed on the ice). Sample the rim for the max layer
+        for s0 in range(SHADOW_DISC_SEGMENTS):
+            a0 = PI2 * s0 / SHADOW_DISC_SEGMENTS
+            rgi = ti.cast(cx + radius * ti.cos(a0) + n_grid / 2.0, ti.i32)
+            rgk = ti.cast(cz + radius * ti.sin(a0) + n_grid / 2.0, ti.i32)
+            if 0 <= rgi < n_grid and 0 <= rgk < n_grid:
+                for jj in ti.static(range(3)):
+                    rvt = voxel_field[rgi, floor_j + jj, rgk]
+                    if (rvt == CONCRETE_T or rvt == SLIPPERY_T) and float(jj) > c_lift:
+                        c_lift = float(jj)
         center_pos = ti.math.vec3(cx, top_y + c_lift, cz)
         if hp_s[2] > 0.0:
             sdx = cx - hp_s[0]
@@ -841,16 +853,13 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
                     gi = ti.cast(vx + n_grid / 2.0, ti.i32)
                     gk = ti.cast(vz + n_grid / 2.0, ti.i32)
                     if 0 <= gi < n_grid and 0 <= gk < n_grid:
-                        # Same stepped-floor window as the center check —
-                        # each vertex sits on its own layer so the disc
-                        # drapes over the arena->ice step
+                        # Same stepped-floor window as the center check (the
+                        # whole disc rides c_lift, the disc's max layer)
                         v_found = 0
-                        v_lift = 0.0
                         for jj in ti.static(range(3)):
                             vt = voxel_field[gi, floor_j + jj, gk]
                             if vt == CONCRETE_T or vt == SLIPPERY_T:
                                 v_found = 1
-                                v_lift = float(jj)
                         if v_found == 1:
                             # Also check this point isn't inside the hole or board break
                             in_hole_s = 0
@@ -864,7 +873,7 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
                                     if board_break_mask[gi, gk] == 1:
                                         in_hole_s = 1
                             if in_hole_s == 0:
-                                shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y + v_lift, vz)
+                                shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y + c_lift, vz)
                                 placed = 1
                                 break
 
