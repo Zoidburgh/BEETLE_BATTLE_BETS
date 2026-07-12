@@ -3737,6 +3737,11 @@ HOVER_DURATION = 1.2  # Time to fly from center to spawn point
 HOVER_HEIGHT = 20.0   # Height during hover flight
 HOVER_SPIN_SPEED = 1.5  # Goofy spinning speed (radians/sec) - gentle lazy spin
 
+# Spawn chosen at assembly START (x, z, rot) so the ghost forms exactly
+# where — and facing how — the beetle will materialize (kills the end-of-
+# animation position/rotation skip). Consumed (not re-rolled) at spawn.
+assembly_spawn = [None] * 4
+
 # Ball assembly animation state (voxel rain effect)
 ball_assembling = False
 ball_assembly_timer = 0.0
@@ -4418,10 +4423,11 @@ ball_scatter_z = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
 import random as _random
 for _i in range(MAX_ASSEMBLY_VOXELS):
     _random.seed(_i * 31337)
-    # Beetle scatter - wider spread
-    assembly_scatter_x[_i] = _random.uniform(-20, 20)
+    # Beetle scatter - wide horizontal sweep-in (was +-20; widened with the
+    # smooth particle path, same as the ball)
+    assembly_scatter_x[_i] = _random.uniform(-30, 30)
     assembly_scatter_y[_i] = _random.uniform(25, 45)
-    assembly_scatter_z[_i] = _random.uniform(-20, 20)
+    assembly_scatter_z[_i] = _random.uniform(-30, 30)
     # Ball scatter - was +-8 horizontal (tuned tight for the old choppy grid
     # path): cramped once flights became smooth. Wide HORIZONTAL sweep-in;
     # height kept modest (user: height was never the issue)
@@ -4581,15 +4587,21 @@ def make_assembly_particle_kernel(slot):
         (simulation.p4_body_color, simulation.p4_stripe_color, simulation.p4_horn_tip_color),
     ]
     body_col, stripe_col, horn_col = _colors[slot]
-    _flip = -1 if slot == 1 else 1
 
     @ti.kernel
     def assembly_particles(center_x: ti.f32, center_y: ti.f32, center_z: ti.f32,
-                           t: ti.f32, num_voxels: ti.i32):
+                           rot: ti.f32, t: ti.f32, num_voxels: ti.i32):
+        cos_r = ti.cos(rot)
+        sin_r = ti.sin(rot)
         for i in range(num_voxels):
-            lx = float(body_cache_x[i] * _flip)
+            # Rotate targets to the spawn facing so the ghost forms already
+            # oriented like the beetle that materializes (no rotation snap).
+            # Replaces the old slot-1 180-degree flip (rot pi covers it)
+            lx0 = float(body_cache_x[i])
             ly = float(body_cache_y[i])
-            lz = float(body_cache_z[i] * _flip)
+            lz0 = float(body_cache_z[i])
+            lx = lx0 * cos_r - lz0 * sin_r
+            lz = lx0 * sin_r + lz0 * cos_r
             target_x = center_x + lx
             target_y = center_y + ly
             target_z = center_z + lz
@@ -4618,11 +4630,11 @@ def make_assembly_particle_kernel(slot):
 
     return assembly_particles
 
-def render_beetle_assembly_fast(slot, spawn_x, spawn_y, spawn_z, progress):
+def render_beetle_assembly_fast(slot, spawn_x, spawn_y, spawn_z, progress, rot=0.0):
     """Respawn assembly voxel rain (particle path — see
     make_assembly_particle_kernel). slot: 0-3 (True/False legacy map to
-    blue/red). Caller must reset renderer.num_assembly_particles once per
-    frame before the per-slot calls."""
+    blue/red). rot = spawn facing so the ghost forms pre-rotated. Caller must
+    reset renderer.num_assembly_particles once per frame before these calls."""
     if slot is True:
         slot = 0
     elif slot is False:
@@ -4630,7 +4642,8 @@ def render_beetle_assembly_fast(slot, spawn_x, spawn_y, spawn_z, progress):
     # World coordinates (int-snapped center for parity with the old grid path)
     num_voxels = beetle_geo[slot]['body_cache_size'][None]
     assembly_particle_kernels[slot](float(int(spawn_x)), float(int(spawn_y)),
-                                    float(int(spawn_z)), float(progress), num_voxels)
+                                    float(int(spawn_z)), float(rot),
+                                    float(progress), num_voxels)
 
 @ti.kernel
 def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
@@ -20270,6 +20283,9 @@ try:
                 if remaining <= ASSEMBLY_DURATION and not assembling[slot]:
                     assembling[slot] = True
                     assembly_timers[slot] = 0.0
+                    # Choose the spawn NOW so the ghost can form exactly
+                    # where (and facing how) the beetle will materialize
+                    assembly_spawn[slot] = get_spawn_position(slot)
                     print(f"Beetle {slot} assembly started!")
                 # Update assembly timer
                 if assembling[slot]:
@@ -20280,8 +20296,13 @@ try:
                     assembling[slot] = False
                     assembly_timers[slot] = 0.0
 
-                    # Get spawn position
-                    spawn_x, spawn_z, spawn_rot = get_spawn_position(slot)
+                    # Use the spawn chosen at assembly start (the ghost formed
+                    # there); fall back if assembly never ran (e.g. rematch)
+                    if assembly_spawn[slot] is not None:
+                        spawn_x, spawn_z, spawn_rot = assembly_spawn[slot]
+                        assembly_spawn[slot] = None
+                    else:
+                        spawn_x, spawn_z, spawn_rot = get_spawn_position(slot)
 
                     if donut_mode or barbell_mode or figure8_mode or yinyang_mode or hourglass_mode or square_bridge_mode or square_mode or squiggle_mode or cut_square_mode:
                         # Start hover phase - beetle flies from center to spawn point
@@ -22213,17 +22234,31 @@ try:
         g['assembly_needs_final_clear'] = any_assembling  # Set flag for next frame if still assembling
     # Assembly flight particles are rebuilt from scratch each frame
     renderer.num_assembly_particles[None] = 0
+    _hover_arena = (donut_mode or barbell_mode or figure8_mode or yinyang_mode
+                    or hourglass_mode or square_bridge_mode or square_mode
+                    or squiggle_mode or cut_square_mode)
     for slot in range(active_player_count):
         if assembling[slot]:
             progress = min(assembly_timers[slot] / ASSEMBLY_DURATION, 1.0)
-            # Assemble high above arena (y=50), beetle will drop from y=15 after assembly
-            render_beetle_assembly_fast(slot, 0.0, 50.0, 0.0, progress)
+            if _hover_arena or assembly_spawn[slot] is None:
+                # Hover arenas: beetle materializes hovering at center,
+                # y = HOVER_HEIGHT, facing rot 0 — ghost forms right there
+                # (render y = physics y + RENDER_Y_OFFSET)
+                render_beetle_assembly_fast(slot, 0.0, HOVER_HEIGHT + RENDER_Y_OFFSET, 0.0, progress, 0.0)
+            else:
+                # Direct spawn: ghost forms AT the chosen spawn point, at the
+                # drop-in height (16.5), already facing the spawn rotation —
+                # the handoff to the real beetle is seamless
+                _asx, _asz, _asrot = assembly_spawn[slot]
+                render_beetle_assembly_fast(slot, _asx, 16.5 + RENDER_Y_OFFSET, _asz, progress, _asrot)
 
     # Render ball assembly animation (voxel rain effect)
     if g['ball_assembling'] and ball_cache_size[None] > 0:
         progress = min(g['ball_assembly_timer'] / BALL_ASSEMBLY_DURATION, 1.0)
         # Assemble high above arena, ball will drop from y=28 after assembly
-        render_ball_assembly_fast(0.0, 58.0, 0.0, progress)
+        # Ball materializes at physics y=28 -> renders at 28+RENDER_Y_OFFSET=61
+        # (was 58: the ghost sat 3 voxels low and the real ball popped up)
+        render_ball_assembly_fast(0.0, 28.0 + RENDER_Y_OFFSET, 0.0, progress)
 
     # Clear and render ladybugs using bounded clearing (much faster than full grid scan)
     # Each ladybug clears both previous and current positions to prevent leftover voxels on movement
