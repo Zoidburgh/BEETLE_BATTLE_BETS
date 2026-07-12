@@ -15055,6 +15055,25 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _burial_now = max(0.0, 8.0 - _pdist)
                     if _burial_now > getattr(shaft_owner, 'horn_burial', 0.0):
                         shaft_owner.horn_burial = _burial_now
+                    # BALL ON TOP: when the ball sits on/above the shaft, the
+                    # horizontal offset is degenerate noise — the horizontal-
+                    # only push jerked it ~1.5 vox/substep in a random flipping
+                    # direction ("can't find the center"). Vertical-dominant
+                    # contact resolves UP like a soft bounce instead
+                    if intruder.horn_type == "ball":
+                        _py = intruder.y - _scy
+                        if _py > 0.0 and _py >= _pdist:
+                            _p3d = math.sqrt(_pdist * _pdist + _py * _py)
+                            _pen = (intruder.radius + 1.5) - _p3d
+                            if _pen > 0.0:
+                                intruder.y += min(_pen, 1.2)  # capped, floor-style
+                                if intruder.prev_y < intruder.y:
+                                    intruder.prev_y = intruder.y  # clamp interp, no pop
+                                if intruder.vy < 0.0:
+                                    # Soft bounce off the beetle's back/horn
+                                    intruder.vy = -intruder.vy * params.get("BALL_GROUND_BOUNCE", 0.8) * 0.6
+                                collision_stats['shaft_penetration_fixes'] += 1
+                            continue
                     if _pdist < 0.1:
                         continue
                     # Tip voxels in the contact normally mean a tip battle
@@ -15871,6 +15890,18 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         b1.prev_y = b1.y
                     if b2.horn_type == "ball":
                         b2.prev_y = b2.y
+            elif is_ball_collision and ((b1.horn_type == "ball" and not b1.on_ground)
+                                        or (b2.horn_type == "ball" and not b2.on_ground)):
+                # Airborne ball vs GROUNDED beetle: the both-airborne gate
+                # skipped this entirely, so an on-top ball only ever got
+                # horizontal shoves. Move just the BALL vertically (pushing
+                # the grounded beetle down only makes the floor fight it)
+                if b1.horn_type == "ball":
+                    b1.y += normal_y * separation_force
+                    b1.prev_y = b1.y
+                else:
+                    b2.y -= normal_y * separation_force
+                    b2.prev_y = b2.y
 
             # Safety clamp to prevent going below floor voxel layer
             # (Main floor collision handles proper positioning above floor)
@@ -19253,20 +19284,6 @@ try:
 
         # Ball physics update (uses same beetle physics now)
         # Skip physics if ball has exploded (waiting for celebration to end)
-        # DEBUG: track ball max height and vy for bounce diagnostics
-        if not hasattr(beetle_ball, '_dbg_max_y'):
-            beetle_ball._dbg_max_y = 0.0
-            beetle_ball._dbg_was_airborne = False
-            beetle_ball._dbg_launch_vy = 0.0
-        if beetle_ball.active and not beetle_ball.on_ground:
-            if beetle_ball.y > beetle_ball._dbg_max_y:
-                beetle_ball._dbg_max_y = beetle_ball.y
-            if not beetle_ball._dbg_was_airborne:
-                beetle_ball._dbg_launch_vy = beetle_ball.vy
-                beetle_ball._dbg_was_airborne = True
-            # Log every 15 frames while airborne
-            if physics_frame % 15 == 0:
-                print(f"[BALL AIR] y={beetle_ball.y:.2f} vy={beetle_ball.vy:.2f} maxY={beetle_ball._dbg_max_y:.2f} launchVy={beetle_ball._dbg_launch_vy:.2f}")
         if beetle_ball.active and not g['ball_has_exploded']:
             # If ball has scored, just apply gravity and let it fall (no collisions/bounces)
             if g['ball_scored_this_fall']:
@@ -19390,9 +19407,23 @@ try:
                 if not g['ball_has_exploded']:
                     clear_and_render_ball_fast(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
                 # Run ball collision only for close beetles (skip if beetle is falling)
+                _bpx, _bpy, _bpz = beetle_ball.x, beetle_ball.y, beetle_ball.z
                 for slot in range(active_player_count):
                     if close_to_ball[slot] and not beetles[slot].is_falling:
                         beetle_collision(beetles[slot], beetle_ball, physics_params)
+                # Anti-teleport governor: pushes from MULTIPLE beetles in one
+                # substep stack with conflicting normals (net = a jump). Cap
+                # the ball's total positional correction per substep;
+                # velocity changes pass through untouched
+                _bdx = beetle_ball.x - _bpx
+                _bdy = beetle_ball.y - _bpy
+                _bdz = beetle_ball.z - _bpz
+                _bdisp = math.sqrt(_bdx*_bdx + _bdy*_bdy + _bdz*_bdz)
+                if _bdisp > 1.5:  # max positional correction voxels/substep
+                    _bscale = 1.5 / _bdisp
+                    beetle_ball.x = _bpx + _bdx * _bscale
+                    beetle_ball.y = _bpy + _bdy * _bscale
+                    beetle_ball.z = _bpz + _bdz * _bscale
 
         # === BALL PHYSICS TIMING END ===
         _t_ball_end = time.perf_counter()
@@ -21525,7 +21556,6 @@ try:
                             if near_goal_pit:
                                 beetle_ball.vy = 0.0
                             else:
-                                pre_bounce_vy = beetle_ball.vy
                                 beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
                                 # Bounce grip: contact friction scrubs some
                                 # horizontal speed on every bounce (real balls
@@ -21537,9 +21567,6 @@ try:
                                 if abs(beetle_ball.vy) < 2.0:
                                     beetle_ball.vy = 0.0
                                     beetle_ball.y = floor_surface + beetle_ball.radius  # Settle on floor exactly
-                                print(f"[BALL BOUNCE] impact_vy={pre_bounce_vy:.2f} bounce_vy={beetle_ball.vy:.2f} maxY={beetle_ball._dbg_max_y:.2f} coeff={physics_params['BALL_GROUND_BOUNCE']:.2f}")
-                            beetle_ball._dbg_max_y = beetle_ball.y  # reset for next arc
-                            beetle_ball._dbg_was_airborne = False
 
                         # After bounce with upward velocity, mark airborne so gravity doesn't eat bounce
                         if beetle_ball.vy > 0:
