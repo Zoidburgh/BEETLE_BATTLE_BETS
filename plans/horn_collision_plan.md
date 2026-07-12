@@ -174,16 +174,18 @@ proximity events <2 vox — geometry changes rebaseline it; response changes
   visually apart) — expansion cap + closing-velocity requirement (only expand when
   segments are approaching) prevent this; verify in playtest.
 
-### Phase 3 RESULTS (2026-07-12, implemented)
-3a controlled-turn credit, 3b sweep-expanded window (pre-contact band =
-velocity damp + engagement floor 0.5, NO position push), 3c svs runs without
-voxel contact (40-vox cull) — block extracted to shaft_vs_shaft_response().
-Medians of 3 config-A runs: deep body clips 255 (vs Phase 2 ref 296, -14%,
-same measuring stick), hh-clips 1931 — NOT comparable to Phase 2's 1114:
-3c made the metric sample every near pair every tick (stable stick from now
-on). Pushes ~3178 (early-band responses firing). collision ms ~6.6 (fine).
-METRIC LESSON for future phases: deep_clip_events is the only counter that
-stayed on one stick throughout; hh-clips is stable ONLY from Phase 3 onward.
+### Phase 3: IMPLEMENTED THEN REMOVED (2026-07-12, user decision)
+Phase 3 was built (commits 9fab8ca + ghost-push fix 05298ae: controlled-turn
+credit, sweep-expanded window, no-voxel-contact svs path) and REVERTED in
+938a137 — the user judged Phase 2 feel/clip level good enough and 3c's
+ghost-push risk not worth it. To resurrect: `git show 9fab8ca 05298ae` or
+cherry-pick both onto current. Its measured result for the record: deep body
+clips -14% vs Phase 2 (255 vs 296). The final shipped state = Phase 2
+geometry + 3D separation, YAW_GRIND_PUSH 68, TUMBLE_MULTIPLIER 4.2.
+PROCESS LESSON: two Claude contexts coded simultaneously on this file —
+Phase 3 was implemented by a second context while this one held a stale
+copy; the "tune" commit 938a137 silently swept the revert in. One coding
+context at a time.
 
 ## Explicitly OUT of scope (don't drift into these)
 
