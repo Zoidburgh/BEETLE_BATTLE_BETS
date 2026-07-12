@@ -4578,41 +4578,65 @@ def make_assembly_particle_kernel(slot):
     body_cache_x = geo['body_cache_x']
     body_cache_y = geo['body_cache_y']
     body_cache_z = geo['body_cache_z']
+    leg_cache_x_f = geo['leg_cache_x']
+    leg_cache_y_f = geo['leg_cache_y']
+    leg_cache_z_f = geo['leg_cache_z']
     horn_tip_flags = geo['body_horn_tip_flags']
     stripe_flags = geo['body_stripe_flags']
     _colors = [
-        (simulation.blue_body_color, simulation.blue_stripe_color, simulation.blue_horn_tip_color),
-        (simulation.red_body_color, simulation.red_stripe_color, simulation.red_horn_tip_color),
-        (simulation.p3_body_color, simulation.p3_stripe_color, simulation.p3_horn_tip_color),
-        (simulation.p4_body_color, simulation.p4_stripe_color, simulation.p4_horn_tip_color),
+        (simulation.blue_body_color, simulation.blue_stripe_color,
+         simulation.blue_horn_tip_color, simulation.blue_leg_color),
+        (simulation.red_body_color, simulation.red_stripe_color,
+         simulation.red_horn_tip_color, simulation.red_leg_color),
+        (simulation.p3_body_color, simulation.p3_stripe_color,
+         simulation.p3_horn_tip_color, simulation.p3_leg_color),
+        (simulation.p4_body_color, simulation.p4_stripe_color,
+         simulation.p4_horn_tip_color, simulation.p4_leg_color),
     ]
-    body_col, stripe_col, horn_col = _colors[slot]
+    body_col, stripe_col, horn_col, leg_col = _colors[slot]
 
     @ti.kernel
     def assembly_particles(center_x: ti.f32, center_y: ti.f32, center_z: ti.f32,
-                           rot: ti.f32, t: ti.f32, num_voxels: ti.i32):
+                           rot: ti.f32, t: ti.f32, num_voxels: ti.i32,
+                           num_legs: ti.i32):
         cos_r = ti.cos(rot)
         sin_r = ti.sin(rot)
-        for i in range(num_voxels):
+        for i in range(num_voxels + num_legs):
+            # First num_voxels motes are body cache; the rest are the legs
+            # at rest stance (lift/sweep 0) so the ghost lands with feet on
+            lx0 = 0.0
+            ly = 0.0
+            lz0 = 0.0
+            is_leg = 0
+            if i < num_voxels:
+                lx0 = float(body_cache_x[i])
+                ly = float(body_cache_y[i])
+                lz0 = float(body_cache_z[i])
+            else:
+                lx0 = float(leg_cache_x_f[i - num_voxels])
+                ly = float(leg_cache_y_f[i - num_voxels])
+                lz0 = float(leg_cache_z_f[i - num_voxels])
+                is_leg = 1
             # Rotate targets to the spawn facing so the ghost forms already
             # oriented like the beetle that materializes (no rotation snap).
             # Replaces the old slot-1 180-degree flip (rot pi covers it)
-            lx0 = float(body_cache_x[i])
-            ly = float(body_cache_y[i])
-            lz0 = float(body_cache_z[i])
             lx = lx0 * cos_r - lz0 * sin_r
             lz = lx0 * sin_r + lz0 * cos_r
             target_x = center_x + lx
             target_y = center_y + ly
             target_z = center_z + lz
-            # Start position (scattered above, same fields as the old path)
-            start_x = target_x + assembly_scatter_x[i]
-            start_y = target_y + assembly_scatter_y[i]
-            start_z = target_z + assembly_scatter_z[i]
+            # Start position (scattered above; legs read the scatter table
+            # from the far end so they don't fly in lockstep with body motes)
+            si = i
+            if is_leg == 1:
+                si = MAX_ASSEMBLY_VOXELS - 1 - (i - num_voxels)
+            start_x = target_x + assembly_scatter_x[si]
+            start_y = target_y + assembly_scatter_y[si]
+            start_z = target_z + assembly_scatter_z[si]
             # Per-mote stagger (reuses scatter randomness) so arrivals
             # desync, + smoothstep so each mote eases in AND settles softly
-            stagger = ti.min(ti.abs(assembly_scatter_x[i]) * 0.02
-                             + ti.abs(assembly_scatter_z[i]) * 0.013, 0.35)
+            stagger = ti.min(ti.abs(assembly_scatter_x[si]) * 0.02
+                             + ti.abs(assembly_scatter_z[si]) * 0.013, 0.35)
             tt = ti.min(ti.max((t - stagger) / (1.0 - stagger), 0.0), 1.0)
             ease = tt * tt * (3.0 - 2.0 * tt)
             px = start_x + (target_x - start_x) * ease
@@ -4621,7 +4645,9 @@ def make_assembly_particle_kernel(slot):
             aidx = ti.atomic_add(renderer.num_assembly_particles[None], 1)
             if aidx < renderer.MAX_ASSEMBLY_PARTICLES:
                 col = body_col[None]
-                if horn_tip_flags[i] == 1:
+                if is_leg == 1:
+                    col = leg_col[None]
+                elif horn_tip_flags[i] == 1:
                     col = horn_col[None]
                 elif stripe_flags[i] == 1:
                     col = stripe_col[None]
@@ -4641,9 +4667,10 @@ def render_beetle_assembly_fast(slot, spawn_x, spawn_y, spawn_z, progress, rot=0
         slot = 1
     # World coordinates (int-snapped center for parity with the old grid path)
     num_voxels = beetle_geo[slot]['body_cache_size'][None]
+    num_legs = beetle_geo[slot]['leg_end_idx'][7]  # end of last leg = total leg voxels
     assembly_particle_kernels[slot](float(int(spawn_x)), float(int(spawn_y)),
                                     float(int(spawn_z)), float(rot),
-                                    float(progress), num_voxels)
+                                    float(progress), num_voxels, num_legs)
 
 @ti.kernel
 def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti.i32,
@@ -22261,11 +22288,12 @@ try:
                 # (render y = physics y + RENDER_Y_OFFSET)
                 render_beetle_assembly_fast(slot, 0.0, HOVER_HEIGHT + RENDER_Y_OFFSET, 0.0, progress, 0.0)
             else:
-                # Direct spawn: ghost forms AT the chosen spawn point, at the
-                # drop-in height (16.5), already facing the spawn rotation —
-                # the handoff to the real beetle is seamless
+                # Direct spawn: ghost forms AT the chosen spawn point, already
+                # facing the spawn rotation — seamless handoff. Height is the
+                # 16.5 drop-in minus 1 (empirical: the materialized beetle
+                # rendered one voxel below the ghost; user-verified offset)
                 _asx, _asz, _asrot = assembly_spawn[slot]
-                render_beetle_assembly_fast(slot, _asx, 16.5 + RENDER_Y_OFFSET, _asz, progress, _asrot)
+                render_beetle_assembly_fast(slot, _asx, 15.5 + RENDER_Y_OFFSET, _asz, progress, _asrot)
 
     # Render ball assembly animation (voxel rain effect)
     if g['ball_assembling'] and ball_cache_size[None] > 0:
