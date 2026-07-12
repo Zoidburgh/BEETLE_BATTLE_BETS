@@ -4447,15 +4447,15 @@ for _i in range(MAX_ASSEMBLY_VOXELS):
     # Beetle scatter - wide flat pancake sweep-in: strong horizontal spread,
     # squished vertical band (still starts above) so the convergence reads
     # as a dramatic gather rather than a tall rain column
-    assembly_scatter_x[_i] = _random.uniform(-38, 38)
+    assembly_scatter_x[_i] = _random.uniform(-52, 52)
     assembly_scatter_y[_i] = _random.uniform(18, 32)
-    assembly_scatter_z[_i] = _random.uniform(-38, 38)
+    assembly_scatter_z[_i] = _random.uniform(-52, 52)
     # Ball scatter - same flat-pancake shape as the beetles: strong horizontal
     # spread, squished vertical band (still starts above) for a dramatic gather
     _random.seed(_i * 31337 + 1)  # Different seed for variation
-    ball_scatter_x[_i] = _random.uniform(-38, 38)
+    ball_scatter_x[_i] = _random.uniform(-52, 52)
     ball_scatter_y[_i] = _random.uniform(8, 18)
-    ball_scatter_z[_i] = _random.uniform(-38, 38)
+    ball_scatter_z[_i] = _random.uniform(-52, 52)
 
 @ti.kernel
 def clear_assembly_voxels():
