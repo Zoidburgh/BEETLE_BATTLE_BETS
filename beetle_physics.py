@@ -17098,7 +17098,7 @@ physics_params = {
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
-    "TUMBLE_MULTIPLIER": 5.0,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
+    "TUMBLE_MULTIPLIER": 6.2,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
     "HORN_LIFT_STRENGTH": 1.3,  # Multiplier for horn combat lift force (higher = more intense lifts)
     "HORN_TIP_STRENGTH": 1.5,  # Tipping torque strength for horn collisions (replaces separation)
     "COLLISION_SPIN_BIAS": 0.8,  # Strength of away-from-attacker spin bias (prevents turning into collisions)
