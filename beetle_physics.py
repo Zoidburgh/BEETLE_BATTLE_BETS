@@ -11627,7 +11627,7 @@ def set_network_ball_mode(active):
             init_ball_cache(beetle_ball.radius)
             ball_cache_initialized = True
         beetle_ball.x = 0.0
-        beetle_ball.y = 16.5  # Same drop height as beetles
+        beetle_ball.y = 20.5  # Beetle drop height + 4
         beetle_ball.z = 0.0
         beetle_ball.vx = 0.0
         beetle_ball.vy = 0.0
@@ -20180,6 +20180,16 @@ try:
         _t_death_end = time.perf_counter()
         _physics_timing['death_explosions'] += (_t_death_end - _t_particles_end) * 1000
 
+        # FALLBACK RESPAWN: ball lost WITHOUT a goal (knocked off the side,
+        # outside the goal lanes). The celebration path below is the ONLY
+        # thing that respawns the ball, so run the same timeline with a
+        # neutral "scorer" — "NOBODY" matches neither BLUE nor RED, so the
+        # confetti/pulse branches stay silent and only assembly+respawn run
+        if (g['ball_has_exploded'] and g['goal_scored_by'] is None
+                and not beetle_ball.visible):
+            g['goal_scored_by'] = "NOBODY"
+            g['goal_celebration_timer'] = ASSEMBLY_START_TIME  # Straight to assembly
+
         # Goal celebration - winner gets confetti/flash after ball explodes
         if g['goal_scored_by'] is not None:
             g['goal_celebration_timer'] = g['goal_celebration_timer'] + PHYSICS_TIMESTEP
@@ -20233,7 +20243,7 @@ try:
                 g['ball_assembly_timer'] = 0.0
                 g['ball_scored_this_fall'] = False  # Reset score flag for new ball
                 beetle_ball.x = 0.0
-                beetle_ball.y = 16.5  # Same drop height as beetles (assembly ghost matches below)
+                beetle_ball.y = 20.5  # Beetle drop height + 4 (assembly ghost matches below)
                 beetle_ball.z = 0.0
                 beetle_ball.vx = 0.0
                 beetle_ball.vy = 0.0
@@ -20241,6 +20251,11 @@ try:
                 beetle_ball.angular_velocity = 0.0
                 beetle_ball.pitch_velocity = 0.0
                 beetle_ball.roll_velocity = 0.0
+                # Default orientation so the stripes match the assembly ghost
+                # (the ghost forms unrotated; keeping death spin mismatched it)
+                beetle_ball.rotation = 0.0
+                beetle_ball.pitch = 0.0
+                beetle_ball.roll = 0.0
                 beetle_ball.visible = True  # Make ball visible again
                 print("Ball respawned!")
 
@@ -22256,9 +22271,9 @@ try:
     if g['ball_assembling'] and ball_cache_size[None] > 0:
         progress = min(g['ball_assembly_timer'] / BALL_ASSEMBLY_DURATION, 1.0)
         # Assemble high above arena, ball will drop from y=28 after assembly
-        # Ball materializes at physics y=16.5 (same as beetles) -> render at
-        # 16.5+RENDER_Y_OFFSET; ghost and drop-in stay exactly aligned
-        render_ball_assembly_fast(0.0, 16.5 + RENDER_Y_OFFSET, 0.0, progress)
+        # Ball materializes at physics y=20.5 -> render at 20.5+RENDER_Y_OFFSET;
+        # ghost and drop-in stay exactly aligned
+        render_ball_assembly_fast(0.0, 20.5 + RENDER_Y_OFFSET, 0.0, progress)
 
     # Clear and render ladybugs using bounded clearing (much faster than full grid scan)
     # Each ladybug clears both previous and current positions to prevent leftover voxels on movement
@@ -22963,7 +22978,7 @@ try:
                             if not ball_cache_initialized:
                                 init_ball_cache(beetle_ball.radius)
                                 ball_cache_initialized = True
-                            beetle_ball.x = 0.0; beetle_ball.y = 16.5; beetle_ball.z = 0.0
+                            beetle_ball.x = 0.0; beetle_ball.y = 20.5; beetle_ball.z = 0.0
                             beetle_ball.vx = 0.0; beetle_ball.vy = 0.0; beetle_ball.vz = 0.0
                             beetle_ball.rotation = 0.0; beetle_ball.angular_velocity = 0.0
                             beetle_ball.pitch = 0.0; beetle_ball.pitch_velocity = 0.0
@@ -23933,7 +23948,7 @@ try:
                         init_ball_cache(beetle_ball.radius)
                         ball_cache_initialized = True
                     beetle_ball.x = 0.0
-                    beetle_ball.y = 16.5  # Same drop height as beetles
+                    beetle_ball.y = 20.5  # Beetle drop height + 4
                     beetle_ball.z = 0.0
                     beetle_ball.vx = 0.0
                     beetle_ball.vy = 0.0
