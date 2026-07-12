@@ -19279,6 +19279,14 @@ try:
                 extra_gravity = physics_params["GRAVITY"] * (physics_params["BALL_GRAVITY_MULTIPLIER"] - 1.0)
                 beetle_ball.vy -= extra_gravity * PHYSICS_TIMESTEP
 
+                # Airborne: gentle horizontal air drag so flights slow naturally
+                # (there was NONE — with the directional cap gone, hits flew
+                # flat forever). Vertical arc untouched
+                if not beetle_ball.on_ground:
+                    _air_drag = physics_params.get("BALL_AIR_DRAG", 0.995)
+                    beetle_ball.vx *= _air_drag
+                    beetle_ball.vz *= _air_drag
+
                 # Apply rolling friction to ball only when on ground (allows proper arc when airborne)
                 if beetle_ball.on_ground:
                     # Silk makes ball stickier - reduce friction value (more stopping power)
@@ -21519,6 +21527,12 @@ try:
                             else:
                                 pre_bounce_vy = beetle_ball.vy
                                 beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
+                                # Bounce grip: contact friction scrubs some
+                                # horizontal speed on every bounce (real balls
+                                # lose tangential energy at each hop)
+                                _grip = physics_params.get("BALL_BOUNCE_GRIP", 0.85)
+                                beetle_ball.vx *= _grip
+                                beetle_ball.vz *= _grip
                                 # If bounce is very small, stop bouncing and settle
                                 if abs(beetle_ball.vy) < 2.0:
                                     beetle_ball.vy = 0.0
@@ -25440,6 +25454,9 @@ try:
                 new_ground_bounce = window.GUI.slider_float("Ground Bounce", physics_params["BALL_GROUND_BOUNCE"], 0.0, 0.8)
                 if new_ground_bounce != physics_params["BALL_GROUND_BOUNCE"]:
                     physics_params["BALL_GROUND_BOUNCE"] = new_ground_bounce
+                # Horizontal slow-down: per-tick air drag + per-bounce grip scrub
+                physics_params["BALL_AIR_DRAG"] = window.GUI.slider_float("Air Drag", physics_params.get("BALL_AIR_DRAG", 0.995), 0.97, 1.0)
+                physics_params["BALL_BOUNCE_GRIP"] = window.GUI.slider_float("Bounce Grip", physics_params.get("BALL_BOUNCE_GRIP", 0.85), 0.5, 1.0)
 
                 window.GUI.text("")
                 window.GUI.text("--- Ball Contact Physics ---")
