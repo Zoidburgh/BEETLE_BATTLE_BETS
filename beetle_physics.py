@@ -4677,18 +4677,44 @@ def render_assembly_kernel_ball(center_x: ti.i32, center_y: ti.i32, center_z: ti
                 else:
                     simulation.voxel_type[current_x, current_y, current_z] = ASSEMBLY_VOXEL_BALL
 
+@ti.kernel
+def assembly_particles_ball(center_x: ti.f32, center_y: ti.f32, center_z: ti.f32,
+                            t: ti.f32, num_voxels: ti.i32):
+    """Ball respawn assembly as FLOAT-position particles (same smoothstep +
+    inner-first stagger as the old grid kernel, minus the cell snapping)."""
+    for i in range(num_voxels):
+        lx = float(ball_cache_x[i])
+        ly = float(ball_cache_y[i])
+        lz = float(ball_cache_z[i])
+        # Inner voxels arrive first (dist-based stagger, same as before)
+        dist_from_center = ti.sqrt(lx * lx + ly * ly + lz * lz)
+        stagger = (dist_from_center / 5.0) * 0.3
+        local_t = ti.max(0.0, ti.min(1.0, (t - stagger) / (1.0 - stagger)))
+        smooth_t = local_t * local_t * (3.0 - 2.0 * local_t)
+        target_x = center_x + lx
+        target_y = center_y + ly
+        target_z = center_z + lz
+        start_x = target_x + ball_scatter_x[i]
+        start_y = target_y + ball_scatter_y[i]
+        start_z = target_z + ball_scatter_z[i]
+        px = start_x + (target_x - start_x) * smooth_t
+        py = start_y + (target_y - start_y) * smooth_t
+        pz = start_z + (target_z - start_z) * smooth_t
+        aidx = ti.atomic_add(renderer.num_assembly_particles[None], 1)
+        if aidx < renderer.MAX_ASSEMBLY_PARTICLES:
+            col = simulation.ball_color[None]
+            if ball_cache_is_stripe[i] == 1:
+                col = simulation.ball_stripe_color[None]
+            renderer.assembly_pt_pos[aidx] = ti.math.vec3(px, py, pz)
+            renderer.assembly_pt_color[aidx] = col
+
 def render_ball_assembly_fast(spawn_x, spawn_y, spawn_z, progress):
-    """Fast ball assembly rendering using GPU kernel"""
-    # Use linear progress - smoothing is done per-voxel in the kernel
-    t = progress
-
-    # Convert to grid coordinates
-    center_x = int(spawn_x) + 64
-    center_y = int(spawn_y)
-    center_z = int(spawn_z) + 64
-
+    """Ball assembly voxel rain (particle path — see assembly_particles_ball).
+    Runs after the beetle assembly calls, sharing the same per-frame
+    counter reset. World coordinates, int-snapped center for parity."""
     num_voxels = ball_cache_size[None]
-    render_assembly_kernel_ball(center_x, center_y, center_z, t, num_voxels)
+    assembly_particles_ball(float(int(spawn_x)), float(int(spawn_y)),
+                            float(int(spawn_z)), float(progress), num_voxels)
 
 @ti.kernel
 def clear_beetles():
@@ -17589,6 +17615,7 @@ renderer.num_shadow_discs[None] = 0
 # All 4 slots: bots die too (slots 2/3 compile fine with empty geometry)
 for _asm_slot in range(4):
     render_beetle_assembly_fast(_asm_slot, 0.0, -100.0, 0.0, 0.5)
+render_ball_assembly_fast(0.0, -100.0, 0.0, 0.5)  # Ball kernel too (0 voxels pre-cache, still compiles)
 renderer.num_assembly_particles[None] = 0  # Drop the warmup particles
 clear_assembly_voxels()
 spawn_victory_confetti(0.0, 0.0, -100.0, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1)
