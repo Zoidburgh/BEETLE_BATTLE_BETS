@@ -2192,7 +2192,14 @@ class Beetle:
             self.angular_velocity *= ANGULAR_FRICTION
 
         # Apply angular friction (pitch/roll) - different damping based on ground contact
-        if self.on_ground:
+        if self.horn_type == "ball":
+            # Ball: light retention so rolling spin persists (the beetle ground
+            # damp ~0.585/step killed the roll). The ground-roll coupling in
+            # the ball post-pass re-targets pitch/roll to v/r each step.
+            ball_spin_retain = physics_params.get("BALL_ANGULAR_FRICTION", 0.98)
+            self.pitch_velocity *= ball_spin_retain
+            self.roll_velocity *= ball_spin_retain
+        elif self.on_ground:
             # Blend damping only when landing (vy < -1) and tilted — lets restoring slam beetle flat
             # Don't blend when on ground being tipped by hazards (vy >= -1)
             tilt = abs(self.pitch) + abs(self.roll)
@@ -2218,17 +2225,18 @@ class Beetle:
             self.roll_velocity -= self.roll * AIR_RESTORING * dt
 
         # Ground restoring torque - automatically level out when on ground
-        # Only apply strong restoring when beetle is settled, not just bouncing
-        if self.on_ground and abs(self.vy) < 2.0:  # Must be on ground AND not bouncing up/down
-            # Apply torque to bring pitch/roll back to zero (level)
-            RESTORING_STRENGTH = physics_params.get("RESTORING_STRENGTH", 35.0)
-            self.pitch_velocity -= self.pitch * RESTORING_STRENGTH * dt
-            self.roll_velocity -= self.roll * RESTORING_STRENGTH * dt
-        elif self.on_ground and abs(self.vy) >= 2.0:
-            # Bouncing/landing - apply moderate restoring to allow tumbling but still settle
-            WEAK_RESTORING = physics_params.get("WEAK_RESTORING", 25.0)
-            self.pitch_velocity -= self.pitch * WEAK_RESTORING * dt
-            self.roll_velocity -= self.roll * WEAK_RESTORING * dt
+        # Ball is exempt: leveling pitch/roll to 0 fights continuous rolling
+        if self.horn_type != "ball":
+            if self.on_ground and abs(self.vy) < 2.0:  # Settled, not bouncing
+                # Apply torque to bring pitch/roll back to zero (level)
+                RESTORING_STRENGTH = physics_params.get("RESTORING_STRENGTH", 35.0)
+                self.pitch_velocity -= self.pitch * RESTORING_STRENGTH * dt
+                self.roll_velocity -= self.roll * RESTORING_STRENGTH * dt
+            elif self.on_ground and abs(self.vy) >= 2.0:
+                # Bouncing/landing - moderate restoring: tumble but still settle
+                WEAK_RESTORING = physics_params.get("WEAK_RESTORING", 25.0)
+                self.pitch_velocity -= self.pitch * WEAK_RESTORING * dt
+                self.roll_velocity -= self.roll * WEAK_RESTORING * dt
 
         # Clamp linear speed (different max for forward vs backward)
         speed = math.sqrt(self.vx**2 + self.vz**2)
@@ -2282,11 +2290,15 @@ class Beetle:
         self.z += self.vz * dt
 
         # Update rotation angles (yaw, pitch, roll)
-        self.pitch += self.pitch_velocity * dt
-        self.roll += self.roll_velocity * dt
+        # Ball integrates pitch/roll in its own post-pass — integrating here
+        # too made its spin advance at 2x the yaw rate (double integration)
+        if self.horn_type != "ball":
+            self.pitch += self.pitch_velocity * dt
+            self.roll += self.roll_velocity * dt
 
         # Clamp pitch/roll only when on ground - allow full rotations when airborne
-        if self.on_ground:
+        # Ball is exempt: it must roll continuously past 60 deg (rolling stripe)
+        if self.on_ground and self.horn_type != "ball":
             # Tunable max tilt angle when grounded (slider controls in degrees, converted to radians)
             ground_tilt_degrees = physics_params.get("GROUND_TILT_ANGLE", 60.0)
             MAX_TILT_ANGLE = math.radians(ground_tilt_degrees)
@@ -19288,8 +19300,8 @@ try:
                     beetle_ball.pitch_velocity += (target_pitch_vel - beetle_ball.pitch_velocity) * roll_blend
                     beetle_ball.roll_velocity += (target_roll_vel - beetle_ball.roll_velocity) * roll_blend
 
-                    # Apply angular friction to yaw spin (horizontal spin from collisions)
-                    beetle_ball.angular_velocity *= physics_params["BALL_ANGULAR_FRICTION"]
+                    # (Yaw angular friction is applied once per step inside
+                    # update_physics — re-applying it here doubled the decay)
 
                     # Dust trail when ball rolls on ground
                     ball_ground_speed = math.sqrt(beetle_ball.vx**2 + beetle_ball.vz**2)
