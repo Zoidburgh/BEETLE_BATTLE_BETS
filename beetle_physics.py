@@ -9163,7 +9163,7 @@ def horn_segment_articulates(beetle, seg_index, n_segs):
         return seg_index == 0
     return True
 
-def shaft_vs_shaft_response(b1, b2, params, has_horn_tips):
+def shaft_vs_shaft_response(b1, b2, params, has_horn_tips, voxel_contact=True):
     """SHAFT-VS-SHAFT RESPONSE (Layer B): horn-vs-horn crossing separation.
     Push both shafts apart along their closest-point line (true 3D — Phase 2),
     damp the closing velocity (incl. body turn sweep + controlled turn + horn
@@ -9211,6 +9211,12 @@ def shaft_vs_shaft_response(b1, b2, params, has_horn_tips):
     # ~6.5 voxels (base-vs-base) to ~4 toward the tips
     _svs_far = max(_ss_s, _ss_t)
     _svs_thick = params.get("SHAFT_VS_SHAFT_DIST", 6.5) - 2.5 * _svs_far
+    # Without voxel-contact backing (Phase 3c path), the generous threshold
+    # fires on horns passing with VISIBLE air between them = ghost pushes
+    # (user report). Tighten to ~real horn half-thickness sums; the voxel-
+    # backed path keeps the full window
+    if not voxel_contact:
+        _svs_thick *= params.get("SVS_NO_CONTACT_SCALE", 0.6)
     # Phase 3: expand the window by how far the horns can sweep past each
     # other in ONE tick (body turn incl. controlled turn + collision spin at
     # the contact tip radius, plus horn articulation at horn length)
@@ -9310,20 +9316,33 @@ def shaft_vs_shaft_response(b1, b2, params, has_horn_tips):
             _svs_cl = ((_v1x - _v2x) * _hx + (_v1y - _v2y) * _hy
                        + (_v1z - _v2z) * _hz)
             if _svs_early:
-                # Pre-contact fast approach: no position push (no phantom
-                # shoves while visually apart). Engage the turn resistance a
-                # tick early and damp the closing velocity — the brakes that
-                # stop a sweep from crossing the whole window between samples
-                if _svs_cl > 0.0:
+                # Pre-contact band: respond ONLY if the crossing actually
+                # lands next tick — the band itself is wide, and braking at
+                # visual distance read as ghost pushes (user report)
+                if _svs_cl > 0.0 and (_ss_d - _svs_cl * PHYSICS_TIMESTEP) < _svs_thick:
                     for _bb in (b1, b2):
                         if _bb.horn_type != "ball":
                             _bb.horn_engagement = max(getattr(_bb, 'horn_engagement', 0.0), 0.5)
                             _bb.in_horn_collision = True
-                    _svs_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5) * 0.5
-                    b1.vx -= _hx * _svs_cl * _svs_damp
-                    b1.vz -= _hz * _svs_cl * _svs_damp
-                    b2.vx += _hx * _svs_cl * _svs_damp
-                    b2.vz += _hz * _svs_cl * _svs_damp
+                    # Attribute the brake to what's causing the approach:
+                    # body-driven closing damps BODY velocity; horn-driven
+                    # closing brakes the HORN articulation itself (damping
+                    # the body for a horn flick was the ghost push)
+                    _cl_art = ((_a1vx - _a2vx) * _hx + (_a1vy - _a2vy) * _hy
+                               + (_a1vz - _a2vz) * _hz)
+                    _cl_body = _svs_cl - _cl_art
+                    if _cl_body > 0.0:
+                        _svs_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5) * 0.5
+                        b1.vx -= _hx * _cl_body * _svs_damp
+                        b1.vz -= _hz * _cl_body * _svs_damp
+                        b2.vx += _hx * _cl_body * _svs_damp
+                        b2.vz += _hz * _cl_body * _svs_damp
+                    if _cl_art > 0.5:
+                        for _bb, _aav in ((b1, abs(_a1vx) + abs(_a1vy) + abs(_a1vz)),
+                                          (b2, abs(_a2vx) + abs(_a2vy) + abs(_a2vz))):
+                            if _aav > 0.5 and _bb.horn_type != "ball":
+                                _bb.horn_pitch_damping = max(getattr(_bb, 'horn_pitch_damping', 0.0), 0.5)
+                                _bb.horn_yaw_damping = max(getattr(_bb, 'horn_yaw_damping', 0.0), 0.5)
                 return
             # Depth-scaled like the horn-vs-body push-out: gentle at first
             # touch, ~2.4x when deep
@@ -14959,7 +14978,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
         _pcdx = b1.x - b2.x
         _pcdz = b1.z - b2.z
         if _pcdx * _pcdx + _pcdz * _pcdz < 1600.0:
-            shaft_vs_shaft_response(b1, b2, params, 0)
+            shaft_vs_shaft_response(b1, b2, params, 0, voxel_contact=False)
 
     if has_collision:
         # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
