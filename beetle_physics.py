@@ -11627,7 +11627,7 @@ def set_network_ball_mode(active):
             init_ball_cache(beetle_ball.radius)
             ball_cache_initialized = True
         beetle_ball.x = 0.0
-        beetle_ball.y = 28.0
+        beetle_ball.y = 16.5  # Same drop height as beetles
         beetle_ball.z = 0.0
         beetle_ball.vx = 0.0
         beetle_ball.vy = 0.0
@@ -20233,7 +20233,7 @@ try:
                 g['ball_assembly_timer'] = 0.0
                 g['ball_scored_this_fall'] = False  # Reset score flag for new ball
                 beetle_ball.x = 0.0
-                beetle_ball.y = 28.0  # Drop from higher than beetles (assembly happens at y=57)
+                beetle_ball.y = 16.5  # Same drop height as beetles (assembly ghost matches below)
                 beetle_ball.z = 0.0
                 beetle_ball.vx = 0.0
                 beetle_ball.vy = 0.0
@@ -22256,9 +22256,9 @@ try:
     if g['ball_assembling'] and ball_cache_size[None] > 0:
         progress = min(g['ball_assembly_timer'] / BALL_ASSEMBLY_DURATION, 1.0)
         # Assemble high above arena, ball will drop from y=28 after assembly
-        # Ball materializes at physics y=28 -> renders at 28+RENDER_Y_OFFSET=61
-        # (was 58: the ghost sat 3 voxels low and the real ball popped up)
-        render_ball_assembly_fast(0.0, 28.0 + RENDER_Y_OFFSET, 0.0, progress)
+        # Ball materializes at physics y=16.5 (same as beetles) -> render at
+        # 16.5+RENDER_Y_OFFSET; ghost and drop-in stay exactly aligned
+        render_ball_assembly_fast(0.0, 16.5 + RENDER_Y_OFFSET, 0.0, progress)
 
     # Clear and render ladybugs using bounded clearing (much faster than full grid scan)
     # Each ladybug clears both previous and current positions to prevent leftover voxels on movement
@@ -22963,7 +22963,7 @@ try:
                             if not ball_cache_initialized:
                                 init_ball_cache(beetle_ball.radius)
                                 ball_cache_initialized = True
-                            beetle_ball.x = 0.0; beetle_ball.y = 28.0; beetle_ball.z = 0.0
+                            beetle_ball.x = 0.0; beetle_ball.y = 16.5; beetle_ball.z = 0.0
                             beetle_ball.vx = 0.0; beetle_ball.vy = 0.0; beetle_ball.vz = 0.0
                             beetle_ball.rotation = 0.0; beetle_ball.angular_velocity = 0.0
                             beetle_ball.pitch = 0.0; beetle_ball.pitch_velocity = 0.0
@@ -23933,7 +23933,7 @@ try:
                         init_ball_cache(beetle_ball.radius)
                         ball_cache_initialized = True
                     beetle_ball.x = 0.0
-                    beetle_ball.y = 28.0
+                    beetle_ball.y = 16.5  # Same drop height as beetles
                     beetle_ball.z = 0.0
                     beetle_ball.vx = 0.0
                     beetle_ball.vy = 0.0
