@@ -131,6 +131,14 @@ In shaft-vs-shaft response (~14928):
 - Gate: user playtests perpendicular grind battles; yaw-grind lift must still feel
   dominant.
 
+### Phase 2 RESULTS (2026-07-12, implemented — vs Phase 1 reference, same config A)
+hh-clips 737->578 (-22%), deep body clips 380->247 (-35%), min_shaft_center
+0.7->1.4, svs pushes 2155->1738 (resolve instead of grind), collision ms fine.
+min_shaft_shaft still 0.0 = tunneling remains (Phase 3). Also fixed in this
+phase: rhino midline shaft chord restored (Phase 1 had dropped it — user
+noticed horn/body clipping); slider "Horn Sep Vertical" (SVS_VERTICAL_SCALE,
+0 = old horizontal-only).
+
 ## Phase 3 — Velocity-expanded thresholds + controlled-turn credit (tunneling)
 
 - **3a. Credit the controlled turn.** Track `beetle.controlled_turn_rate`

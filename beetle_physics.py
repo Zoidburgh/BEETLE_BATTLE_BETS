@@ -9115,8 +9115,14 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
         tt, bt = calculate_hercules_jaw_tips(beetle, _p, _y)
         return [(bx, by, bz) + tt, (bx, by, bz) + bt]
     if ht == "rhino":
+        # Midline shaft chord (the old single segment — keeps shaft-vs-body
+        # coverage) PLUS both splayed prong chords
+        if _current:
+            mx, my, mz = calculate_horn_tip_position(beetle)
+        else:
+            mx, my, mz = calculate_horn_tip_position_with_both(beetle, _p, _y)
         lt, rt = calculate_rhino_prong_tips(beetle, _p, _y)
-        return [(bx, by, bz) + lt, (bx, by, bz) + rt]
+        return [(bx, by, bz, mx, my, mz), (bx, by, bz) + lt, (bx, by, bz) + rt]
     if ht == "atlas":
         if _current:
             tx, ty, tz = calculate_horn_tip_position(beetle)
@@ -15036,23 +15042,47 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         # something must not disable base separation - that
                         # blanket gate was why base merges slipped through)
                         _svs_param_limit = 0.7 if has_horn_tips == 1 else 0.9
-                        if 0.01 < _ss_d < _svs_thick and _ss_s < _svs_param_limit and _ss_t < _svs_param_limit:
+                        if _ss_d < _svs_thick and _ss_s < _svs_param_limit and _ss_t < _svs_param_limit:
                             _svs_depth = _svs_thick - _ss_d
                             for _bb in (b1, b2):
                                 if _svs_depth > getattr(_bb, 'horn_burial', 0.0):
                                     _bb.horn_burial = _svs_depth
-                            # Horizontal separation axis between crossing points
+                            # TRUE 3D separation axis between crossing points
+                            # (Phase 2): a horn lying across another separates
+                            # vertically instead of a sideways body shove.
+                            # SVS_VERTICAL_SCALE 0 restores horizontal-only.
+                            _vscale = params.get("SVS_VERTICAL_SCALE", 1.0)
                             _sepx = _c2x - _c1x
+                            _sepy = (_c2y - _c1y) * _vscale
                             _sepz = _c2z - _c1z
-                            _seph = math.sqrt(_sepx*_sepx + _sepz*_sepz)
+                            _seph = math.sqrt(_sepx*_sepx + _sepy*_sepy + _sepz*_sepz)
                             if _seph < 0.05:
-                                # Near-vertical crossing - fall back to the
-                                # center-to-center axis
+                                # Segments essentially INTERSECT (the old code
+                                # excluded this case entirely -> perfectly
+                                # crossed shafts got no response). Axis = the
+                                # mutual perpendicular of the two horn
+                                # directions, oriented from b1 toward b2
+                                _s1 = _segs1[_svs_best[1]]
+                                _s2 = _segs2[_svs_best[2]]
+                                _d1x, _d1y, _d1z = _s1[3]-_s1[0], _s1[4]-_s1[1], _s1[5]-_s1[2]
+                                _d2x, _d2y, _d2z = _s2[3]-_s2[0], _s2[4]-_s2[1], _s2[5]-_s2[2]
+                                _sepx = _d1y * _d2z - _d1z * _d2y
+                                _sepy = (_d1z * _d2x - _d1x * _d2z) * _vscale
+                                _sepz = _d1x * _d2y - _d1y * _d2x
+                                _seph = math.sqrt(_sepx*_sepx + _sepy*_sepy + _sepz*_sepz)
+                                if _seph > 0.05 and (_sepx * (b2.x - b1.x) + _sepy * (b2.y - b1.y)
+                                                     + _sepz * (b2.z - b1.z)) < 0.0:
+                                    _sepx, _sepy, _sepz = -_sepx, -_sepy, -_sepz
+                            if _seph < 0.05:
+                                # Parallel AND coincident - last resort:
+                                # center-to-center horizontal
                                 _sepx = b2.x - b1.x
+                                _sepy = 0.0
                                 _sepz = b2.z - b1.z
                                 _seph = math.sqrt(_sepx*_sepx + _sepz*_sepz)
                             if _seph > 0.05:
                                 _hx = _sepx / _seph
+                                _hy = _sepy / _seph
                                 _hz = _sepz / _seph
                                 # Contact-point velocities: body + turn sweep +
                                 # horn articulation (numeric tip diff x param).
@@ -15065,7 +15095,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 # mirrored (wrong-direction) sweep
                                 _svs_as = _ss_s_loc if horn_segment_articulates(b1, _svs_best[1], len(_segs1)) else 0.0
                                 _svs_at = _ss_t_loc if horn_segment_articulates(b2, _svs_best[2], len(_segs2)) else 0.0
-                                _a1vx = _a1vz = _a2vx = _a2vz = 0.0
+                                _a1vx = _a1vy = _a1vz = _a2vx = _a2vy = _a2vz = 0.0
                                 if _svs_as > 0.0 and (abs(b1.horn_pitch_velocity) > 0.02 or
                                         abs(b1.horn_yaw_velocity) > 0.02):
                                     _adv1 = horn_collision_segments(
@@ -15074,6 +15104,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     _si1 = _svs_best[1]
                                     if _si1 < len(_adv1):
                                         _a1vx = _svs_as * (_adv1[_si1][3] - _segs1[_si1][3]) / PHYSICS_TIMESTEP
+                                        _a1vy = _svs_as * (_adv1[_si1][4] - _segs1[_si1][4]) / PHYSICS_TIMESTEP
                                         _a1vz = _svs_as * (_adv1[_si1][5] - _segs1[_si1][5]) / PHYSICS_TIMESTEP
                                 if _svs_at > 0.0 and (abs(b2.horn_pitch_velocity) > 0.02 or
                                         abs(b2.horn_yaw_velocity) > 0.02):
@@ -15083,19 +15114,33 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     _si2 = _svs_best[2]
                                     if _si2 < len(_adv2):
                                         _a2vx = _svs_at * (_adv2[_si2][3] - _segs2[_si2][3]) / PHYSICS_TIMESTEP
+                                        _a2vy = _svs_at * (_adv2[_si2][4] - _segs2[_si2][4]) / PHYSICS_TIMESTEP
                                         _a2vz = _svs_at * (_adv2[_si2][5] - _segs2[_si2][5]) / PHYSICS_TIMESTEP
                                 _v1x = b1.vx - (_c1z - b1.z) * b1.angular_velocity + _a1vx
+                                _v1y = b1.vy + _a1vy
                                 _v1z = b1.vz + (_c1x - b1.x) * b1.angular_velocity + _a1vz
                                 _v2x = b2.vx - (_c2z - b2.z) * b2.angular_velocity + _a2vx
+                                _v2y = b2.vy + _a2vy
                                 _v2z = b2.vz + (_c2x - b2.x) * b2.angular_velocity + _a2vz
-                                # Closing along the separation axis (b1 -> b2)
-                                _svs_cl = (_v1x - _v2x) * _hx + (_v1z - _v2z) * _hz
+                                # Closing along the (3D) separation axis (b1 -> b2)
+                                _svs_cl = ((_v1x - _v2x) * _hx + (_v1y - _v2y) * _hy
+                                           + (_v1z - _v2z) * _hz)
                                 # Depth-scaled like the horn-vs-body push-out:
                                 # gentle at first touch, ~2.4x when deep
                                 _svs_push = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35) * (1.0 + _svs_depth * 0.4)
+                                # Vertical is POSITION-only and never pushes a
+                                # grounded beetle down (the floor just fights it)
+                                _p1y = -_hy * _svs_push * 0.5
+                                _p2y = _hy * _svs_push * 0.5
+                                if _p1y < 0.0 and b1.air_gap <= 1.0:
+                                    _p1y = 0.0
+                                if _p2y < 0.0 and b2.air_gap <= 1.0:
+                                    _p2y = 0.0
                                 b1.x -= _hx * _svs_push * 0.5
+                                b1.y += _p1y
                                 b1.z -= _hz * _svs_push * 0.5
                                 b2.x += _hx * _svs_push * 0.5
+                                b2.y += _p2y
                                 b2.z += _hz * _svs_push * 0.5
                                 if _svs_cl > 0.0:
                                     _svs_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5) * 0.5
@@ -25221,6 +25266,8 @@ try:
             # Engagement resistance (0 / 1.0 = classic hard-block feel)
             physics_params["HORN_LOCK_TURN_FACTOR"] = window.GUI.slider_float("Horn Lock Turn", physics_params["HORN_LOCK_TURN_FACTOR"], 0.0, 1.0)
             physics_params["HORN_DAMPING_CAP"] = window.GUI.slider_float("Horn Damping Cap", physics_params["HORN_DAMPING_CAP"], 0.5, 1.0)
+            # Vertical share of horn-vs-horn separation (0 = old horizontal-only)
+            physics_params["SVS_VERTICAL_SCALE"] = window.GUI.slider_float("Horn Sep Vertical", physics_params.get("SVS_VERTICAL_SCALE", 1.0), 0.0, 1.0)
             physics_params["YAW_GRIND_PUSH"] = window.GUI.slider_float("Yaw Grind Push", physics_params["YAW_GRIND_PUSH"], 0.0, 150.0)
             physics_params["YAW_GRIND_LIFT"] = window.GUI.slider_float("Yaw Grind Lift", physics_params["YAW_GRIND_LIFT"], 0.0, 100.0)
             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
