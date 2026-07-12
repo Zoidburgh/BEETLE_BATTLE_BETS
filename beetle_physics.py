@@ -4674,6 +4674,8 @@ def make_assembly_particle_kernel(slot):
             stagger = ti.min(ti.abs(assembly_scatter_x[si]) * 0.02
                              + ti.abs(assembly_scatter_z[si]) * 0.013, 0.35)
             tt = ti.min(ti.max((t - stagger) / (1.0 - stagger), 0.0), 1.0)
+            if tt <= 0.0:
+                continue  # Mote's clock hasn't started — don't park it visibly
             ease = tt * tt * (3.0 - 2.0 * tt)
             px = start_x + (target_x - start_x) * ease
             py = start_y + (target_y - start_y) * ease
@@ -4774,6 +4776,8 @@ def assembly_particles_ball(center_x: ti.f32, center_y: ti.f32, center_z: ti.f32
         dist_from_center = ti.sqrt(lx * lx + ly * ly + lz * lz)
         stagger = (dist_from_center / 5.0) * 0.3
         local_t = ti.max(0.0, ti.min(1.0, (t - stagger) / (1.0 - stagger)))
+        if local_t <= 0.0:
+            continue  # Mote's clock hasn't started — don't park it visibly
         smooth_t = local_t * local_t * (3.0 - 2.0 * local_t)
         target_x = center_x + lx
         target_y = center_y + ly
@@ -14968,6 +14972,16 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
         dz = b1.z - b2.z
         dist = math.sqrt(dx**2 + dz**2)
 
+        if dist <= 0.001:
+            # PERFECTLY STACKED (e.g. double-booked spawn point): the whole
+            # response block below needs a direction, so idle stacked bodies
+            # never separated until an input broke the tie. Synthesize a
+            # deterministic direction from the pair's voxel ids
+            _tie_ang = float(b1.color) * 1.7 + float(b2.color) * 0.9
+            dx = math.cos(_tie_ang) * 0.01
+            dz = math.sin(_tie_ang) * 0.01
+            dist = 0.01
+
         if dist > 0.001:
             # Use GPU-calculated collision point or fallback to midpoint
             if contact_count > 0:
@@ -20417,8 +20431,24 @@ try:
                     assembling[slot] = True
                     assembly_timers[slot] = 0.0
                     # Choose the spawn NOW so the ghost can form exactly
-                    # where (and facing how) the beetle will materialize
-                    assembly_spawn[slot] = get_spawn_position(slot)
+                    # where (and facing how) the beetle will materialize.
+                    # DOUBLE-BOOKING GUARD: two beetles dying in the same
+                    # window can pre-pick the same "best" point (neither is
+                    # standing there yet) — rotate 90 deg around center if a
+                    # pending stash is too close
+                    _sp = get_spawn_position(slot)
+                    for _os in range(active_player_count):
+                        if _os != slot and assembly_spawn[_os] is not None:
+                            _odx = _sp[0] - assembly_spawn[_os][0]
+                            _odz = _sp[1] - assembly_spawn[_os][1]
+                            if _odx * _odx + _odz * _odz < 36.0:  # within 6 voxels
+                                _r = math.sqrt(_sp[0] ** 2 + _sp[1] ** 2)
+                                _a = math.atan2(_sp[1], _sp[0]) + math.pi / 2.0
+                                _nx = _r * math.cos(_a)
+                                _nz = _r * math.sin(_a)
+                                _sp = (_nx, _nz, math.atan2(-_nz, -_nx))  # re-face center
+                                break
+                    assembly_spawn[slot] = _sp
                     print(f"Beetle {slot} assembly started!")
                 # Update assembly timer
                 if assembling[slot]:
