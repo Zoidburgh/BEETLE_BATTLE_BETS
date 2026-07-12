@@ -787,18 +787,24 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
             drop = ti.math.vec3(0.29, 0.29, 0.29)
         shadow_color = ti.max(bc - drop, 0.0)
         up = ti.math.vec3(0.0, 1.0, 0.0)
-        center_pos = ti.math.vec3(cx, top_y, cz)
 
-        # Check if center is on floor — if not, skip entire disc
+        # Check if center is on floor — if not, skip entire disc.
+        # The floor can step UP (the ice bowl ring sits +1 voxel), so scan a
+        # small vertical window and LIFT the disc onto the layer found —
+        # a single-layer check made shadows vanish on the raised ice
         # Also skip if center is inside the moving hole
         hp_s = hole_params[None]
         ci = ti.cast(cx + n_grid / 2.0, ti.i32)
         ck = ti.cast(cz + n_grid / 2.0, ti.i32)
         center_on_floor = 0
+        c_lift = 0.0
         if 0 <= ci < n_grid and 0 <= ck < n_grid:
-            cvt = voxel_field[ci, floor_j, ck]
-            if cvt == CONCRETE_T or cvt == SLIPPERY_T:
-                center_on_floor = 1
+            for jj in ti.static(range(3)):
+                cvt = voxel_field[ci, floor_j + jj, ck]
+                if cvt == CONCRETE_T or cvt == SLIPPERY_T:
+                    center_on_floor = 1
+                    c_lift = float(jj)
+        center_pos = ti.math.vec3(cx, top_y + c_lift, cz)
         if hp_s[2] > 0.0:
             sdx = cx - hp_s[0]
             sdz = cz - hp_s[1]
@@ -835,8 +841,17 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
                     gi = ti.cast(vx + n_grid / 2.0, ti.i32)
                     gk = ti.cast(vz + n_grid / 2.0, ti.i32)
                     if 0 <= gi < n_grid and 0 <= gk < n_grid:
-                        vt = voxel_field[gi, floor_j, gk]
-                        if vt == CONCRETE_T or vt == SLIPPERY_T:
+                        # Same stepped-floor window as the center check —
+                        # each vertex sits on its own layer so the disc
+                        # drapes over the arena->ice step
+                        v_found = 0
+                        v_lift = 0.0
+                        for jj in ti.static(range(3)):
+                            vt = voxel_field[gi, floor_j + jj, gk]
+                            if vt == CONCRETE_T or vt == SLIPPERY_T:
+                                v_found = 1
+                                v_lift = float(jj)
+                        if v_found == 1:
                             # Also check this point isn't inside the hole or board break
                             in_hole_s = 0
                             if hp_s[2] > 0.0:
@@ -849,7 +864,7 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
                                     if board_break_mask[gi, gk] == 1:
                                         in_hole_s = 1
                             if in_hole_s == 0:
-                                shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y, vz)
+                                shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y + v_lift, vz)
                                 placed = 1
                                 break
 
