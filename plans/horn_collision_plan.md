@@ -56,6 +56,21 @@ max_contact_cluster). Known baselines from history: deep-clips 1.2–1.8% of fra
 - Acceptance across the whole plan: deep-clip % trending toward <0.5%, FPS within
   run-to-run noise, and the USER's playtest is the only judge of feel.
 
+### Phase 0 RESULTS (2026-07-12, commit 05c1468 harness; 75s runs, median of 3)
+
+| Config (slots 0-3) | horn-horn clips (% frames, pre-gate <2vox) | deep body clips % | min horn-horn dist |
+|---|---|---|---|
+| A: stag,stag,herc,herc | **6.75%** (runs: 6.46/6.75/7.60) | 4.57% | **0.0 every run** |
+| B: rhino,atlas,stag,herc | **7.92%** (7.40/8.98/7.92) | 4.50% | 0.0 every run |
+| C: giraffe,spider,scorp,rhino | **9.85%** (9.10/12.54/9.85) | 3.33% | 0.0 every run |
+
+Top clipping pairs: stagXhercules (A), rhinoXstag / atlasXhercules (B),
+scorpionXrhino / spiderXscorpion / giraffeXrhino (C). beetle_collision
+6-13ms cumulative — watch this in Phase 1 (more segment pairs).
+Harness: `python beetle_physics.py --canary 75 --bot-types a,b,c,d`.
+NOTE: hh-clip counts EVENTS (a frame with 2 clipping pairs counts twice) —
+compare like-for-like across phases, don't read as exact frame %.
+
 ## Phase 1 — Multi-segment horn skeletons (data change, response code untouched)
 
 Extend `horn_collision_segments(beetle)` to return a list of
