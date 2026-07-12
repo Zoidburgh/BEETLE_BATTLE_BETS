@@ -1906,14 +1906,14 @@ RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128
 # Ball physics constants (tunable via sliders for smooth rolling/bouncing)
 # These will be overridden by slider values in the main loop
 BALL_SEPARATION_FORCE = 0.9  # How hard ball pushes away from beetles (0.1-2.0)
-BALL_MOMENTUM_TRANSFER = 1.5  # How much beetle velocity transfers to ball (0.0-2.0)
+BALL_MOMENTUM_TRANSFER = 0.8  # How much beetle velocity transfers to ball (0.0-2.0) — 2026-07-12: tamed after speed-cap fix uncorked true hit force
 BALL_RESTITUTION = 0.2  # Bounciness coefficient (0=no bounce, 1=full bounce)
 BALL_MASS_RATIO = 0.6  # Ball weight vs beetle (0.1=very light, 2.0=heavy)
 BALL_ROLLING_FRICTION = 0.99  # Horizontal slowdown (0.80=high friction, 0.99=ice)
 BALL_GROUND_BOUNCE = 0.8  # Floor bounce coefficient (0=dead stop, 0.8=super bouncy)
 BALL_PUSH_MULTIPLIER = 3.9  # How easily beetles can push the ball (1.0=normal, 3.0=very easy)
 BALL_SPIN_MULTIPLIER = 4.3  # How easily ball spins when hit (1.0=normal, 4.0=very spinny)
-BALL_ANGULAR_FRICTION = 0.995  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
+BALL_ANGULAR_FRICTION = 0.99  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
 
 # Ball torque/lift physics (realistic soccer ball behavior)
 BALL_LIFT_STRENGTH = 3.6  # How much ball lifts when scooping with horn (0.0-10.0)
