@@ -860,23 +860,24 @@ HORN_TYPE_IDS = {"rhino": 0, "stag": 1, "hercules": 2, "scorpion": 3, "atlas": 4
 # tables the physics loop reads via rebuild_horn_limit_tables().
 # ============================================================================
 BEETLE_TYPE_STATS = [  # indexed by horn_type_id (NOTE: BEETLE_STATS is taken — genetics UI defs)
-    dict(name="rhino",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,
-         pitch_up=42.0, pitch_dn=-5.0,  yaw_max=20.0, yaw_min=-20.0),
-    dict(name="stag",       fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.15, yaw=1.15,  # snappier pincers
-         pitch_up=55.0, pitch_dn=2.0,   yaw_max=35.0, yaw_min=-5.0),
+    # Values baked from user's beetle_tuning.json 2026-07-12 (in-game slider tune)
+    dict(name="rhino",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.01, yaw=1.258, # faster yaw sweep
+         pitch_up=49.06, pitch_dn=-5.0,  yaw_max=27.26, yaw_min=-27.26),
+    dict(name="stag",       fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.15, yaw=1.393, # snappier pincers, wide open
+         pitch_up=46.74, pitch_dn=2.0,   yaw_max=53.0,  yaw_min=-14.39),
     dict(name="hercules",   fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.2,  yaw=1.6,   # faster jaws (2026-07-09 tune)
-         pitch_up=40.0, pitch_dn=2.0,   yaw_max=28.0, yaw_min=-28.0),
+         pitch_up=40.0,  pitch_dn=2.0,   yaw_max=28.0,  yaw_min=-28.0),
     dict(name="scorpion",   fwd=9.0/12.5, back=6.0/7.0,  turn=1.0,  tilt=0.92, yaw=1.0,   # slower claws; yaw unused (tail)
-         pitch_up=58.0, pitch_dn=-18.0, yaw_max=20.0, yaw_min=-20.0),
-    dict(name="atlas",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,
-         pitch_up=20.0, pitch_dn=-40.0, yaw_max=20.0, yaw_min=-20.0),
+         pitch_up=58.0,  pitch_dn=-18.0, yaw_max=20.0,  yaw_min=-20.0),
+    dict(name="atlas",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.286, yaw=1.258, # faster scoop
+         pitch_up=28.55, pitch_dn=-40.0, yaw_max=20.0,  yaw_min=-20.0),
     dict(name="bombardier", fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,   # no horn (ranges unused)
-         pitch_up=0.0,  pitch_dn=0.0,   yaw_max=0.0,  yaw_min=0.0),
+         pitch_up=0.0,   pitch_dn=0.0,   yaw_max=0.0,   yaw_min=0.0),
     dict(name="spider",     fwd=8.0/12.5, back=6.0/7.0,  turn=1.35, tilt=1.0,  yaw=1.0,   # slow mover, agile turner
-         pitch_up=58.0, pitch_dn=-18.0, yaw_max=20.0, yaw_min=-20.0),
+         pitch_up=58.0,  pitch_dn=-18.0, yaw_max=20.0,  yaw_min=-20.0),
     dict(name="giraffe",    fwd=1.0,      back=1.0,      turn=1.0,
          tilt=HORN_YAW_SPEED/HORN_TILT_SPEED, yaw=HORN_TILT_SPEED/HORN_YAW_SPEED,         # neck: pitch at yaw speed & vice versa
-         pitch_up=25.0, pitch_dn=-40.0, yaw_max=55.0, yaw_min=-55.0),                     # ±55° yaw compensates pitch compression
+         pitch_up=15.0,  pitch_dn=-56.81, yaw_max=55.0, yaw_min=-55.0),                   # deep down-reach tune; ±55° yaw
 ]
 
 def rebuild_horn_limit_tables():
