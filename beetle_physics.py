@@ -17395,6 +17395,28 @@ beetle_tuning_note = ""  # Last save/load feedback line in the tuning window
 # Initialize controller support
 init_controllers()
 
+# ============ BACKGROUND MUSIC ============
+# Loops the first track found in music/ (pygame.mixer streams from disk, so
+# file size doesn't hit RAM). pygame.init() above already set up the mixer.
+# Playlist management + volume UI planned — this just gets music playing.
+music_playing = False
+try:
+    _music_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
+    _music_tracks = []
+    if os.path.isdir(_music_dir):
+        _music_tracks = sorted(f for f in os.listdir(_music_dir)
+                               if f.lower().endswith((".wav", ".ogg", ".mp3")))
+    if _music_tracks:
+        pygame.mixer.music.load(os.path.join(_music_dir, _music_tracks[0]))
+        pygame.mixer.music.set_volume(0.5)
+        pygame.mixer.music.play(-1)  # Loop forever
+        music_playing = True
+        print(f"[Music] Playing (looped): {_music_tracks[0]}")
+    else:
+        print("[Music] No tracks in music/ - silent")
+except Exception as _music_err:
+    print(f"[Music] Disabled ({_music_err})")
+
 # DON'T set up title screen yet - we'll show loading screen first during warmup
 
 print("\n=== BEETLE PHYSICS ===")
