@@ -30,7 +30,7 @@ voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for 
 # fractional position that integer voxel-grid placement discards. Applied to
 # rendered particle positions ONLY, so beetle/ball motion glides at sub-voxel
 # resolution instead of stepping voxel-to-voxel. Grid/collision never see it.
-owner_frac_offset = ti.Vector.field(3, dtype=ti.f32, shape=5)
+owner_frac_offset = ti.Vector.field(3, dtype=ti.f32, shape=6)  # 0-3 beetles, 4 ball, 5 ladybug (referee)
 
 # Floor mesh fields (flat quads + bevel skirts — single merged mesh for one draw call)
 # Capacity kept tight: scene.mesh() uploads the FULL vertex buffer every frame
@@ -1463,6 +1463,10 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                     frac_owner = simulation.beetle_owner(vtype)
                     if vtype == 16 or vtype == 17:  # Ball body/stripe
                         frac_owner = 4
+                    elif 35 <= vtype <= 39:  # Ladybug shell/spots/head/legs/wings
+                        # One shared slot: in practice only the flying referee
+                        # exists (last-drawn ladybug wins if more are spawned)
+                        frac_owner = 5
                     pos = ti.math.vec3(world_x, world_y, world_z)
                     if frac_owner >= 0:
                         off = owner_frac_offset[frac_owner]
@@ -1499,8 +1503,8 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
 # extract. Slow turns glide as a rigid body between stamp steps instead of
 # re-snapping every voxel to the lattice each frame (rotation shimmer).
 # [yaw, pitch, roll] residuals — beetles use yaw only; ball uses all three
-owner_rot_residual = ti.Vector.field(3, dtype=ti.f32, shape=5)
-owner_rot_pivot = ti.Vector.field(3, dtype=ti.f32, shape=5)
+owner_rot_residual = ti.Vector.field(3, dtype=ti.f32, shape=6)  # 0-3 beetles, 4 ball, 5 ladybug (referee)
+owner_rot_pivot = ti.Vector.field(3, dtype=ti.f32, shape=6)
 
 # Beetle respawn-assembly flight particles: FLOAT positions so the voxel rain
 # glides instead of ticking cell-to-cell on the integer grid (the old path

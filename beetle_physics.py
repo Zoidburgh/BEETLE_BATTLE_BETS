@@ -13952,9 +13952,22 @@ def render_ladybug(ladybug, dt):
     # Bob up and down with wing beats (body rises as wings flap down)
     bob_offset = -math.sin(ladybug.antenna_phase) * 1.5  # ±1.5 voxels, inverted
 
+    # Sub-voxel + rotation-residual smoothing (owner slot 5): the flying
+    # referee glides instead of voxel-stepping — X/Z/Y fractions (Y includes
+    # the wing bob) plus the yaw remainder past the quantized stamp
+    _lb_wx = ladybug.x + 64.0
+    _lb_wy = ladybug.y + bob_offset + RENDER_Y_OFFSET
+    _lb_wz = ladybug.z + 64.0
+    renderer.owner_frac_offset[5] = [
+        _lb_wx - int(_lb_wx), _lb_wy - int(_lb_wy), _lb_wz - int(_lb_wz)]
+    _lb_rot_q = round(ladybug.rotation / 0.05) * 0.05
+    renderer.owner_rot_residual[5] = [ladybug.rotation - _lb_rot_q, 0.0, 0.0]
+    renderer.owner_rot_pivot[5] = [
+        float(int(_lb_wx)) - 64.0, 0.0, float(int(_lb_wz)) - 64.0]
+
     # Place voxels
     place_ladybug_kernel(ladybug.x, ladybug.y + bob_offset, ladybug.z,
-                         ladybug.rotation, ladybug.body_tilt, ladybug.body_roll,
+                         _lb_rot_q, ladybug.body_tilt, ladybug.body_roll,
                          ladybug.kick_phase, ladybug.antenna_phase, head_turn)
 
     # Save current position for next frame's clearing
