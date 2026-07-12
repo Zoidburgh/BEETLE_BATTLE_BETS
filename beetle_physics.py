@@ -9113,7 +9113,14 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
         return [(bx, by, bz) + lt, (bx, by, bz) + rt]
     if ht == "hercules":
         tt, bt = calculate_hercules_jaw_tips(beetle, _p, _y)
-        return [(bx, by, bz) + tt, (bx, by, bz) + bt]
+        # Bottom jaw roots at its own pivot, local (3,1,0) — NOT the top
+        # attachment (3,6,0) both segments shared at first: that diagonal
+        # chord left the low/mid bottom jaw uncovered, so pitching it
+        # up/down clipped through horns and bodies
+        _cr = math.cos(beetle.rotation)
+        _sr = math.sin(beetle.rotation)
+        _bjbase = (beetle.x + 3.0 * _cr, beetle.y + 1.0, beetle.z + 3.0 * _sr)
+        return [(bx, by, bz) + tt, _bjbase + bt]
     if ht == "rhino":
         # Midline shaft chord (the old single segment — keeps shaft-vs-body
         # coverage) PLUS both splayed prong chords
