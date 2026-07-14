@@ -2017,6 +2017,7 @@ class Beetle:
         self.forward_bonus = 0.0       # 0.0 to 0.30 (30% max bonus)
         self.backward_bonus = 0.0      # 0.0 to 0.30 (30% max bonus)
         self.body_pitch_offset = 0.0  # Static body tilt angle (radians) - calculated from leg geometry for scorpion
+        self.spray_aim_vel = 0.0  # Bombardier aim tilt rate (rad/s) - the whole-body sweep, credited as articulation on ball contact
 
         # Scorpion stinger control (VB/NM keys)
         self.stinger_curvature = 0.0  # Stinger curvature offset (-1.0 to +1.0): negative=dart forward, positive=pull back, 0=neutral
@@ -4840,6 +4841,11 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
     beetle1_y_max = -1
     beetle2_y_min = 999
     beetle2_y_max = -1
+    # Same-column adjacency for BALL contacts (see below): most recent row
+    # where each entity was seen during the ascending scan
+    last_y_1 = -999
+    last_y_2 = -999
+    ball_adjacent = 0
     # Track if column has non-leg-tip voxels (for less sensitive leg collision)
     has_non_leg_tip_1 = 0
     has_non_leg_tip_2 = 0
@@ -4880,9 +4886,11 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
         if color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
             if voxel == 16 or voxel == 17:
                 belongs_to_1 = 1
-        elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color1) and voxel_part_v != simulation.PART_VENOM_TIP:
-            # Any of this player's parts except the venom bulb
-            # (body/legs/stripe/horn tip/hook; leg tips tracked separately)
+        elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color1):
+            # Any of this player's parts, venom bulb INCLUDED — the scorpion's
+            # upper tail is stamped PART_VENOM_TIP, and excluding it left the
+            # bulb/stinger with zero collision presence (ball and horns clipped
+            # straight through the raised tail). Leg tips tracked separately.
             belongs_to_1 = 1
             if voxel_part_v == simulation.PART_LEG_TIP:
                 is_leg_tip_1 = 1
@@ -4893,9 +4901,10 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
         if color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
             if voxel == 16 or voxel == 17:
                 belongs_to_2 = 1
-        elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color2) and voxel_part_v != simulation.PART_VENOM_TIP:
-            # Any of this player's parts except the venom bulb
-            # (body/legs/stripe/horn tip/hook; leg tips tracked separately)
+        elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color2):
+            # Any of this player's parts, venom bulb INCLUDED (see the
+            # belongs_to_1 note — excluding PART_VENOM_TIP made the scorpion's
+            # upper tail a collision phantom). Leg tips tracked separately.
             belongs_to_2 = 1
             if voxel_part_v == simulation.PART_LEG_TIP:
                 is_leg_tip_2 = 1
@@ -4909,6 +4918,9 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
             # Track if this column has only leg tips for beetle1
             if is_leg_tip_1 == 0:
                 has_non_leg_tip_1 = 1
+            if gy - last_y_2 <= 2:
+                ball_adjacent = 1
+            last_y_1 = gy
 
         if belongs_to_2 == 1:
             if gy < beetle2_y_min:
@@ -4918,6 +4930,9 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
             # Track if this column has only leg tips for beetle2
             if is_leg_tip_2 == 0:
                 has_non_leg_tip_2 = 1
+            if gy - last_y_1 <= 2:
+                ball_adjacent = 1
+            last_y_2 = gy
 
     # Check if Y-ranges overlap or are adjacent (variable tolerance based on voxel types)
     if beetle1_y_max >= 0 and beetle2_y_max >= 0:  # Both beetles present
@@ -4947,6 +4962,14 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
 
         if beetle1_y_min <= beetle2_y_max + tolerance and beetle2_y_min <= beetle1_y_max + tolerance:
             contact = 1
+        # BALL: envelope overlap is NOT touch. A beetle's Y-envelope spans
+        # vertical gaps (scorpion back below + tail arc above reads as one
+        # 33..55 range), so a ball floating IN the gap "overlapped" both
+        # heights and hovered on nothing. Require a ball voxel within 2
+        # rows of a beetle voxel in this column. Hook-interior columns keep
+        # the envelope (pincer squeeze wants early wide detection)
+        if contact == 1 and is_ball_involved == 1 and has_hook_interior == 0 and ball_adjacent == 0:
+            contact = 0
 
     # XZ NEIGHBOR CHECK: Catch edge-to-edge clipping in adjacent columns
     # Only check 4 cardinal neighbors (not diagonals) with tight Y tolerance
@@ -9247,6 +9270,15 @@ def calculate_horn_tip_position(beetle):
 
 _COLOR_TO_SLOT = None
 
+def _slot_of(beetle):
+    """Slot index for a beetle object (color is a VOXEL ID, never compare
+    to strings — see _giraffe_pivot_local)."""
+    global _COLOR_TO_SLOT
+    if _COLOR_TO_SLOT is None:
+        _COLOR_TO_SLOT = {simulation.BEETLE_BLUE: 0, simulation.BEETLE_RED: 1,
+                          simulation.BEETLE_P3: 2, simulation.BEETLE_P4: 3}
+    return _COLOR_TO_SLOT.get(beetle.color, 0)
+
 def _giraffe_pivot_local(beetle):
     """Beetle-local (x, y) of the giraffe neck/head pivot from the beetle's
     OWN slot geometry. beetle.color is a voxel id (5/6/51/58), NOT a string —
@@ -9376,6 +9408,32 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
         # it's the same in current and predicted skeletons
         tx, ty, tz = calculate_horn_tip_position(beetle)
         return [(bx, by, bz, tx, ty, tz)] + _scorpion_tail_segments(beetle)
+    if ht == "bombardier":
+        # Mandible chord tracks the AIM TILT: aiming rotates the whole
+        # stamped body (head included) around the rear pivot, but this
+        # chord stayed at fixed y=5 — a raised head's real mandibles sat
+        # ~3 voxels above their collision segment, so digging the head
+        # under the ball scooped thin air. Same pivot/formula as the
+        # placement kernel; aim ignores horn pitch/yaw, so current and
+        # predicted skeletons match (aim velocity credited separately)
+        _bslot = _slot_of(beetle)
+        _aim_b = spray_aim[_bslot] * SPRAY_AIM_MAX
+        if abs(_aim_b) > 0.001:
+            _bbl = -float(_slot_body_dims(_bslot)[0])
+            _cab = math.cos(_aim_b)
+            _sab = math.sin(_aim_b)
+            _crb = math.cos(beetle.rotation)
+            _srb = math.sin(beetle.rotation)
+            _wpts = []
+            for _lxb, _lyb in ((3.0, 5.0), (10.0, 5.0)):
+                _rxb2 = _lxb - _bbl
+                _axb = _bbl + _rxb2 * _cab - _lyb * _sab
+                _ayb = _rxb2 * _sab + _lyb * _cab
+                _wpts.append((beetle.x + _axb * _crb, beetle.y + _ayb,
+                              beetle.z + _axb * _srb))
+            return [_wpts[0] + _wpts[1]]
+        tx, ty, tz = calculate_horn_tip_position(beetle)
+        return [(bx, by, bz, tx, ty, tz)]
     if _current:
         tx, ty, tz = calculate_horn_tip_position(beetle)
     else:
@@ -9384,23 +9442,162 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
 
 def horn_segment_param(beetle, seg_index, t_local, n_segs):
     """Map a segment-local 0..1 param to the horn's global base->tip space.
-    Giraffe segments CHAIN (neck then head): global = (i+t)/n. Every other
+    Giraffe segments CHAIN (neck then head): global = (i+t)/n. Scorpion is
+    MIXED: segment 0 is the claw arm (full 0..1 alone) and segments 1-2 are
+    the CHAINED tail polyline (pivot->bulb->tip) — without chaining, a
+    contact at the bulb end of segment 1 read as param ~1.0 = "tip", so the
+    mid-tail fell into the tip-skip gates and clipped. Every other
     multi-segment type is PARALLEL ARMS sharing one base — each arm spans
     the full 0..1 by itself (a pincer-tip contact IS a tip contact)."""
     if beetle.horn_type == "giraffe" and n_segs > 1:
         return (seg_index + t_local) / n_segs
+    if beetle.horn_type == "scorpion" and n_segs == 3 and seg_index >= 1:
+        return (seg_index - 1 + t_local) / 2.0
     return t_local
 
 def horn_segment_articulates(beetle, seg_index, n_segs):
     """Whether this segment moves with horn pitch/yaw input.
     Giraffe: only the head (last) segment sweeps — the neck is fixed.
     Atlas: only the cephalic horn (segment 0) — pronotum horns are body.
+    Scorpion: only the claw chord (segment 0) — the tail follows
+    tail_rotation_angle, not horn pitch/yaw, so its pitch/yaw-predicted
+    skeleton is identical to the current one (credit would always be 0;
+    returning False skips the wasted predicted-skeleton rebuild).
     All other types: every arm articulates."""
     if beetle.horn_type == "giraffe":
         return seg_index == n_segs - 1
     if beetle.horn_type == "atlas":
         return seg_index == 0
+    if beetle.horn_type == "scorpion":
+        return seg_index == 0
     return True
+
+def _ball_surface_contact(ball, beetle):
+    """Deepest analytic contact of the ball with a beetle's collision
+    shapes (horn/tail segments plus a simple body capsule): returns
+    (penetration_voxels, nx, ny, nz) — penetration can be negative (no
+    contact), and the normal is the unit radial from the closest point on
+    that shape to the ball center, i.e. the TRUE surface direction
+    (vertical-up fallback on degeneracy). Drives the ball's separation
+    taper and its collision normal. The voxel grid CANNOT provide either:
+    overlapping entities overwrite each other's cells (one cell = one
+    type), and the contact cluster's spatial hash is XZ-only, so neither
+    can tell a ball resting ON a surface from one buried in it."""
+    global _COLOR_TO_SLOT
+    if _COLOR_TO_SLOT is None:
+        _COLOR_TO_SLOT = {simulation.BEETLE_BLUE: 0, simulation.BEETLE_RED: 1,
+                          simulation.BEETLE_P3: 2, simulation.BEETLE_P4: 3}
+    _bl, _bb = _slot_body_dims(_COLOR_TO_SLOT.get(beetle.color, 0))
+    _r = float(_bb) * 0.5            # body capsule radius (half body height)
+    # SLANTED BACKS: some bodies are generated with a baked-in ramp
+    # (scorpion rear +4, bombardier front +4, giraffe front +2) — the
+    # capsule axis follows it so depth reads match the real surface
+    _rear_up = 0.0
+    _front_up = 0.0
+    if beetle.horn_type == "scorpion":
+        _rear_up = 4.0
+    elif beetle.horn_type == "bombardier":
+        _front_up = 4.0
+    elif beetle.horn_type == "giraffe":
+        _front_up = 2.0
+    _cr = math.cos(beetle.rotation)
+    _sr = math.sin(beetle.rotation)
+    # Local (front_x, front_y, rear_x, rear_y, radius)-style endpoint list:
+    # body spine capsule first, extra shapes per type below.
+    # The ramp offsets SHIFT the whole body column (voxels span
+    # offset..offset+height), so the spine axis = offset + half-height —
+    # NOT (height+offset)/2, which sat the ramped end ~2 voxels low and
+    # gave the bombardier an analytic belly hanging below the real one
+    _pts = [(-(float(_bl) - 1.0), _rear_up + float(_bb) * 0.5, 0.0,
+             3.0, _front_up + float(_bb) * 0.5, 0.0, _r)]
+    if beetle.horn_type == "bombardier":
+        # HEAD BLOCK: the bombardier's big elevated head (generation: dx 2..7,
+        # y 5..5+front_body_height+1, front height FIXED at 4 → y 5..10, does
+        # NOT scale with the back-body-height slider). Its mandible chord in
+        # horn_collision_segments runs along the head's BOTTOM edge (y=5), so
+        # a ball on the head top read NEGATIVE depth — it clipped in and sat
+        # there with no push-out and a center-normal fallback. Axis at the
+        # head's center height, radius = half its height
+        _pts.append((2.0, 7.5, 0.0, 6.0, 7.5, 0.0, 2.5))
+        # ANTENNAE: stubby head-top feelers (generation: (6, 7..8, ±4) out
+        # to (8, 7..8, ±6)) — horn-tip-flagged voxels entirely outside the
+        # head capsule's z-reach, so the ball collided on their voxels with
+        # zero analytic depth and slipped through/off them
+        _pts.append((6.0, 7.5, 4.0, 8.0, 7.5, 6.0, 1.4))
+        _pts.append((6.0, 7.5, -4.0, 8.0, 7.5, -6.0, 1.4))
+        # AIM TILT: aiming the spray rotates the WHOLE stamped body around
+        # the rear pivot (placement kernel spray_aim_pitch, same pivot and
+        # formula). Rotate the analytic shapes identically — otherwise
+        # lowering the lifted front presses the real belly/head onto the
+        # ball while the math still thinks the front is up, so the ball
+        # clipped into the legs with no push-out
+        _aim = spray_aim[_COLOR_TO_SLOT.get(beetle.color, 0)] * SPRAY_AIM_MAX
+        if abs(_aim) > 0.001:
+            _pvx = -float(_bl)
+            _ca = math.cos(_aim)
+            _sa = math.sin(_aim)
+            _rp = []
+            for _ax, _ay, _az, _bx2, _by2, _bz2, _pr in _pts:
+                _rxa = _ax - _pvx
+                _rxb = _bx2 - _pvx
+                _rp.append((_pvx + _rxa * _ca - _ay * _sa, _rxa * _sa + _ay * _ca, _az,
+                            _pvx + _rxb * _ca - _by2 * _sa, _rxb * _sa + _by2 * _ca, _bz2, _pr))
+            _pts = _rp
+    segs = []
+    for _ax, _ay, _az, _bx2, _by2, _bz2, _pr in _pts:
+        segs.append((beetle.x + _ax * _cr - _az * _sr, beetle.y + _ay,
+                     beetle.z + _ax * _sr + _az * _cr,
+                     beetle.x + _bx2 * _cr - _bz2 * _sr, beetle.y + _by2,
+                     beetle.z + _bx2 * _sr + _bz2 * _cr, _pr))
+    if beetle.horn_type == "bombardier":
+        # FRONT/MIDDLE LEG STRUTS: the raised front stands on long stilt
+        # legs far below/outside every body shape, so the ball read zero
+        # analytic depth on their voxels and ghosted through. One coarse
+        # capsule per leg, matching the cascade generation (attach at the
+        # elevated body side, foot down-and-out; static stance — gait
+        # swing ignored; legs stay planted so NO aim rotation)
+        for _lax, _lay, _laz, _lbx, _lby, _lbz in (
+                (0.0, 5.0, 3.0, 2.0, 0.5, 9.0),    # front leg
+                (-3.0, 3.0, 3.0, -2.0, 0.5, 9.0)): # middle leg
+            for _side in (-1.0, 1.0):
+                _z1 = _laz * _side
+                _z2 = _lbz * _side
+                segs.append((beetle.x + _lax * _cr - _z1 * _sr, beetle.y + _lay,
+                             beetle.z + _lax * _sr + _z1 * _cr,
+                             beetle.x + _lbx * _cr - _z2 * _sr, beetle.y + _lby,
+                             beetle.z + _lbx * _sr + _z2 * _cr, 1.2))
+    for _s in horn_collision_segments(beetle):
+        segs.append(_s + (1.5,))     # horn shafts: same halfwidth the shaft response uses
+    best_pen = -1e9
+    best_dx = 0.0
+    best_dy = 1.0
+    best_dz = 0.0
+    for ax, ay, az, bx, by, bz, seg_r in segs:
+        _cx, _cyy, _cz, _t, _d = closest_point_on_segment(ball.x, ball.y, ball.z,
+                                                          ax, ay, az, bx, by, bz)
+        _pen = (ball.radius + seg_r) - _d
+        if _pen > best_pen:
+            best_pen = _pen
+            best_dx = ball.x - _cx
+            best_dy = ball.y - _cyy
+            best_dz = ball.z - _cz
+    # SQUEEZE EJECTION: a grounded ball with the shape pressing from ABOVE
+    # gets a downward radial — pushing along it only drives the ball into
+    # the floor, which pins it there (belly-slamming the bombardier onto
+    # the ball left it clipped among the legs). Resolve horizontally
+    # instead: out from under the axis, or LATERALLY (the short way out,
+    # past the legs) when dead-centered under the spine
+    if best_pen > 0.0 and best_dy < 0.0 and getattr(ball, 'on_ground', False):
+        _h = math.sqrt(best_dx*best_dx + best_dz*best_dz)
+        if _h > 0.3:
+            return best_pen, best_dx / _h, 0.0, best_dz / _h
+        _lz = -(ball.x - beetle.x) * _sr + (ball.z - beetle.z) * _cr
+        _side = 1.0 if _lz >= 0.0 else -1.0
+        return best_pen, -_sr * _side, 0.0, _cr * _side
+    _dl = math.sqrt(best_dx*best_dx + best_dy*best_dy + best_dz*best_dz)
+    if _dl < 0.05:
+        return best_pen, 0.0, 1.0, 0.0
+    return best_pen, best_dx / _dl, best_dy / _dl, best_dz / _dl
 
 def _closest_on_horn_segments(segments, px, py, pz):
     """Closest point to (px,py,pz) across a horn's segment list.
@@ -15087,6 +15284,32 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 instant_normal_y = 0.0
                 instant_normal_z = dz / dist
 
+            # BALL SURFACE NORMAL: bend the ball's collision normal toward
+            # the true surface radial (closest point on the beetle's capsule
+            # set -> ball center). The center-to-center normal made the ball
+            # bounce as if it hit the beetle's CENTER — visibly wrong
+            # geometry on the tail/horns (deflections ignoring the surface
+            # actually struck). Slider BALL_SURFACE_NORMAL: 1 = full surface
+            # normal, 0 = old center normal. Also yields the analytic
+            # penetration reused by the separation taper below.
+            _ball_pen_raw = -1e9
+            if is_ball_collision:
+                _sn_ball = b1 if b1.horn_type == "ball" else b2
+                _sn_btl = b2 if b1.horn_type == "ball" else b1
+                _ball_pen_raw, _rnx, _rny, _rnz = _ball_surface_contact(_sn_ball, _sn_btl)
+                _sn_mix = params.get("BALL_SURFACE_NORMAL", 1.0)
+                if _sn_mix > 0.0 and _ball_pen_raw > -2.0:
+                    # Normal convention is b2 -> b1; radial is surface -> ball
+                    _sgn = 1.0 if b1.horn_type == "ball" else -1.0
+                    _bnx = instant_normal_x * (1.0 - _sn_mix) + _sgn * _rnx * _sn_mix
+                    _bny = instant_normal_y * (1.0 - _sn_mix) + _sgn * _rny * _sn_mix
+                    _bnz = instant_normal_z * (1.0 - _sn_mix) + _sgn * _rnz * _sn_mix
+                    _bnl = math.sqrt(_bnx*_bnx + _bny*_bny + _bnz*_bnz)
+                    if _bnl > 0.05:
+                        instant_normal_x = _bnx / _bnl
+                        instant_normal_y = _bny / _bnl
+                        instant_normal_z = _bnz / _bnl
+
             # Apply exponential moving average to smooth collision normal (reduces jitter)
             # This prevents rapid oscillation when beetles are locked horn-to-horn
             # Also smooths Y to prevent jarring "jump" on first contact during horn pitch
@@ -15163,9 +15386,23 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # only push jerked it ~1.5 vox/substep in a random flipping
                     # direction ("can't find the center"). Vertical-dominant
                     # contact resolves UP like a soft bounce instead
+                    _ball_seg_pen = 1.0  # beetles: no extra scaling below
+                    _sg_flat = 1.0       # 1 = horizontal segment, 0 = vertical
                     if intruder.horn_type == "ball":
+                        # Segment steepness: lift/on-top logic assumes a
+                        # roughly HORIZONTAL shaft under the ball. Applied to
+                        # a near-vertical one (scorpion tail pivot->bulb) it
+                        # became a conveyor: horizontal press-in speed turned
+                        # into vy every substep, sucking the ball up the tail
+                        # and ejecting it at the stinger
+                        _sg_dx = _so_segs[_sseg][3] - _so_segs[_sseg][0]
+                        _sg_dy = _so_segs[_sseg][4] - _so_segs[_sseg][1]
+                        _sg_dz = _so_segs[_sseg][5] - _so_segs[_sseg][2]
+                        _sg_len = math.sqrt(_sg_dx*_sg_dx + _sg_dy*_sg_dy + _sg_dz*_sg_dz)
+                        _sg_vert = abs(_sg_dy) / _sg_len if _sg_len > 0.001 else 0.0
+                        _sg_flat = max(0.0, 1.0 - _sg_vert)
                         _py = intruder.y - _scy
-                        if _py > 0.0 and _py >= _pdist:
+                        if _py > 0.0 and _py >= _pdist and _sg_vert < 0.7:
                             _p3d = math.sqrt(_pdist * _pdist + _py * _py)
                             _pen = (intruder.radius + 1.5) - _p3d
                             if _pen > 0.0:
@@ -15173,19 +15410,34 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 if intruder.prev_y < intruder.y:
                                     intruder.prev_y = intruder.y  # clamp interp, no pop
                                 _bb_impact = -intruder.vy
-                                if _bb_impact > 3.0:
+                                _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
+                                # Bounce only on a REAL drop (default >=2 voxels
+                                # of fall). The old fixed 3.0 cutoff was a
+                                # ~0.04-voxel fall at ball gravity, so every
+                                # animation-jitter re-contact popped = the
+                                # "mini bounce" chatter. Slider 0 = old feel
+                                _bb_min = max(3.0, math.sqrt(2.0 * _bb_g * params.get("BALL_BOUNCE_MIN_DROP", 2.0)))
+                                if _bb_impact > _bb_min:
                                     # Real drop: bounce off the horn (tunable,
                                     # deader than floor) + floor-style squash
                                     intruder.vy = _bb_impact * params.get("BALL_BEETLE_BOUNCE", 0.45)
-                                    _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
-                                    _bb_min = math.sqrt(4.0 * _bb_g)  # 2-voxel drop impact
-                                    if _bb_impact >= _bb_min:
-                                        globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.35)
-                                        globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
+                                    globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.35)
+                                    globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
                                 elif intruder.vy < 0.0:
                                     intruder.vy = 0.0  # gentle contact settles, no micro-bounce
                                 collision_stats['shaft_penetration_fixes'] += 1
                             continue
+                        # SIDE/BELOW contact: only respond when the segment
+                        # truly penetrates the ball in 3D, scaled by depth.
+                        # The horizontal-only gates below let a tail segment
+                        # several voxels ABOVE the ball shove and lift it —
+                        # phantom pushes that ratcheted the ball from the
+                        # back up to the stinger tip
+                        _bp3d = math.sqrt(_pdist * _pdist + _py * _py)
+                        _bpen = (intruder.radius + 1.5) - _bp3d
+                        if _bpen <= 0.0:
+                            continue
+                        _ball_seg_pen = min(_bpen / 1.5, 1.0)
                     if _pdist < 0.1:
                         continue
                     # Tip voxels in the contact normally mean a tip battle
@@ -15238,6 +15490,21 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             _horn_vx = _artic_t * (_pt_x - so_tip_x) / PHYSICS_TIMESTEP
                             _horn_vy = _artic_t * (_pt_y - so_tip_y) / PHYSICS_TIMESTEP
                             _horn_vz = _artic_t * (_pt_z - so_tip_z) / PHYSICS_TIMESTEP
+                    # BOMBARDIER AIM SWEEP: aiming tilts the whole head/
+                    # mandibles around the rear pivot — pure body geometry,
+                    # invisible to the horn pitch/yaw credit above. Credit
+                    # its vertical motion at the contact (rate x lever arm)
+                    # so digging the rising head under the ball lifts it
+                    if shaft_owner.horn_type == "bombardier":
+                        _sav = getattr(shaft_owner, 'spray_aim_vel', 0.0)
+                        if abs(_sav) > 0.02:
+                            _crv = math.cos(shaft_owner.rotation)
+                            _srv = math.sin(shaft_owner.rotation)
+                            _pbl = float(_slot_body_dims(_slot_of(shaft_owner))[0])
+                            _pvwx = shaft_owner.x - _pbl * _crv
+                            _pvwz = shaft_owner.z - _pbl * _srv
+                            _lever = math.sqrt((_scx - _pvwx) ** 2 + (_scz - _pvwz) ** 2)
+                            _horn_vy += _sav * _lever
 
                     # Closing speed at the contact: how fast the shaft (body
                     # motion + turn sweep + horn articulation) and the intruder's
@@ -15284,7 +15551,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     if _scy < _below_mid and (_closing > 0.0 or _vert_closing > 0.5):
                         _lift_speed = max(_closing, 0.0) + max(_vert_closing, 0.0)
                         if intruder.horn_type == "ball":
-                            intruder.vy += min(_lift_speed * shaft_lift, 4.0)
+                            # Scaled by real 3D segment penetration AND by how
+                            # horizontal the segment is — a level horn scoops,
+                            # a vertical tail must not act as a lift conveyor
+                            intruder.vy += min(_lift_speed * shaft_lift, 4.0) * _ball_seg_pen * _sg_flat
                         else:
                             intruder.pending_lift += min(_lift_speed * shaft_lift, 4.0)
                     # Depth-proportional positional separation per step: a
@@ -15293,7 +15563,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # center) gets up to ~4x so it's expelled in a few steps
                     # instead of ~20
                     _burial = max(0.0, 8.0 - _pdist)
-                    _push_amt = shaft_pushout * (1.0 + _burial * 0.4)
+                    # _ball_seg_pen: 1.0 for beetles; for the ball it scales
+                    # the shove by real 3D segment penetration
+                    _push_amt = shaft_pushout * (1.0 + _burial * 0.4) * _ball_seg_pen
                     intruder.x += _pnx * _push_amt
                     intruder.z += _pnz * _push_amt
                     shaft_owner.x -= _pnx * _push_amt * 0.3
@@ -15832,6 +16104,19 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             # Separation/tipping to prevent stuck collisions
             separation_force = params["SEPARATION_FORCE"]
 
+            # DEPTH-SCALED BALL SEPARATION: positional shoves on the ball
+            # taper with its analytic penetration into the beetle's collision
+            # shapes (segments + body capsule). A resting ball reads ~0 depth
+            # -> no per-substep teleport-stepping (the floaty micro-shifts
+            # and the ride-up-the-tail ratchet); a buried ball still gets
+            # full push-out. BALL_SEP_DEPTH = voxels of penetration for full
+            # force; 0 disables the taper (old always-full behavior)
+            _ball_sep_ref = params.get("BALL_SEP_DEPTH", 3.0)
+            _ball_depth_scale = 1.0
+            if is_ball_collision and _ball_sep_ref > 0.0:
+                # _ball_pen_raw computed with the surface normal above
+                _ball_depth_scale = min(max(_ball_pen_raw, 0.0) / _ball_sep_ref, 1.0)
+
             if is_horn_contact and not is_ball_collision:
                 # HORN COLLISION: Apply tipping torque instead of full separation
                 # Use separate cooldown from lift forces (0.1 seconds)
@@ -15969,9 +16254,11 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _beetle_e = b2 if b1.horn_type == "ball" else b1
                     _bsep_scale = 0.0 if _beetle_e.air_gap <= 1.0 else _recoil
                     if b1.horn_type == "ball":
+                        b1_sep *= _ball_depth_scale
                         b2_sep *= _bsep_scale
                     else:
                         b1_sep *= _bsep_scale
+                        b2_sep *= _ball_depth_scale
 
                 b1.x += normal_x * b1_sep
                 b1.z += normal_z * b1_sep
@@ -16012,8 +16299,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             # VERTICAL SEPARATION - only when both beetles are airborne
             # This prevents floor voxel destruction and maintains symmetry
             if not b1.on_ground and not b2.on_ground:
-                b1.y += normal_y * separation_force
-                b2.y -= normal_y * separation_force
+                b1.y += normal_y * separation_force * (_ball_depth_scale if b1.horn_type == "ball" else 1.0)
+                b2.y -= normal_y * separation_force * (_ball_depth_scale if b2.horn_type == "ball" else 1.0)
                 # Update prev positions to prevent interpolation choppiness from position corrections
                 # (Ball especially needs this for smooth vertical motion during collisions)
                 if is_ball_collision:
@@ -16028,10 +16315,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # horizontal shoves. Move just the BALL vertically (pushing
                 # the grounded beetle down only makes the floor fight it)
                 if b1.horn_type == "ball":
-                    b1.y += normal_y * separation_force
+                    b1.y += normal_y * separation_force * _ball_depth_scale
                     b1.prev_y = b1.y
                 else:
-                    b2.y -= normal_y * separation_force
+                    b2.y -= normal_y * separation_force * _ball_depth_scale
                     b2.prev_y = b2.y
                 # BODY BOUNCE: a ball landing ON a beetle's back bounces
                 # (deader than floor) instead of rolling off. Velocity-only
@@ -16041,13 +16328,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 _bb_beetle = b2 if b1.horn_type == "ball" else b1
                 if _bb_ball.y > _bb_beetle.y + 3.0 and _bb_ball.vy < 0.0:
                     _bb_impact = -_bb_ball.vy
-                    if _bb_impact > 3.0:
+                    _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
+                    # Same real-drop cutoff as the shaft branch: impacts below
+                    # ~a BALL_BOUNCE_MIN_DROP-voxel fall settle instead of
+                    # popping (kills the mini-bounce chatter). Slider 0 = old
+                    _bb_min = max(3.0, math.sqrt(2.0 * _bb_g * params.get("BALL_BOUNCE_MIN_DROP", 2.0)))
+                    if _bb_impact > _bb_min:
                         _bb_ball.vy = _bb_impact * params.get("BALL_BEETLE_BOUNCE", 0.45)
-                        _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
-                        _bb_min = math.sqrt(4.0 * _bb_g)  # 2-voxel drop impact
-                        if _bb_impact >= _bb_min:
-                            globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.35)
-                            globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
+                        globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.35)
+                        globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
                     else:
                         _bb_ball.vy = 0.0  # gentle contact settles
 
@@ -16109,6 +16398,13 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # Override vel_along_normal with beetle's push direction (negative = toward ball)
                 if abs(beetle_vel_along_normal) > 0.3:  # Lower threshold, rotation counts
                     vel_along_normal = -abs(beetle_vel_along_normal) * 0.8  # Treat as approaching
+                else:
+                    # Receding ball + beetle not pushing: leave it alone.
+                    # Applying the impulse formula to a POSITIVE (separating)
+                    # velocity yields a NEGATIVE impulse = suction that pulled
+                    # the ball back in, eating fresh bounces (vertical surface
+                    # normal) and adding drag-stick on rolls (old normal)
+                    apply_impulse = False
 
             if apply_impulse:
                 # Impulse magnitude (use ball-specific restitution for ball collisions)
@@ -19262,11 +19558,16 @@ try:
                     # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
                     # Direct adjustment - holds position when keys released
                     aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
+                    _aim_before = spray_aim[slot]
                     if p_inputs & INPUT_HORN_LEFT:
                         spray_aim[slot] = min(1.0, spray_aim[slot] + aim_adjust_speed)
                     elif p_inputs & INPUT_HORN_RIGHT:
                         spray_aim[slot] = max(-1.0, spray_aim[slot] - aim_adjust_speed)
                     # No else - holds current position when no keys pressed
+                    # Track the aim tilt RATE (rad/s of body sweep) so ball
+                    # contact can credit the rising head's motion as lift
+                    beetle.spray_aim_vel = ((spray_aim[slot] - _aim_before) * SPRAY_AIM_MAX / frame_dt
+                                            if frame_dt > 0.0 else 0.0)
 
                     # Skip horn controls for bombardier
                     pitch_pressed = False
@@ -25820,6 +26121,16 @@ try:
                 physics_params["BALL_SQUASH"] = window.GUI.slider_float("Ball Squash", physics_params.get("BALL_SQUASH", 1.0), 0.0, 2.0)
                 # Bounciness of beetle backs/horns (0 = roll off like before)
                 physics_params["BALL_BEETLE_BOUNCE"] = window.GUI.slider_float("Beetle Bounce", physics_params.get("BALL_BEETLE_BOUNCE", 0.45), 0.0, 0.8)
+                # Min fall (voxels) before the ball bounces off a beetle at
+                # all — below it contact settles (kills mini-bounce chatter)
+                physics_params["BALL_BOUNCE_MIN_DROP"] = window.GUI.slider_float("Bounce Min Drop", physics_params.get("BALL_BOUNCE_MIN_DROP", 2.0), 0.0, 8.0)
+                # Penetration (voxels) into a beetle's shapes for FULL ball
+                # push-out; shoves taper below it, so a resting ball isn't
+                # constantly nudged (0 = old always-full separation)
+                physics_params["BALL_SEP_DEPTH"] = window.GUI.slider_float("Ball Sep Depth", physics_params.get("BALL_SEP_DEPTH", 3.0), 0.0, 8.0)
+                # Ball bounce direction: 1 = true surface normal (closest
+                # point on body/horn shapes), 0 = old center-to-center
+                physics_params["BALL_SURFACE_NORMAL"] = window.GUI.slider_float("Ball Surf Normal", physics_params.get("BALL_SURFACE_NORMAL", 1.0), 0.0, 1.0)
 
                 window.GUI.text("")
                 window.GUI.text("--- Ball Contact Physics ---")
