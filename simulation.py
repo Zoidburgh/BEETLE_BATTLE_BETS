@@ -105,20 +105,31 @@ BG_ANIM_FREQUENCY = 1
 # Check if user wants fresh kernel compilation (bypasses cache that might cause variance)
 FRESH_COMPILE = '--fresh' in sys.argv
 
+# OFFLINE KERNEL CACHE LOCATION: relocate off Taichi 1.7.4's default
+# C:/taichi_cache (a root-drive folder that hits permission walls on
+# locked-down and shipped machines) to per-user LOCALAPPDATA, which is always
+# writable without admin. Falls back to the home dir, then Taichi's default.
+_ti_cache_base = os.environ.get('LOCALAPPDATA') or os.path.expanduser('~')
+_ti_cache_dir = os.path.join(_ti_cache_base, 'BeetleBattle', 'taichi_cache')
+try:
+    os.makedirs(_ti_cache_dir, exist_ok=True)
+except Exception as _mk_err:
+    print(f'[Cache] Could not create cache dir ({_mk_err}) — using Taichi default')
+    _ti_cache_dir = None
+
 # STALE-LOCK GUARD: if a previous run was force-killed or crashed while holding
 # the offline-cache lock, the orphaned ticache.lock blocks ALL future cache
 # writes — the game silently recompiles every kernel every session forever
 # (huge first-contact/arena/ball lag spikes; diagnosed 2026-07-14 from the
 # "Lock ...ticache.lock failed" dump warning). The lock is only held for the
 # ~ms of an actual dump, so any lock present at STARTUP is guaranteed stale.
-# Clear it before ti.init so this can never brick the cache again — for us or
-# for shipped players.
+# Clear it before ti.init so this can never brick the cache again.
 try:
-    _ti_cache_dir = 'C:/taichi_cache/ticache'
-    _ti_lock = os.path.join(_ti_cache_dir, 'ticache.lock')
-    if os.path.exists(_ti_lock):
-        os.remove(_ti_lock)
-        print('[Cache] Cleared stale offline-cache lock (prior run was force-killed/crashed)')
+    if _ti_cache_dir:
+        _ti_lock = os.path.join(_ti_cache_dir, 'ticache.lock')
+        if os.path.exists(_ti_lock):
+            os.remove(_ti_lock)
+            print('[Cache] Cleared stale offline-cache lock (prior run was force-killed/crashed)')
 except Exception as _lock_err:
     print(f'[Cache] Could not clear stale lock ({_lock_err}) — cache may not persist this run')
 
@@ -127,6 +138,8 @@ _cache_opts = dict(
     offline_cache_cleaning_policy='never',  # Don't evict cached kernels between runs
     offline_cache_max_size_of_files=500 * 1024 * 1024,  # 500 MB headroom
 )
+if _ti_cache_dir:
+    _cache_opts['offline_cache_file_path'] = _ti_cache_dir
 
 _t_init = _time.perf_counter()
 if BACKEND == 'cpu':

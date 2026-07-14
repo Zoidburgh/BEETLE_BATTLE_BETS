@@ -1923,7 +1923,7 @@ BALL_MASS_RATIO = 0.6  # Ball weight vs beetle (0.1=very light, 2.0=heavy)
 BALL_ROLLING_FRICTION = 0.99  # Horizontal slowdown (0.80=high friction, 0.99=ice)
 BALL_GROUND_BOUNCE = 0.8  # Floor bounce coefficient (0=dead stop, 0.8=super bouncy)
 BALL_PUSH_MULTIPLIER = 3.9  # How easily beetles can push the ball (1.0=normal, 3.0=very easy)
-BALL_SPIN_MULTIPLIER = 4.3  # How easily ball spins when hit (1.0=normal, 4.0=very spinny)
+BALL_SPIN_MULTIPLIER = 5.0  # How easily ball spins when hit (1.0=normal, 4.0=very spinny)
 BALL_ANGULAR_FRICTION = 0.99  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
 
 # Ball torque/lift physics (realistic soccer ball behavior)
@@ -9267,6 +9267,35 @@ def calculate_giraffe_elbow_position(beetle):
     sin_r = math.sin(beetle.rotation)
     return (beetle.x + pivot_x * cos_r, beetle.y + pivot_y, beetle.z + pivot_x * sin_r)
 
+def _scorpion_tail_segments(beetle):
+    """Scorpion tail/stinger as a 2-segment chained polyline (rear pivot ->
+    bulb -> stinger tip), rebuilt at the live tail_rotation_angle. Physics
+    space, body-yaw only, matching the other segment helpers. The tail is the
+    scorpion's active weapon and was previously UNCOVERED by any segment — a
+    ball rode up it and clipped through the raised arc. Same reach/height
+    constants (15 fwd, 11 up) as get_scorpion_tail_tip_position."""
+    global _COLOR_TO_SLOT
+    if _COLOR_TO_SLOT is None:
+        _COLOR_TO_SLOT = {simulation.BEETLE_BLUE: 0, simulation.BEETLE_RED: 1,
+                          simulation.BEETLE_P3: 2, simulation.BEETLE_P4: 3}
+    _bl, _bb = _slot_body_dims(_COLOR_TO_SLOT.get(beetle.color, 0))
+    _pivx = -float(_bl) + 1.0   # rear of abdomen
+    _pivy = float(_bb)          # at back-body height
+    _ta = math.radians(beetle.tail_rotation_angle)
+    _tc, _ts = math.cos(_ta), math.sin(_ta)
+    # tip + a mid-arc bulb point, both rotated by the tail angle about the pivot
+    _tipox = 15.0 * _tc - 11.0 * _ts
+    _tipoy = 15.0 * _ts + 11.0 * _tc
+    _midox = (15.0 * 0.4) * _tc - (11.0 * 0.75) * _ts
+    _midoy = (15.0 * 0.4) * _ts + (11.0 * 0.75) * _tc
+    _cr, _sr = math.cos(beetle.rotation), math.sin(beetle.rotation)
+    def _w(lx, ly):  # body-yaw to world (tail is centered, local z = 0)
+        return (beetle.x + lx * _cr, beetle.y + ly, beetle.z + lx * _sr)
+    _p = _w(_pivx, _pivy)
+    _m = _w(_pivx + _midox, _pivy + _midoy)
+    _t = _w(_pivx + _tipox, _pivy + _tipoy)
+    return [_p + _m, _m + _t]
+
 def _atlas_pronotum_segments(beetle):
     """The atlas beetle's two STATIONARY pronotum horns (body geometry — they
     never follow horn pitch/yaw). Straight chords matching
@@ -9341,6 +9370,12 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
         else:
             tx, ty, tz = calculate_horn_tip_position_with_both(beetle, _p, _y)
         return [(bx, by, bz, tx, ty, tz)] + _atlas_pronotum_segments(beetle)
+    if ht == "scorpion":
+        # Front claw chord (as before) + the rear tail polyline (was uncovered
+        # → ball rode up it). Tail uses tail_rotation_angle, not pitch/yaw, so
+        # it's the same in current and predicted skeletons
+        tx, ty, tz = calculate_horn_tip_position(beetle)
+        return [(bx, by, bz, tx, ty, tz)] + _scorpion_tail_segments(beetle)
     if _current:
         tx, ty, tz = calculate_horn_tip_position(beetle)
     else:
@@ -15183,20 +15218,26 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _horn_vx = 0.0
                     _horn_vy = 0.0
                     _horn_vz = 0.0
-                    # Articulation only moves the ROTATING segment: for most
-                    # types that's the whole shaft (t from the base pivot);
-                    # for the giraffe the neck is fixed and only the head
-                    # segment sweeps, scaling with t from the elbow pivot.
-                    _artic_t = _st_local if _sseg == _nseg - 1 else 0.0
+                    # Articulation credit: which segment actually MOVES with
+                    # horn input, per horn_segment_articulates (was hardcoded
+                    # "last segment" — correct only for giraffe, INVERTED for
+                    # atlas which put it on the stationary pronotum, and it
+                    # dropped credit for non-last arms of rhino/stag/hercules).
+                    _artic_t = _st_local if horn_segment_articulates(shaft_owner, _sseg, _nseg) else 0.0
                     if _artic_t > 0.0 and (abs(shaft_owner.horn_pitch_velocity) > 0.02 or
                             abs(shaft_owner.horn_yaw_velocity) > 0.02):
-                        _pt_x, _pt_y, _pt_z = calculate_horn_tip_position_with_both(
+                        # Rebuild the skeleton at PREDICTED angles and take the
+                        # SAME contact arm's tip (was the generic single tip =
+                        # wrong arm for multi-arm types)
+                        _pred_segs = horn_collision_segments(
                             shaft_owner,
                             shaft_owner.horn_pitch + shaft_owner.horn_pitch_velocity * PHYSICS_TIMESTEP,
                             shaft_owner.horn_yaw + shaft_owner.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                        _horn_vx = _artic_t * (_pt_x - so_tip_x) / PHYSICS_TIMESTEP
-                        _horn_vy = _artic_t * (_pt_y - so_tip_y) / PHYSICS_TIMESTEP
-                        _horn_vz = _artic_t * (_pt_z - so_tip_z) / PHYSICS_TIMESTEP
+                        if _sseg < len(_pred_segs):
+                            _pt_x, _pt_y, _pt_z = _pred_segs[_sseg][3], _pred_segs[_sseg][4], _pred_segs[_sseg][5]
+                            _horn_vx = _artic_t * (_pt_x - so_tip_x) / PHYSICS_TIMESTEP
+                            _horn_vy = _artic_t * (_pt_y - so_tip_y) / PHYSICS_TIMESTEP
+                            _horn_vz = _artic_t * (_pt_z - so_tip_z) / PHYSICS_TIMESTEP
 
                     # Closing speed at the contact: how fast the shaft (body
                     # motion + turn sweep + horn articulation) and the intruder's
@@ -21786,9 +21827,13 @@ try:
                             _sq_min_impact = math.sqrt(2.0 * _sq_g * 2.0)
 
                             # Dust ring: subtle few motes at the gate, splashier
-                            # with fall height (kernel scales count/speed/height)
+                            # with fall height (kernel scales count/speed/height).
+                            # Spawn at the ACTUAL floor surface — the hardcoded
+                            # +0.5 sat below the raised ice-bowl lip, so edge
+                            # bounces buried the dust inside the ice (invisible)
+                            _dust_y = RENDER_Y_OFFSET + floor_surface
                             if impact_speed >= _sq_min_impact and g['ball_dust_cooldown'] <= 0.0:
-                                spawn_ball_bounce_dust(beetle_ball.x, RENDER_Y_OFFSET + 0.5, beetle_ball.z,
+                                spawn_ball_bounce_dust(beetle_ball.x, _dust_y, beetle_ball.z,
                                                        impact_speed, beetle_ball.radius, _sq_min_impact)
                                 g['ball_dust_cooldown'] = 0.1  # 0.1 second cooldown
 
@@ -25799,7 +25844,7 @@ try:
                 new_push = window.GUI.slider_float("Push Ease", physics_params["BALL_PUSH_MULTIPLIER"], 0.5, 4.0)
                 if new_push != physics_params["BALL_PUSH_MULTIPLIER"]:
                     physics_params["BALL_PUSH_MULTIPLIER"] = new_push
-                new_spin = window.GUI.slider_float("Spin Ease", physics_params["BALL_SPIN_MULTIPLIER"], 0.5, 5.0)
+                new_spin = window.GUI.slider_float("Spin Ease", physics_params["BALL_SPIN_MULTIPLIER"], 0.5, 10.0)
                 if new_spin != physics_params["BALL_SPIN_MULTIPLIER"]:
                     physics_params["BALL_SPIN_MULTIPLIER"] = new_spin
                 new_ang_fric = window.GUI.slider_float("Spin Retain", physics_params["BALL_ANGULAR_FRICTION"], 0.90, 0.995)
