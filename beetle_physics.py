@@ -18,6 +18,17 @@ from collections import deque
 # ============================================================================
 _splash_active = False
 try:
+    # AUDIO CRASH FIX (2026-07-13): a real audio device open IN THIS PROCESS
+    # corrupts memory on audio device-change events (window focus changes,
+    # volume keys, Bluetooth renegotiation) — silent 0xc0000005 crashes that
+    # fault inside taichi_python as the heap victim. Reproduced
+    # deterministically via focus-steal test: WASAPI AND DirectSound both
+    # died at the same point, the dummy driver survived all 8 toggles. So
+    # this process uses NO real audio (dummy driver); music runs in a
+    # separate windowless music_player.py subprocess that owns the device
+    # and receives no focus events. Must be set BEFORE pygame inits audio
+    import os as _os_audio
+    _os_audio.environ['SDL_AUDIODRIVER'] = 'dummy'
     import pygame
     pygame.display.init()
     pygame.font.init()
@@ -17376,11 +17387,12 @@ beetle_tuning_note = ""  # Last save/load feedback line in the tuning window
 # Initialize controller support
 init_controllers()
 
-# ============ BACKGROUND MUSIC ============
-# Loops the first track found in music/ (pygame.mixer streams from disk, so
-# file size doesn't hit RAM). pygame.init() above already set up the mixer.
-# Playlist management + volume UI planned — this just gets music playing.
-music_playing = False
+# ============ BACKGROUND MUSIC (separate process) ============
+# This process has NO real audio device (dummy driver, see splash section) —
+# music runs in music_player.py as a windowless subprocess so audio
+# device-change events can never corrupt the game/Taichi memory. We hold its
+# stdin pipe: when the game exits, the pipe closes and the player stops.
+music_proc = None
 try:
     _music_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "music")
     _music_tracks = []
@@ -17388,11 +17400,14 @@ try:
         _music_tracks = sorted(f for f in os.listdir(_music_dir)
                                if f.lower().endswith((".wav", ".ogg", ".mp3")))
     if _music_tracks:
-        pygame.mixer.music.load(os.path.join(_music_dir, _music_tracks[0]))
-        pygame.mixer.music.set_volume(0.5)
-        pygame.mixer.music.play(-1)  # Loop forever
-        music_playing = True
-        print(f"[Music] Playing (looped): {_music_tracks[0]}")
+        import subprocess as _subprocess
+        _track_path = os.path.join(_music_dir, _music_tracks[0])
+        music_proc = _subprocess.Popen(
+            [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "music_player.py"),
+             _track_path, "0.5"],
+            stdin=_subprocess.PIPE)
+        atexit.register(lambda: music_proc and music_proc.poll() is None and music_proc.terminate())
+        print(f"[Music] Playing (looped, separate process): {_music_tracks[0]}")
     else:
         print("[Music] No tracks in music/ - silent")
 except Exception as _music_err:

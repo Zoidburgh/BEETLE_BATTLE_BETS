@@ -105,6 +105,23 @@ BG_ANIM_FREQUENCY = 1
 # Check if user wants fresh kernel compilation (bypasses cache that might cause variance)
 FRESH_COMPILE = '--fresh' in sys.argv
 
+# STALE-LOCK GUARD: if a previous run was force-killed or crashed while holding
+# the offline-cache lock, the orphaned ticache.lock blocks ALL future cache
+# writes — the game silently recompiles every kernel every session forever
+# (huge first-contact/arena/ball lag spikes; diagnosed 2026-07-14 from the
+# "Lock ...ticache.lock failed" dump warning). The lock is only held for the
+# ~ms of an actual dump, so any lock present at STARTUP is guaranteed stale.
+# Clear it before ti.init so this can never brick the cache again — for us or
+# for shipped players.
+try:
+    _ti_cache_dir = 'C:/taichi_cache/ticache'
+    _ti_lock = os.path.join(_ti_cache_dir, 'ticache.lock')
+    if os.path.exists(_ti_lock):
+        os.remove(_ti_lock)
+        print('[Cache] Cleared stale offline-cache lock (prior run was force-killed/crashed)')
+except Exception as _lock_err:
+    print(f'[Cache] Could not clear stale lock ({_lock_err}) — cache may not persist this run')
+
 _cache_opts = dict(
     offline_cache=not FRESH_COMPILE,
     offline_cache_cleaning_policy='never',  # Don't evict cached kernels between runs
