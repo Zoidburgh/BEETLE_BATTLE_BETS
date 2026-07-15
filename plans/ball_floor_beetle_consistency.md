@@ -104,6 +104,16 @@ contact; normal dribbling -> no dust spam.
   (remember the Nov 2025 scan-trimming lesson before touching).
 - Anti-teleport governor dilution in deep pins: revisit only if deep
   multi-contact pins expel visibly slowly.
+- STAG POCKET MODEL (designed feature, not a bug fix): the stag's cradle
+  is the game's only CONCAVE weapon and convex-capsule physics degrades
+  inside it by construction (opposing walls cancel blended normals,
+  contact ownership is inherently ambiguous, pincer-close is a two-sided
+  squeeze with no natural escape direction). Current state after the
+  2026-07-15 mitigations (risers, grounded gate, segment hysteresis,
+  hook-aura removal for the ball): acceptable. The real fix is a
+  dedicated pocket contact regime (floor + walls + base push, ejection
+  via the pocket opening) — would make stag ball-carrying a signature
+  mechanic. Pull forward only if stag handling becomes a focus.
 
 ## Order & cadence
 0 (commit) -> 1 -> GATE -> 2 -> GATE -> 3 -> GATE -> 4 -> GATE -> stop.

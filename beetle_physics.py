@@ -4969,9 +4969,11 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
         # vertical gaps (scorpion back below + tail arc above reads as one
         # 33..55 range), so a ball floating IN the gap "overlapped" both
         # heights and hovered on nothing. Require a ball voxel within 2
-        # rows of a beetle voxel in this column. Hook-interior columns keep
-        # the envelope (pincer squeeze wants early wide detection)
-        if contact == 1 and is_ball_involved == 1 and has_hook_interior == 0 and ball_adjacent == 0:
+        # rows of a beetle voxel in this column — INCLUDING hook-interior
+        # columns: their ±5-row early-squeeze tolerance is for grabbing
+        # BEETLES, and for the ball it created a glue aura around the stag
+        # pincers (carry/settle running from 5 voxels away = "too sticky")
+        if contact == 1 and is_ball_involved == 1 and ball_adjacent == 0:
             contact = 0
 
     # XZ NEIGHBOR CHECK: Catch edge-to-edge clipping in adjacent columns
@@ -7758,6 +7760,12 @@ def apply_bowl_slide(entity, params):
         # and the lane, so angled shots at the goal bounced off empty air
         if _in_goal_lane(entity.x, entity.z):
             return  # No slide in goal pit areas
+        if (_is_ball and abs(entity.x) > 37.5 and entity.y < 8.0
+                and abs(entity.z) < 12.0 + entity.radius):
+            # GOAL BOX INTERIOR (ball-radius z margin): deep in the goal
+            # the rim systems stand aside too, or a slightly-off-center
+            # deep ball got shoved back toward the arena mid-fall
+            return
 
         # On the bowl - apply exponential inward force
         slide_strength = params.get("BOWL_SLIDE_STRENGTH", BOWL_SLIDE_STRENGTH)
@@ -7805,6 +7813,14 @@ def apply_bowl_slide(entity, params):
 
             # Direct position slide (exponentially stronger at edges)
             slide_amount = slide_strength * force_multiplier * 0.05
+            if _is_ball:
+                # The slide is a positional CONVEYOR (up to ~0.55/substep at
+                # depth = ~130 vox/s) — THIS, not the rim bounce restitution,
+                # was the "strong force back toward the middle": medium
+                # shots that kept their momentum and penetrated deep were
+                # slung back harder than fast shots that bounced at entry.
+                # Scale it down for the ball ("Rim Return", 1 = old full)
+                slide_amount *= params.get("BALL_RIM_RETURN", 0.4)
             entity.x += dir_x * slide_amount
             entity.z += dir_z * slide_amount
             # Also update prev position to avoid jitter
@@ -9314,6 +9330,40 @@ def calculate_horn_tip_position(beetle):
 
 _COLOR_TO_SLOT = None
 
+def _stag_pincer_point(beetle, pitch_angle, yaw_angle, lx, ly, lz_signed):
+    """World position of an arbitrary stag-pincer-local point, using the
+    exact transform pipeline of calculate_stag_pincer_tips (pivot (3,1),
+    pitch, per-side yaw, body yaw). lz_signed < 0 = left pincer."""
+    _s = 1.0 if lz_signed > 0.0 else -1.0
+    rel_x = lx - 3.0
+    rel_y = ly - 1.0
+    rel_z = lz_signed
+    cp = math.cos(pitch_angle)
+    sp = math.sin(pitch_angle)
+    px = rel_x * cp - rel_y * sp
+    py = rel_x * sp + rel_y * cp
+    cy = math.cos(yaw_angle)
+    sy = math.sin(yaw_angle)
+    yx = px * cy - _s * rel_z * sy
+    yz = _s * px * sy + rel_z * cy
+    lxx = yx + 3.0
+    lyy = py + 1.0
+    cr = math.cos(beetle.rotation)
+    sr = math.sin(beetle.rotation)
+    return (beetle.x + lxx * cr - yz * sr, beetle.y + lyy,
+            beetle.z + lxx * sr + yz * cr)
+
+def _horn_push_radii(beetle, n):
+    """Per-segment halfwidths for the ball's analytic horn shapes — real
+    thickness where the voxels are MASSIVE blocks rather than rods
+    (push-face consistency): scorpion claw masses ~2.5, hercules jaws
+    1.8, everything else the shaft default 1.5."""
+    if beetle.horn_type == "scorpion" and n >= 2:
+        return [2.5, 2.5] + [1.5] * (n - 2)
+    if beetle.horn_type == "hercules":
+        return [1.8] * n
+    return [1.5] * n
+
 def _slot_of(beetle):
     """Slot index for a beetle object (color is a VOXEL ID, never compare
     to strings — see _giraffe_pivot_local)."""
@@ -9331,8 +9381,6 @@ def _leg_strut_capsules(beetle):
     from z=3, tibia drifts ~2 forward, feet at ground). Static stance
     pose — gait swing accepted as unmodeled. Ball layer only."""
     ht = beetle.horn_type
-    if ht not in ("bombardier", "scorpion", "spider"):
-        return []
     _slot = _slot_of(beetle)
     _bl, _bb = _slot_body_dims(_slot)
     _ll = float(_slot_leg_length(_slot))
@@ -9347,9 +9395,16 @@ def _leg_strut_capsules(beetle):
         # rear at -(bl//2)-1, rear2 at -(bl*3//4)-2)
         _pairs = ((-float(int(_bl) // 2) - 1.0, 2.0, 1.2),
                   (-float(int(_bl) * 3 // 4) - 2.0, 2.0, 1.3))
-    else:  # spider — 4 splayed pairs; peaked arch approximated straight
+    elif ht == "spider":  # 4 splayed pairs; peaked arch approximated straight
         _pairs = ((4.0, 2.0, 0.9), (1.0, 2.0, 1.0),
                   (-2.0, 2.0, 1.1), (-5.0, 2.0, 1.0))
+    else:
+        # STANDARD BEETLES (rhino/stag/hercules/atlas/giraffe): front/mid/
+        # rear pairs at ground level — a ball rolling off the back slid
+        # down the body side and ghosted straight through the leg voxels
+        # (legs had no analytic presence for these types at all)
+        _pairs = ((0.0, 2.0, 1.0), (-3.0, 2.0, 1.0),
+                  (-float(int(_bl) // 2) - 1.0, 2.0, 1.0))
     segs = []
     for _ax, _ay, _mult in _pairs:
         _fx = _ax + 2.0
@@ -9534,7 +9589,19 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
         return [(bx, by, bz, ex, ey, ez), (ex, ey, ez, tx, ty, tz)]
     if ht == "stag":
         lt, rt = calculate_stag_pincer_tips(beetle, _p, _y)
-        return [(bx, by, bz) + lt, (bx, by, bz) + rt]
+        # L-RISERS (push-face consistency): the real pincer is an L — a low
+        # horizontal arm (y~1) plus a VERTICAL riser at its end (the raised
+        # tips, ~prong+1 tall). Only the arm was modeled: a thin rod under
+        # the ball's center wedged pushed balls UP and over the top instead
+        # of forward (ball rolled off behind the stag mid-dribble). The
+        # riser is rigid with the arm — same pivot/pitch/yaw transform
+        _tlx = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
+        _tlz = beetle.horn_prong_len + 3.0
+        _rh = 2.0 + beetle.horn_prong_len  # riser top local y
+        _ltop = _stag_pincer_point(beetle, _p, _y, _tlx, _rh, -_tlz)
+        _rtop = _stag_pincer_point(beetle, _p, _y, _tlx, _rh, _tlz)
+        return [(bx, by, bz) + lt, lt + _ltop,
+                (bx, by, bz) + rt, rt + _rtop]
     if ht == "hercules":
         tt, bt = calculate_hercules_jaw_tips(beetle, _p, _y)
         # Bottom jaw roots at its own pivot, local (3,1,0) — NOT the top
@@ -9780,8 +9847,10 @@ def _ball_surface_contact(ball, beetle):
     # Leg struts for raised-stance types (generated from the leg
     # constants; legs stay planted, so no aim rotation)
     segs.extend(_leg_strut_capsules(beetle))
-    for _s in horn_collision_segments(beetle):
-        segs.append(_s + (1.5,))     # horn shafts: same halfwidth the shaft response uses
+    _hsegs = horn_collision_segments(beetle)
+    _hradii = _horn_push_radii(beetle, len(_hsegs))
+    for _hi, _s in enumerate(_hsegs):
+        segs.append(_s + (_hradii[_hi],))
     best_pen = -1e9
     _cands = []
     for ax, ay, az, bx, by, bz, seg_r in segs:
@@ -15594,6 +15663,41 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _so_segs = horn_collision_segments(shaft_owner)
                     _scx, _scy, _scz, _sseg, _st_local, _sdist = _closest_on_horn_segments(
                         _so_segs, collision_x, collision_y, collision_z)
+                    # SEGMENT HYSTERESIS (ball): multi-arm skeletons fork
+                    # (rhino midline + prongs at the tip) and the closest-
+                    # segment winner flips between arms for a ball bouncing
+                    # at the fork — every downstream value (rest height,
+                    # surface point) alternated between two targets, so the
+                    # ball visibly fought for two spots. Keep last substep's
+                    # segment unless another is CLEARLY closer
+                    if intruder.horn_type == "ball":
+                        _latch = getattr(intruder, 'seg_latch', None)
+                        if (_latch is not None and _latch[0] == shaft_owner.color
+                                and _latch[1] != _sseg and _latch[1] < len(_so_segs)):
+                            _lseg = _so_segs[_latch[1]]
+                            _lcx, _lcy, _lcz, _lt, _ld = closest_point_on_segment(
+                                collision_x, collision_y, collision_z,
+                                _lseg[0], _lseg[1], _lseg[2], _lseg[3], _lseg[4], _lseg[5])
+                            if _ld <= _sdist + 0.75:
+                                _scx, _scy, _scz = _lcx, _lcy, _lcz
+                                _sseg = _latch[1]
+                                _st_local = _lt
+                                _sdist = _ld
+                        intruder.seg_latch = (shaft_owner.color, _sseg)
+                        # Response geometry from the BALL CENTER, not the
+                        # voxel contact cluster: the cluster average jumps
+                        # whole voxels as animated stamping shifts columns,
+                        # and on a pitched horn that jitter walks the
+                        # closest point (and thus the rest target) up and
+                        # down the slope every frame — the residual micro
+                        # hops. The ball's center is smooth. (_sdist keeps
+                        # the cluster-based value for the contact gate)
+                        _bseg = _so_segs[_sseg]
+                        _bcx, _bcy, _bcz, _bt, _bd2 = closest_point_on_segment(
+                            intruder.x, intruder.y, intruder.z,
+                            _bseg[0], _bseg[1], _bseg[2], _bseg[3], _bseg[4], _bseg[5])
+                        _scx, _scy, _scz = _bcx, _bcy, _bcz
+                        _st_local = _bt
                     _nseg = len(_so_segs)
                     _st = horn_segment_param(shaft_owner, _sseg, _st_local, _nseg)  # global 0..1 along the horn
                     # Tip of the CONTACT segment (arm), not the last in the list
@@ -15645,7 +15749,25 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _sg_vert = abs(_sg_dy) / _sg_len if _sg_len > 0.001 else 0.0
                         _sg_flat = max(0.0, 1.0 - _sg_vert)
                         _py = intruder.y - _scy
-                        if _py > 0.0 and _py >= _pdist and _sg_vert < 0.7:
+                        # GROUNDED gate (push-face consistency): a rod beside
+                        # a grounded ball's lower quarter cannot lift it —
+                        # only a shaft actually UNDER the center column can.
+                        # Without this, a ball cradled between the stag's low
+                        # arms was levitated 1.2/substep and rolled over the
+                        # top backward mid-dribble. Airborne dribbling on top
+                        # of horns is unchanged
+                        # HYSTERESIS on the on-top/side split: the hard
+                        # switch at py == pdist flip-flopped per substep for
+                        # a ball resting slightly off the horn's crest —
+                        # alternating vertical resolves and horizontal pushes
+                        # ("doesn't know which way to go" skips). Once
+                        # on-top, stay until clearly off the side
+                        _ot_ratio = _py / max(_pdist, 0.001)
+                        _ot_gate = 0.8 if getattr(intruder, 'ontop_latch', False) else 1.0
+                        _is_ontop = (_py > 0.0 and _ot_ratio >= _ot_gate and _sg_vert < 0.7
+                                     and (not intruder.on_ground or _pdist < 1.5))
+                        intruder.ontop_latch = _is_ontop
+                        if _is_ontop:
                             _p3d = math.sqrt(_pdist * _pdist + _py * _py)
                             _pen = (intruder.radius + 1.5) - _p3d
                             if _pen > 0.0:
@@ -15696,6 +15818,18 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     _art_vx += _chx2
                                     _art_vy += _chy2
                                     _art_vz += _chz2
+                                elif shaft_owner.horn_type == "spider" and _sseg == 1:
+                                    # Abdomen swing (the missing on-top entry:
+                                    # a grounded ball behind the spider
+                                    # classifies on-top, so up/down butt
+                                    # flicks transferred NOTHING here)
+                                    _spv3 = getattr(shaft_owner, 'spider_aim_vel', 0.0)
+                                    if abs(_spv3) > 0.02:
+                                        _chx2, _chy2, _chz2 = _channel_sweep_velocity(
+                                            shaft_owner, _spv3, 3.0, 0.0, _scx, _scy, _scz)
+                                        _art_vx += _chx2
+                                        _art_vy += _chy2
+                                        _art_vz += _chz2
                                 _surf_vy = shaft_owner.vy + _art_vy
                                 # Surface horizontal velocity at the contact
                                 # (linear + turn sweep + articulation/channel)
@@ -15720,8 +15854,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_rel - _bb_min) / 35.0 * 0.35)
                                     globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
                                 else:
-                                    if intruder.vy < _surf_vy:
-                                        intruder.vy = _surf_vy  # settle riding the surface
+                                    # Settle riding the surface — SYMMETRIC
+                                    # within a small band: the old one-sided
+                                    # raise RECTIFIED the beetle's (render-
+                                    # hidden) floor-settle vy buzz into
+                                    # upward pumping = micro hops. Real
+                                    # motion exceeds the band and rides as
+                                    # before
+                                    if intruder.vy - _surf_vy < 2.0:
+                                        intruder.vy = _surf_vy
                                     # CARRY FRICTION (Coulomb-capped): a
                                     # resting/dribbled ball converges toward
                                     # the surface's motion — walking carries,
@@ -15730,6 +15871,28 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     if _cg > 0.0:
                                         _carry_toward(intruder, _sfvx, _sfvz, _cg,
                                                       params.get("BALL_CARRY_MAX_DV", 2.5))
+                                    # SMOOTH REST HEIGHT: converge gently
+                                    # BOTH WAYS to the analytic surface
+                                    # height. The stamped horn steps +-1
+                                    # voxel row with walk animation, and
+                                    # lift-only correction rode each highest
+                                    # step up then dropped off it — the
+                                    # vertical micro hops. The segment
+                                    # surface moves smoothly (no rounding)
+                                    _rest_y = _scy + math.sqrt(max(
+                                        (intruder.radius + 1.5) ** 2 - _pdist * _pdist, 0.25))
+                                    _dy_rest = (_rest_y - intruder.y) * 0.3
+                                    if _dy_rest < 0.0:
+                                        # DOWNWARD smoothing only when truly
+                                        # centered on the crest (the micro-hop
+                                        # case). Off-center, the flank target
+                                        # is LOWER — pulling down there flushed
+                                        # the ball off the horn on every turn
+                                        # before the carry could re-center it
+                                        _dy_rest *= max(0.0, 1.0 - _pdist / 2.0)
+                                    intruder.y += max(-0.25, min(0.4, _dy_rest))
+                                    if intruder.prev_y < intruder.y:
+                                        intruder.prev_y = intruder.y
                                 collision_stats['shaft_penetration_fixes'] += 1
                             continue
                         # SIDE/BELOW contact: only respond when the segment
@@ -16748,7 +16911,12 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # to true on-top contact (ball clearly above the beetle)
                 _bb_ball = b1 if b1.horn_type == "ball" else b2
                 _bb_beetle = b2 if b1.horn_type == "ball" else b1
-                if _bb_ball.y > _bb_beetle.y + 3.0 and _bb_ball.vy < _bb_beetle.vy:
+                # Gate widened by a small band (+2): the strict `<` made the
+                # settle one-sided — it RECTIFIED the beetle's render-hidden
+                # floor-settle vy buzz into upward pumping (micro hops on
+                # backs). Within the band the settle assignment follows the
+                # surface BOTH ways; real bounces still need the impact gate
+                if _bb_ball.y > _bb_beetle.y + 3.0 and _bb_ball.vy < _bb_beetle.vy + 2.0:
                     # MOVING-SURFACE FRAME: impact measured against the
                     # beetle's own vertical motion and the result rides it —
                     # a rising back trampolines the ball; settling matches
@@ -16782,6 +16950,43 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         if _cg > 0.0:
                             _carry_toward(_bb_ball, _bsvx, _bsvz, _cg,
                                           params.get("BALL_CARRY_MAX_DV", 2.5))
+            elif is_ball_collision:
+                # BEETLE LANDING ON THE BALL (airborne beetle, grounded ball):
+                # the vertical-separation matrix had NO branch here, and the
+                # ball is not floor — a dropping beetle fell straight THROUGH
+                # the ball's volume ("swallowed" it) until its own floor
+                # support caught it, then the squeeze slowly spat the ball
+                # out. Give the beetle the DOME response: ride up/off along
+                # the surface normal and arrest the fall against the ball;
+                # the off-axis dome normal + existing horizontal separation
+                # roll the beetle off while the squeeze evacuates the ball
+                _lb_ball = b1 if b1.horn_type == "ball" else b2
+                _lb_beetle = b2 if b1.horn_type == "ball" else b1
+                if not _lb_beetle.on_ground:
+                    # Normal convention is b2 -> b1; orient it ball -> beetle
+                    _dn = 1.0 if _lb_beetle is b1 else -1.0
+                    _dny = normal_y * _dn
+                    if _dny > 0.2:  # ball genuinely below the beetle
+                        _lb_beetle.y += _dny * separation_force
+                        _closing_fall = _lb_ball.vy - _lb_beetle.vy
+                        if _closing_fall > 0.0:
+                            # Arrest most of the fall; the ball takes a
+                            # squash-out share downward into the floor
+                            _lb_beetle.vy += _closing_fall * 0.6
+                            # TIP OFF THE DOME: an off-center landing on a
+                            # ball is unstable — tip the body away from the
+                            # support point (same local-frame pattern and
+                            # tunable as the shaft contact tilt), scaled by
+                            # the landing impact
+                            _tcos = math.cos(_lb_beetle.rotation)
+                            _tsin = math.sin(_lb_beetle.rotation)
+                            _wlx = _lb_ball.x - _lb_beetle.x
+                            _wlz = _lb_ball.z - _lb_beetle.z
+                            _loc_x = _wlx * _tcos + _wlz * _tsin
+                            _loc_z = _wlz * _tcos - _wlx * _tsin
+                            _tilt_f = min(_closing_fall, 15.0) * params.get("SHAFT_PENETRATION_TILT", 0.15)
+                            _lb_beetle.pending_pitch += _loc_z * _tilt_f / _lb_beetle.pitch_inertia
+                            _lb_beetle.pending_roll -= _loc_x * _tilt_f / _lb_beetle.roll_inertia
 
             # Safety clamp to prevent going below floor voxel layer
             # (Main floor collision handles proper positioning above floor).
@@ -22553,6 +22758,17 @@ try:
             if beetle_ball.y < -1.0 and beetle_ball.vy < 0:
                 in_goal_pit = True
 
+            # GOAL BOX INTERIOR: past the bevels and LOW = inside the goal,
+            # with a ball-radius margin on z. The goal's visual walls have
+            # no physics, so a deep shot drifting a little past |z|=12
+            # exited the pit region SIDEWAYS, found the ice lip's floor,
+            # got snapped up onto it and slid back toward center — read as
+            # "teleports to the middle, slightly shallower, then falls"
+            if (abs(beetle_ball.x) > 37.5
+                    and az < goal_pit_half_width + beetle_ball.radius
+                    and beetle_ball.y < 8.0):
+                in_goal_pit = True
+
             if in_goal_pit:
                 # Ball is in goal pit - no floor collision, let it fall
                 beetle_ball.on_ground = False
@@ -26656,6 +26872,9 @@ try:
                 # ball keeps on the ice (higher = rides the ramp farther)
                 physics_params["BALL_RIM_BOUNCE"] = window.GUI.slider_float("Rim Bounce", physics_params.get("BALL_RIM_BOUNCE", 0.21), 0.0, 0.9)
                 physics_params["BALL_RIM_MOMENTUM"] = window.GUI.slider_float("Rim Momentum", physics_params.get("BALL_RIM_MOMENTUM", 0.97), 0.85, 1.0)
+                # How hard the ice conveyor slings the ball back to mid
+                # (the return force; 1 = old full-strength slide)
+                physics_params["BALL_RIM_RETURN"] = window.GUI.slider_float("Rim Return", physics_params.get("BALL_RIM_RETURN", 0.4), 0.1, 1.0)
                 # How far past the arena edge each entity travels free
                 # before the rim band bites (voxels)
                 physics_params["BOWL_BALL_GRACE"] = window.GUI.slider_float("Ball Rim Grace", physics_params.get("BOWL_BALL_GRACE", 8.0), 0.0, 12.0)

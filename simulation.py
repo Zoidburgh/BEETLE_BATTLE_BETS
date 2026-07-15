@@ -7868,14 +7868,26 @@ def clear_goal_pit_floor():
     center_z = 64
     floor_y_offset = 33
     goal_pit_half_width = 12
+    # ROUNDED CORNERS (corner_r 5 at the mouth, matching the renderer's
+    # floor-mesh SDF and the ball's in_goal_pit logic): the old SHARP
+    # rectangle cleared the voxels UNDER the visible corner bevels, so the
+    # floor probe found nothing there and the ball sank through the mesh
 
-    for i in range(0, 33):  # Blue pit: grid x 0..32
+    for i in range(0, 33):  # Blue pit: grid x 0..32 (corner at i=32)
         for k in range(center_z - goal_pit_half_width, center_z + goal_pit_half_width):
             if voxel_type[i, floor_y_offset, k] == CONCRETE:
+                dx_c = 32 - i
+                dz_c = goal_pit_half_width - abs(k - center_z)
+                if dx_c < 5 and dz_c < 5 and (dx_c * dx_c + dz_c * dz_c) < 25:
+                    continue  # inside the bevel bulge - keep the floor
                 voxel_type[i, floor_y_offset, k] = EMPTY
-    for i in range(96, 128):  # Red pit: grid x 96..127
+    for i in range(96, 128):  # Red pit: grid x 96..127 (corner at i=96)
         for k in range(center_z - goal_pit_half_width, center_z + goal_pit_half_width):
             if voxel_type[i, floor_y_offset, k] == CONCRETE:
+                dx_c = i - 96
+                dz_c = goal_pit_half_width - abs(k - center_z)
+                if dx_c < 5 and dz_c < 5 and (dx_c * dx_c + dz_c * dz_c) < 25:
+                    continue  # inside the bevel bulge - keep the floor
                 voxel_type[i, floor_y_offset, k] = EMPTY
 
 @ti.kernel
