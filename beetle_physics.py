@@ -9847,19 +9847,46 @@ def _ball_surface_contact(ball, beetle):
     # Leg struts for raised-stance types (generated from the leg
     # constants; legs stay planted, so no aim rotation)
     segs.extend(_leg_strut_capsules(beetle))
+    _n_base = len(segs)  # shapes before the horn segments (no articulation)
     _hsegs = horn_collision_segments(beetle)
-    _hradii = _horn_push_radii(beetle, len(_hsegs))
+    _n_horn = len(_hsegs)
+    _hradii = _horn_push_radii(beetle, _n_horn)
     for _hi, _s in enumerate(_hsegs):
         segs.append(_s + (_hradii[_hi],))
     best_pen = -1e9
     _cands = []
-    for ax, ay, az, bx, by, bz, seg_r in segs:
+    # MULTI-CONTACT manifold: every shape with REAL penetration, carrying
+    # its own contact point and its own articulation velocity — secondary
+    # contacts (beyond the deepest) resolve independently in the caller.
+    # This is what makes concave regions (stag cradle, hercules jaw gap)
+    # work without special cases: both walls act at once, and closing
+    # walls carry their own motion into their own contacts
+    _contacts = []
+    _pred = None
+    _hvel = (abs(beetle.horn_pitch_velocity) > 0.02
+             or abs(beetle.horn_yaw_velocity) > 0.02)
+    for _i, (ax, ay, az, bx, by, bz, seg_r) in enumerate(segs):
         _cx, _cyy, _cz, _t, _d = closest_point_on_segment(ball.x, ball.y, ball.z,
                                                           ax, ay, az, bx, by, bz)
         _pen = (ball.radius + seg_r) - _d
         if _pen > best_pen:
             best_pen = _pen
         _cands.append((_pen, ball.x - _cx, ball.y - _cyy, ball.z - _cz))
+        if _pen > 0.0:
+            _avx = 0.0
+            _avz = 0.0
+            if _i >= _n_base and _hvel:
+                _hi2 = _i - _n_base
+                if horn_segment_articulates(beetle, _hi2, _n_horn):
+                    if _pred is None:
+                        _pred = horn_collision_segments(
+                            beetle,
+                            beetle.horn_pitch + beetle.horn_pitch_velocity * PHYSICS_TIMESTEP,
+                            beetle.horn_yaw + beetle.horn_yaw_velocity * PHYSICS_TIMESTEP)
+                    if _hi2 < len(_pred):
+                        _avx = _t * (_pred[_hi2][3] - _hsegs[_hi2][3]) / PHYSICS_TIMESTEP
+                        _avz = _t * (_pred[_hi2][5] - _hsegs[_hi2][5]) / PHYSICS_TIMESTEP
+            _contacts.append((_pen, ball.x - _cx, ball.y - _cyy, ball.z - _cz, _cx, _cz, _avx, _avz))
     # SEAM BLENDING: average the radials of every shape within 1 voxel of
     # the deepest, weighted by how close each is to the max. Winner-takes-
     # all flipped the normal per substep wherever two shapes trade the
@@ -9886,14 +9913,14 @@ def _ball_surface_contact(ball, beetle):
     if best_pen > 0.0 and best_dy < 0.0 and getattr(ball, 'on_ground', False):
         _h = math.sqrt(best_dx*best_dx + best_dz*best_dz)
         if _h > 0.3:
-            return best_pen, best_dx / _h, 0.0, best_dz / _h
+            return best_pen, best_dx / _h, 0.0, best_dz / _h, _contacts
         _lz = -(ball.x - beetle.x) * _sr + (ball.z - beetle.z) * _cr
         _side = 1.0 if _lz >= 0.0 else -1.0
-        return best_pen, -_sr * _side, 0.0, _cr * _side
+        return best_pen, -_sr * _side, 0.0, _cr * _side, _contacts
     _dl = math.sqrt(best_dx*best_dx + best_dy*best_dy + best_dz*best_dz)
     if _dl < 0.05:
-        return best_pen, 0.0, 1.0, 0.0
-    return best_pen, best_dx / _dl, best_dy / _dl, best_dz / _dl
+        return best_pen, 0.0, 1.0, 0.0, _contacts
+    return best_pen, best_dx / _dl, best_dy / _dl, best_dz / _dl, _contacts
 
 def _closest_on_horn_segments(segments, px, py, pz):
     """Closest point to (px,py,pz) across a horn's segment list.
@@ -15608,7 +15635,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             if is_ball_collision:
                 _sn_ball = b1 if b1.horn_type == "ball" else b2
                 _sn_btl = b2 if b1.horn_type == "ball" else b1
-                _ball_pen_raw, _rnx, _rny, _rnz = _ball_surface_contact(_sn_ball, _sn_btl)
+                _ball_pen_raw, _rnx, _rny, _rnz, _ball_contacts = _ball_surface_contact(_sn_ball, _sn_btl)
                 _sn_mix = params.get("BALL_SURFACE_NORMAL", 1.0)
                 if _sn_mix > 0.0 and _ball_pen_raw > -2.0:
                     # Normal convention is b2 -> b1; radial is surface -> ball
@@ -15621,6 +15648,62 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         instant_normal_x = _bnx / _bnl
                         instant_normal_y = _bny / _bnl
                         instant_normal_z = _bnz / _bnl
+                # MULTI-CONTACT SECONDARY PASS (stag_physics_plan P1 — the
+                # general mechanism that replaced the rejected pocket
+                # special case): every shape penetrating the ball BEYOND
+                # the deepest resolves INDEPENDENTLY — capped horizontal
+                # push-out + closing-velocity transfer along its own
+                # radial, with that shape's own articulation velocity.
+                # Concave cradles confine from both walls at once, and the
+                # stag squeeze-shot EMERGES: each arm's inward normal
+                # tilts forward by the splay angle, so two closing walls
+                # wedge the ball out the opening. Vertical stays with the
+                # primary paths (on-top branch / grounded gate / floor)
+                _ball_pinched = False
+                if len(_ball_contacts) > 1:
+                    _deep_i = 0
+                    for _ci in range(1, len(_ball_contacts)):
+                        if _ball_contacts[_ci][0] > _ball_contacts[_deep_i][0]:
+                            _deep_i = _ci
+                    _mc_push = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35)
+                    _mc_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5)
+                    _dpx = _ball_contacts[_deep_i][1]
+                    _dpz = _ball_contacts[_deep_i][3]
+                    for _ci in range(len(_ball_contacts)):
+                        if _ci == _deep_i:
+                            continue  # deepest = the primary response's job
+                        _cp, _crx, _cry, _crz, _ccx3, _ccz3, _cavx, _cavz = _ball_contacts[_ci]
+                        _chl = math.sqrt(_crx * _crx + _crz * _crz)
+                        if _chl < 0.3:
+                            continue  # directly above/below: no lateral role
+                        # PINCH detection: this contact's horizontal radial
+                        # opposes the deepest's = a true two-wall squeeze
+                        if _crx * _dpx + _crz * _dpz < -0.3 * _chl:
+                            _ball_pinched = True
+                        _hnx = _crx / _chl
+                        _hnz = _crz / _chl
+                        # VELOCITY transfer along the FULL 3D radial — the
+                        # wedge's natural up-and-forward pop arrives as
+                        # bounded velocity, not positional teleport
+                        _c3l = math.sqrt(_crx * _crx + _cry * _cry + _crz * _crz)
+                        _n3x = _crx / _c3l
+                        _n3y = _cry / _c3l
+                        _n3z = _crz / _c3l
+                        # surface velocity at THIS contact: body linear +
+                        # turn sweep + the shape's own articulation
+                        _msx = _sn_btl.vx - (_ccz3 - _sn_btl.z) * _sn_btl.angular_velocity + _cavx
+                        _msz = _sn_btl.vz + (_ccx3 - _sn_btl.x) * _sn_btl.angular_velocity + _cavz
+                        _mcl = ((_msx - _sn_ball.vx) * _n3x
+                                + (_sn_btl.vy - _sn_ball.vy) * _n3y
+                                + (_msz - _sn_ball.vz) * _n3z)
+                        if _mcl > 0.0:
+                            _sn_ball.vx += _n3x * _mcl * _mc_damp
+                            _sn_ball.vy += _n3y * _mcl * _mc_damp
+                            _sn_ball.vz += _n3z * _mcl * _mc_damp
+                        # POSITIONAL push stays horizontal (no levitation)
+                        _mp = min(_cp, 1.0) * _mc_push
+                        _sn_ball.x += _hnx * _mp
+                        _sn_ball.z += _hnz * _mp
 
             # Apply exponential moving average to smooth collision normal (reduces jitter)
             # This prevents rapid oscillation when beetles are locked horn-to-horn
@@ -15771,7 +15854,12 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             _p3d = math.sqrt(_pdist * _pdist + _py * _py)
                             _pen = (intruder.radius + 1.5) - _p3d
                             if _pen > 0.0:
-                                intruder.y += min(_pen, 1.2)  # capped, floor-style
+                                # During a PINCH (two opposing walls), the
+                                # positional lift is nearly disabled — the
+                                # wedge must eject via VELOCITY (the multi-
+                                # contact pass), or the teleport-up beat the
+                                # forward squirt and the ball just perched
+                                intruder.y += min(_pen, 0.3 if _ball_pinched else 1.2)
                                 if intruder.prev_y < intruder.y:
                                     intruder.prev_y = intruder.y  # clamp interp, no pop
                                 # MOVING-SURFACE FRAME: bounce/settle against
@@ -22867,7 +22955,12 @@ try:
                                     _vn = (beetle_ball.vx * _nx + beetle_ball.vy * _ny
                                            + beetle_ball.vz * _nz)
                                     if _vn < 0.0:
-                                        _rest = physics_params["BALL_GROUND_BOUNCE"]
+                                        # Ice-ring restitution: DEADER than
+                                        # concrete — the 22-deg normal turns
+                                        # fall speed into INWARD speed, and
+                                        # at the floor's 0.8 a dropping ball
+                                        # rocketed back to mid-arena
+                                        _rest = physics_params.get("BALL_ICE_BOUNCE", 0.4)
                                         _tvx = beetle_ball.vx - _vn * _nx
                                         _tvy = beetle_ball.vy - _vn * _ny
                                         _tvz = beetle_ball.vz - _vn * _nz
@@ -22877,7 +22970,7 @@ try:
                                     else:
                                         # moving along/off the slope already —
                                         # no reflection, just settle handling
-                                        beetle_ball.vy = abs(beetle_ball.vy) * physics_params["BALL_GROUND_BOUNCE"]
+                                        beetle_ball.vy = abs(beetle_ball.vy) * physics_params.get("BALL_ICE_BOUNCE", 0.4)
                                 else:
                                     beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
                                     # Bounce grip: contact friction scrubs some
@@ -26875,6 +26968,9 @@ try:
                 # How hard the ice conveyor slings the ball back to mid
                 # (the return force; 1 = old full-strength slide)
                 physics_params["BALL_RIM_RETURN"] = window.GUI.slider_float("Rim Return", physics_params.get("BALL_RIM_RETURN", 0.4), 0.1, 1.0)
+                # Ice-ring bounce restitution (the slope converts fall speed
+                # into inward speed; deader than the concrete floor's)
+                physics_params["BALL_ICE_BOUNCE"] = window.GUI.slider_float("Ice Bounce", physics_params.get("BALL_ICE_BOUNCE", 0.4), 0.0, 0.8)
                 # How far past the arena edge each entity travels free
                 # before the rim band bites (voxels)
                 physics_params["BOWL_BALL_GRACE"] = window.GUI.slider_float("Ball Rim Grace", physics_params.get("BOWL_BALL_GRACE", 8.0), 0.0, 12.0)
