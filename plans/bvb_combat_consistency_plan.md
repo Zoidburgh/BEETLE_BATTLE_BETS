@@ -24,9 +24,8 @@ pitch-strike reading dead because a static chord won the contact.
       spider all credited.
 - [x] SVS (horn-vs-horn crossings): pitch/yaw + scorpion tail + spider
       abdomen credited.
-- [ ] CONFIRMED GAP: bombardier AIM credit is missing in SVS — aim-tilting
-      the head into a horn crossing transfers nothing (works in the shaft
-      path). Small block, mirrors the scorpion/spider loop entries.
+- [x] FIXED 2026-07-15: bombardier AIM credit added to SVS (was missing —
+      aim-tilting the head into a horn crossing transferred nothing).
 - [ ] VERIFY: main impulse's artic_tip_speed credit (redirection) is
       pitch/yaw-only and reach-15 hardcoded — channels (tail/aim) get no
       credit there; horn_reach 15 is wrong for short-horned types.
@@ -34,10 +33,11 @@ pitch-strike reading dead because a static chord won the contact.
 ### D2. Contact-damping parity (what slows a weapon grinding through you)
 - [x] Horn pitch/yaw: horn damping via calculate_horn_damping.
 - [x] Bombardier aim: burial damping (step 6 of the abnormal-body plan).
-- [ ] CONFIRMED GAP: scorpion TAIL has no contact damping — V-strike
-      grinds through an opponent's horn/body at full 50 deg/s while every
-      other weapon slows under burial. Mirror the bombardier aim-damping
-      pattern (horn_burial scale on tail rotation speed).
+- [x] FIXED 2026-07-15: scorpion tail burial-damped (1.5 free / 5.5 stop,
+      same constants as aim/turn damping; strike AND passive return).
+      NOTE: horn_burial also rises on deep BALL contact, so a smash that
+      buries into the ball's core slows briefly mid-swing — accepted (the
+      launch happens in the first substeps, before burial builds).
 - [ ] CONFIRMED GAP: spider ABDOMEN aim likewise undamped (lower stakes —
       the abdomen aims up/away from opponents; verify in play first).
 
@@ -54,14 +54,12 @@ pitch-strike reading dead because a static chord won the contact.
       per-type counter to collision_stats for one canary) before deciding.
 
 ### D4. Per-slot parity (P3/P4 vs blue/red)
-- [ ] CONFIRMED (memory, unfixed): the thin-horn XZ NEIGHBOR RESCUE in
-      _column_pair_contact hardcodes blue/red voxel id lists — DEAD for
-      slots 2/3, so P3/P4 thin horns clip through gaps blue/red would
-      catch. Fix: ownership via simulation.beetle_owner like the main
-      column test (also un-hardcodes future palettes).
-- [ ] VERIFY: any other blue/red-only code on the combat path (grep
-      BEETLE_BLUE|BEETLE_RED literals inside collision functions; the
-      old giraffe color==string class of bug).
+- [x] FIXED 2026-07-15: neighbor rescue is ownership-based (all slots,
+      venom voxels now included consistently with the main column test).
+      CANARY still due before commit — detection change rebaselines
+      metrics for everyone.
+- [x] VERIFIED 2026-07-15: no other BEETLE_BLUE/RED literals remain in
+      the collision-gate region (grep clean).
 
 ### D5. Geometry parity in bvb layers
 - [x] Segments: all 8 types have multi-arm/channel-tracked skeletons

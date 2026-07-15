@@ -4989,13 +4989,14 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
                     for neighbor_gy in range(beetle1_y_min, beetle1_y_max + 1):
                         if 0 <= neighbor_gy < simulation.n_grid and contact == 0:
                             neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
+                            # Ownership-based (was hardcoded blue/red voxel id
+                            # lists — the rescue was DEAD for slots 2/3, so
+                            # P3/P4 thin horns clipped through voxel-gap seams
+                            # blue/red would catch)
                             neighbor_is_2 = 0
-                            if color2 == simulation.BEETLE_BLUE:
-                                if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
-                                    neighbor_is_2 = 1
-                            elif color2 == simulation.BEETLE_RED:
-                                if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
-                                    neighbor_is_2 = 1
+                            _nown2 = simulation.beetle_owner(neighbor_voxel)
+                            if _nown2 >= 0 and _nown2 == simulation.beetle_owner(color2):
+                                neighbor_is_2 = 1
                             if neighbor_is_2 == 1:
                                 contact = 1
     elif beetle2_y_max >= 0 and beetle1_y_max < 0:  # Only beetle2 in this column
@@ -5009,13 +5010,11 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
                     for neighbor_gy in range(beetle2_y_min, beetle2_y_max + 1):
                         if 0 <= neighbor_gy < simulation.n_grid and contact == 0:
                             neighbor_voxel = simulation.voxel_type[neighbor_gx, neighbor_gy, neighbor_gz]
+                            # Ownership-based (see the mirrored branch above)
                             neighbor_is_1 = 0
-                            if color1 == simulation.BEETLE_BLUE:
-                                if neighbor_voxel == 5 or neighbor_voxel == 7 or neighbor_voxel == 9 or neighbor_voxel == 11 or neighbor_voxel == 13 or neighbor_voxel == 18:
-                                    neighbor_is_1 = 1
-                            elif color1 == simulation.BEETLE_RED:
-                                if neighbor_voxel == 6 or neighbor_voxel == 8 or neighbor_voxel == 10 or neighbor_voxel == 12 or neighbor_voxel == 14 or neighbor_voxel == 19:
-                                    neighbor_is_1 = 1
+                            _nown1 = simulation.beetle_owner(neighbor_voxel)
+                            if _nown1 >= 0 and _nown1 == simulation.beetle_owner(color1):
+                                neighbor_is_1 = 1
                             if neighbor_is_1 == 1:
                                 contact = 1
 
@@ -7774,7 +7773,7 @@ def apply_bowl_slide(entity, params):
             outward_vel = -(entity.vx * dir_x + entity.vz * dir_z)  # Positive = moving outward
 
             if outward_vel > 0:
-                _rim_bounce = params.get("BALL_RIM_BOUNCE", 0.5) if _is_ball else 0.0
+                _rim_bounce = params.get("BALL_RIM_BOUNCE", 0.35) if _is_ball else 0.0
                 if _is_ball and _rim_bounce > 0.001 and outward_vel > params.get("BALL_RIM_BOUNCE_MIN", 6.0):
                     # RIM BOUNCE (boards): a fast shot into the band REFLECTS
                     # back into play. The old slide only ERASED outward
@@ -7783,6 +7782,10 @@ def apply_bowl_slide(entity, params):
                     # dead code). Slider 0 restores the soft ooze
                     entity.vx += dir_x * outward_vel * (1.0 + _rim_bounce)
                     entity.vz += dir_z * outward_vel * (1.0 + _rim_bounce)
+                    # Mark the substep so the ice-slope FLOOR bounce doesn't
+                    # ALSO add restitution this step — both firing at the lip
+                    # corner stacked into a rocket toward mid-arena
+                    entity.rim_bounce_frame = physics_frame
                 else:
                     # Dampen outward velocity (stronger dampening further out).
                     # RAMP MOMENTUM: the ball keeps most of its speed on the
@@ -16043,6 +16046,18 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                         if abs(_spv2) > 0.02:
                                             _cvx, _cvy, _cvz = _channel_sweep_velocity(
                                                 _cb, _spv2, 3.0, 0.0, _ccx, _ccy, _ccz)
+                                    elif _cb.horn_type == "bombardier":
+                                        # Aim sweeps BOTH its segments (chord +
+                                        # head) around the rear pivot — was
+                                        # credited in the shaft path but not
+                                        # here, so aim-tilting into a locked
+                                        # horn cross transferred nothing
+                                        _bav = getattr(_cb, 'spray_aim_vel', 0.0)
+                                        if abs(_bav) > 0.02:
+                                            _cvx, _cvy, _cvz = _channel_sweep_velocity(
+                                                _cb, _bav,
+                                                -float(_slot_body_dims(_slot_of(_cb))[0]), 0.0,
+                                                _ccx, _ccy, _ccz)
                                     if _is1:
                                         _a1vx += _cvx
                                         _a1vy += _cvy
@@ -20073,14 +20088,22 @@ try:
                     TAIL_MAX_DOWN = -25.0       # Fully pushed down
 
                     _tail_before = beetle.tail_rotation_angle
+                    # BURIAL-DAMPED (like horn damping / bombardier aim):
+                    # every other weapon slows when buried in a body — the
+                    # tail ground through opponents at full 50 deg/s. Same
+                    # constants as the turn clamp (1.5 voxels free, 5.5 stop)
+                    _tail_mult = 1.0
+                    _tail_bury = getattr(beetle, 'horn_burial', 0.0)
+                    if _tail_bury > 1.5:
+                        _tail_mult = max(0.0, 1.0 - (_tail_bury - 1.5) / 4.0)
                     if p_inputs & INPUT_HORN_LEFT:
                         # V = Push tail down (for striking)
-                        beetle.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
+                        beetle.tail_rotation_angle -= TAIL_ROTATION_SPEED * _tail_mult * PHYSICS_TIMESTEP
                         beetle.tail_rotation_angle = max(TAIL_MAX_DOWN, beetle.tail_rotation_angle)
                     else:
                         # No key = passively return to max up position
                         if beetle.tail_rotation_angle < TAIL_MAX_UP:
-                            beetle.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
+                            beetle.tail_rotation_angle += TAIL_RETURN_SPEED * _tail_mult * PHYSICS_TIMESTEP
                             beetle.tail_rotation_angle = min(TAIL_MAX_UP, beetle.tail_rotation_angle)
                     # Tail swing rate (rad/s) — credited as contact velocity
                     # on tail-segment hits so a strike actually smashes
@@ -22579,14 +22602,65 @@ try:
                             # Suppress bounce if ball is near goal pit edge (prevent bouncing out of goal)
                             if near_goal_pit:
                                 beetle_ball.vy = 0.0
+                            elif getattr(beetle_ball, 'rim_bounce_frame', -1) == physics_frame:
+                                # LIP GUARD (consistency plan ph2): the rim
+                                # band already reflected the ball THIS substep
+                                # — a second restitution here stacked into a
+                                # rocket toward mid-arena at the lip corner.
+                                # Keep the position resolve, just kill the
+                                # leftover downward velocity (inelastic touch)
+                                if beetle_ball.vy < 0:
+                                    beetle_ball.vy = 0.0
                             else:
-                                beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
-                                # Bounce grip: contact friction scrubs some
-                                # horizontal speed on every bounce (real balls
-                                # lose tangential energy at each hop)
                                 _grip = physics_params.get("BALL_BOUNCE_GRIP", 0.899)
-                                beetle_ball.vx *= _grip
-                                beetle_ball.vz *= _grip
+                                _bfd = math.sqrt(beetle_ball.x ** 2 + beetle_ball.z ** 2)
+                                _slope_mix = physics_params.get("BOWL_BOUNCE_NORMAL", 1.0)
+                                _on_ice_ring = (_bfd > ARENA_RADIUS and _bfd > 0.01
+                                                and not (abs(beetle_ball.z) < 12.0
+                                                         and abs(beetle_ball.x) >= 30.0))
+                                if _on_ice_ring and _slope_mix > 0.001:
+                                    # SLOPE-AWARE BOUNCE (consistency plan ph1):
+                                    # reflect about the ANALYTIC ice-slope
+                                    # normal (bowl rises 0.4/voxel outward ->
+                                    # n = (-0.4*out, 1)/sqrt(1.16), up-and-
+                                    # inward) instead of straight up — lip
+                                    # bounces deflect back into play in ONE
+                                    # arc instead of popping vertically and
+                                    # then being dragged by the slide. The
+                                    # floor system has no normals anywhere
+                                    # else (flat), so only the ring changes.
+                                    # Slider 0 = old vertical-only
+                                    _ox = beetle_ball.x / _bfd
+                                    _oz = beetle_ball.z / _bfd
+                                    _inv = 1.0 / math.sqrt(1.16)
+                                    _nx = -0.4 * _ox * _inv * _slope_mix
+                                    _nz = -0.4 * _oz * _inv * _slope_mix
+                                    _ny = _inv * _slope_mix + (1.0 - _slope_mix)
+                                    _nl = math.sqrt(_nx * _nx + _ny * _ny + _nz * _nz)
+                                    _nx /= _nl
+                                    _ny /= _nl
+                                    _nz /= _nl
+                                    _vn = (beetle_ball.vx * _nx + beetle_ball.vy * _ny
+                                           + beetle_ball.vz * _nz)
+                                    if _vn < 0.0:
+                                        _rest = physics_params["BALL_GROUND_BOUNCE"]
+                                        _tvx = beetle_ball.vx - _vn * _nx
+                                        _tvy = beetle_ball.vy - _vn * _ny
+                                        _tvz = beetle_ball.vz - _vn * _nz
+                                        beetle_ball.vx = _tvx * _grip - _vn * _rest * _nx
+                                        beetle_ball.vy = _tvy - _vn * _rest * _ny
+                                        beetle_ball.vz = _tvz * _grip - _vn * _rest * _nz
+                                    else:
+                                        # moving along/off the slope already —
+                                        # no reflection, just settle handling
+                                        beetle_ball.vy = abs(beetle_ball.vy) * physics_params["BALL_GROUND_BOUNCE"]
+                                else:
+                                    beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
+                                    # Bounce grip: contact friction scrubs some
+                                    # horizontal speed on every bounce (real balls
+                                    # lose tangential energy at each hop)
+                                    beetle_ball.vx *= _grip
+                                    beetle_ball.vz *= _grip
                                 # Squash & stretch: same 2-voxel gate as the
                                 # dust (computed above), SUBTLE at the gate and
                                 # ramping hard with fall height
@@ -26572,12 +26646,15 @@ try:
                 # Arena rim (bowl band) feel: restitution for fast shots
                 # into the band (0 = old soft ooze), and how much speed the
                 # ball keeps on the ice (higher = rides the ramp farther)
-                physics_params["BALL_RIM_BOUNCE"] = window.GUI.slider_float("Rim Bounce", physics_params.get("BALL_RIM_BOUNCE", 0.5), 0.0, 0.9)
+                physics_params["BALL_RIM_BOUNCE"] = window.GUI.slider_float("Rim Bounce", physics_params.get("BALL_RIM_BOUNCE", 0.35), 0.0, 0.9)
                 physics_params["BALL_RIM_MOMENTUM"] = window.GUI.slider_float("Rim Momentum", physics_params.get("BALL_RIM_MOMENTUM", 0.97), 0.85, 1.0)
                 # How far past the arena edge each entity travels free
                 # before the rim band bites (voxels)
                 physics_params["BOWL_BALL_GRACE"] = window.GUI.slider_float("Ball Rim Grace", physics_params.get("BOWL_BALL_GRACE", 8.0), 0.0, 12.0)
                 physics_params["BOWL_BEETLE_GRACE"] = window.GUI.slider_float("Beetle Rim Grace", physics_params.get("BOWL_BEETLE_GRACE", 5.0), 0.0, 12.0)
+                # Ice-ring bounce direction: 1 = true slope normal (deflects
+                # up-and-inward off the bowl), 0 = old vertical-only bounce
+                physics_params["BOWL_BOUNCE_NORMAL"] = window.GUI.slider_float("Bowl Bnc Normal", physics_params.get("BOWL_BOUNCE_NORMAL", 1.0), 0.0, 1.0)
                 # Resting-ball friction on beetle surfaces: how fast the
                 # ball converges to the motion of the back/horn it sits on
                 # (0 = old frictionless surfaces)
