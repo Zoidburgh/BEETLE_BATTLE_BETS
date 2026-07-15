@@ -9351,29 +9351,35 @@ def _leg_strut_capsules(beetle):
                          beetle.z + _fx * _sr + _z2 * _cr, 1.2))
     return segs
 
+def _channel_sweep_velocity(beetle, rate, pivot_lx, pivot_ly, cx, cy, cz):
+    """World-space velocity at a contact point from a MOTION CHANNEL (plan
+    F2): geometry rotating at `rate` (rad/s) around a body-local pivot in
+    the body's X-Y plane — scorpion tail swing, bombardier aim tilt,
+    spider abdomen aim. One formula for every channel: a point at local
+    offset (rx, ry) from the pivot moves at rate * (-ry, +rx). The generic
+    articulation credit only differentiates horn pitch/yaw, which these
+    channels don't touch."""
+    _cr = math.cos(beetle.rotation)
+    _sr = math.sin(beetle.rotation)
+    _px = beetle.x + pivot_lx * _cr
+    _py = beetle.y + pivot_ly
+    _pz = beetle.z + pivot_lx * _sr
+    _rlx = (cx - _px) * _cr + (cz - _pz) * _sr
+    _rly = cy - _py
+    _vlx = -rate * _rly
+    _vly = rate * _rlx
+    return _vlx * _cr, _vly, _vlx * _sr
+
 def _tail_sweep_velocity(beetle, cx, cy, cz):
-    """World-space velocity of the scorpion's tail at a contact point from
-    the current tail swing: rate x lever around the rear pivot, in the
-    body's local X-Y plane (the tail's rotation plane). Zero for
-    non-scorpions and still tails. The generic articulation credit only
-    differentiates horn pitch/yaw, which the tail ignores — without this a
-    50 deg/s tail strike transferred zero momentum (plan F2)."""
+    """Scorpion tail channel: swing around the rear pivot (a 50 deg/s
+    V-strike carries real momentum — the tail smash). Zero for
+    non-scorpions and still tails."""
     _tv = getattr(beetle, 'tail_vel', 0.0)
     if beetle.horn_type != "scorpion" or abs(_tv) <= 0.02:
         return 0.0, 0.0, 0.0
-    _cr = math.cos(beetle.rotation)
-    _sr = math.sin(beetle.rotation)
     _bl, _bb = _slot_body_dims(_slot_of(beetle))
-    _px = beetle.x + (-float(_bl) + 1.0) * _cr
-    _py = beetle.y + float(_bb)
-    _pz = beetle.z + (-float(_bl) + 1.0) * _sr
-    _rlx = (cx - _px) * _cr + (cz - _pz) * _sr
-    _rly = cy - _py
-    # CCW rotation at rate w: point at local offset (rx, ry) moves at
-    # w * (-ry, +rx)
-    _vlx = -_tv * _rly
-    _vly = _tv * _rlx
-    return _vlx * _cr, _vly, _vlx * _sr
+    return _channel_sweep_velocity(beetle, _tv, -float(_bl) + 1.0, float(_bb),
+                                   cx, cy, cz)
 
 def _giraffe_pivot_local(beetle):
     """Beetle-local (x, y) of the giraffe neck/head pivot from the beetle's
@@ -9560,6 +9566,29 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
                               beetle.z + _axb * _srb))
             segs.append(_wpts[0] + _wpts[1])
         return segs
+    if ht == "spider":
+        # Prosoma chord (base->fangs, as before) + ABDOMEN segment on the
+        # spider-aim channel: the fat rear swings up to ~30 deg around the
+        # pedicel pivot (3,0) — same transform as the placement kernel —
+        # and previously had no segment at all, so beetle-vs-beetle passed
+        # through it and the abdomen's swing velocity had nothing to key on
+        tx, ty, tz = calculate_horn_tip_position(beetle)
+        _sslot = _slot_of(beetle)
+        _sbl, _sbb = _slot_body_dims(_sslot)
+        _sad2 = spider_aim[_sslot] * SPIDER_AIM_MAX
+        _crsp = math.cos(beetle.rotation)
+        _srsp = math.sin(beetle.rotation)
+        _casp = math.cos(_sad2)
+        _sasp = math.sin(_sad2)
+        _wpts = []
+        for _lxs, _lys in ((-(float(_sbl) - 1.0), float(_sbb) * 0.5),
+                           (-1.0, float(_sbb) * 0.5)):
+            _rxs = _lxs - 3.0
+            _axs = 3.0 + _rxs * _casp - _lys * _sasp
+            _ays = _rxs * _sasp + _lys * _casp
+            _wpts.append((beetle.x + _axs * _crsp, beetle.y + _ays,
+                          beetle.z + _axs * _srsp))
+        return [(bx, by, bz, tx, ty, tz), _wpts[0] + _wpts[1]]
     if _current:
         tx, ty, tz = calculate_horn_tip_position(beetle)
     else:
@@ -9598,6 +9627,8 @@ def horn_segment_articulates(beetle, seg_index, n_segs):
         return seg_index == 0
     if beetle.horn_type == "scorpion":
         return seg_index <= 1  # both claw arms pivot with horn pitch/yaw
+    if beetle.horn_type == "spider":
+        return False  # prosoma is body-fixed; abdomen rides spider_aim (own channel)
     return True
 
 def _ball_surface_contact(ball, beetle):
@@ -15646,30 +15677,31 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             _horn_vx = _artic_t * (_pt_x - so_tip_x) / PHYSICS_TIMESTEP
                             _horn_vy = _artic_t * (_pt_y - so_tip_y) / PHYSICS_TIMESTEP
                             _horn_vz = _artic_t * (_pt_z - so_tip_z) / PHYSICS_TIMESTEP
-                    # BOMBARDIER AIM SWEEP: aiming tilts the whole head/
-                    # mandibles around the rear pivot — pure body geometry,
-                    # invisible to the horn pitch/yaw credit above. Credit
-                    # its vertical motion at the contact (rate x lever arm)
-                    # so digging the rising head under the ball lifts it
+                    # MOTION-CHANNEL SWEEPS (plan F2): body-geometry DOFs the
+                    # horn pitch/yaw credit above can't see, all via the one
+                    # rate-x-lever formula in _channel_sweep_velocity.
+                    # Bombardier: aim tilts head+mandibles around the rear
+                    # pivot (digging the rising head under the ball lifts).
+                    # Scorpion: tail V-strike (segs 2-3) smashes.
+                    # Spider: abdomen aim (seg 1) swings the fat rear.
+                    _chvx = _chvy = _chvz = 0.0
                     if shaft_owner.horn_type == "bombardier":
                         _sav = getattr(shaft_owner, 'spray_aim_vel', 0.0)
                         if abs(_sav) > 0.02:
-                            _crv = math.cos(shaft_owner.rotation)
-                            _srv = math.sin(shaft_owner.rotation)
-                            _pbl = float(_slot_body_dims(_slot_of(shaft_owner))[0])
-                            _pvwx = shaft_owner.x - _pbl * _crv
-                            _pvwz = shaft_owner.z - _pbl * _srv
-                            _lever = math.sqrt((_scx - _pvwx) ** 2 + (_scz - _pvwz) ** 2)
-                            _horn_vy += _sav * _lever
-                    # SCORPION TAIL SWEEP: same idea — the V-strike swings
-                    # the tail segments (indices 1-2) around the rear pivot;
-                    # credit its velocity at the contact so a tail smash
-                    # shoves/launches instead of just occupying space
-                    if shaft_owner.horn_type == "scorpion" and _sseg >= 2:
-                        _tvx, _tvy, _tvz = _tail_sweep_velocity(shaft_owner, _scx, _scy, _scz)
-                        _horn_vx += _tvx
-                        _horn_vy += _tvy
-                        _horn_vz += _tvz
+                            _chvx, _chvy, _chvz = _channel_sweep_velocity(
+                                shaft_owner, _sav,
+                                -float(_slot_body_dims(_slot_of(shaft_owner))[0]), 0.0,
+                                _scx, _scy, _scz)
+                    elif shaft_owner.horn_type == "scorpion" and _sseg >= 2:
+                        _chvx, _chvy, _chvz = _tail_sweep_velocity(shaft_owner, _scx, _scy, _scz)
+                    elif shaft_owner.horn_type == "spider" and _sseg == 1:
+                        _spv = getattr(shaft_owner, 'spider_aim_vel', 0.0)
+                        if abs(_spv) > 0.02:
+                            _chvx, _chvy, _chvz = _channel_sweep_velocity(
+                                shaft_owner, _spv, 3.0, 0.0, _scx, _scy, _scz)
+                    _horn_vx += _chvx
+                    _horn_vy += _chvy
+                    _horn_vz += _chvz
 
                     # Closing speed at the contact: how fast the shaft (body
                     # motion + turn sweep + horn articulation) and the intruder's
@@ -15867,16 +15899,25 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 # crossings: tail segments ignore pitch/yaw,
                                 # so the predicted-skeleton diff above reads
                                 # zero — credit the tail_vel sweep directly
-                                if b1.horn_type == "scorpion" and _svs_best[1] >= 2:
-                                    _t1x, _t1y, _t1z = _tail_sweep_velocity(b1, _c1x, _c1y, _c1z)
-                                    _a1vx += _t1x
-                                    _a1vy += _t1y
-                                    _a1vz += _t1z
-                                if b2.horn_type == "scorpion" and _svs_best[2] >= 2:
-                                    _t2x, _t2y, _t2z = _tail_sweep_velocity(b2, _c2x, _c2y, _c2z)
-                                    _a2vx += _t2x
-                                    _a2vy += _t2y
-                                    _a2vz += _t2z
+                                for _cb, _cseg, _ccx, _ccy, _ccz, _is1 in (
+                                        (b1, _svs_best[1], _c1x, _c1y, _c1z, True),
+                                        (b2, _svs_best[2], _c2x, _c2y, _c2z, False)):
+                                    _cvx = _cvy = _cvz = 0.0
+                                    if _cb.horn_type == "scorpion" and _cseg >= 2:
+                                        _cvx, _cvy, _cvz = _tail_sweep_velocity(_cb, _ccx, _ccy, _ccz)
+                                    elif _cb.horn_type == "spider" and _cseg == 1:
+                                        _spv2 = getattr(_cb, 'spider_aim_vel', 0.0)
+                                        if abs(_spv2) > 0.02:
+                                            _cvx, _cvy, _cvz = _channel_sweep_velocity(
+                                                _cb, _spv2, 3.0, 0.0, _ccx, _ccy, _ccz)
+                                    if _is1:
+                                        _a1vx += _cvx
+                                        _a1vy += _cvy
+                                        _a1vz += _cvz
+                                    else:
+                                        _a2vx += _cvx
+                                        _a2vy += _cvy
+                                        _a2vz += _cvz
                                 _v1x = b1.vx - (_c1z - b1.z) * b1.angular_velocity + _a1vx
                                 _v1y = b1.vy + _a1vy
                                 _v1z = b1.vz + (_c1x - b1.x) * b1.angular_velocity + _a1vz

@@ -83,9 +83,14 @@ Every unique beetle breaks that template the same four ways:
       sees the raised head. [scoop tunable CUT per design rule]
       GATE 6 PENDING — CANARY REQUIRED before committing (the bvb head
       segment rebaselines horn_cross metrics; record the new baseline).
-- [ ] 7. Spider refinement (only if gates show residual issues): abdomen
-      as a segment (enables its velocity credit via the same channel
-      math), fang chord verification, peaked leg arches.
+- [x] 7. Spider completion: abdomen is a second segment in
+      horn_collision_segments (aim-rotated around the pedicel pivot) with
+      its swing velocity credited in the shaft path AND horn-vs-horn
+      crossings. Channel math unified in _channel_sweep_velocity (one
+      rate-x-lever formula; the bombardier credit upgraded from
+      vertical-only to the full 3D sweep). GATE 7 PENDING.
+      Deferred unless testing demands: peaked leg arches (straight-chord
+      struts stand in), fang chord widening.
 
 ## Testing schedule
 
