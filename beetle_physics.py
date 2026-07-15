@@ -7730,6 +7730,13 @@ def check_floor_collision(world_x: ti.f32, world_z: ti.f32) -> ti.f32:
     return highest_floor_y
 
 
+def _in_goal_lane(x, z):
+    """Goal-mouth lane test, shared by the bowl slide, the rim squeeze,
+    the ice-ring slope bounce and the ball's MIN_Y exemption — the lanes
+    have no ice and the pits have no floor, so every rim/floor rule must
+    stand aside there."""
+    return abs(z) < 12.0 and (x <= -30.0 or x >= 30.0)
+
 def apply_bowl_slide(entity, params):
     """Push entity toward arena center if on slippery bowl perimeter.
 
@@ -7749,9 +7756,7 @@ def apply_bowl_slide(entity, params):
         # Goal mouth FUNNEL: the lane starts at |x|>=30 (was 32) — the old
         # sharp rectangle left an un-exempt crescent between the circular rim
         # and the lane, so angled shots at the goal bounced off empty air
-        goal_pit_half_width = 12
-        in_goal_pit = abs(entity.z) < goal_pit_half_width and (entity.x <= -30.0 or entity.x >= 30.0)
-        if in_goal_pit:
+        if _in_goal_lane(entity.x, entity.z):
             return  # No slide in goal pit areas
 
         # On the bowl - apply exponential inward force
@@ -7773,7 +7778,7 @@ def apply_bowl_slide(entity, params):
             outward_vel = -(entity.vx * dir_x + entity.vz * dir_z)  # Positive = moving outward
 
             if outward_vel > 0:
-                _rim_bounce = params.get("BALL_RIM_BOUNCE", 0.35) if _is_ball else 0.0
+                _rim_bounce = params.get("BALL_RIM_BOUNCE", 0.21) if _is_ball else 0.0
                 if _is_ball and _rim_bounce > 0.001 and outward_vel > params.get("BALL_RIM_BOUNCE_MIN", 6.0):
                     # RIM BOUNCE (boards): a fast shot into the band REFLECTS
                     # back into play. The old slide only ERASED outward
@@ -16657,7 +16662,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _bsq_d = math.sqrt(_bsq.x ** 2 + _bsq.z ** 2)
                     _rim_start = ARENA_RADIUS + params.get("BOWL_BALL_GRACE", 8.0) - 2.0
                     if (_bsq_sep > 0.0 and _bsq_d > _rim_start
-                            and not (abs(_bsq.z) < 12.0 and abs(_bsq.x) >= 30.0)):
+                            and not _in_goal_lane(_bsq.x, _bsq.z)):
                         _outx = _bsq.x / _bsq_d
                         _outz = _bsq.z / _bsq_d
                         _pshx = normal_x if _bsq is b1 else -normal_x
@@ -16779,14 +16784,18 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                           params.get("BALL_CARRY_MAX_DV", 2.5))
 
             # Safety clamp to prevent going below floor voxel layer
-            # (Main floor collision handles proper positioning above floor)
+            # (Main floor collision handles proper positioning above floor).
+            # GOAL ROBBERY FIX (consistency plan ph3): the BALL is exempt in
+            # the goal lanes — the pit has no floor, and this clamp snapped a
+            # scoring ball back to y=0.5 with vy=0 whenever a beetle touched
+            # it on the way down into the goal
             MIN_Y = 0.5  # Minimum Y to prevent center going below floor at y=0
-            if b1.y < MIN_Y:
-                b1.y = MIN_Y
-                b1.vy = 0.0
-            if b2.y < MIN_Y:
-                b2.y = MIN_Y
-                b2.vy = 0.0
+            for _mb in (b1, b2):
+                if _mb.y < MIN_Y:
+                    if _mb.horn_type == "ball" and _in_goal_lane(_mb.x, _mb.z):
+                        continue
+                    _mb.y = MIN_Y
+                    _mb.vy = 0.0
 
             # Calculate 3D relative velocity
             rel_vx = b1.vx - b2.vx
@@ -22616,8 +22625,7 @@ try:
                                 _bfd = math.sqrt(beetle_ball.x ** 2 + beetle_ball.z ** 2)
                                 _slope_mix = physics_params.get("BOWL_BOUNCE_NORMAL", 1.0)
                                 _on_ice_ring = (_bfd > ARENA_RADIUS and _bfd > 0.01
-                                                and not (abs(beetle_ball.z) < 12.0
-                                                         and abs(beetle_ball.x) >= 30.0))
+                                                and not _in_goal_lane(beetle_ball.x, beetle_ball.z))
                                 if _on_ice_ring and _slope_mix > 0.001:
                                     # SLOPE-AWARE BOUNCE (consistency plan ph1):
                                     # reflect about the ANALYTIC ice-slope
@@ -26646,7 +26654,7 @@ try:
                 # Arena rim (bowl band) feel: restitution for fast shots
                 # into the band (0 = old soft ooze), and how much speed the
                 # ball keeps on the ice (higher = rides the ramp farther)
-                physics_params["BALL_RIM_BOUNCE"] = window.GUI.slider_float("Rim Bounce", physics_params.get("BALL_RIM_BOUNCE", 0.35), 0.0, 0.9)
+                physics_params["BALL_RIM_BOUNCE"] = window.GUI.slider_float("Rim Bounce", physics_params.get("BALL_RIM_BOUNCE", 0.21), 0.0, 0.9)
                 physics_params["BALL_RIM_MOMENTUM"] = window.GUI.slider_float("Rim Momentum", physics_params.get("BALL_RIM_MOMENTUM", 0.97), 0.85, 1.0)
                 # How far past the arena edge each entity travels free
                 # before the rim band bites (voxels)
