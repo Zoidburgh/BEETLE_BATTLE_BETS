@@ -65,12 +65,16 @@ Every unique beetle breaks that template the same four ways:
       the abdomen as a segment). Bombardier aim channel was the session-1
       prototype (spray_aim_vel).
       GATE 3 PENDING — checklist below.
-- [ ] 4. Scorpion claw split: L/R claw chords (like stag pincers) to the
-      real claw tips, replacing the single centered chord. Fixes ball
-      ghost/slip on claws + misplaced beetle-vs-beetle claw contact.
-- [ ] 5. Generated leg struts from leg-generation constants: scorpion
-      rear, bombardier front+middle (replace the hand-made ones), spider
-      single-chord legs.
+- [x] 4. Scorpion claw split: L/R claw chords through the arm + claw mass
+      (the old single chord ran along z=0 — the GAP between the claws),
+      rotated by horn pitch/yaw around the claw pivot (2,2) (default pitch
+      +20 deg). Scorpion is now 4 segments: claws 0-1 (parallel arms,
+      articulate), tail 2-3 (chained, tail channel); horn_segment_param /
+      articulates / tail-credit gates updated. GATE 4 PENDING.
+- [x] 5. Generated leg struts (_leg_strut_capsules, ball layer only) from
+      the leg-generation constants + per-slot leg length: bombardier
+      front+middle (replaces hand-made), scorpion rear+rear2, spider all
+      4 pairs (straight chords; arch refinement is step 7). GATE 5 PENDING.
 - [ ] 6. Bombardier polish: merge antennae+head-top into one transverse
       bar (fewer seams); aim burial damping (grinding the head through a
       beetle/ball slows like horn damping — uses existing horn_burial,

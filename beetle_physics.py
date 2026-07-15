@@ -2700,6 +2700,18 @@ def _slot_body_dims(slot):
         return _g[4], _g[3]
     return 12, 6
 
+def _slot_leg_length(slot):
+    """Leg length for a slot — slider values for 0/1, applied remote
+    config for 2/3, rebuild default otherwise."""
+    if slot == 0:
+        return window.blue_leg_length_value
+    if slot == 1:
+        return window.red_leg_length_value
+    _g = _applied_remote_geo.get(slot)
+    if _g:  # (horn_id, shaft, prong, back_body, body_len, body_width, leg_len)
+        return _g[6]
+    return 8
+
 def apply_remote_beetle_config(network_mgr):
     """Apply received remote beetle configurations (any slot).
 
@@ -9299,6 +9311,46 @@ def _slot_of(beetle):
                           simulation.BEETLE_P3: 2, simulation.BEETLE_P4: 3}
     return _COLOR_TO_SLOT.get(beetle.color, 0)
 
+def _leg_strut_capsules(beetle):
+    """Coarse leg capsules for types whose stance opens ball-sized gaps
+    (plan F4) — the ball ghosted through leg voxels because legs have no
+    analytic presence. Derived from the leg-generation constants (attach
+    x, attach height, per-pair length multiplier; legs cascade sideways
+    from z=3, tibia drifts ~2 forward, feet at ground). Static stance
+    pose — gait swing accepted as unmodeled. Ball layer only."""
+    ht = beetle.horn_type
+    if ht not in ("bombardier", "scorpion", "spider"):
+        return []
+    _slot = _slot_of(beetle)
+    _bl, _bb = _slot_body_dims(_slot)
+    _ll = float(_slot_leg_length(_slot))
+    _cr = math.cos(beetle.rotation)
+    _sr = math.sin(beetle.rotation)
+    # (attach_x, attach_y, length multiplier) per covered pair
+    if ht == "bombardier":
+        # Raised front stands on stilts (attach +4/+2 elevation)
+        _pairs = ((0.0, 5.0, 1.15), (-3.0, 3.0, 1.1))
+    elif ht == "scorpion":
+        # Long rear pairs under the raised rear (generation:
+        # rear at -(bl//2)-1, rear2 at -(bl*3//4)-2)
+        _pairs = ((-float(int(_bl) // 2) - 1.0, 2.0, 1.2),
+                  (-float(int(_bl) * 3 // 4) - 2.0, 2.0, 1.3))
+    else:  # spider — 4 splayed pairs; peaked arch approximated straight
+        _pairs = ((4.0, 2.0, 0.9), (1.0, 2.0, 1.0),
+                  (-2.0, 2.0, 1.1), (-5.0, 2.0, 1.0))
+    segs = []
+    for _ax, _ay, _mult in _pairs:
+        _fx = _ax + 2.0
+        _fz = 3.0 + _ll * _mult
+        for _side in (-1.0, 1.0):
+            _z1 = 3.0 * _side
+            _z2 = _fz * _side
+            segs.append((beetle.x + _ax * _cr - _z1 * _sr, beetle.y + _ay,
+                         beetle.z + _ax * _sr + _z1 * _cr,
+                         beetle.x + _fx * _cr - _z2 * _sr, beetle.y + 0.5,
+                         beetle.z + _fx * _sr + _z2 * _cr, 1.2))
+    return segs
+
 def _tail_sweep_velocity(beetle, cx, cy, cz):
     """World-space velocity of the scorpion's tail at a contact point from
     the current tail swing: rate x lever around the rear pivot, in the
@@ -9447,11 +9499,39 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
             tx, ty, tz = calculate_horn_tip_position_with_both(beetle, _p, _y)
         return [(bx, by, bz, tx, ty, tz)] + _atlas_pronotum_segments(beetle)
     if ht == "scorpion":
-        # Front claw chord (as before) + the rear tail polyline (was uncovered
-        # → ball rode up it). Tail uses tail_rotation_angle, not pitch/yaw, so
-        # it's the same in current and predicted skeletons
-        tx, ty, tz = calculate_horn_tip_position(beetle)
-        return [(bx, by, bz, tx, ty, tz)] + _scorpion_tail_segments(beetle)
+        # L/R CLAW CHORDS (plan step 4): the claws are two arms spread to
+        # z +-7 — the old single centered chord ran along z=0, the GAP
+        # between the claws, where no voxels exist; outer-claw contacts
+        # read far-off-shaft and slipped. One chord per claw through the
+        # arm + claw mass (generation: arm (2, 2..3, -/+2..5), claw block
+        # (6..9, 2..6, -/+3..7)), rotated by horn pitch/yaw around the claw
+        # pivot (2,2) like the placement kernel — default pitch is +20 deg,
+        # so unrotated chords would sit ~2 voxels below the real claws.
+        # Tail polyline (segs 2-3) uses tail_rotation_angle, not pitch/yaw,
+        # so it is identical in current and predicted skeletons
+        _crs = math.cos(beetle.rotation)
+        _srs = math.sin(beetle.rotation)
+        _cps = math.cos(_p)
+        _sps = math.sin(_p)
+        _cys = math.cos(_y)
+        _sys = math.sin(_y)
+        segs = []
+        for _side in (-1.0, 1.0):
+            _wpts = []
+            for _lx, _ly, _lz in ((2.0, 3.0, 2.5 * _side), (8.5, 4.0, 5.0 * _side)):
+                _rx = _lx - 2.0
+                _ry = _ly - 2.0
+                _px2 = _rx * _cps - _ry * _sps
+                _py2 = _rx * _sps + _ry * _cps
+                _qx = _px2 * _cys + _lz * _sys
+                _qz = -_px2 * _sys + _lz * _cys
+                _fx = _qx + 2.0
+                _fy = _py2 + 2.0
+                _wpts.append((beetle.x + _fx * _crs - _qz * _srs,
+                              beetle.y + _fy,
+                              beetle.z + _fx * _srs + _qz * _crs))
+            segs.append(_wpts[0] + _wpts[1])
+        return segs + _scorpion_tail_segments(beetle)
     if ht == "bombardier":
         # Mandible chord tracks the AIM TILT: aiming rotates the whole
         # stamped body (head included) around the rear pivot, but this
@@ -9495,8 +9575,10 @@ def horn_segment_param(beetle, seg_index, t_local, n_segs):
     the full 0..1 by itself (a pincer-tip contact IS a tip contact)."""
     if beetle.horn_type == "giraffe" and n_segs > 1:
         return (seg_index + t_local) / n_segs
-    if beetle.horn_type == "scorpion" and n_segs == 3 and seg_index >= 1:
-        return (seg_index - 1 + t_local) / 2.0
+    if beetle.horn_type == "scorpion" and n_segs == 4 and seg_index >= 2:
+        # Segments 0-1 are the claw arms (full 0..1 each); 2-3 chain as
+        # the tail polyline (pivot->bulb->tip)
+        return (seg_index - 2 + t_local) / 2.0
     return t_local
 
 def horn_segment_articulates(beetle, seg_index, n_segs):
@@ -9513,7 +9595,7 @@ def horn_segment_articulates(beetle, seg_index, n_segs):
     if beetle.horn_type == "atlas":
         return seg_index == 0
     if beetle.horn_type == "scorpion":
-        return seg_index == 0
+        return seg_index <= 1  # both claw arms pivot with horn pitch/yaw
     return True
 
 def _ball_surface_contact(ball, beetle):
@@ -9607,23 +9689,9 @@ def _ball_surface_contact(ball, beetle):
                      beetle.z + _ax * _sr + _az * _cr,
                      beetle.x + _bx2 * _cr - _bz2 * _sr, beetle.y + _by2,
                      beetle.z + _bx2 * _sr + _bz2 * _cr, _pr))
-    if beetle.horn_type == "bombardier":
-        # FRONT/MIDDLE LEG STRUTS: the raised front stands on long stilt
-        # legs far below/outside every body shape, so the ball read zero
-        # analytic depth on their voxels and ghosted through. One coarse
-        # capsule per leg, matching the cascade generation (attach at the
-        # elevated body side, foot down-and-out; static stance — gait
-        # swing ignored; legs stay planted so NO aim rotation)
-        for _lax, _lay, _laz, _lbx, _lby, _lbz in (
-                (0.0, 5.0, 3.0, 2.0, 0.5, 9.0),    # front leg
-                (-3.0, 3.0, 3.0, -2.0, 0.5, 9.0)): # middle leg
-            for _side in (-1.0, 1.0):
-                _z1 = _laz * _side
-                _z2 = _lbz * _side
-                segs.append((beetle.x + _lax * _cr - _z1 * _sr, beetle.y + _lay,
-                             beetle.z + _lax * _sr + _z1 * _cr,
-                             beetle.x + _lbx * _cr - _z2 * _sr, beetle.y + _lby,
-                             beetle.z + _lbx * _sr + _z2 * _cr, 1.2))
+    # Leg struts for raised-stance types (generated from the leg
+    # constants; legs stay planted, so no aim rotation)
+    segs.extend(_leg_strut_capsules(beetle))
     for _s in horn_collision_segments(beetle):
         segs.append(_s + (1.5,))     # horn shafts: same halfwidth the shaft response uses
     best_pen = -1e9
@@ -15596,7 +15664,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # the tail segments (indices 1-2) around the rear pivot;
                     # credit its velocity at the contact so a tail smash
                     # shoves/launches instead of just occupying space
-                    if shaft_owner.horn_type == "scorpion" and _sseg >= 1:
+                    if shaft_owner.horn_type == "scorpion" and _sseg >= 2:
                         _tvx, _tvy, _tvz = _tail_sweep_velocity(shaft_owner, _scx, _scy, _scz)
                         _horn_vx += _tvx
                         _horn_vy += _tvy
@@ -15798,12 +15866,12 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 # crossings: tail segments ignore pitch/yaw,
                                 # so the predicted-skeleton diff above reads
                                 # zero — credit the tail_vel sweep directly
-                                if b1.horn_type == "scorpion" and _svs_best[1] >= 1:
+                                if b1.horn_type == "scorpion" and _svs_best[1] >= 2:
                                     _t1x, _t1y, _t1z = _tail_sweep_velocity(b1, _c1x, _c1y, _c1z)
                                     _a1vx += _t1x
                                     _a1vy += _t1y
                                     _a1vz += _t1z
-                                if b2.horn_type == "scorpion" and _svs_best[2] >= 1:
+                                if b2.horn_type == "scorpion" and _svs_best[2] >= 2:
                                     _t2x, _t2y, _t2z = _tail_sweep_velocity(b2, _c2x, _c2y, _c2z)
                                     _a2vx += _t2x
                                     _a2vy += _t2y
