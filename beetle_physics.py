@@ -2330,21 +2330,10 @@ class Beetle:
             self.roll = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.roll))
         # When airborne, allow full 360° tumbling (no clamping)
 
-    def arena_collision(self):
-        """Bounce off arena walls"""
-        dist = math.sqrt(self.x**2 + self.z**2)
-        if dist > ARENA_RADIUS - self.radius:
-            # Push back
-            angle = math.atan2(self.z, self.x)
-            self.x = math.cos(angle) * (ARENA_RADIUS - self.radius)
-            self.z = math.sin(angle) * (ARENA_RADIUS - self.radius)
-
-            # Bounce velocity
-            normal_x = self.x / dist
-            normal_z = self.z / dist
-            dot = self.vx * normal_x + self.vz * normal_z
-            self.vx -= 2 * dot * normal_x * 0.5
-            self.vz -= 2 * dot * normal_z * 0.5
+    # NOTE: the old arena_collision() wall-bounce method was DEAD CODE
+    # (never called) and booby-trapped — it clamped at ARENA_RADIUS -
+    # self.radius with BEETLE_RADIUS=16, i.e. a 16-voxel circle. Removed
+    # 2026-07-15; the live boundary is apply_bowl_slide (+ rim bounce).
 
 # Game state
 match_winner = None  # Legacy variable, no longer used (kept for compatibility with reset_match)
@@ -7754,8 +7743,8 @@ def apply_bowl_slide(entity, params):
     _is_ball = entity.horn_type == "ball"
     # Grace bands: play extends closer to the edge before the slide bites
     # (2026-07-12 user tune: ball +2 -> 5, beetles 0 -> 2)
-    _start_r = ARENA_RADIUS + (params.get("BOWL_BALL_GRACE", 5.0) if _is_ball
-                               else params.get("BOWL_BEETLE_GRACE", 2.0))
+    _start_r = ARENA_RADIUS + (params.get("BOWL_BALL_GRACE", 8.0) if _is_ball
+                               else params.get("BOWL_BEETLE_GRACE", 5.0))
     if dist_from_center > _start_r:
         # Check if in goal pit area (no ice there, so no slide).
         # Goal mouth FUNNEL: the lane starts at |x|>=30 (was 32) — the old
@@ -7784,12 +7773,27 @@ def apply_bowl_slide(entity, params):
             # Calculate outward velocity component
             outward_vel = -(entity.vx * dir_x + entity.vz * dir_z)  # Positive = moving outward
 
-            # Dampen outward velocity (stronger dampening further out)
             if outward_vel > 0:
-                dampen = BOWL_VELOCITY_DAMPEN ** (1.0 + normalized_dist * 2.0)
-                # Remove the outward component and add back dampened version
-                entity.vx += dir_x * outward_vel * (1.0 - dampen)
-                entity.vz += dir_z * outward_vel * (1.0 - dampen)
+                _rim_bounce = params.get("BALL_RIM_BOUNCE", 0.5) if _is_ball else 0.0
+                if _is_ball and _rim_bounce > 0.001 and outward_vel > params.get("BALL_RIM_BOUNCE_MIN", 6.0):
+                    # RIM BOUNCE (boards): a fast shot into the band REFLECTS
+                    # back into play. The old slide only ERASED outward
+                    # velocity — shots died at the rim and oozed back (the
+                    # one wall-bounce implementation, arena_collision, was
+                    # dead code). Slider 0 restores the soft ooze
+                    entity.vx += dir_x * outward_vel * (1.0 + _rim_bounce)
+                    entity.vz += dir_z * outward_vel * (1.0 + _rim_bounce)
+                else:
+                    # Dampen outward velocity (stronger dampening further out).
+                    # RAMP MOMENTUM: the ball keeps most of its speed on the
+                    # ice so slow/medium rolls visibly ride up the bowl and
+                    # return via the slide force (the slope-gravity proxy),
+                    # instead of stopping dead; beetles keep original grip
+                    _dbase = params.get("BALL_RIM_MOMENTUM", 0.97) if _is_ball else BOWL_VELOCITY_DAMPEN
+                    dampen = _dbase ** (1.0 + normalized_dist * 2.0)
+                    # Remove the outward component and add back dampened version
+                    entity.vx += dir_x * outward_vel * (1.0 - dampen)
+                    entity.vz += dir_z * outward_vel * (1.0 - dampen)
 
             # Direct position slide (exponentially stronger at edges)
             slide_amount = slide_strength * force_multiplier * 0.05
@@ -9369,6 +9373,50 @@ def _channel_sweep_velocity(beetle, rate, pivot_lx, pivot_ly, cx, cy, cz):
     _vlx = -rate * _rly
     _vly = rate * _rlx
     return _vlx * _cr, _vly, _vlx * _sr
+
+def _articulating_credit_segment(beetle, segs, n_segs, seg_i, t_local, seg_dist, cx, cy, cz):
+    """(segment index, t, weight) to use for horn pitch/yaw MOTION credit
+    at a contact. The closest segment overall can be a STATIC piece parked
+    in the moving part's airspace — the atlas pronotum chords sit exactly
+    where an airborne ball meets the descending cephalic horn, and the
+    giraffe's fixed neck sits under its sweeping head — so static decoys
+    stole the strike credit and hits read dead (rhino never suffered: all
+    its segments articulate). If the contact's own segment articulates,
+    use it at full weight; otherwise use the nearest ARTICULATING segment,
+    weighted down the farther it is than the winner."""
+    if horn_segment_articulates(beetle, seg_i, n_segs):
+        return seg_i, t_local, 1.0
+    _best = -1
+    _bt = 0.0
+    _bd = 1e9
+    for _i in range(n_segs):
+        if horn_segment_articulates(beetle, _i, n_segs):
+            _c = closest_point_on_segment(cx, cy, cz, *segs[_i])
+            if _c[4] < _bd:
+                _bd = _c[4]
+                _best = _i
+                _bt = _c[3]
+    if _best < 0:
+        return -1, 0.0, 0.0
+    return _best, _bt, max(0.0, 1.0 - max(0.0, _bd - seg_dist) / 4.0)
+
+def _carry_toward(ball, svx, svz, grip, cap):
+    """Coulomb-capped carry friction: converge the ball's horizontal
+    velocity toward the surface's, but limit the transferred delta-v per
+    substep. Unlimited proportional drag = infinite friction — a fast horn
+    STRIKE entrained the ball into the sweep ("caught on the horn")
+    instead of releasing it. With the cap, slow relative motion converges
+    fully (carrying), fast relative motion gets only a friction-sized
+    nudge while the normal impulse sends the ball away (striking)."""
+    _dvx = (svx - ball.vx) * grip
+    _dvz = (svz - ball.vz) * grip
+    _m = math.sqrt(_dvx * _dvx + _dvz * _dvz)
+    if _m > cap:
+        _s = cap / _m
+        _dvx *= _s
+        _dvz *= _s
+    ball.vx += _dvx
+    ball.vz += _dvz
 
 def _tail_sweep_velocity(beetle, cx, cy, cz):
     """Scorpion tail channel: swing around the rear pivot (a 50 deg/s
@@ -15596,22 +15644,84 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 intruder.y += min(_pen, 1.2)  # capped, floor-style
                                 if intruder.prev_y < intruder.y:
                                     intruder.prev_y = intruder.y  # clamp interp, no pop
-                                _bb_impact = -intruder.vy
+                                # MOVING-SURFACE FRAME: bounce/settle against
+                                # the shaft's OWN vertical motion (body +
+                                # horn articulation + aim/tail channel), not
+                                # the world — a rising horn trampolines the
+                                # ball, and a settling ball RIDES the surface
+                                # instead of freezing at vy=0 while the
+                                # surface moves underneath it
+                                # Articulation + channel motion as a FULL 3D
+                                # vector — the horizontal part was dropped at
+                                # first, so yawing the horn side-to-side
+                                # under a resting ball moved the surface with
+                                # zero carry (ball wouldn't follow)
+                                _art_vx = 0.0
+                                _art_vy = 0.0
+                                _art_vz = 0.0
+                                _cseg2, _ct2, _cw2 = _articulating_credit_segment(
+                                    shaft_owner, _so_segs, _nseg, _sseg, _st_local, _sdist,
+                                    collision_x, collision_y, collision_z)
+                                if _cseg2 >= 0 and _cw2 > 0.0 and (
+                                        abs(shaft_owner.horn_pitch_velocity) > 0.02 or
+                                        abs(shaft_owner.horn_yaw_velocity) > 0.02):
+                                    _ps = horn_collision_segments(
+                                        shaft_owner,
+                                        shaft_owner.horn_pitch + shaft_owner.horn_pitch_velocity * PHYSICS_TIMESTEP,
+                                        shaft_owner.horn_yaw + shaft_owner.horn_yaw_velocity * PHYSICS_TIMESTEP)
+                                    if _cseg2 < len(_ps):
+                                        _art_vx = _ct2 * _cw2 * (_ps[_cseg2][3] - _so_segs[_cseg2][3]) / PHYSICS_TIMESTEP
+                                        _art_vy = _ct2 * _cw2 * (_ps[_cseg2][4] - _so_segs[_cseg2][4]) / PHYSICS_TIMESTEP
+                                        _art_vz = _ct2 * _cw2 * (_ps[_cseg2][5] - _so_segs[_cseg2][5]) / PHYSICS_TIMESTEP
+                                if shaft_owner.horn_type == "bombardier":
+                                    _sav2 = getattr(shaft_owner, 'spray_aim_vel', 0.0)
+                                    if abs(_sav2) > 0.02:
+                                        _chx2, _chy2, _chz2 = _channel_sweep_velocity(
+                                            shaft_owner, _sav2,
+                                            -float(_slot_body_dims(_slot_of(shaft_owner))[0]), 0.0,
+                                            _scx, _scy, _scz)
+                                        _art_vx += _chx2
+                                        _art_vy += _chy2
+                                        _art_vz += _chz2
+                                elif shaft_owner.horn_type == "scorpion" and _sseg >= 2:
+                                    _chx2, _chy2, _chz2 = _tail_sweep_velocity(shaft_owner, _scx, _scy, _scz)
+                                    _art_vx += _chx2
+                                    _art_vy += _chy2
+                                    _art_vz += _chz2
+                                _surf_vy = shaft_owner.vy + _art_vy
+                                # Surface horizontal velocity at the contact
+                                # (linear + turn sweep + articulation/channel)
+                                _sfvx = shaft_owner.vx - (intruder.z - shaft_owner.z) * shaft_owner.angular_velocity + _art_vx
+                                _sfvz = shaft_owner.vz + (intruder.x - shaft_owner.x) * shaft_owner.angular_velocity + _art_vz
+                                _bb_rel = _surf_vy - intruder.vy  # closing onto the shaft
                                 _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
-                                # Bounce only on a REAL drop (default >=2 voxels
-                                # of fall). The old fixed 3.0 cutoff was a
-                                # ~0.04-voxel fall at ball gravity, so every
-                                # animation-jitter re-contact popped = the
-                                # "mini bounce" chatter. Slider 0 = old feel
+                                # Real-drop cutoff (relative frame); slider 0 = old feel
                                 _bb_min = max(3.0, math.sqrt(2.0 * _bb_g * params.get("BALL_BOUNCE_MIN_DROP", 2.0)))
-                                if _bb_impact > _bb_min:
-                                    # Real drop: bounce off the horn (tunable,
-                                    # deader than floor) + floor-style squash
-                                    intruder.vy = _bb_impact * params.get("BALL_BEETLE_BOUNCE", 0.45)
-                                    globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.35)
+                                if _bb_rel > _bb_min:
+                                    # Real relative impact: bounce in the
+                                    # surface frame + tangential scrub. Own
+                                    # grip, MUCH stickier than the floor's:
+                                    # big dribble skips get one transfer per
+                                    # bounce, and at the floor's 10%/bounce
+                                    # the ball lagged a moving beetle and
+                                    # missed the landing (lower = grippier)
+                                    intruder.vy = _surf_vy + _bb_rel * params.get("BALL_BEETLE_BOUNCE", 0.45)
+                                    _grip = params.get("BALL_BEETLE_BOUNCE_GRIP", 0.6)
+                                    intruder.vx = _sfvx + (intruder.vx - _sfvx) * _grip
+                                    intruder.vz = _sfvz + (intruder.vz - _sfvz) * _grip
+                                    globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_rel - _bb_min) / 35.0 * 0.35)
                                     globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
-                                elif intruder.vy < 0.0:
-                                    intruder.vy = 0.0  # gentle contact settles, no micro-bounce
+                                else:
+                                    if intruder.vy < _surf_vy:
+                                        intruder.vy = _surf_vy  # settle riding the surface
+                                    # CARRY FRICTION (Coulomb-capped): a
+                                    # resting/dribbled ball converges toward
+                                    # the surface's motion — walking carries,
+                                    # spinning slings (slider 0 = frictionless)
+                                    _cg = params.get("BALL_CARRY_GRIP", 0.25)
+                                    if _cg > 0.0:
+                                        _carry_toward(intruder, _sfvx, _sfvz, _cg,
+                                                      params.get("BALL_CARRY_MAX_DV", 2.5))
                                 collision_stats['shaft_penetration_fixes'] += 1
                             continue
                         # SIDE/BELOW contact: only respond when the segment
@@ -15662,21 +15772,23 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # "last segment" — correct only for giraffe, INVERTED for
                     # atlas which put it on the stationary pronotum, and it
                     # dropped credit for non-last arms of rhino/stag/hercules).
-                    _artic_t = _st_local if horn_segment_articulates(shaft_owner, _sseg, _nseg) else 0.0
-                    if _artic_t > 0.0 and (abs(shaft_owner.horn_pitch_velocity) > 0.02 or
+                    _cseg, _ct, _cw = _articulating_credit_segment(
+                        shaft_owner, _so_segs, _nseg, _sseg, _st_local, _sdist,
+                        collision_x, collision_y, collision_z)
+                    if _cseg >= 0 and _cw > 0.0 and (abs(shaft_owner.horn_pitch_velocity) > 0.02 or
                             abs(shaft_owner.horn_yaw_velocity) > 0.02):
                         # Rebuild the skeleton at PREDICTED angles and take the
-                        # SAME contact arm's tip (was the generic single tip =
-                        # wrong arm for multi-arm types)
+                        # CREDIT arm's tip (nearest articulating segment — the
+                        # contact's own segment when it moves, the moving
+                        # neighbor when a static decoy won the contact)
                         _pred_segs = horn_collision_segments(
                             shaft_owner,
                             shaft_owner.horn_pitch + shaft_owner.horn_pitch_velocity * PHYSICS_TIMESTEP,
                             shaft_owner.horn_yaw + shaft_owner.horn_yaw_velocity * PHYSICS_TIMESTEP)
-                        if _sseg < len(_pred_segs):
-                            _pt_x, _pt_y, _pt_z = _pred_segs[_sseg][3], _pred_segs[_sseg][4], _pred_segs[_sseg][5]
-                            _horn_vx = _artic_t * (_pt_x - so_tip_x) / PHYSICS_TIMESTEP
-                            _horn_vy = _artic_t * (_pt_y - so_tip_y) / PHYSICS_TIMESTEP
-                            _horn_vz = _artic_t * (_pt_z - so_tip_z) / PHYSICS_TIMESTEP
+                        if _cseg < len(_pred_segs):
+                            _horn_vx = _ct * _cw * (_pred_segs[_cseg][3] - _so_segs[_cseg][3]) / PHYSICS_TIMESTEP
+                            _horn_vy = _ct * _cw * (_pred_segs[_cseg][4] - _so_segs[_cseg][4]) / PHYSICS_TIMESTEP
+                            _horn_vz = _ct * _cw * (_pred_segs[_cseg][5] - _so_segs[_cseg][5]) / PHYSICS_TIMESTEP
                     # MOTION-CHANNEL SWEEPS (plan F2): body-geometry DOFs the
                     # horn pitch/yaw credit above can't see, all via the one
                     # rate-x-lever formula in _channel_sweep_velocity.
@@ -15711,6 +15823,27 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _int_cvx = intruder.vx - (_scz - intruder.z) * intruder.angular_velocity
                     _int_cvz = intruder.vz + (_scx - intruder.x) * intruder.angular_velocity
                     _closing = (_own_cvx - _int_cvx) * _pnx + (_own_cvz - _int_cvz) * _pnz
+                    # TANGENTIAL CARRY (ball, side contacts): a ROTATING horn
+                    # slid sideways under the ball with zero drag — momentum
+                    # transfer below only acts along the push normal. Drag
+                    # the ball's tangential velocity toward the shaft's
+                    # contact-point motion (body + turn sweep + articulation,
+                    # already in _own_cv*), scaled by real penetration
+                    if intruder.horn_type == "ball":
+                        _cg2 = params.get("BALL_CARRY_GRIP", 0.25)
+                        if _cg2 > 0.0:
+                            # Tangential-only target (normal handled by the
+                            # momentum transfer below), Coulomb-capped so a
+                            # fast side-of-horn STRIKE releases the ball
+                            # instead of entraining it into the sweep
+                            _relx = _own_cvx - intruder.vx
+                            _relz = _own_cvz - intruder.vz
+                            _reln = _relx * _pnx + _relz * _pnz
+                            _carry_toward(intruder,
+                                          intruder.vx + (_relx - _reln * _pnx),
+                                          intruder.vz + (_relz - _reln * _pnz),
+                                          _cg2 * _ball_seg_pen,
+                                          params.get("BALL_CARRY_MAX_DV", 2.5))
                     if _closing > 0.0:
                         # Momentum transfer: driving or sweeping a horn into a
                         # body shoves it, with a reaction on the horn owner.
@@ -16497,6 +16630,43 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 b2.x -= normal_x * b2_sep
                 b2.z -= normal_z * b2_sep
 
+                # RIM SQUEEZE: a beetle pressing the ball OUTWARD into the
+                # bowl band fought the inward slide in a positional
+                # stalemate (mushy pin, no resolution). Rotate the outward
+                # part of the ball's just-applied separation onto the rim
+                # TANGENT so it squirts along the boards — same pattern as
+                # the under-belly squeeze. Goal lanes exempt (no rim there)
+                if is_ball_collision:
+                    _bsq = b1 if b1.horn_type == "ball" else b2
+                    _bsq_sep = b1_sep if _bsq is b1 else b2_sep
+                    _bsq_d = math.sqrt(_bsq.x ** 2 + _bsq.z ** 2)
+                    _rim_start = ARENA_RADIUS + params.get("BOWL_BALL_GRACE", 8.0) - 2.0
+                    if (_bsq_sep > 0.0 and _bsq_d > _rim_start
+                            and not (abs(_bsq.z) < 12.0 and abs(_bsq.x) >= 30.0)):
+                        _outx = _bsq.x / _bsq_d
+                        _outz = _bsq.z / _bsq_d
+                        _pshx = normal_x if _bsq is b1 else -normal_x
+                        _pshz = normal_z if _bsq is b1 else -normal_z
+                        _outc = _pshx * _outx + _pshz * _outz
+                        if _outc > 0.3:
+                            _tx = _pshx - _outc * _outx
+                            _tz = _pshz - _outc * _outz
+                            _tl = math.sqrt(_tx * _tx + _tz * _tz)
+                            if _tl > 0.05:
+                                _tux = _tx / _tl
+                                _tuz = _tz / _tl
+                            else:
+                                # Dead-radial push: pick the tangent the ball
+                                # is already drifting toward
+                                _tux = -_outz
+                                _tuz = _outx
+                                if _bsq.vx * _tux + _bsq.vz * _tuz < 0.0:
+                                    _tux = -_tux
+                                    _tuz = -_tuz
+                            _shift = _bsq_sep * _outc
+                            _bsq.x += (-_outx + _tux) * _shift
+                            _bsq.z += (-_outz + _tuz) * _shift
+
                 # BODY COLLISION TILT: Bodies tilt in opposite directions on impact
                 if not is_ball_collision:
                     body_tilt_strength = params.get("BODY_TILT_STRENGTH", 1.2)
@@ -16558,19 +16728,40 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # to true on-top contact (ball clearly above the beetle)
                 _bb_ball = b1 if b1.horn_type == "ball" else b2
                 _bb_beetle = b2 if b1.horn_type == "ball" else b1
-                if _bb_ball.y > _bb_beetle.y + 3.0 and _bb_ball.vy < 0.0:
-                    _bb_impact = -_bb_ball.vy
+                if _bb_ball.y > _bb_beetle.y + 3.0 and _bb_ball.vy < _bb_beetle.vy:
+                    # MOVING-SURFACE FRAME: impact measured against the
+                    # beetle's own vertical motion and the result rides it —
+                    # a rising back trampolines the ball; settling matches
+                    # the surface instead of freezing at vy=0 while the
+                    # beetle moves underneath
+                    _bb_impact = _bb_beetle.vy - _bb_ball.vy
                     _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
                     # Same real-drop cutoff as the shaft branch: impacts below
                     # ~a BALL_BOUNCE_MIN_DROP-voxel fall settle instead of
                     # popping (kills the mini-bounce chatter). Slider 0 = old
                     _bb_min = max(3.0, math.sqrt(2.0 * _bb_g * params.get("BALL_BOUNCE_MIN_DROP", 2.0)))
+                    # Surface velocity at the contact (linear + turn sweep)
+                    _bsvx = _bb_beetle.vx - (_bb_ball.z - _bb_beetle.z) * _bb_beetle.angular_velocity
+                    _bsvz = _bb_beetle.vz + (_bb_ball.x - _bb_beetle.x) * _bb_beetle.angular_velocity
                     if _bb_impact > _bb_min:
-                        _bb_ball.vy = _bb_impact * params.get("BALL_BEETLE_BOUNCE", 0.45)
+                        _bb_ball.vy = _bb_beetle.vy + _bb_impact * params.get("BALL_BEETLE_BOUNCE", 0.45)
+                        # Tangential scrub: the bounce inherits part of the
+                        # moving back's horizontal motion (own grip, stickier
+                        # than floor — see the shaft branch note)
+                        _grip = params.get("BALL_BEETLE_BOUNCE_GRIP", 0.6)
+                        _bb_ball.vx = _bsvx + (_bb_ball.vx - _bsvx) * _grip
+                        _bb_ball.vz = _bsvz + (_bb_ball.vz - _bsvz) * _grip
                         globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.35)
                         globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
                     else:
-                        _bb_ball.vy = 0.0  # gentle contact settles
+                        _bb_ball.vy = _bb_beetle.vy  # settle riding the surface
+                        # CARRY FRICTION (Coulomb-capped): a resting ball
+                        # converges toward the back's motion — walking
+                        # carries it, spinning slings it off (slider 0 = old)
+                        _cg = params.get("BALL_CARRY_GRIP", 0.25)
+                        if _cg > 0.0:
+                            _carry_toward(_bb_ball, _bsvx, _bsvz, _cg,
+                                          params.get("BALL_CARRY_MAX_DV", 2.5))
 
             # Safety clamp to prevent going below floor voxel layer
             # (Main floor collision handles proper positioning above floor)
@@ -26378,6 +26569,22 @@ try:
                 # Ball bounce direction: 1 = true surface normal (closest
                 # point on body/horn shapes), 0 = old center-to-center
                 physics_params["BALL_SURFACE_NORMAL"] = window.GUI.slider_float("Ball Surf Normal", physics_params.get("BALL_SURFACE_NORMAL", 1.0), 0.0, 1.0)
+                # Arena rim (bowl band) feel: restitution for fast shots
+                # into the band (0 = old soft ooze), and how much speed the
+                # ball keeps on the ice (higher = rides the ramp farther)
+                physics_params["BALL_RIM_BOUNCE"] = window.GUI.slider_float("Rim Bounce", physics_params.get("BALL_RIM_BOUNCE", 0.5), 0.0, 0.9)
+                physics_params["BALL_RIM_MOMENTUM"] = window.GUI.slider_float("Rim Momentum", physics_params.get("BALL_RIM_MOMENTUM", 0.97), 0.85, 1.0)
+                # How far past the arena edge each entity travels free
+                # before the rim band bites (voxels)
+                physics_params["BOWL_BALL_GRACE"] = window.GUI.slider_float("Ball Rim Grace", physics_params.get("BOWL_BALL_GRACE", 8.0), 0.0, 12.0)
+                physics_params["BOWL_BEETLE_GRACE"] = window.GUI.slider_float("Beetle Rim Grace", physics_params.get("BOWL_BEETLE_GRACE", 5.0), 0.0, 12.0)
+                # Resting-ball friction on beetle surfaces: how fast the
+                # ball converges to the motion of the back/horn it sits on
+                # (0 = old frictionless surfaces)
+                physics_params["BALL_CARRY_GRIP"] = window.GUI.slider_float("Carry Grip", physics_params.get("BALL_CARRY_GRIP", 0.25), 0.0, 0.8)
+                # Tangential transfer per BOUNCE off a beetle (fraction of
+                # relative motion KEPT: lower = grippier; floor stays 0.899)
+                physics_params["BALL_BEETLE_BOUNCE_GRIP"] = window.GUI.slider_float("Beetle Bnc Grip", physics_params.get("BALL_BEETLE_BOUNCE_GRIP", 0.6), 0.2, 1.0)
 
                 window.GUI.text("")
                 window.GUI.text("--- Ball Contact Physics ---")
