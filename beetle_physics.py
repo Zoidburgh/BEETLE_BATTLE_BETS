@@ -9533,31 +9533,33 @@ def horn_collision_segments(beetle, pitch=None, yaw=None):
             segs.append(_wpts[0] + _wpts[1])
         return segs + _scorpion_tail_segments(beetle)
     if ht == "bombardier":
-        # Mandible chord tracks the AIM TILT: aiming rotates the whole
-        # stamped body (head included) around the rear pivot, but this
-        # chord stayed at fixed y=5 — a raised head's real mandibles sat
-        # ~3 voxels above their collision segment, so digging the head
-        # under the ball scooped thin air. Same pivot/formula as the
-        # placement kernel; aim ignores horn pitch/yaw, so current and
-        # predicted skeletons match (aim velocity credited separately)
+        # Mandible chord + HEAD BLOCK segment, both tracking the AIM TILT
+        # around the rear pivot exactly like the placement kernel (the
+        # chord alone stayed at fixed y=5 while the raised head's real
+        # mandibles sat ~3 voxels higher — scooping hit thin air; and
+        # without the head segment, other beetles' horns clipped straight
+        # through the head block in beetle-vs-beetle). Bombardier has no
+        # horn pitch/yaw, so current and predicted skeletons match (aim
+        # velocity credited separately via spray_aim_vel)
         _bslot = _slot_of(beetle)
         _aim_b = spray_aim[_bslot] * SPRAY_AIM_MAX
-        if abs(_aim_b) > 0.001:
-            _bbl = -float(_slot_body_dims(_bslot)[0])
-            _cab = math.cos(_aim_b)
-            _sab = math.sin(_aim_b)
-            _crb = math.cos(beetle.rotation)
-            _srb = math.sin(beetle.rotation)
+        _crb = math.cos(beetle.rotation)
+        _srb = math.sin(beetle.rotation)
+        _cab = math.cos(_aim_b)
+        _sab = math.sin(_aim_b)
+        _bbl = -float(_slot_body_dims(_bslot)[0])
+        segs = []
+        for _ea, _eb in (((3.0, 5.0), (10.0, 5.0)),   # mandible chord (head bottom)
+                         ((2.0, 7.5), (6.0, 7.5))):   # head block axis
             _wpts = []
-            for _lxb, _lyb in ((3.0, 5.0), (10.0, 5.0)):
+            for _lxb, _lyb in (_ea, _eb):
                 _rxb2 = _lxb - _bbl
                 _axb = _bbl + _rxb2 * _cab - _lyb * _sab
                 _ayb = _rxb2 * _sab + _lyb * _cab
                 _wpts.append((beetle.x + _axb * _crb, beetle.y + _ayb,
                               beetle.z + _axb * _srb))
-            return [_wpts[0] + _wpts[1]]
-        tx, ty, tz = calculate_horn_tip_position(beetle)
-        return [(bx, by, bz, tx, ty, tz)]
+            segs.append(_wpts[0] + _wpts[1])
+        return segs
     if _current:
         tx, ty, tz = calculate_horn_tip_position(beetle)
     else:
@@ -9659,12 +9661,11 @@ def _ball_surface_contact(ball, beetle):
         # there with no push-out and a center-normal fallback. Axis at the
         # head's center height, radius = half its height
         _pts.append((2.0, 7.5, 0.0, 6.0, 7.5, 0.0, 2.5))
-        # ANTENNAE: stubby head-top feelers (generation: (6, 7..8, ±4) out
-        # to (8, 7..8, ±6)) — horn-tip-flagged voxels entirely outside the
-        # head capsule's z-reach, so the ball collided on their voxels with
-        # zero analytic depth and slipped through/off them
-        _pts.append((6.0, 7.5, 4.0, 8.0, 7.5, 6.0, 1.4))
-        _pts.append((6.0, 7.5, -4.0, 8.0, 7.5, -6.0, 1.4))
+        # HEAD-TOP BAR: one transverse capsule across the head top at the
+        # antenna line (z -6..+6 at x~7) covering BOTH antennae and the
+        # head-top strip between them — two separate antenna capsules made
+        # a three-way seam with the head capsule that flickered the blend
+        _pts.append((7.0, 7.5, -6.0, 7.0, 7.5, 6.0, 1.4))
         # AIM TILT: aiming the spray rotates the WHOLE stamped body around
         # the rear pivot (placement kernel spray_aim_pitch, same pivot and
         # formula). Rotate the analytic shapes identically — otherwise
@@ -19748,6 +19749,13 @@ try:
                     # V/B aim controls - adjust spray angle (tilts beetle from butt pivot)
                     # Direct adjustment - holds position when keys released
                     aim_adjust_speed = 2.7 * frame_dt  # Smooth adjustment rate (50% faster)
+                    # BURIAL-DAMPED: grinding the head INTO a body slows the
+                    # tilt like horn damping does (same horn_burial signal +
+                    # constants as the depth-aware turn clamp: 1.5 voxels
+                    # free, 5.5+ full stop) instead of clipping through
+                    _aim_bury = getattr(beetle, 'horn_burial', 0.0)
+                    if _aim_bury > 1.5:
+                        aim_adjust_speed *= max(0.0, 1.0 - (_aim_bury - 1.5) / 4.0)
                     _aim_before = spray_aim[slot]
                     if p_inputs & INPUT_HORN_LEFT:
                         spray_aim[slot] = min(1.0, spray_aim[slot] + aim_adjust_speed)

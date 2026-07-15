@@ -75,10 +75,14 @@ Every unique beetle breaks that template the same four ways:
       the leg-generation constants + per-slot leg length: bombardier
       front+middle (replaces hand-made), scorpion rear+rear2, spider all
       4 pairs (straight chords; arch refinement is step 7). GATE 5 PENDING.
-- [ ] 6. Bombardier polish: merge antennae+head-top into one transverse
-      bar (fewer seams); aim burial damping (grinding the head through a
-      beetle/ball slows like horn damping — uses existing horn_burial,
-      universal mechanism, not a knob). [scoop tunable CUT per design rule]
+- [x] 6. Bombardier polish: antennae+head-top merged into one transverse
+      bar capsule (killed the three-way blend seam); aim burial damping
+      (same horn_burial signal + constants as the turn clamp: 1.5 free,
+      5.5 stop); HEAD BLOCK is now a second segment in
+      horn_collision_segments (aim-tracked) so beetle-vs-beetle anti-clip
+      sees the raised head. [scoop tunable CUT per design rule]
+      GATE 6 PENDING — CANARY REQUIRED before committing (the bvb head
+      segment rebaselines horn_cross metrics; record the new baseline).
 - [ ] 7. Spider refinement (only if gates show residual issues): abdomen
       as a segment (enables its velocity credit via the same channel
       math), fang chord verification, peaked leg arches.
