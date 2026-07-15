@@ -2018,6 +2018,8 @@ class Beetle:
         self.backward_bonus = 0.0      # 0.0 to 0.30 (30% max bonus)
         self.body_pitch_offset = 0.0  # Static body tilt angle (radians) - calculated from leg geometry for scorpion
         self.spray_aim_vel = 0.0  # Bombardier aim tilt rate (rad/s) - the whole-body sweep, credited as articulation on ball contact
+        self.tail_vel = 0.0       # Scorpion tail swing rate (rad/s) - credited at tail-segment contacts (the tail smash)
+        self.spider_aim_vel = 0.0 # Spider abdomen aim rate (rad/s) - tracked for the abdomen channel
 
         # Scorpion stinger control (VB/NM keys)
         self.stinger_curvature = 0.0  # Stinger curvature offset (-1.0 to +1.0): negative=dart forward, positive=pull back, 0=neutral
@@ -6704,6 +6706,13 @@ collision_point_y = ti.field(ti.f32, shape=())
 collision_point_z = ti.field(ti.f32, shape=())
 collision_contact_count = ti.field(ti.i32, shape=())
 collision_has_horn_tips = ti.field(ti.i32, shape=())  # 1 if horn tip voxels involved, 0 otherwise
+# Per-side tip attribution: WHOSE tip voxels are in the contact. Needed
+# because "colored like a tip" != "fights like a horn" — bombardier
+# antennae/mandibles, spider fangs, scorpion claw/tail tips are tip-flagged
+# for coloring, and without ownership their contacts inherited full
+# horn-joust physics (abnormal_body_collision_plan.md F3)
+collision_tips_b1 = ti.field(ti.i32, shape=())
+collision_tips_b2 = ti.field(ti.i32, shape=())
 collision_has_hook_interiors = ti.field(ti.i32, shape=())  # 1 if stag hook interior voxels involved, 0 otherwise
 
 # OPTIMIZATION: Spatial hash for O(N+M) collision point calculation instead of O(N×M)
@@ -8714,14 +8723,18 @@ def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_co
                     occupied_z[idx] = k
 
 @ti.kernel
-def calculate_collision_point_kernel(overlap_count: ti.i32):
-    """OPTIMIZED: GPU-accelerated O(N+M) collision point calculation using spatial hash"""
+def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
+    """OPTIMIZED: GPU-accelerated O(N+M) collision point calculation using spatial hash.
+    color1/color2: the pair's voxel color ids, used to attribute tip voxels
+    to a side (collision_tips_b1/b2) for the per-type TIP_FACTOR physics."""
     # Reset collision data
     collision_point_x[None] = 0.0
     collision_point_y[None] = 0.0
     collision_point_z[None] = 0.0
     collision_contact_count[None] = 0
     collision_has_horn_tips[None] = 0  # Reset horn tip detection
+    collision_tips_b1[None] = 0
+    collision_tips_b2[None] = 0
     collision_has_hook_interiors[None] = 0  # Reset hook interior detection
 
     # Scan through overlapping voxel columns
@@ -8753,6 +8766,13 @@ def calculate_collision_point_kernel(overlap_count: ti.i32):
                             simulation.voxel_part[vtype] == simulation.PART_STINGER or
                             simulation.voxel_part[vtype] == simulation.PART_VENOM_TIP):
                         collision_has_horn_tips[None] = 1
+                        # Attribute the tip to its side of THIS pair (a
+                        # bystander's tips set neither flag)
+                        _tip_own = simulation.beetle_owner(vtype)
+                        if _tip_own >= 0 and _tip_own == simulation.beetle_owner(color1):
+                            collision_tips_b1[None] = 1
+                        if _tip_own >= 0 and _tip_own == simulation.beetle_owner(color2):
+                            collision_tips_b2[None] = 1
 
                     # Check if this is a hook interior voxel
                     if vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
@@ -9279,6 +9299,30 @@ def _slot_of(beetle):
                           simulation.BEETLE_P3: 2, simulation.BEETLE_P4: 3}
     return _COLOR_TO_SLOT.get(beetle.color, 0)
 
+def _tail_sweep_velocity(beetle, cx, cy, cz):
+    """World-space velocity of the scorpion's tail at a contact point from
+    the current tail swing: rate x lever around the rear pivot, in the
+    body's local X-Y plane (the tail's rotation plane). Zero for
+    non-scorpions and still tails. The generic articulation credit only
+    differentiates horn pitch/yaw, which the tail ignores — without this a
+    50 deg/s tail strike transferred zero momentum (plan F2)."""
+    _tv = getattr(beetle, 'tail_vel', 0.0)
+    if beetle.horn_type != "scorpion" or abs(_tv) <= 0.02:
+        return 0.0, 0.0, 0.0
+    _cr = math.cos(beetle.rotation)
+    _sr = math.sin(beetle.rotation)
+    _bl, _bb = _slot_body_dims(_slot_of(beetle))
+    _px = beetle.x + (-float(_bl) + 1.0) * _cr
+    _py = beetle.y + float(_bb)
+    _pz = beetle.z + (-float(_bl) + 1.0) * _sr
+    _rlx = (cx - _px) * _cr + (cz - _pz) * _sr
+    _rly = cy - _py
+    # CCW rotation at rate w: point at local offset (rx, ry) moves at
+    # w * (-ry, +rx)
+    _vlx = -_tv * _rly
+    _vly = _tv * _rlx
+    return _vlx * _cr, _vly, _vlx * _sr
+
 def _giraffe_pivot_local(beetle):
     """Beetle-local (x, y) of the giraffe neck/head pivot from the beetle's
     OWN slot geometry. beetle.color is a voxel id (5/6/51/58), NOT a string —
@@ -9510,6 +9554,20 @@ def _ball_surface_contact(ball, beetle):
     # gave the bombardier an analytic belly hanging below the real one
     _pts = [(-(float(_bl) - 1.0), _rear_up + float(_bb) * 0.5, 0.0,
              3.0, _front_up + float(_bb) * 0.5, 0.0, _r)]
+    if beetle.horn_type == "spider":
+        # ABDOMEN AIM: silk aiming rotates the abdomen (voxels with dx < 3)
+        # around the pedicel pivot (3, 0) by up to ~30 deg — the fat rear
+        # swings ~7 voxels at the tip, previously invisible to the analytic
+        # layer. Rotate the capsule's REAR endpoint identically (the front
+        # endpoint sits at the pivot x and stays)
+        _sad = spider_aim[_slot_of(beetle)] * SPIDER_AIM_MAX
+        if abs(_sad) > 0.001:
+            _pp = _pts[0]
+            _rx0 = _pp[0] - 3.0
+            _ca0 = math.cos(_sad)
+            _sa0 = math.sin(_sad)
+            _pts[0] = (3.0 + _rx0 * _ca0 - _pp[1] * _sa0, _rx0 * _sa0 + _pp[1] * _ca0,
+                       _pp[2], _pp[3], _pp[4], _pp[5], _pp[6])
     if beetle.horn_type == "bombardier":
         # HEAD BLOCK: the bombardier's big elevated head (generation: dx 2..7,
         # y 5..5+front_body_height+1, front height FIXED at 4 → y 5..10, does
@@ -9569,18 +9627,31 @@ def _ball_surface_contact(ball, beetle):
     for _s in horn_collision_segments(beetle):
         segs.append(_s + (1.5,))     # horn shafts: same halfwidth the shaft response uses
     best_pen = -1e9
-    best_dx = 0.0
-    best_dy = 1.0
-    best_dz = 0.0
+    _cands = []
     for ax, ay, az, bx, by, bz, seg_r in segs:
         _cx, _cyy, _cz, _t, _d = closest_point_on_segment(ball.x, ball.y, ball.z,
                                                           ax, ay, az, bx, by, bz)
         _pen = (ball.radius + seg_r) - _d
         if _pen > best_pen:
             best_pen = _pen
-            best_dx = ball.x - _cx
-            best_dy = ball.y - _cyy
-            best_dz = ball.z - _cz
+        _cands.append((_pen, ball.x - _cx, ball.y - _cyy, ball.z - _cz))
+    # SEAM BLENDING: average the radials of every shape within 1 voxel of
+    # the deepest, weighted by how close each is to the max. Winner-takes-
+    # all flipped the normal per substep wherever two shapes trade the
+    # "deepest" title (head/antenna, belly/leg-strut, body/claw junctions)
+    # -> direction flicker = stick pockets and jitter
+    _cut = best_pen - 1.0
+    best_dx = 0.0
+    best_dy = 0.0
+    best_dz = 0.0
+    for _pen, _rdx, _rdy, _rdz in _cands:
+        if _pen > _cut:
+            _rl = math.sqrt(_rdx*_rdx + _rdy*_rdy + _rdz*_rdz)
+            if _rl > 0.05:
+                _w = (_pen - _cut) / _rl
+                best_dx += _rdx * _w
+                best_dy += _rdy * _w
+                best_dz += _rdz * _w
     # SQUEEZE EJECTION: a grounded ball with the shape pressing from ABOVE
     # gets a downward radial — pushing along it only drives the ball into
     # the floor, which pins it there (belly-slamming the bombardier onto
@@ -15034,6 +15105,14 @@ def calculate_horn_damping(beetle, collision_x, collision_y, collision_z, engage
     return new_pitch_damping, new_yaw_damping
 
 
+# Combat weight of a type's tip-FLAGGED voxels (abnormal_body_plan F3):
+# the flags drive tip COLORING, so pseudo-weapons (bombardier antennae/
+# mandibles, spider fangs, scorpion claw/tail tips) are flagged like real
+# horn tips and used to escalate contacts into full horn-joust physics
+# (0.65 engagement floor, full leverage, tip lock). Scale that escalation
+# per type instead: a bombardier head-bump is mostly a body shove.
+TIP_FACTOR = {"bombardier": 0.3, "spider": 0.6, "scorpion": 0.7}
+
 def beetle_collision(b1, b2, params, precomputed_collision=None):
     """Handle collision with voxel-perfect detection, pushing, and horn leverage.
 
@@ -15226,7 +15305,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                         beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
 
         # GPU-ACCELERATED: Calculate collision point on GPU (no CPU transfer!)
-        calculate_collision_point_kernel(0)  # overlap_count not used in kernel
+        calculate_collision_point_kernel(int(b1.color), int(b2.color))
 
         # Read results from GPU (minimal data transfer - just 5 values!)
         collision_x = collision_point_x[None]
@@ -15234,6 +15313,14 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
         collision_z = collision_point_z[None]
         contact_count = collision_contact_count[None]
         has_horn_tips = collision_has_horn_tips[None]
+        # Pair tip weight: strongest TIP_FACTOR among the sides whose tip
+        # voxels are actually in this contact (bystander tips: neither flag
+        # set -> factor 0 -> no escalation from someone else's horn)
+        pair_tip_factor = 0.0
+        if collision_tips_b1[None] == 1:
+            pair_tip_factor = TIP_FACTOR.get(b1.horn_type, 1.0)
+        if collision_tips_b2[None] == 1:
+            pair_tip_factor = max(pair_tip_factor, TIP_FACTOR.get(b2.horn_type, 1.0))
 
         collision_stats['voxel_collisions'] += 1
         if contact_count > collision_stats['max_contact_count']:
@@ -15505,6 +15592,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             _pvwz = shaft_owner.z - _pbl * _srv
                             _lever = math.sqrt((_scx - _pvwx) ** 2 + (_scz - _pvwz) ** 2)
                             _horn_vy += _sav * _lever
+                    # SCORPION TAIL SWEEP: same idea — the V-strike swings
+                    # the tail segments (indices 1-2) around the rear pivot;
+                    # credit its velocity at the contact so a tail smash
+                    # shoves/launches instead of just occupying space
+                    if shaft_owner.horn_type == "scorpion" and _sseg >= 1:
+                        _tvx, _tvy, _tvz = _tail_sweep_velocity(shaft_owner, _scx, _scy, _scz)
+                        _horn_vx += _tvx
+                        _horn_vy += _tvy
+                        _horn_vz += _tvz
 
                     # Closing speed at the contact: how fast the shaft (body
                     # motion + turn sweep + horn articulation) and the intruder's
@@ -15698,6 +15794,20 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                         _a2vx = _svs_at * (_adv2[_si2][3] - _segs2[_si2][3]) / PHYSICS_TIMESTEP
                                         _a2vy = _svs_at * (_adv2[_si2][4] - _segs2[_si2][4]) / PHYSICS_TIMESTEP
                                         _a2vz = _svs_at * (_adv2[_si2][5] - _segs2[_si2][5]) / PHYSICS_TIMESTEP
+                                # SCORPION TAIL SWEEP on horn-vs-horn
+                                # crossings: tail segments ignore pitch/yaw,
+                                # so the predicted-skeleton diff above reads
+                                # zero — credit the tail_vel sweep directly
+                                if b1.horn_type == "scorpion" and _svs_best[1] >= 1:
+                                    _t1x, _t1y, _t1z = _tail_sweep_velocity(b1, _c1x, _c1y, _c1z)
+                                    _a1vx += _t1x
+                                    _a1vy += _t1y
+                                    _a1vz += _t1z
+                                if b2.horn_type == "scorpion" and _svs_best[2] >= 1:
+                                    _t2x, _t2y, _t2z = _tail_sweep_velocity(b2, _c2x, _c2y, _c2z)
+                                    _a2vx += _t2x
+                                    _a2vy += _t2y
+                                    _a2vz += _t2z
                                 _v1x = b1.vx - (_c1z - b1.z) * b1.angular_velocity + _a1vx
                                 _v1y = b1.vy + _a1vy
                                 _v1z = b1.vz + (_c1x - b1.x) * b1.angular_velocity + _a1vz
@@ -15779,9 +15889,11 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     height_factor * HORN_ENGAGEMENT_HEIGHT_WEIGHT)
 
                 # Boost engagement for tip collisions - tips should feel solid even with few voxels
+                # Scaled by the pair's TIP_FACTOR: pseudo-weapon tips
+                # (bombardier head etc.) get a proportionally lower floor
                 MIN_TIP_ENGAGEMENT = 0.65  # Minimum engagement when horn tips are involved
                 if has_horn_tips == 1:
-                    engagement_factor = max(engagement_factor, MIN_TIP_ENGAGEMENT)
+                    engagement_factor = max(engagement_factor, MIN_TIP_ENGAGEMENT * pair_tip_factor)
 
                 # Expose engagement for the input-side turn resistance (light
                 # contact turns near full speed, deep lock turns at the floor)
@@ -15806,10 +15918,14 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     horn_leverage = min(math.log(raw_leverage + 1.0) * 2.0, 2.5)
 
                     # TIP vs SHAFT: Tips have full leverage, shaft hits have reduced leverage
-                    # Shaft hits (no tip voxels) have less mechanical advantage
+                    # Shaft hits (no tip voxels) have less mechanical advantage.
+                    # Pseudo-weapon tips (TIP_FACTOR < 1) get proportionally
+                    # shaft-like leverage instead of a real horn's full lift
+                    shaft_leverage_mult = params.get("SHAFT_LEVERAGE_MULT", 0.4)
                     if has_horn_tips == 0:
-                        shaft_leverage_mult = params.get("SHAFT_LEVERAGE_MULT", 0.4)
                         horn_leverage *= shaft_leverage_mult
+                    else:
+                        horn_leverage *= shaft_leverage_mult + (1.0 - shaft_leverage_mult) * pair_tip_factor
 
                     # Add MASSIVE upward bias to the collision normal
                     normal_y += horn_leverage * 2.5  # 5x stronger than before!
@@ -16065,9 +16181,12 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     bias_strength = params.get("COLLISION_SPIN_BIAS", 0.8)
 
                     # TIP vs SHAFT: Shaft hits need MORE spin bias to counteract wrong-direction torque
+                    # (pseudo-weapon tips blend toward the shaft treatment)
+                    shaft_spin_mult = params.get("SHAFT_SPIN_BIAS_MULT", 2.0)
                     if has_horn_tips == 0:
-                        shaft_spin_mult = params.get("SHAFT_SPIN_BIAS_MULT", 2.0)
                         bias_strength *= shaft_spin_mult
+                    else:
+                        bias_strength *= 1.0 + (shaft_spin_mult - 1.0) * (1.0 - pair_tip_factor)
 
                     # b1 is attacking b2 - make b2 spin away from b1
                     if b1_toward_bias > b2_toward_bias + 0.5:
@@ -16178,10 +16297,13 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # Reduced separation for horns (20% of normal to prevent complete overlap)
                 # Applied every frame regardless of cooldown
                 # TIP vs SHAFT: Shaft hits need MORE separation to prevent clipping
+                shaft_sep_mult = params.get("SHAFT_SEPARATION_MULT", 0.5)
                 if has_horn_tips == 1:
-                    mini_sep = separation_force * 0.2  # Tips: 20% separation (they lock well)
+                    # Real tips lock (20% separation); pseudo-weapon tips
+                    # blend toward the shaft separation so they don't lock
+                    mini_sep = separation_force * (0.2 * pair_tip_factor
+                                                   + shaft_sep_mult * (1.0 - pair_tip_factor))
                 else:
-                    shaft_sep_mult = params.get("SHAFT_SEPARATION_MULT", 0.5)
                     mini_sep = separation_force * shaft_sep_mult  # Shaft: more separation to prevent clip
 
                 # MOMENTUM-BASED SEPARATION: Moving beetle pushes stationary one more
@@ -18136,7 +18258,7 @@ calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_BLUE,
                                  beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
 calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_RED,
                                  beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
-calculate_collision_point_kernel(0)
+calculate_collision_point_kernel(int(simulation.BEETLE_BLUE), int(simulation.BEETLE_RED))
 update_loading(1)
 
 # PHASE 2: Death/explosion kernels
@@ -19576,10 +19698,14 @@ try:
                     # Spider abdomen aim - V tilts butt UP, B returns to level
                     # Negative values = UP, clamp to -1 to 0 (only upward from spawn)
                     aim_adjust_speed = SPIDER_AIM_SPEED * frame_dt
+                    _sp_aim_before = spider_aim[slot]
                     if p_inputs & INPUT_HORN_LEFT:
                         spider_aim[slot] = max(-1.0, spider_aim[slot] - aim_adjust_speed)
                     elif p_inputs & INPUT_HORN_RIGHT:
                         spider_aim[slot] = min(0.0, spider_aim[slot] + aim_adjust_speed)
+                    # Abdomen swing rate (rad/s) for the abdomen channel
+                    beetle.spider_aim_vel = ((spider_aim[slot] - _sp_aim_before) * SPIDER_AIM_MAX / frame_dt
+                                             if frame_dt > 0.0 else 0.0)
 
                     # Silk firing - R for slow lob, Y for fast shot
                     if p_inputs & INPUT_HORN_UP:  # R key
@@ -19638,6 +19764,7 @@ try:
                     TAIL_MAX_UP = 20.0          # Resting position (max up)
                     TAIL_MAX_DOWN = -25.0       # Fully pushed down
 
+                    _tail_before = beetle.tail_rotation_angle
                     if p_inputs & INPUT_HORN_LEFT:
                         # V = Push tail down (for striking)
                         beetle.tail_rotation_angle -= TAIL_ROTATION_SPEED * PHYSICS_TIMESTEP
@@ -19647,6 +19774,9 @@ try:
                         if beetle.tail_rotation_angle < TAIL_MAX_UP:
                             beetle.tail_rotation_angle += TAIL_RETURN_SPEED * PHYSICS_TIMESTEP
                             beetle.tail_rotation_angle = min(TAIL_MAX_UP, beetle.tail_rotation_angle)
+                    # Tail swing rate (rad/s) — credited as contact velocity
+                    # on tail-segment hits so a strike actually smashes
+                    beetle.tail_vel = math.radians(beetle.tail_rotation_angle - _tail_before) / PHYSICS_TIMESTEP
 
                     # B = Venom shot from tail tip
                     if (p_inputs & INPUT_HORN_RIGHT) and venom_cooldown[slot] <= 0 and venom_charges[slot] > 0:
