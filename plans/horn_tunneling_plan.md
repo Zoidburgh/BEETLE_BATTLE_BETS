@@ -16,6 +16,19 @@ horn_collision_plan.md history.
 - T2 not built (build only if in-and-out-same-side residue shows in play).
 Ghost-push regression check: bots idling horns-raised must produce ZERO fires.
 
+**CANARY RESULTS 2026-07-16 (3x 75s stag,stag,hercules,hercules):**
+First cut OVERFIRED: 965 fires/75s — in bot perma-grind, crossed shafts OSCILLATE across
+each other's plane (real intersections SVS already owns), each oscillation = a sign flip,
+and the response perturbation fed back into more flips. THREE GATES ADDED (committed after):
+(1) voxel-contact suppression at fire time (contact steps belong to the normal stack),
+(2) sweep magnitude ≥1.2 voxels/step through the plane (true tunnels are fast by definition;
+oscillations move 0.2-0.5), (3) 9-frame per-pair refire cooldown.
+Gated composition (run 3): **2 fires** (plausible true tunnels), 153 mag-suppressed
+(oscillations), 9 contact-suppressed. Frame time identical across all runs (~23ms 4-bot,
+detector cost invisible, even at 965 fires/run). deep_clip 129/193/239 across runs = normal
+combat-intensity variance (post-change rebaseline; not comparable to older numbers anyway).
+Suppression counters stay in the perf log: `horn_crossing_supp: contact=N mag=N`.
+
 ## The problem
 
 At max yaw speed (MAX_ANGULAR_SPEED = 8 rad/s) a ~20-voxel horn tip sweeps ~2.7 voxels per

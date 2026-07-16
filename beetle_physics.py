@@ -768,6 +768,7 @@ def save_perf_log():
     w(f"  min_shaft_shaft_dist: {'n/a' if _mss > 900 else f'{_mss:.1f}'} voxels (horn-vs-horn crossing; <2 = clipping)")
     w(f"  horn_cross_clip_events: {collision_stats['horn_cross_clip_events']} (horn-horn within 2 voxels, pre-gate)")
     w(f"  horn_crossing_fires: {collision_stats.get('horn_crossing_fires', 0)} (T1 tunneling detector: certain pass-throughs caught)")
+    w(f"  horn_crossing_supp: contact={collision_stats.get('horn_crossing_supp_contact', 0)} mag={collision_stats.get('horn_crossing_supp_mag', 0)} (flips suppressed by gates)")
     for _hk, _hv in sorted(collision_stats['horn_cross_by_type'].items(), key=lambda kv: -kv[1]):
         w(f"    {_hk}: {_hv}")
     for _ck, _cv in sorted(collision_stats['deep_clip_by_type'].items(), key=lambda kv: -kv[1]):
@@ -10217,6 +10218,7 @@ def closest_point_on_segment(px, py, pz, ax, ay, az, bx, by, bz):
 # they were computed on — a flip only counts against the IMMEDIATELY previous
 # frame, so match resets / gaps can never produce a phantom crossing.
 horn_cross_sign_prev = {}
+horn_cross_fire_frame = {}  # (slot1, slot2) -> physics_frame of last fire (refire cooldown)
 _CROSSING_TYPES = ("rhino", "stag", "hercules", "atlas",
                    "spider", "bombardier", "scorpion", "giraffe")
 
@@ -15664,6 +15666,13 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
     # detection was reverted for pushing beetles that visibly weren't
     # touching). Runs OUTSIDE the voxel-contact gate by necessity: during a
     # tunnel step there IS no voxel contact.
+    # Gates (canary-tuned 2026-07-16 — first cut fired 965x/75s on bot
+    # grinds): (1) voxel contact this step means the normal response stack
+    # owns the frame — crossed shafts OSCILLATING across each other's plane
+    # in a grind are real intersections, not tunnels; (2) a true tunnel is
+    # FAST by definition (slow crossings get voxel contact mid-way), so the
+    # plane sweep must exceed ~1.2 voxels in one step; (3) per-pair refire
+    # cooldown so the response can't ping-pong the sign into a fire loop.
     _cross_range = params.get("CROSSING_RANGE", 4.0)
     if (_cross_range > 0.0 and not is_ball_collision and physics_frame > 30
             and b1.horn_type in _CROSSING_TYPES and b2.horn_type in _CROSSING_TYPES
@@ -15709,11 +15718,29 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     continue
                 if not (0.02 < _res[6] < 0.98 and 0.02 < _res[7] < 0.98):
                     continue
+                # Sweep magnitude: a genuine tunnel blows through the plane
+                # (>1.2 voxels in one step); grind oscillations move ~0.2-0.5
+                if abs(_prev[1]) + abs(_s_now) < 1.2:
+                    collision_stats['horn_crossing_supp_mag'] = \
+                        collision_stats.get('horn_crossing_supp_mag', 0) + 1
+                    continue
                 if _cr_fire is None or _res[8] < _cr_fire[0]:
                     _sgn = 1.0 if _prev[1] > 0.0 else -1.0
                     _cr_fire = (_res[8], _sgn * _nx / _nlen, _sgn * _ny / _nlen,
                                 _sgn * _nz / _nlen, _res)
+        # Voxel contact this step = the normal response stack owns the frame
+        # (grind oscillations across the plane are intersections, not
+        # tunnels). Checked at fire time so the suppression is countable.
+        if _cr_fire is not None and precomputed_collision:
+            collision_stats['horn_crossing_supp_contact'] = \
+                collision_stats.get('horn_crossing_supp_contact', 0) + 1
+            _cr_fire = None
+        _cr_cd_key = (_cr_s1, _cr_s2)
+        if _cr_fire is not None and (physics_frame -
+                horn_cross_fire_frame.get(_cr_cd_key, -99)) < 9:
+            _cr_fire = None  # refire cooldown (~0.15s per pair)
         if _cr_fire is not None:
+            horn_cross_fire_frame[_cr_cd_key] = physics_frame
             collision_stats['horn_crossing_fires'] = \
                 collision_stats.get('horn_crossing_fires', 0) + 1
             _cr_d, _cnx, _cny, _cnz, _cres = _cr_fire
