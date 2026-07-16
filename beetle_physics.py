@@ -6715,6 +6715,12 @@ collision_has_horn_tips = ti.field(ti.i32, shape=())  # 1 if horn tip voxels inv
 # horn-joust physics (abnormal_body_collision_plan.md F3)
 collision_tips_b1 = ti.field(ti.i32, shape=())
 collision_tips_b2 = ti.field(ti.i32, shape=())
+# Packed copy of ALL cluster outputs (sync perf plan fix 1): every [None]
+# scalar read is a full Python<->Taichi round-trip (~0.15ms on the CPU
+# backend); with sustained bot contact (~5.5 collisions/frame) the ~8
+# reads per pair were ~half the response cost. One to_numpy() = one sync.
+# Layout: [x, y, z, count, has_tips, tips_b1, tips_b2, hook]
+collision_pack = ti.field(ti.f32, shape=(8,))
 collision_has_hook_interiors = ti.field(ti.i32, shape=())  # 1 if stag hook interior voxels involved, 0 otherwise
 
 # OPTIMIZATION: Spatial hash for O(N+M) collision point calculation instead of O(N×M)
@@ -8831,6 +8837,16 @@ def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
         vz1 = beetle1_occupied_z[i]
         collision_spatial_hash[vx1, vz1] = 0  # Reset
 
+    # PHASE 4: pack every output so the host reads ONE array (one sync)
+    collision_pack[0] = collision_point_x[None]
+    collision_pack[1] = collision_point_y[None]
+    collision_pack[2] = collision_point_z[None]
+    collision_pack[3] = ti.cast(collision_contact_count[None], ti.f32)
+    collision_pack[4] = ti.cast(collision_has_horn_tips[None], ti.f32)
+    collision_pack[5] = ti.cast(collision_tips_b1[None], ti.f32)
+    collision_pack[6] = ti.cast(collision_tips_b2[None], ti.f32)
+    collision_pack[7] = ti.cast(collision_has_hook_interiors[None], ti.f32)
+
 
 def calculate_horn_length(shaft_len, prong_len, horn_type):
     """Calculate actual horn reach based on geometry and beetle type
@@ -9563,7 +9579,31 @@ def _atlas_pronotum_segments(beetle):
                      beetle.z + _tx * _sr + _tz * _cr))
     return segs
 
+_hcs_cache = {}
+_hcs_cache_frame = -1
+
 def horn_collision_segments(beetle, pitch=None, yaw=None):
+    """Memoized per physics substep (2026-07-16 perf fix): within one
+    substep this gets called many times per colliding pair (shaft path x2,
+    svs x2, predicted-skeleton rebuilds, the ball manifold) with identical
+    inputs — recomputing multi-arm skeletons in Python each time grew
+    beetle_collision ~9x over the July-12 baseline. Staleness within a
+    substep (collision pushes move beetles sub-voxel between pairs) is the
+    same approximation class as every other response. Cache clears each
+    substep via physics_frame."""
+    global _hcs_cache_frame
+    if _hcs_cache_frame != physics_frame:
+        _hcs_cache.clear()
+        _hcs_cache_frame = physics_frame
+    _ck = (id(beetle), pitch, yaw)
+    _hit = _hcs_cache.get(_ck)
+    if _hit is not None:
+        return _hit
+    _segs = _horn_collision_segments_impl(beetle, pitch, yaw)
+    _hcs_cache[_ck] = _segs
+    return _segs
+
+def _horn_collision_segments_impl(beetle, pitch=None, yaw=None):
     """Segment list approximating the horn for the anti-clip layers.
     Phase 1 of horn_collision_plan.md: multi-arm horns get one segment PER
     ARM, all sharing the base attachment point — stag = left+right pincer,
@@ -15543,7 +15583,11 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         b2.z -= nz * push_strength * 0.3
 
     # Voxel-overlap check: normally precomputed by the batched pairs kernel
-    # (one launch for all pairs in the main loop); standalone kernel otherwise
+    # (one launch for all pairs in the main loop); standalone kernel otherwise.
+    # NOTE (2026-07-16): batching the CLUSTER kernels across pairs was tried
+    # and REVERTED — it replaced the hash-based O(N+M) per-pair scan with a
+    # brute-force box scan and DOUBLED collision cost (the July-7 floor-
+    # batching lesson again: batch mandatory overhead, not clever algorithms)
     if precomputed_collision is None:
         has_collision = check_collision_kernel(b1.x, b1.z, b1.y, b2.x, b2.z, b2.y, b1.color, b2.color)
     else:
@@ -15555,23 +15599,23 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                         beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
         calculate_occupied_voxels_kernel(b2.x, b2.z, b2.color,
                                         beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
-
-        # GPU-ACCELERATED: Calculate collision point on GPU (no CPU transfer!)
         calculate_collision_point_kernel(int(b1.color), int(b2.color))
 
-        # Read results from GPU (minimal data transfer - just 5 values!)
-        collision_x = collision_point_x[None]
-        collision_y = collision_point_y[None]
-        collision_z = collision_point_z[None]
-        contact_count = collision_contact_count[None]
-        has_horn_tips = collision_has_horn_tips[None]
+        # Read ALL results in ONE sync (packed field; the old per-scalar
+        # [None] reads were ~8 round-trips per colliding pair)
+        _cpk = collision_pack.to_numpy()
+        collision_x = float(_cpk[0])
+        collision_y = float(_cpk[1])
+        collision_z = float(_cpk[2])
+        contact_count = int(_cpk[3])
+        has_horn_tips = int(_cpk[4])
         # Pair tip weight: strongest TIP_FACTOR among the sides whose tip
         # voxels are actually in this contact (bystander tips: neither flag
         # set -> factor 0 -> no escalation from someone else's horn)
         pair_tip_factor = 0.0
-        if collision_tips_b1[None] == 1:
+        if _cpk[5] > 0.5:
             pair_tip_factor = TIP_FACTOR.get(b1.horn_type, 1.0)
-        if collision_tips_b2[None] == 1:
+        if _cpk[6] > 0.5:
             pair_tip_factor = max(pair_tip_factor, TIP_FACTOR.get(b2.horn_type, 1.0))
 
         collision_stats['voxel_collisions'] += 1
@@ -15579,7 +15623,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             collision_stats['max_contact_count'] = contact_count
         # Track separately without stag pincer squeezes (hook interiors), whose
         # wrap-around contact is legitimately huge — this max is the clip signal
-        if collision_has_hook_interiors[None] == 0 and contact_count > collision_stats['max_contact_no_hook']:
+        if _cpk[7] < 0.5 and contact_count > collision_stats['max_contact_no_hook']:
             collision_stats['max_contact_no_hook'] = contact_count
 
         # Collision detected! Calculate 3D collision geometry
