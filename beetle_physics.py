@@ -353,6 +353,29 @@ _last_perf_auto_save = time.time()
 # saves the perf log and exits after N seconds of gameplay (default 75).
 # Combine with --bot-types to pick the matchup.
 CANARY_MODE = '--canary' in sys.argv
+
+# --balltrace: per-substep ball CSV (position/velocity + which contact
+# branch fired, pen, rest target, surface vy, segment, contact count) for
+# offline jitter diagnosis. Dumps ball_trace.csv on exit.
+BALL_TRACE = '--balltrace' in sys.argv
+_ball_trace_rows = []
+_bt_dbg = {}
+
+def _bt_dump():
+    if not _ball_trace_rows:
+        return
+    try:
+        with open("ball_trace.csv", "w") as _f:
+            _f.write("frame,x,y,z,vx,vy,vz,branch,seg,pen,rest_y,surf_vy,pinched,contacts\n")
+            for _r in _ball_trace_rows:
+                _f.write(",".join(str(_v) for _v in _r) + "\n")
+        print(f"Ball trace: {len(_ball_trace_rows)} rows -> ball_trace.csv")
+    except Exception as _e:
+        print("ball trace dump failed:", _e)
+
+if BALL_TRACE:
+    import atexit
+    atexit.register(_bt_dump)
 CANARY_SECONDS = 75.0
 _canary_play_start = None  # Set when gameplay begins (canary end timer)
 if CANARY_MODE:
@@ -658,6 +681,7 @@ collision_stats = {
     'min_shaft_shaft_dist': 999.0,  # closest horn-vs-horn segment crossing (<2 = visually clipping)
     'horn_cross_clip_events': 0,    # horn-horn crossings within 2 voxels (counted PRE-gate: dead zones included)
     'horn_cross_by_type': {},       # "typeXtype" -> count
+    'horn_crossing_fires': 0,       # T1 tunneling detector: certain pass-throughs caught (horn_tunneling_plan.md)
     'batch_check_ms': deque(maxlen=120),  # batched all-pairs kernel time per physics step
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
 }
@@ -743,6 +767,7 @@ def save_perf_log():
     _mss = collision_stats['min_shaft_shaft_dist']
     w(f"  min_shaft_shaft_dist: {'n/a' if _mss > 900 else f'{_mss:.1f}'} voxels (horn-vs-horn crossing; <2 = clipping)")
     w(f"  horn_cross_clip_events: {collision_stats['horn_cross_clip_events']} (horn-horn within 2 voxels, pre-gate)")
+    w(f"  horn_crossing_fires: {collision_stats.get('horn_crossing_fires', 0)} (T1 tunneling detector: certain pass-throughs caught)")
     for _hk, _hv in sorted(collision_stats['horn_cross_by_type'].items(), key=lambda kv: -kv[1]):
         w(f"    {_hk}: {_hv}")
     for _ck, _cv in sorted(collision_stats['deep_clip_by_type'].items(), key=lambda kv: -kv[1]):
@@ -2100,29 +2125,31 @@ class Beetle:
         if self.tip_cooldown > 0.0:
             self.tip_cooldown = max(0.0, self.tip_cooldown - dt)
 
-        # Drain pending collision forces smoothly (20% per tick, ~15 frames to fully apply)
+        # Drain pending collision forces smoothly (20% per tick, ~15 frames to fully apply).
+        # Small remainders drain at a constant floor rate instead of dumping
+        # whole — the old dump was a one-frame pop at the end of every impulse
         if self.pending_lift > 0.0:
             drain = self.pending_lift * 0.2
             if drain < 0.05:
-                drain = self.pending_lift
+                drain = min(self.pending_lift, 0.05)
             self.vy += drain
             self.pending_lift -= drain
         if abs(self.pending_pitch) > 0.0:
             drain = self.pending_pitch * 0.2
             if abs(drain) < 0.02:
-                drain = self.pending_pitch
+                drain = math.copysign(min(abs(self.pending_pitch), 0.02), self.pending_pitch)
             self.pitch_velocity += drain
             self.pending_pitch -= drain
         if abs(self.pending_roll) > 0.0:
             drain = self.pending_roll * 0.2
             if abs(drain) < 0.02:
-                drain = self.pending_roll
+                drain = math.copysign(min(abs(self.pending_roll), 0.02), self.pending_roll)
             self.roll_velocity += drain
             self.pending_roll -= drain
         if abs(self.pending_yaw) > 0.0:
             drain = self.pending_yaw * 0.2
             if abs(drain) < 0.02:
-                drain = self.pending_yaw
+                drain = math.copysign(min(abs(self.pending_yaw), 0.02), self.pending_yaw)
             self.angular_velocity += drain
             self.pending_yaw -= drain
 
@@ -2151,6 +2178,21 @@ class Beetle:
 
         # Apply gravity (always on) - use global adjustable gravity
         self.vy -= physics_params["GRAVITY"] * dt
+
+        # FLOOR REST CLAMP (root fix, measured via --balltrace): grounded
+        # beetles used to FREE-FALL between cache-amortized floor checks
+        # (floor only re-checks after ~1 voxel of movement), then snap
+        # back up — a permanent ~34Hz, ±0.5-voxel sawtooth at rest, hidden
+        # by integer-Y beetle rendering but re-broadcast by anything
+        # resting ON the beetle (the unfixable-looking ball jitter). At
+        # true floor level, downward velocity IS the artifact. air_gap is
+        # the real ground signal (on_ground is sticky through launches);
+        # lifts/launches (vy > 0) and edge walk-offs (air_gap grows on the
+        # movement-triggered floor recheck) are unaffected.
+        if (self.horn_type != "ball" and self.on_ground
+                and self.air_gap <= 0.5 and self.vy < 0.0
+                and not getattr(self, 'no_floor_below', False)):
+            self.vy = 0.0
 
         # Apply vertical velocity
         self.y += self.vy * dt
@@ -2297,12 +2339,13 @@ class Beetle:
         if abs(self.angular_velocity) > MAX_ANGULAR_SPEED:
             self.angular_velocity = MAX_ANGULAR_SPEED if self.angular_velocity > 0 else -MAX_ANGULAR_SPEED
 
-        # Different tilt speed caps based on ground contact
+        # Different tilt speed caps based on ground contact. Yaw has had a
+        # hard 8.0 clamp forever ("prevent jarring 180 spins"); pitch/roll
+        # airborne ran at 900 (= uncapped) from Nov 2025 until 2026-07-16
         if self.on_ground:
-            MAX_TILT_SPEED = 8.0  # Conservative limit when on ground
+            MAX_TILT_SPEED = physics_params.get("GROUND_TILT_SPEED", 8.0)
         else:
-            # Allow dramatic tumbling when airborne (tunable via slider)
-            MAX_TILT_SPEED = physics_params.get("AIRBORNE_TILT_SPEED", 20.0)
+            MAX_TILT_SPEED = physics_params.get("AIRBORNE_TILT_SPEED", 14.0)
 
         if abs(self.pitch_velocity) > MAX_TILT_SPEED:
             self.pitch_velocity = MAX_TILT_SPEED if self.pitch_velocity > 0 else -MAX_TILT_SPEED
@@ -4977,15 +5020,16 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
             contact = 0
 
     # XZ NEIGHBOR CHECK: Catch edge-to-edge clipping in adjacent columns
-    # Only check 4 cardinal neighbors (not diagonals) with tight Y tolerance
-    # This prevents thin horn edges from slipping through gaps between spherical voxels
+    # All 8 neighbors (was cardinal-only — diagonal thin-horn approaches
+    # slipped through the seam; horn_tunneling_plan.md T0.1) with tight Y
+    # tolerance. Prevents thin horn edges slipping between spherical voxels
     elif beetle1_y_max >= 0 and beetle2_y_max < 0:  # Only beetle1 in this column
-        # Check 4 cardinal neighboring columns for beetle2 voxels
-        for neighbor_dir in range(4):
+        # Check 8 neighboring columns for beetle2 voxels
+        for neighbor_dir in range(8):
             if contact == 0:
-                # Cardinal directions: +X, -X, +Z, -Z
-                neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
-                neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
+                # 0-3 cardinals (+X,-X,+Z,-Z), 4-7 diagonals
+                neighbor_gx = gx + (1 if (neighbor_dir == 0 or neighbor_dir == 4 or neighbor_dir == 5) else (-1 if (neighbor_dir == 1 or neighbor_dir == 6 or neighbor_dir == 7) else 0))
+                neighbor_gz = gz + (1 if (neighbor_dir == 2 or neighbor_dir == 4 or neighbor_dir == 6) else (-1 if (neighbor_dir == 3 or neighbor_dir == 5 or neighbor_dir == 7) else 0))
                 if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
                     # Check for beetle2 voxels in neighbor column at exact Y (±0 tolerance)
                     for neighbor_gy in range(beetle1_y_min, beetle1_y_max + 1):
@@ -5002,11 +5046,11 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
                             if neighbor_is_2 == 1:
                                 contact = 1
     elif beetle2_y_max >= 0 and beetle1_y_max < 0:  # Only beetle2 in this column
-        # Check 4 cardinal neighboring columns for beetle1 voxels
-        for neighbor_dir in range(4):
+        # Check 8 neighboring columns for beetle1 voxels (mirror of above)
+        for neighbor_dir in range(8):
             if contact == 0:
-                neighbor_gx = gx + (1 if neighbor_dir == 0 else (-1 if neighbor_dir == 1 else 0))
-                neighbor_gz = gz + (1 if neighbor_dir == 2 else (-1 if neighbor_dir == 3 else 0))
+                neighbor_gx = gx + (1 if (neighbor_dir == 0 or neighbor_dir == 4 or neighbor_dir == 5) else (-1 if (neighbor_dir == 1 or neighbor_dir == 6 or neighbor_dir == 7) else 0))
+                neighbor_gz = gz + (1 if (neighbor_dir == 2 or neighbor_dir == 4 or neighbor_dir == 6) else (-1 if (neighbor_dir == 3 or neighbor_dir == 5 or neighbor_dir == 7) else 0))
                 if 0 <= neighbor_gx < simulation.n_grid and 0 <= neighbor_gz < simulation.n_grid:
                     # Check for beetle1 voxels in neighbor column at exact Y (±0 tolerance)
                     for neighbor_gy in range(beetle2_y_min, beetle2_y_max + 1):
@@ -7767,10 +7811,12 @@ def apply_bowl_slide(entity, params):
         if _in_goal_lane(entity.x, entity.z):
             return  # No slide in goal pit areas
         if (_is_ball and abs(entity.x) > 37.5 and entity.y < 8.0
-                and abs(entity.z) < 12.0 + entity.radius):
-            # GOAL BOX INTERIOR (ball-radius z margin): deep in the goal
-            # the rim systems stand aside too, or a slightly-off-center
-            # deep ball got shoved back toward the arena mid-fall
+                and (abs(entity.z) < 12.0
+                     or (entity.y < 2.0 and abs(entity.z) < 12.0 + entity.radius))):
+            # GOAL BOX INTERIOR: rim systems stand aside deep in the goal
+            # (z margin only once the ball is DOWN at floor level — the
+            # airspace above the z 12..16 floor shoulder keeps normal rim
+            # behavior, matching the floor gate above)
             return
 
         # On the bowl - apply exponential inward force
@@ -10165,6 +10211,14 @@ def closest_point_on_segment(px, py, pz, ax, ay, az, bx, by, bz):
     dz = pz - cz
     return cx, cy, cz, t, math.sqrt(dx*dx + dy*dy + dz*dz)
 
+
+# HORN CROSSING DETECTOR state (horn_tunneling_plan.md T1): previous-step
+# side-sign per (slot1, slot2, arm1, arm2). Entries carry the physics_frame
+# they were computed on — a flip only counts against the IMMEDIATELY previous
+# frame, so match resets / gaps can never produce a phantom crossing.
+horn_cross_sign_prev = {}
+_CROSSING_TYPES = ("rhino", "stag", "hercules", "atlas",
+                   "spider", "bombardier", "scorpion", "giraffe")
 
 def closest_points_between_segments(ax, ay, az, bx, by, bz, cx, cy, cz, dx_, dy_, dz_):
     """Closest points between segments AB and CD (Ericson, Real-Time
@@ -15599,6 +15653,107 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         b2.x -= nx * push_strength * 0.3  # Slight counter-push
                         b2.z -= nz * push_strength * 0.3
 
+    # HORN CROSSING DETECTOR (horn_tunneling_plan.md T1): fast spins / pitch
+    # flicks sweep a horn tip ~2.7 voxels per step — thin horns pass ENTIRELY
+    # through each other between checks, so no static layer (voxel kernel,
+    # shaft-vs-body, SVS) ever sees contact. Track which SIDE of horn B horn A
+    # sits on (sign of the offset along the mutual perpendicular of the two
+    # segment lines); a sign flip between consecutive frames while the
+    # segments are near and interior is a geometrically CERTAIN pass-through.
+    # This can never ghost-fire on proximity — the P3 lesson (expanded-window
+    # detection was reverted for pushing beetles that visibly weren't
+    # touching). Runs OUTSIDE the voxel-contact gate by necessity: during a
+    # tunnel step there IS no voxel contact.
+    _cross_range = params.get("CROSSING_RANGE", 4.0)
+    if (_cross_range > 0.0 and not is_ball_collision and physics_frame > 30
+            and b1.horn_type in _CROSSING_TYPES and b2.horn_type in _CROSSING_TYPES
+            and (b1.x - b2.x) ** 2 + (b1.z - b2.z) ** 2 < 2025.0):  # 45^2: horns can't span more
+        _cr_segs1 = horn_collision_segments(b1)  # memoized per substep
+        _cr_segs2 = horn_collision_segments(b2)
+        _cr_s1 = _slot_of(b1)
+        _cr_s2 = _slot_of(b2)
+        _cr_fire = None  # (dist, nx, ny, nz oriented toward b2's PREVIOUS side, closest-result)
+        for _ci in range(len(_cr_segs1)):
+            _sa = _cr_segs1[_ci]
+            _dax, _day, _daz = _sa[3] - _sa[0], _sa[4] - _sa[1], _sa[5] - _sa[2]
+            for _cj in range(len(_cr_segs2)):
+                _sb = _cr_segs2[_cj]
+                _dbx, _dby, _dbz = _sb[3] - _sb[0], _sb[4] - _sb[1], _sb[5] - _sb[2]
+                _ck = (_cr_s1, _cr_s2, _ci, _cj)
+                _nx = _day * _dbz - _daz * _dby
+                _ny = _daz * _dbx - _dax * _dbz
+                _nz = _dax * _dby - _day * _dbx
+                _nlen = math.sqrt(_nx * _nx + _ny * _ny + _nz * _nz)
+                _dalen = math.sqrt(_dax * _dax + _day * _day + _daz * _daz)
+                _dblen = math.sqrt(_dbx * _dbx + _dby * _dby + _dbz * _dbz)
+                # Near-parallel: the sign is numerically undefined and n
+                # sweeping through zero flips it WITHOUT a crossing — drop
+                # state instead of storing garbage (parallel grinds belong
+                # to SVS anyway)
+                if _nlen < 0.15 * _dalen * _dblen or _dalen < 0.5 or _dblen < 0.5:
+                    horn_cross_sign_prev.pop(_ck, None)
+                    continue
+                _s_now = ((_sb[0] - _sa[0]) * _nx + (_sb[1] - _sa[1]) * _ny
+                          + (_sb[2] - _sa[2]) * _nz) / _nlen
+                _prev = horn_cross_sign_prev.get(_ck)
+                horn_cross_sign_prev[_ck] = (physics_frame, _s_now)
+                if _prev is None or _prev[0] != physics_frame - 1:
+                    continue
+                if _prev[1] * _s_now >= 0.0:
+                    continue
+                # Lines crossed since last frame. Confirm the physical
+                # SEGMENTS did (near each other + crossing interior to both
+                # horns, not on their infinite extensions)
+                _res = closest_points_between_segments(*_sa, *_sb)
+                if _res[8] > _cross_range:
+                    continue
+                if not (0.02 < _res[6] < 0.98 and 0.02 < _res[7] < 0.98):
+                    continue
+                if _cr_fire is None or _res[8] < _cr_fire[0]:
+                    _sgn = 1.0 if _prev[1] > 0.0 else -1.0
+                    _cr_fire = (_res[8], _sgn * _nx / _nlen, _sgn * _ny / _nlen,
+                                _sgn * _nz / _nlen, _res)
+        if _cr_fire is not None:
+            collision_stats['horn_crossing_fires'] = \
+                collision_stats.get('horn_crossing_fires', 0) + 1
+            _cr_d, _cnx, _cny, _cnz, _cres = _cr_fire
+            # RESPONSE (motion restore, no new forces):
+            # 1. Positional un-cross along the crossing normal: b2 back
+            #    toward its previous side (+n), b1 the other way. Horizontal
+            #    is positional (like SVS); vertical rides the capped-velocity
+            #    pattern from smoothness S1 (never pushes grounded down).
+            _cr_push = min(_cr_d + 2.0, 3.0) * 0.5
+            b1.x -= _cnx * _cr_push
+            b1.z -= _cnz * _cr_push
+            b2.x += _cnx * _cr_push
+            b2.z += _cnz * _cr_push
+            _svs_vcap = params.get("SVS_LIFT_CAP", 8.0)
+            for _cb, _cvy in ((b1, -_cny * _cr_push), (b2, _cny * _cr_push)):
+                if _cvy < 0.0 and _cb.air_gap <= 1.0:
+                    continue  # never push a grounded beetle down
+                _cvv = max(-_svs_vcap, min(_svs_vcap, _cvy / PHYSICS_TIMESTEP))
+                if _cvv > 0.0:
+                    _cb.vy = max(_cb.vy, _cvv)
+                elif _cvv < 0.0:
+                    _cb.vy = min(_cb.vy, _cvv)
+            # 2. Reverse the relative linear velocity component that is still
+            #    carrying them through each other (mild restitution)
+            _vreln = ((b2.vx - b1.vx) * _cnx + (b2.vy - b1.vy) * _cny
+                      + (b2.vz - b1.vz) * _cnz)
+            if _vreln < 0.0:
+                _dv = -_vreln * 1.3 * 0.5
+                b1.vx -= _cnx * _dv
+                b1.vz -= _cnz * _dv
+                b2.vx += _cnx * _dv
+                b2.vz += _cnz * _dv
+            # 3. The spin "hit" something: feed horn_burial so the existing
+            #    depth-aware turn clamp + engagement resistance own the next
+            #    steps (no new spin mechanic), and damp body spin once
+            for _cb in (b1, b2):
+                if getattr(_cb, 'horn_burial', 0.0) < 4.0:
+                    _cb.horn_burial = 4.0
+                _cb.angular_velocity *= 0.5
+
     # Voxel-overlap check: normally precomputed by the batched pairs kernel
     # (one launch for all pairs in the main loop); standalone kernel otherwise.
     # NOTE (2026-07-16): batching the CLUSTER kernels across pairs was tried
@@ -15721,6 +15876,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # wedge the ball out the opening. Vertical stays with the
                 # primary paths (on-top branch / grounded gate / floor)
                 _ball_pinched = False
+                if BALL_TRACE:
+                    _bt_dbg['contacts'] = len(_ball_contacts)
                 if len(_ball_contacts) > 1:
                     _deep_i = 0
                     for _ci in range(1, len(_ball_contacts)):
@@ -15758,7 +15915,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _msx = _sn_btl.vx - (_ccz3 - _sn_btl.z) * _sn_btl.angular_velocity + _cavx
                         _msz = _sn_btl.vz + (_ccx3 - _sn_btl.x) * _sn_btl.angular_velocity + _cavz
                         _mcl = ((_msx - _sn_ball.vx) * _n3x
-                                + (_sn_btl.vy - _sn_ball.vy) * _n3y
+                                + ((0.0 if _sn_btl.on_ground else _sn_btl.vy) - _sn_ball.vy) * _n3y
                                 + (_msz - _sn_ball.vz) * _n3z)
                         if _mcl > 0.0:
                             _sn_ball.vx += _n3x * _mcl * _mc_damp * _act
@@ -15984,7 +16141,14 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                         _art_vx += _chx2
                                         _art_vy += _chy2
                                         _art_vz += _chz2
-                                _surf_vy = shaft_owner.vy + _art_vy
+                                # GROUNDED body vy is the floor-settle
+                                # sawtooth (measured: gravity ramps to -8
+                                # then snaps back every ~7 substeps, +-0.5
+                                # voxels at ~34Hz, hidden by integer-Y
+                                # beetle rendering) — pure noise. Real
+                                # vertical surface motion of a grounded
+                                # beetle comes only through articulation
+                                _surf_vy = (0.0 if shaft_owner.on_ground else shaft_owner.vy) + _art_vy
                                 # Surface horizontal velocity at the contact
                                 # (linear + turn sweep + articulation/channel)
                                 _sfvx = shaft_owner.vx - (intruder.z - shaft_owner.z) * shaft_owner.angular_velocity + _art_vx
@@ -15993,7 +16157,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
                                 # Real-drop cutoff (relative frame); slider 0 = old feel
                                 _bb_min = max(3.0, math.sqrt(2.0 * _bb_g * params.get("BALL_BOUNCE_MIN_DROP", 2.0)))
+                                if BALL_TRACE:
+                                    _bt_dbg['branch'] = 'ontop'
+                                    _bt_dbg['seg'] = _sseg
+                                    _bt_dbg['pen'] = round(_pen, 3)
+                                    _bt_dbg['surf_vy'] = round(_surf_vy, 2)
+                                    _bt_dbg['pinched'] = int(_ball_pinched)
                                 if _bb_rel > _bb_min:
+                                    if BALL_TRACE:
+                                        _bt_dbg['branch'] = 'bounce'
                                     # Real relative impact: bounce in the
                                     # surface frame + tangential scrub. Own
                                     # grip, MUCH stickier than the floor's:
@@ -16035,6 +16207,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     # surface moves smoothly (no rounding)
                                     _rest_y = _scy + math.sqrt(max(
                                         (intruder.radius + 1.5) ** 2 - _pdist * _pdist, 0.25))
+                                    if BALL_TRACE:
+                                        _bt_dbg['branch'] = 'settle'
+                                        _bt_dbg['rest_y'] = round(_rest_y, 3)
                                     _dy_rest = (_rest_y - intruder.y) * 0.3
                                     if _dy_rest < 0.0:
                                         # DOWNWARD smoothing only when truly
@@ -16211,7 +16386,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             # a vertical tail must not act as a lift conveyor
                             intruder.vy += min(_lift_speed * shaft_lift, 4.0) * _ball_seg_pen * _sg_flat
                         else:
-                            intruder.pending_lift += min(_lift_speed * shaft_lift, 4.0)
+                            # Cap matched to the horn-lift per-step cap (this
+                            # was 4.0 = 3x horn lift — an oversized queued pop)
+                            intruder.pending_lift += min(_lift_speed * shaft_lift,
+                                                         params.get("SHAFT_PEN_LIFT_CAP", 1.5))
                     # Depth-proportional positional separation per step: a
                     # barely-touching shaft gets the gentle base push (mirrors
                     # the floor's capped push-out), a buried one (near the body
@@ -16400,19 +16578,35 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 # Depth-scaled like the horn-vs-body push-out:
                                 # gentle at first touch, ~2.4x when deep
                                 _svs_push = params.get("SHAFT_PENETRATION_PUSHOUT", 0.35) * (1.0 + _svs_depth * 0.4)
-                                # Vertical is POSITION-only and never pushes a
-                                # grounded beetle down (the floor just fights it)
+                                # Vertical is VELOCITY with a speed cap (was a
+                                # position teleport up to ~25 u/s equivalent —
+                                # grounded beetles visibly "skipped up" a
+                                # sub-voxel per step while shafts crossed).
+                                # max()/min() set a separation-speed floor
+                                # instead of accumulating, so repeated contact
+                                # steps can't stack into a launch. Still never
+                                # pushes a grounded beetle down (the floor
+                                # just fights it)
                                 _p1y = -_hy * _svs_push * 0.5
                                 _p2y = _hy * _svs_push * 0.5
                                 if _p1y < 0.0 and b1.air_gap <= 1.0:
                                     _p1y = 0.0
                                 if _p2y < 0.0 and b2.air_gap <= 1.0:
                                     _p2y = 0.0
+                                _svs_vcap = params.get("SVS_LIFT_CAP", 8.0)
+                                _v1y = max(-_svs_vcap, min(_svs_vcap, _p1y / PHYSICS_TIMESTEP))
+                                _v2y = max(-_svs_vcap, min(_svs_vcap, _p2y / PHYSICS_TIMESTEP))
+                                if _v1y > 0.0:
+                                    b1.vy = max(b1.vy, _v1y)
+                                elif _v1y < 0.0:
+                                    b1.vy = min(b1.vy, _v1y)
+                                if _v2y > 0.0:
+                                    b2.vy = max(b2.vy, _v2y)
+                                elif _v2y < 0.0:
+                                    b2.vy = min(b2.vy, _v2y)
                                 b1.x -= _hx * _svs_push * 0.5
-                                b1.y += _p1y
                                 b1.z -= _hz * _svs_push * 0.5
                                 b2.x += _hx * _svs_push * 0.5
-                                b2.y += _p2y
                                 b2.z += _hz * _svs_push * 0.5
                                 if _svs_cl > 0.0:
                                     _svs_damp = params.get("SHAFT_PENETRATION_VEL_DAMP", 0.5) * 0.5
@@ -17027,13 +17221,16 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     b1_tilt = body_tilt_strength * (1.5 - b1_push_ratio)
                     b2_tilt = body_tilt_strength * (1.5 - b2_push_ratio)
 
-                    # Pitch: opposite directions (one tips forward, other tips back)
-                    b1.pitch_velocity += local1_z * b1_tilt / b1.pitch_inertia
-                    b2.pitch_velocity -= local2_z * b2_tilt / b2.pitch_inertia  # Opposite sign
+                    # Pitch: opposite directions (one tips forward, other tips back).
+                    # Routed through the pending drain (was a direct velocity
+                    # write every overlap step — up to ~2.9 rad/s per step
+                    # bypassing the smoothing every other combat torque gets)
+                    b1.pending_pitch += local1_z * b1_tilt / b1.pitch_inertia
+                    b2.pending_pitch -= local2_z * b2_tilt / b2.pitch_inertia  # Opposite sign
 
                     # Roll: both tilt away from collision point
-                    b1.roll_velocity -= local1_x * b1_tilt / b1.roll_inertia
-                    b2.roll_velocity += local2_x * b2_tilt / b2.roll_inertia  # Opposite sign
+                    b1.pending_roll -= local1_x * b1_tilt / b1.roll_inertia
+                    b2.pending_roll += local2_x * b2_tilt / b2.roll_inertia  # Opposite sign
 
             # VERTICAL SEPARATION - only when both beetles are airborne
             # This prevents floor voxel destruction and maintains symmetry
@@ -17070,13 +17267,14 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # floor-settle vy buzz into upward pumping (micro hops on
                 # backs). Within the band the settle assignment follows the
                 # surface BOTH ways; real bounces still need the impact gate
-                if _bb_ball.y > _bb_beetle.y + 3.0 and _bb_ball.vy < _bb_beetle.vy + 2.0:
+                _bb_svy = 0.0 if _bb_beetle.on_ground else _bb_beetle.vy  # grounded body vy = settle sawtooth noise
+                if _bb_ball.y > _bb_beetle.y + 3.0 and _bb_ball.vy < _bb_svy + 2.0:
                     # MOVING-SURFACE FRAME: impact measured against the
                     # beetle's own vertical motion and the result rides it —
                     # a rising back trampolines the ball; settling matches
                     # the surface instead of freezing at vy=0 while the
                     # beetle moves underneath
-                    _bb_impact = _bb_beetle.vy - _bb_ball.vy
+                    _bb_impact = _bb_svy - _bb_ball.vy
                     _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
                     # Same real-drop cutoff as the shaft branch: impacts below
                     # ~a BALL_BOUNCE_MIN_DROP-voxel fall settle instead of
@@ -17086,7 +17284,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _bsvx = _bb_beetle.vx - (_bb_ball.z - _bb_beetle.z) * _bb_beetle.angular_velocity
                     _bsvz = _bb_beetle.vz + (_bb_ball.x - _bb_beetle.x) * _bb_beetle.angular_velocity
                     if _bb_impact > _bb_min:
-                        _bb_ball.vy = _bb_beetle.vy + _bb_impact * params.get("BALL_BEETLE_BOUNCE", 0.45)
+                        _bb_ball.vy = _bb_svy + _bb_impact * params.get("BALL_BEETLE_BOUNCE", 0.45)
                         # Tangential scrub: the bounce inherits part of the
                         # moving back's horizontal motion (own grip, stickier
                         # than floor — see the shaft branch note)
@@ -17096,7 +17294,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.35)
                         globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
                     else:
-                        _bb_ball.vy = _bb_beetle.vy  # settle riding the surface
+                        _bb_ball.vy = _bb_svy  # settle riding the surface
                         # CARRY FRICTION (Coulomb-capped): a resting ball
                         # converges toward the back's motion — walking
                         # carries it, spinning slings it off (slider 0 = old)
@@ -17231,7 +17429,11 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 if is_horn_contact:
                     impulse_y = 0.0  # Disable vertical impulse - lifting logic handles it
                 else:
-                    impulse_y = impulse * normal_y
+                    # Capped: the smoothed normal carries the horn_leverage*2.5
+                    # up-bias, so a hard body ram could dump a large one-step
+                    # vy pop (only the global 20 cap restrained it)
+                    _iy_cap = params.get("BODY_IMPULSE_Y_CAP", 3.0)
+                    impulse_y = max(-_iy_cap, min(_iy_cap, impulse * normal_y))
 
                 # Ball contacts: the beetle takes only a LIGHT recoil — the
                 # equal-and-opposite default treats beetle and ball as equal
@@ -18585,7 +18787,7 @@ physics_params = {
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
-    "GRAVITY": 60.0,  # Adjustable gravity
+    "GRAVITY": 72.0,  # Adjustable gravity (60→72 user tune 2026-07-16, snappier falls)
     "SEPARATION_FORCE": 0.7,  # Gradual position separation on collision
     "FORWARD_SPEED": 12.5,  # Forward top speed (base before momentum bonus)
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
@@ -18600,7 +18802,8 @@ physics_params = {
     "AIR_FRICTION": 0.985,  # Horizontal friction while popped up (vs ground 0.88 — launches keep their momentum)
     # Airborne tumbling physics parameters
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
-    "AIRBORNE_TILT_SPEED": 900.0,  # Max pitch/roll speed when airborne
+    "AIRBORNE_TILT_SPEED": 14.0,  # Max pitch/roll speed when airborne (was 900 since Nov 2025 = no cap at all; the "tilts super fast" complaint — 14 still flips in ~13 frames)
+    "GROUND_TILT_SPEED": 8.0,  # Max pitch/roll speed when grounded (was hardcoded 8.0)
     "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
     "TUMBLE_MULTIPLIER": 6.2,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
     "HORN_LIFT_STRENGTH": 1.36,  # Multiplier for horn combat lift force (higher = more intense lifts) — 2026-07-12 tune
@@ -18628,6 +18831,11 @@ physics_params = {
     "YAW_GRIND_PUSH": 75.0,   # Forward shove on contacts while yaw-grinding (units/s) — 2026-07-12 tune
     "YAW_GRIND_LIFT": 80.0,   # Lift on contacts while yaw-grinding (units/s) — 2026-07-12 tune
     "YAW_GRIND_TILT": 0.03,   # Pitch tilt per step on contacts while yaw-grinding (rad)
+    # Smoothness caps (2026-07-16 plans/smoothness_plan.md S1 — kill single-step spikes)
+    "SVS_LIFT_CAP": 8.0,       # Max vertical separation SPEED (u/s) for shaft-vs-shaft (was a position teleport, up to ~25 u/s equivalent)
+    "SHAFT_PEN_LIFT_CAP": 1.5,  # Per-step pending_lift cap for shaft-under-body lever (was 4.0 — 3x the horn-lift cap)
+    "BODY_IMPULSE_Y_CAP": 3.0,  # Per-step vertical impulse cap on body-to-body contacts (normal carries a horn_leverage up-bias)
+    "CROSSING_RANGE": 4.0,  # Horn crossing detector proximity gate (horn_tunneling_plan.md T1); 0 = detector off
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
@@ -18698,6 +18906,36 @@ def reset_network_stats():
 # for every non-own slot (generalized from single-opponent for 4P — A3)
 guest_opp_targets = {}
 
+# Guest: VISUAL error offsets (smoothness plan S4.1). Sim-state corrections
+# still land instantly (physics stays host-correct); the applied DELTA of
+# every snap/burst is banked here, the render subtracts it, and it decays
+# ~15%/frame — the eye sees a short glide instead of a teleport. One
+# mechanism covers own-beetle packet bursts, opponent snaps, and the ball.
+# Host/offline: never written, stays zero (render subtract is a no-op).
+net_vis_offset = [[0.0, 0.0, 0.0] for _ in range(4)]      # [dx, dy, dz]
+net_vis_rot_offset = [[0.0, 0.0, 0.0] for _ in range(4)]  # [dyaw, dpitch, droll]
+net_ball_vis_offset = [0.0, 0.0, 0.0]
+NET_VIS_DECAY = 0.85   # retained per render frame (~4-frame half-life)
+NET_VIS_MAX = 6.0      # = SYNC_SNAP_DIST; bigger jumps still read as snaps
+
+def _bank_vis_delta(slot_idx, dx, dy, dz, dyaw=0.0, dpitch=0.0, droll=0.0):
+    """Accumulate an applied net-correction delta into a slot's visual offset."""
+    _vo = net_vis_offset[slot_idx]
+    _ro = net_vis_rot_offset[slot_idx]
+    _vo[0] = max(-NET_VIS_MAX, min(NET_VIS_MAX, _vo[0] + dx))
+    _vo[1] = max(-NET_VIS_MAX, min(NET_VIS_MAX, _vo[1] + dy))
+    _vo[2] = max(-NET_VIS_MAX, min(NET_VIS_MAX, _vo[2] + dz))
+    _ro[0] = max(-math.pi, min(math.pi, _ro[0] + dyaw))
+    _ro[1] = max(-math.pi, min(math.pi, _ro[1] + dpitch))
+    _ro[2] = max(-math.pi, min(math.pi, _ro[2] + droll))
+
+def _reset_vis_offsets():
+    for _v in net_vis_offset:
+        _v[0] = _v[1] = _v[2] = 0.0
+    for _v in net_vis_rot_offset:
+        _v[0] = _v[1] = _v[2] = 0.0
+    net_ball_vis_offset[0] = net_ball_vis_offset[1] = net_ball_vis_offset[2] = 0.0
+
 # Net debug HUD (toggle with N key while in an online session)
 show_net_debug = False
 net_hud = {
@@ -18755,6 +18993,7 @@ def net_log_tick(actual_fps):
 def reset_net_hud():
     """Reset per-match net debug HUD stats and start a fresh CSV log."""
     guest_opp_targets.clear()
+    _reset_vis_offsets()
     if net_hud['log_fh'] is not None:
         try:
             net_hud['log_fh'].close()
@@ -19765,18 +20004,22 @@ try:
             network_manager.send_frame_sync(input_buffer.current_frame)
 
         # === HOST STATE SYNC (send authoritative state periodically) ===
-        if network_manager.is_host and physics_frame % 3 == 0:  # Every ~50ms (20 syncs/sec)
+        # v6: 30Hz (was 20) + angular rates so guests extrapolate rotation
+        if network_manager.is_host and physics_frame % 2 == 0:  # Every ~33ms (30 syncs/sec)
             network_manager.send_state_sync(
                 physics_frame,
                 [
                     {'x': b.x, 'y': b.y, 'z': b.z,
                      'rot': b.rotation, 'pitch': b.pitch, 'roll': b.roll,
                      'vx': b.vx, 'vy': b.vy, 'vz': b.vz,
+                     'avel': b.angular_velocity, 'pvel': b.pitch_velocity, 'rvel': b.roll_velocity,
                      'active': b.active, 'is_falling': b.is_falling}
                     for b in beetles[:active_player_count]
                 ],
                 {'x': beetle_ball.x, 'y': beetle_ball.y, 'z': beetle_ball.z,
                  'vx': beetle_ball.vx, 'vy': beetle_ball.vy, 'vz': beetle_ball.vz,
+                 'avel': beetle_ball.angular_velocity, 'pvel': beetle_ball.pitch_velocity,
+                 'rvel': beetle_ball.roll_velocity,
                  'active': beetle_ball.active},
             )
 
@@ -19822,7 +20065,9 @@ try:
 
             # Remote beetles: store targets for EVERY non-own slot -
             # corrections happen continuously below (A3: was single-opponent)
-            _sync_recv_time = time.time()
+            # recv_time is MONOTONIC (perf_counter): wall clock jitters with
+            # GC/scheduling and that jitter fed straight into dead-reckoning
+            _sync_recv_time = time.perf_counter()
             for _si in range(min(active_player_count, len(sync['beetles']))):
                 if _si == own_idx:
                     continue
@@ -19834,6 +20079,11 @@ try:
             beetle = beetles[own_idx]
             host_b = sync['beetles'][own_idx]
             err = sync_errors[own_idx]
+            # Pre-correction state: whatever the ladder below applies, the
+            # net delta is banked as a visual offset (S4.1) so the ~30Hz
+            # correction bursts and snaps render as a glide
+            _pre_own = (beetle.x, beetle.y, beetle.z,
+                        beetle.rotation, beetle.pitch, beetle.roll)
             rot_diff = (host_b['rot'] - beetle.rotation) % TWO_PI
             if rot_diff > math.pi:
                 rot_diff -= TWO_PI
@@ -19868,14 +20118,17 @@ try:
                 beetle.roll = host_b['roll']
                 net_hud['snap_count'] += 1
             else:
-                # Soft correction with deadzone
+                # Soft correction with deadzone. Velocity blend moved INSIDE
+                # the deadzone (S4.2): it used to fire on every packet even
+                # when position was fine — a constant felt "drag" on the
+                # local player that served no correction purpose
                 if err >= SYNC_OWN_DEADZONE:
                     beetle.x += (host_b['x'] - beetle.x) * SYNC_OWN_LERP
                     beetle.y += (host_b['y'] - beetle.y) * SYNC_OWN_LERP
                     beetle.z += (host_b['z'] - beetle.z) * SYNC_OWN_LERP
-                beetle.vx += (host_b['vx'] - beetle.vx) * SYNC_OWN_VEL_BLEND
-                beetle.vy += (host_b['vy'] - beetle.vy) * SYNC_OWN_VEL_BLEND
-                beetle.vz += (host_b['vz'] - beetle.vz) * SYNC_OWN_VEL_BLEND
+                    beetle.vx += (host_b['vx'] - beetle.vx) * SYNC_OWN_VEL_BLEND
+                    beetle.vy += (host_b['vy'] - beetle.vy) * SYNC_OWN_VEL_BLEND
+                    beetle.vz += (host_b['vz'] - beetle.vz) * SYNC_OWN_VEL_BLEND
 
                 # Clamp to floor so corrections never leave us under the arena
                 if beetle.active:
@@ -19891,6 +20144,16 @@ try:
                 else:
                     beetle.rotation += rot_diff * SYNC_OWN_LERP
 
+            # Bank whatever the ladder applied into the visual offset
+            _dyaw = (beetle.rotation - _pre_own[3] + math.pi) % TWO_PI - math.pi
+            _bank_vis_delta(own_idx,
+                            beetle.x - _pre_own[0],
+                            beetle.y - _pre_own[1],
+                            beetle.z - _pre_own[2],
+                            _dyaw,
+                            beetle.pitch - _pre_own[4],
+                            beetle.roll - _pre_own[5])
+
             # --- Ball sync ---
             host_ball = sync['ball']
             # Detect respawn: if Y changed drastically (>15 units), snap instead of lerp
@@ -19905,15 +20168,29 @@ try:
                 beetle_ball.angular_velocity = 0.0
                 beetle_ball.pitch_velocity = 0.0
                 beetle_ball.roll_velocity = 0.0
+                # Respawn is a deliberate teleport - don't glide it
+                net_ball_vis_offset[0] = net_ball_vis_offset[1] = net_ball_vis_offset[2] = 0.0
                 print(f"Ball respawn detected (Y jump: {y_diff:.1f}), snapping to spawn")
             else:
-                beetle_ball.x += (host_ball['x'] - beetle_ball.x) * SYNC_BALL_LERP
-                beetle_ball.y += (host_ball['y'] - beetle_ball.y) * SYNC_BALL_LERP
-                beetle_ball.z += (host_ball['z'] - beetle_ball.z) * SYNC_BALL_LERP
+                # Bank the lerp step as a visual offset - the ball was the
+                # steppiest object on screen (corrected only at packet rate)
+                _bdx = (host_ball['x'] - beetle_ball.x) * SYNC_BALL_LERP
+                _bdy = (host_ball['y'] - beetle_ball.y) * SYNC_BALL_LERP
+                _bdz = (host_ball['z'] - beetle_ball.z) * SYNC_BALL_LERP
+                beetle_ball.x += _bdx
+                beetle_ball.y += _bdy
+                beetle_ball.z += _bdz
+                net_ball_vis_offset[0] = max(-NET_VIS_MAX, min(NET_VIS_MAX, net_ball_vis_offset[0] + _bdx))
+                net_ball_vis_offset[1] = max(-NET_VIS_MAX, min(NET_VIS_MAX, net_ball_vis_offset[1] + _bdy))
+                net_ball_vis_offset[2] = max(-NET_VIS_MAX, min(NET_VIS_MAX, net_ball_vis_offset[2] + _bdz))
                 # Adopt host velocities so prediction between syncs tracks
                 beetle_ball.vx = host_ball['vx']
                 beetle_ball.vy = host_ball['vy']
                 beetle_ball.vz = host_ball['vz']
+                # v6: adopt spin rates too - guest ball rolls like the host's
+                beetle_ball.angular_velocity = host_ball['avel']
+                beetle_ball.pitch_velocity = host_ball['pvel']
+                beetle_ball.roll_velocity = host_ball['rvel']
             # Ball active toggle: full setup shared with the game-options path
             # (arena rebuild + snap + bowl rim via queue_arena_switch)
             set_network_ball_mode(host_ball['active'])
@@ -19931,6 +20208,11 @@ try:
                     continue  # host says falling - hands off, local fall plays out
                 elif opp.is_falling and tgt['active']:
                     # Guest-only fall desync - rescue to host state
+                    # (banked as a visual offset so it glides on screen)
+                    _dyaw = (tgt['rot'] - opp.rotation + math.pi) % TWO_PI - math.pi
+                    _bank_vis_delta(_corr_slot,
+                                    tgt['x'] - opp.x, tgt['y'] - opp.y, tgt['z'] - opp.z,
+                                    _dyaw, tgt['pitch'] - opp.pitch, tgt['roll'] - opp.roll)
                     opp.is_falling = False
                     opp.x = tgt['x']
                     opp.y = tgt['y']
@@ -19943,13 +20225,20 @@ try:
                     opp.roll = tgt['roll']
                     net_hud['snap_count'] += 1
                 else:
-                    # Dead-reckon the target forward by packet age
-                    age = min(time.time() - tgt['recv_time'], SYNC_OPP_MAX_EXTRAP)
+                    # Dead-reckon the target forward by packet age (monotonic
+                    # clock; wall time injected scheduling jitter into motion)
+                    age = min(time.perf_counter() - tgt['recv_time'], SYNC_OPP_MAX_EXTRAP)
                     pred_x = tgt['x'] + tgt['vx'] * age
                     pred_y = tgt['y'] + tgt['vy'] * age
                     pred_z = tgt['z'] + tgt['vz'] * age
+                    # v6: rotation/tilt extrapolate on synced angular rates -
+                    # a host-side flip advances between packets instead of
+                    # being chased with a 0.2 lerp toward a stale absolute
+                    pred_rot = tgt['rot'] + tgt['avel'] * age
+                    pred_pitch = tgt['pitch'] + tgt['pvel'] * age
+                    pred_roll = tgt['roll'] + tgt['rvel'] * age
                     err = math.sqrt((pred_x - opp.x) ** 2 + (pred_y - opp.y) ** 2 + (pred_z - opp.z) ** 2)
-                    rot_diff = (tgt['rot'] - opp.rotation) % TWO_PI
+                    rot_diff = (pred_rot - opp.rotation) % TWO_PI
                     if rot_diff > math.pi:
                         rot_diff -= TWO_PI
 
@@ -19961,12 +20250,16 @@ try:
                     airborne = floor_surface is None or opp.y > floor_surface + 0.75 or tgt['y'] > floor_surface + 0.75
 
                     if err > SYNC_SNAP_DIST:
+                        # Snap the SIM, glide the RENDER (banked offset)
+                        _bank_vis_delta(_corr_slot,
+                                        pred_x - opp.x, pred_y - opp.y, pred_z - opp.z,
+                                        rot_diff, pred_pitch - opp.pitch, pred_roll - opp.roll)
                         opp.x = pred_x
                         opp.y = pred_y
                         opp.z = pred_z
-                        opp.rotation = tgt['rot']
-                        opp.pitch = tgt['pitch']
-                        opp.roll = tgt['roll']
+                        opp.rotation = pred_rot
+                        opp.pitch = pred_pitch
+                        opp.roll = pred_roll
                         net_hud['snap_count'] += 1
                     else:
                         if err >= SYNC_OPP_DEADZONE:
@@ -19979,22 +20272,29 @@ try:
                             elif abs(pred_y - opp.y) > SYNC_OPP_Y_DEADZONE:
                                 opp.y += (pred_y - opp.y) * SYNC_OPP_RATE_Y
                         if abs(rot_diff) > SYNC_SNAP_ANGLE:
-                            opp.rotation = tgt['rot']
+                            _bank_vis_delta(_corr_slot, 0.0, 0.0, 0.0, rot_diff)
+                            opp.rotation = pred_rot
                         else:
                             opp.rotation += rot_diff * SYNC_OPP_ROT_RATE
-                        # Tilt tracks the host directly (pitch/roll now synced) -
-                        # local collision-driven tilt diverging is what made
+                        # Tilt tracks the host directly (pitch/roll synced;
+                        # v6 extrapolates them on the synced rates) - local
+                        # collision-driven tilt diverging is what made
                         # airborne beetles look like they skip
-                        opp.pitch += (tgt['pitch'] - opp.pitch) * SYNC_OPP_ROT_RATE
-                        opp.roll += (tgt['roll'] - opp.roll) * SYNC_OPP_ROT_RATE
+                        opp.pitch += (pred_pitch - opp.pitch) * SYNC_OPP_ROT_RATE
+                        opp.roll += (pred_roll - opp.roll) * SYNC_OPP_ROT_RATE
 
                     # Adopt host horizontal velocities so the local sim carries the
                     # target's motion; vertical velocity follows the host when
-                    # airborne, else stays local so floor contact resolves cleanly
+                    # airborne, else stays local so floor contact resolves cleanly.
+                    # v6: angular rates adopted too - the local sim spins/tumbles
+                    # like the host between packets instead of going stale
                     opp.vx = tgt['vx']
                     opp.vz = tgt['vz']
                     if airborne or abs(tgt['vy']) > 1.0:
                         opp.vy = tgt['vy']
+                    opp.angular_velocity = tgt['avel']
+                    opp.pitch_velocity = tgt['pvel']
+                    opp.roll_velocity = tgt['rvel']
 
                     # Clamp to floor so corrections never leave the opponent under the arena
                     if opp.active and floor_surface is not None and opp.y < floor_surface:
@@ -20522,8 +20822,14 @@ try:
                                 push_force = physics_params.get("YAW_GRIND_PUSH", 60.0) * PHYSICS_TIMESTEP
                                 _ylb.vx += forward_x * push_force
                                 _ylb.vz += forward_z * push_force
-                                _ylb.vy += physics_params.get("YAW_GRIND_LIFT", 40.0) * PHYSICS_TIMESTEP  # Lift up
-                                _ylb.pitch -= physics_params.get("YAW_GRIND_TILT", 0.03)  # Direct pitch tilt (front/grabbed area up)
+                                # Lift + tilt ride the pending drain (were a raw
+                                # vy add with zero decay + a direct pitch-angle
+                                # teleport, every step of a held yaw key — a
+                                # "skips up" source). Tilt is queued as the
+                                # equivalent angular RATE; ground damping now
+                                # applies to it, which is the point
+                                _ylb.pending_lift += physics_params.get("YAW_GRIND_LIFT", 40.0) * PHYSICS_TIMESTEP
+                                _ylb.pending_pitch -= physics_params.get("YAW_GRIND_TILT", 0.03) / PHYSICS_TIMESTEP
                     elif p_inputs & INPUT_HORN_RIGHT:
                         # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                         base_yaw_speed = HORN_YAW_SPEED * BEETLE_TYPE_STATS[beetle.horn_type_id]["yaw"]  # per-type yaw speed (BEETLE TUNING panel)
@@ -20549,8 +20855,14 @@ try:
                                 push_force = physics_params.get("YAW_GRIND_PUSH", 60.0) * PHYSICS_TIMESTEP
                                 _ylb.vx += forward_x * push_force
                                 _ylb.vz += forward_z * push_force
-                                _ylb.vy += physics_params.get("YAW_GRIND_LIFT", 40.0) * PHYSICS_TIMESTEP  # Lift up
-                                _ylb.pitch -= physics_params.get("YAW_GRIND_TILT", 0.03)  # Direct pitch tilt (front/grabbed area up)
+                                # Lift + tilt ride the pending drain (were a raw
+                                # vy add with zero decay + a direct pitch-angle
+                                # teleport, every step of a held yaw key — a
+                                # "skips up" source). Tilt is queued as the
+                                # equivalent angular RATE; ground damping now
+                                # applies to it, which is the point
+                                _ylb.pending_lift += physics_params.get("YAW_GRIND_LIFT", 40.0) * PHYSICS_TIMESTEP
+                                _ylb.pending_pitch -= physics_params.get("YAW_GRIND_TILT", 0.03) / PHYSICS_TIMESTEP
 
                 # PREDICTIVE TIP GATE REMOVED (2026-07-07, user call): the
                 # accidental ablation test proved it dead weight - the old
@@ -22918,10 +23230,15 @@ try:
             # exited the pit region SIDEWAYS, found the ice lip's floor,
             # got snapped up onto it and slid back toward center — read as
             # "teleports to the middle, slightly shallower, then falls"
-            if (abs(beetle_ball.x) > 37.5
-                    and az < goal_pit_half_width + beetle_ball.radius
-                    and beetle_ball.y < 8.0):
-                in_goal_pit = True
+            # Ball-radius z-margin ONLY when the ball is already DOWN at
+            # floor level (inside the wall-less pit, where the ice lip
+            # would snap it) — an airborne ball above the floor shoulder
+            # at z 12..16 past the bevels was falling THROUGH that real
+            # floor strip because the margin swallowed it
+            if abs(beetle_ball.x) > 37.5 and beetle_ball.y < 8.0:
+                if az < goal_pit_half_width or (beetle_ball.y < 2.0
+                        and az < goal_pit_half_width + beetle_ball.radius):
+                    in_goal_pit = True
 
             if in_goal_pit:
                 # Ball is in goal pit - no floor collision, let it fall
@@ -23066,6 +23383,18 @@ try:
                     else:
                         # Ball is airborne - clear on_ground so rolling friction doesn't apply
                         beetle_ball.on_ground = False
+        if BALL_TRACE and beetle_ball.active:
+            _ball_trace_rows.append((
+                physics_frame,
+                round(beetle_ball.x, 3), round(beetle_ball.y, 4), round(beetle_ball.z, 3),
+                round(beetle_ball.vx, 2), round(beetle_ball.vy, 3), round(beetle_ball.vz, 2),
+                _bt_dbg.get('branch', ''), _bt_dbg.get('seg', ''),
+                _bt_dbg.get('pen', ''), _bt_dbg.get('rest_y', ''),
+                _bt_dbg.get('surf_vy', ''), _bt_dbg.get('pinched', ''),
+                _bt_dbg.get('contacts', '')))
+            _bt_dbg.clear()
+            if len(_ball_trace_rows) > 80000:
+                del _ball_trace_rows[:20000]
 
         # Apply edge tipping physics (GPU-accelerated)
         # Reuse cached floor_y values from penetration check above
@@ -23077,6 +23406,11 @@ try:
         for slot in range(active_player_count):
             b = beetles[slot]
             if b.active and not b.is_falling:
+                # Tell the floor-rest clamp whether real floor exists below
+                # (the clamp trusted stale on_ground/air_gap and levitated
+                # beetles TIPPING over the goal pits - tipping moves too
+                # little horizontally to trigger the amortized floor recheck)
+                b.no_floor_below = floor_y_by_slot[slot] <= -100.0
                 if floor_y_by_slot[slot] <= -100.0:  # No floor support (use cached value)
                     bb_tip_immune[None] = 1 if spawn_immunity[slot] > 0 else 0
                     calculate_edge_tipping_kernel(float(b.x), float(b.z), simulation.PLAYER_VOXEL_IDS[slot][0],
@@ -23172,8 +23506,11 @@ try:
     blue_score_pending = g.get('blue_score_pending', 0)
     red_score_pending = g.get('red_score_pending', 0)
 
-    # Calculate interpolation alpha for smooth rendering between physics states
-    alpha = accumulator / PHYSICS_TIMESTEP
+    # Calculate interpolation alpha for smooth rendering between physics states.
+    # Clamped: when MAX_PHYSICS_STEPS_PER_FRAME breaks the catch-up loop the
+    # residual accumulator can exceed one step — unclamped that extrapolates
+    # PAST the newest physics state (one-frame overshoot at very low FPS)
+    alpha = min(accumulator / PHYSICS_TIMESTEP, 1.0)
 
     # Helper function for angle interpolation (shortest path)
     def lerp_angle(a, b, t):
@@ -23209,6 +23546,25 @@ try:
         # Interpolate spray aim (bombardier butt-tilt) and spider abdomen aim
         render_spray_aim[slot] = prev_spray_aim[slot] + (spray_aim[slot] - prev_spray_aim[slot]) * alpha
         render_spider_aim[slot] = prev_spider_aim[slot] + (spider_aim[slot] - prev_spider_aim[slot]) * alpha
+        # Net visual offset (guest, S4.1): render behind the sim by the
+        # still-decaying correction delta - snaps and per-packet bursts
+        # glide out over ~4 frames instead of teleporting. Zero offline/host.
+        _nvo = net_vis_offset[slot]
+        _nro = net_vis_rot_offset[slot]
+        if _nvo[0] or _nvo[1] or _nvo[2] or _nro[0] or _nro[1] or _nro[2]:
+            render_x[slot] -= _nvo[0]
+            render_y[slot] -= _nvo[1]
+            render_z[slot] -= _nvo[2]
+            render_rotation[slot] -= _nro[0]
+            render_pitch[slot] -= _nro[1]
+            render_roll[slot] -= _nro[2]
+            for _k in range(3):
+                _nvo[_k] *= NET_VIS_DECAY
+                _nro[_k] *= NET_VIS_DECAY
+                if abs(_nvo[_k]) < 0.001:
+                    _nvo[_k] = 0.0
+                if abs(_nro[_k]) < 0.0005:
+                    _nro[_k] = 0.0
 
     # === ANIMATION TIMING ===
     perf_monitor.start('animation')
@@ -23814,26 +24170,38 @@ try:
         # Sub-voxel render offset: the fractional part the kernel's int()
         # grid placement discards (renderer adds it back to this slot's
         # voxels, so motion glides instead of stepping voxel-to-voxel).
-        # Y stays integer: the floor-settle limit cycle (gravity vs floor
-        # correction vs pitch restoring) buzzes y by a fraction of a voxel
-        # at rest - integer y hides it, and vertical motion is fast enough
-        # that voxel-stepped y never read as choppy anyway.
+        # Y is fractional too since 2026-07-16 (smoothness plan S3): lifts
+        # and climbs used to pop a full voxel at a time. The floor-settle
+        # buzz that forced integer Y historically was fixed at the SOURCE
+        # by the floor-rest vy clamp in update_physics — if rest-buzz ever
+        # reappears, suspect a new path that moves y while grounded.
+        # Y fraction uses int() (not floor) to mirror the kernel's base_y.
+        _by_f = render_y[slot] + RENDER_Y_OFFSET
         renderer.owner_frac_offset[slot] = [
             render_x[slot] + 64.0 - math.floor(render_x[slot] + 64.0),
-            0.0,
+            _by_f - int(_by_f),
             render_z[slot] + 64.0 - math.floor(render_z[slot] + 64.0)]
-        # Rotation-residual smoothing: stamp at a quantized yaw (~2.9 deg
-        # steps), glide the remainder in the extract — slow turns rotate as a
-        # rigid body instead of per-voxel lattice-snapping every frame
+        # Rotation-residual smoothing: stamp at quantized angles (~2.9 deg
+        # steps), glide the remainder in the extract — slow turns/tilts move
+        # as a rigid body instead of per-voxel lattice-snapping every frame.
+        # Pitch/roll residuals added 2026-07-16 (were stamped raw = tilt
+        # shimmer); extract rotation order (yaw, pitch about Z, roll about X)
+        # matches the place kernel exactly. Pivot Y = the kernel's base_y —
+        # pitch/roll residuals rotate around the real body origin
         _rot_q = round(render_rotation[slot] / 0.05) * 0.05
-        renderer.owner_rot_residual[slot] = [render_rotation[slot] - _rot_q, 0.0, 0.0]
+        _pitch_q = round(render_pitch[slot] / 0.05) * 0.05
+        _roll_q = round(render_roll[slot] / 0.05) * 0.05
+        renderer.owner_rot_residual[slot] = [
+            render_rotation[slot] - _rot_q,
+            render_pitch[slot] - _pitch_q,
+            render_roll[slot] - _roll_q]
         renderer.owner_rot_pivot[slot] = [
             float(int(render_x[slot] + 64.0)) - 64.0,
-            0.0,
+            float(int(_by_f)),
             float(int(render_z[slot] + 64.0)) - 64.0]
         place_beetle_kernels[slot](
             render_x[slot], render_y[slot], render_z[slot],
-            _rot_q, render_pitch[slot], render_roll[slot],
+            _rot_q, _pitch_q, _roll_q,
             render_horn_pitch[slot], render_horn_yaw[slot], render_tail_pitch[slot],
             b.horn_type_id, b.body_pitch_offset,
             _body_id, _legs_id, _leg_tip_id,
@@ -23996,6 +24364,16 @@ try:
         ball_render_x = beetle_ball.prev_x + (beetle_ball.x - beetle_ball.prev_x) * alpha
         ball_render_y = beetle_ball.prev_y + (beetle_ball.y - beetle_ball.prev_y) * alpha
         ball_render_z = beetle_ball.prev_z + (beetle_ball.z - beetle_ball.prev_z) * alpha
+        # Net visual offset (guest): the ball's per-packet correction lerp
+        # renders as a glide (it was the steppiest object on screen)
+        if net_ball_vis_offset[0] or net_ball_vis_offset[1] or net_ball_vis_offset[2]:
+            ball_render_x -= net_ball_vis_offset[0]
+            ball_render_y -= net_ball_vis_offset[1]
+            ball_render_z -= net_ball_vis_offset[2]
+            for _k in range(3):
+                net_ball_vis_offset[_k] *= NET_VIS_DECAY
+                if abs(net_ball_vis_offset[_k]) < 0.001:
+                    net_ball_vis_offset[_k] = 0.0
         ball_render_rotation = lerp_angle(beetle_ball.prev_rotation, beetle_ball.rotation, alpha)
         ball_render_pitch = lerp_angle(beetle_ball.prev_pitch, beetle_ball.pitch, alpha)
         ball_render_roll = lerp_angle(beetle_ball.prev_roll, beetle_ball.roll, alpha)
@@ -27085,7 +27463,7 @@ try:
             # Physics parameter sliders
             window.GUI.text("")
             window.GUI.text("=== PHYSICS TUNING ===")
-            physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 60.0)
+            physics_params["GRAVITY"] = window.GUI.slider_float("Gravity", physics_params["GRAVITY"], 0.5, 200.0)
             physics_params["TORQUE_MULTIPLIER"] = window.GUI.slider_float("Torque", physics_params["TORQUE_MULTIPLIER"], 0.0, 4.0)
             physics_params["IMPULSE_MULTIPLIER"] = window.GUI.slider_float("Impulse", physics_params["IMPULSE_MULTIPLIER"], 0.0, 1.0)
             physics_params["SEPARATION_FORCE"] = window.GUI.slider_float("Separation", physics_params["SEPARATION_FORCE"], 0.0, 1.0)
@@ -27097,6 +27475,11 @@ try:
             physics_params["SVS_VERTICAL_SCALE"] = window.GUI.slider_float("Horn Sep Vertical", physics_params.get("SVS_VERTICAL_SCALE", 1.0), 0.0, 1.0)
             physics_params["YAW_GRIND_PUSH"] = window.GUI.slider_float("Yaw Grind Push", physics_params["YAW_GRIND_PUSH"], 0.0, 250.0)
             physics_params["YAW_GRIND_LIFT"] = window.GUI.slider_float("Yaw Grind Lift", physics_params["YAW_GRIND_LIFT"], 0.0, 200.0)
+            # Smoothness caps (plans/smoothness_plan.md S1; max = old uncapped feel)
+            physics_params["SVS_LIFT_CAP"] = window.GUI.slider_float("Horn Sep Lift Cap", physics_params["SVS_LIFT_CAP"], 0.0, 25.0)
+            physics_params["SHAFT_PEN_LIFT_CAP"] = window.GUI.slider_float("Shaft Pen Lift Cap", physics_params["SHAFT_PEN_LIFT_CAP"], 0.0, 4.0)
+            physics_params["BODY_IMPULSE_Y_CAP"] = window.GUI.slider_float("Body Impulse Y Cap", physics_params["BODY_IMPULSE_Y_CAP"], 0.0, 20.0)
+            physics_params["CROSSING_RANGE"] = window.GUI.slider_float("Cross Fix Range", physics_params["CROSSING_RANGE"], 0.0, 8.0)
             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
             physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
@@ -27109,7 +27492,8 @@ try:
             physics_params["AIR_POP_SLOW"] = window.GUI.slider_float("Air Pop Slow", physics_params["AIR_POP_SLOW"], 0.0, 0.8)
             physics_params["AIR_FRICTION"] = window.GUI.slider_float("Air Friction", physics_params["AIR_FRICTION"], 0.88, 1.0)
             physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
-            physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 8.0, 1000.0)
+            physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 4.0, 200.0)
+            physics_params["GROUND_TILT_SPEED"] = window.GUI.slider_float("Ground Tilt Speed", physics_params["GROUND_TILT_SPEED"], 2.0, 20.0)
             physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
             physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 8.0)
             physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
