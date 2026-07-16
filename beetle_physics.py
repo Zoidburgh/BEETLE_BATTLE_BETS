@@ -2364,9 +2364,12 @@ class Beetle:
             self.pitch += self.pitch_velocity * dt
             self.roll += self.roll_velocity * dt
 
-        # Clamp pitch/roll only when on ground - allow full rotations when airborne
+        # Clamp pitch/roll only when TRULY on ground - allow full rotations
+        # when airborne. air_gap gate matters: on_ground is STICKY through
+        # launches (see floor-rest clamp), so without it the cap would
+        # visibly arrest a horn-launch flip for its first few frames.
         # Ball is exempt: it must roll continuously past 60 deg (rolling stripe)
-        if self.on_ground and self.horn_type != "ball":
+        if self.on_ground and self.air_gap <= 0.5 and self.horn_type != "ball":
             # Tunable max tilt angle when grounded (slider controls in degrees, converted to radians)
             ground_tilt_degrees = physics_params.get("GROUND_TILT_ANGLE", 60.0)
             MAX_TILT_ANGLE = math.radians(ground_tilt_degrees)
@@ -18831,7 +18834,7 @@ physics_params = {
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
     "AIRBORNE_TILT_SPEED": 14.0,  # Max pitch/roll speed when airborne (was 900 since Nov 2025 = no cap at all; the "tilts super fast" complaint — 14 still flips in ~13 frames)
     "GROUND_TILT_SPEED": 8.0,  # Max pitch/roll speed when grounded (was hardcoded 8.0)
-    "GROUND_TILT_ANGLE": 300.0,  # Max tilt angle in degrees when on ground
+    "GROUND_TILT_ANGLE": 80.0,  # Max tilt angle in degrees when TRULY grounded (air_gap-gated; was 300 = no clamp since Nov 2025 — grounded beetles could roll fully over. Slider to 300 restores)
     "TUMBLE_MULTIPLIER": 6.2,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
     "HORN_LIFT_STRENGTH": 1.36,  # Multiplier for horn combat lift force (higher = more intense lifts) — 2026-07-12 tune
     "HORN_TIP_STRENGTH": 1.5,  # Tipping torque strength for horn collisions (replaces separation)
@@ -20849,14 +20852,21 @@ try:
                                 push_force = physics_params.get("YAW_GRIND_PUSH", 60.0) * PHYSICS_TIMESTEP
                                 _ylb.vx += forward_x * push_force
                                 _ylb.vz += forward_z * push_force
-                                # Lift + tilt ride the pending drain (were a raw
-                                # vy add with zero decay + a direct pitch-angle
-                                # teleport, every step of a held yaw key — a
-                                # "skips up" source). Tilt is queued as the
-                                # equivalent angular RATE; ground damping now
-                                # applies to it, which is the point
+                                # Lift rides the pending drain (was a raw vy
+                                # add with zero decay — a "skips up" source).
+                                # Tilt is a direct VELOCITY injection: small
+                                # per-step and sustained, so it's smooth by
+                                # construction (edge-tipping reasoning) — the
+                                # pending-pool version queued a backlog that
+                                # kept draining ~10 frames AFTER a launch,
+                                # pitching the thrown victim nose-up at the
+                                # airborne cap ("tosses horn back super
+                                # fast"). 0.71 compensates ground damping so
+                                # the sustained tilt rate matches the old
+                                # direct-angle feel; contact end = effect
+                                # ends (damping eats the residual in frames)
                                 _ylb.pending_lift += physics_params.get("YAW_GRIND_LIFT", 40.0) * PHYSICS_TIMESTEP
-                                _ylb.pending_pitch -= physics_params.get("YAW_GRIND_TILT", 0.03) / PHYSICS_TIMESTEP
+                                _ylb.pitch_velocity -= physics_params.get("YAW_GRIND_TILT", 0.03) / PHYSICS_TIMESTEP * 0.71
                     elif p_inputs & INPUT_HORN_RIGHT:
                         # B key INCREASES yaw = OPENS pincers (toward max_yaw_limit)
                         base_yaw_speed = HORN_YAW_SPEED * BEETLE_TYPE_STATS[beetle.horn_type_id]["yaw"]  # per-type yaw speed (BEETLE TUNING panel)
@@ -20882,14 +20892,21 @@ try:
                                 push_force = physics_params.get("YAW_GRIND_PUSH", 60.0) * PHYSICS_TIMESTEP
                                 _ylb.vx += forward_x * push_force
                                 _ylb.vz += forward_z * push_force
-                                # Lift + tilt ride the pending drain (were a raw
-                                # vy add with zero decay + a direct pitch-angle
-                                # teleport, every step of a held yaw key — a
-                                # "skips up" source). Tilt is queued as the
-                                # equivalent angular RATE; ground damping now
-                                # applies to it, which is the point
+                                # Lift rides the pending drain (was a raw vy
+                                # add with zero decay — a "skips up" source).
+                                # Tilt is a direct VELOCITY injection: small
+                                # per-step and sustained, so it's smooth by
+                                # construction (edge-tipping reasoning) — the
+                                # pending-pool version queued a backlog that
+                                # kept draining ~10 frames AFTER a launch,
+                                # pitching the thrown victim nose-up at the
+                                # airborne cap ("tosses horn back super
+                                # fast"). 0.71 compensates ground damping so
+                                # the sustained tilt rate matches the old
+                                # direct-angle feel; contact end = effect
+                                # ends (damping eats the residual in frames)
                                 _ylb.pending_lift += physics_params.get("YAW_GRIND_LIFT", 40.0) * PHYSICS_TIMESTEP
-                                _ylb.pending_pitch -= physics_params.get("YAW_GRIND_TILT", 0.03) / PHYSICS_TIMESTEP
+                                _ylb.pitch_velocity -= physics_params.get("YAW_GRIND_TILT", 0.03) / PHYSICS_TIMESTEP * 0.71
 
                 # PREDICTIVE TIP GATE REMOVED (2026-07-07, user call): the
                 # accidental ablation test proved it dead weight - the old
