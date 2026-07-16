@@ -9635,9 +9635,12 @@ def _horn_collision_segments_impl(beetle, pitch=None, yaw=None):
         # the ball's center wedged pushed balls UP and over the top instead
         # of forward (ball rolled off behind the stag mid-dribble). The
         # riser is rigid with the arm — same pivot/pitch/yaw transform
-        _tlx = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
-        _tlz = beetle.horn_prong_len + 3.0
-        _rh = 2.0 + beetle.horn_prong_len  # riser top local y
+        # Riser stands at the REAL elbow (same corrected formulas as
+        # calculate_stag_pincer_tips), topping at y = vlen+1 per generation
+        _hlen2 = max(1.0, float(round(beetle.horn_shaft_len - 2)))
+        _tlx = 3.0 + _hlen2 - 1.0
+        _tlz = float(int((_hlen2 - 1.0) * 0.36) + 1)
+        _rh = 1.0 + float(round(beetle.horn_prong_len))  # riser top local y
         _ltop = _stag_pincer_point(beetle, _p, _y, _tlx, _rh, -_tlz)
         _rtop = _stag_pincer_point(beetle, _p, _y, _tlx, _rh, _tlz)
         return [(bx, by, bz) + lt, lt + _ltop,
@@ -9912,7 +9915,13 @@ def _ball_surface_contact(ball, beetle):
         if _pen > best_pen:
             best_pen = _pen
         _cands.append((_pen, ball.x - _cx, ball.y - _cyy, ball.z - _cz))
-        if _pen > 0.0:
+        if _pen > -0.75:
+            # ENGAGEMENT ZONE: shapes enter the manifold slightly BEFORE
+            # touching. The rest logic parks a carried ball at pen ~= 0, so
+            # penetration-gated contacts flickered in/out at the cradle
+            # walls - stick-slip carry, and body-charge momentum barely
+            # transferred (stag vs rhino). Velocity transfer ramps across
+            # the band; positional push still needs true penetration
             _avx = 0.0
             _avz = 0.0
             if _i >= _n_base and _hvel:
@@ -10443,11 +10452,19 @@ def calculate_horn_tip_position_with_both(beetle, pitch_angle, yaw_angle):
     return world_x, world_y, world_z
 
 def calculate_stag_pincer_tips(beetle, pitch_angle, yaw_angle):
-    """Calculate both left and right pincer tip positions for stag beetles"""
-    # Stag pincer tips in local coordinates
-    tip_local_x = beetle.horn_shaft_len + beetle.horn_prong_len + 3.0
+    """Calculate both left and right pincer tip positions for stag beetles.
+
+    2026-07-16 GEOMETRY CORRECTION: now matches generate_stag_pincers
+    exactly — the arm runs (3,1,-/+1) to the elbow at a 20-deg INWARD
+    curve (elbow_z = int((hlen-1)*0.36)+1). The old values (x: shaft+
+    prong+3 ~= 20, z: prong+3 = +-8, a "safety buffer" from the single-
+    chord era) pointed EIGHT voxels past and ~2x wider than the real
+    pincers — every ball/combat response computed on phantom arms, and a
+    charging ball rode up over a rod that visually doesn't exist."""
+    _hlen = max(1.0, float(round(beetle.horn_shaft_len - 2)))
+    tip_local_x = 3.0 + _hlen - 1.0
     tip_local_y = 1.0
-    tip_local_z = beetle.horn_prong_len + 3.0  # Pincers extend sideways + safety buffer (was 1.5)
+    tip_local_z = float(int((_hlen - 1.0) * 0.36) + 1)
 
     # === LEFT PINCER (extends in -Z direction) ===
     # Step 1: Translate to horn pivot
@@ -15720,9 +15737,12 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _chl = math.sqrt(_crx * _crx + _crz * _crz)
                         if _chl < 0.3:
                             continue  # directly above/below: no lateral role
+                        # Engagement ramp: 0 at pen=-0.75 -> 1 at pen=0
+                        _act = min(max((_cp + 0.75) / 0.75, 0.0), 1.0)
                         # PINCH detection: this contact's horizontal radial
                         # opposes the deepest's = a true two-wall squeeze
-                        if _crx * _dpx + _crz * _dpz < -0.3 * _chl:
+                        # (real penetration only)
+                        if _cp > 0.0 and _crx * _dpx + _crz * _dpz < -0.3 * _chl:
                             _ball_pinched = True
                         _hnx = _crx / _chl
                         _hnz = _crz / _chl
@@ -15741,13 +15761,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 + (_sn_btl.vy - _sn_ball.vy) * _n3y
                                 + (_msz - _sn_ball.vz) * _n3z)
                         if _mcl > 0.0:
-                            _sn_ball.vx += _n3x * _mcl * _mc_damp
-                            _sn_ball.vy += _n3y * _mcl * _mc_damp
-                            _sn_ball.vz += _n3z * _mcl * _mc_damp
+                            _sn_ball.vx += _n3x * _mcl * _mc_damp * _act
+                            _sn_ball.vy += _n3y * _mcl * _mc_damp * _act
+                            _sn_ball.vz += _n3z * _mcl * _mc_damp * _act
                         # POSITIONAL push stays horizontal (no levitation)
-                        _mp = min(_cp, 1.0) * _mc_push
-                        _sn_ball.x += _hnx * _mp
-                        _sn_ball.z += _hnz * _mp
+                        # and needs TRUE penetration
+                        if _cp > 0.0:
+                            _mp = min(_cp, 1.0) * _mc_push
+                            _sn_ball.x += _hnx * _mp
+                            _sn_ball.z += _hnz * _mp
 
             # Apply exponential moving average to smooth collision normal (reduces jitter)
             # This prevents rapid oscillation when beetles are locked horn-to-horn
