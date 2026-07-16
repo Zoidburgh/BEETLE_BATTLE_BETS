@@ -769,6 +769,7 @@ def save_perf_log():
     w(f"  horn_cross_clip_events: {collision_stats['horn_cross_clip_events']} (horn-horn within 2 voxels, pre-gate)")
     w(f"  horn_crossing_fires: {collision_stats.get('horn_crossing_fires', 0)} (T1 tunneling detector: certain pass-throughs caught)")
     w(f"  horn_crossing_supp: contact={collision_stats.get('horn_crossing_supp_contact', 0)} mag={collision_stats.get('horn_crossing_supp_mag', 0)} (flips suppressed by gates)")
+    w(f"  body_sep_pushes: {collision_stats.get('body_sep_pushes', 0)} (analytic body-overlap separations)")
     for _hk, _hv in sorted(collision_stats['horn_cross_by_type'].items(), key=lambda kv: -kv[1]):
         w(f"    {_hk}: {_hv}")
     for _ck, _cv in sorted(collision_stats['deep_clip_by_type'].items(), key=lambda kv: -kv[1]):
@@ -1961,11 +1962,11 @@ RENDER_Y_OFFSET = 33.0  # Shift voxel rendering up so Y=0 maps to grid Y=33 (128
 # Ball physics constants (tunable via sliders for smooth rolling/bouncing)
 # These will be overridden by slider values in the main loop
 BALL_SEPARATION_FORCE = 0.9  # How hard ball pushes away from beetles (0.1-2.0)
-BALL_MOMENTUM_TRANSFER = 0.8  # How much beetle velocity transfers to ball (0.0-2.0) — 2026-07-12: tamed after speed-cap fix uncorked true hit force
+BALL_MOMENTUM_TRANSFER = 0.96  # How much beetle velocity transfers to ball (0.0-2.0) — 2026-07-12 tamed to 0.8 after speed-cap fix; 2026-07-16 +20% ("hit higher/farther")
 BALL_RESTITUTION = 0.2  # Bounciness coefficient (0=no bounce, 1=full bounce)
 BALL_MASS_RATIO = 0.6  # Ball weight vs beetle (0.1=very light, 2.0=heavy)
 BALL_ROLLING_FRICTION = 0.99  # Horizontal slowdown (0.80=high friction, 0.99=ice)
-BALL_GROUND_BOUNCE = 0.8  # Floor bounce coefficient (0=dead stop, 0.8=super bouncy)
+BALL_GROUND_BOUNCE = 0.9  # Floor bounce coefficient (0.8→0.87→0.9 2026-07-16 "loses too much height"; height kept per bounce = coeff^2 = ~81%)
 BALL_PUSH_MULTIPLIER = 3.9  # How easily beetles can push the ball (1.0=normal, 3.0=very easy)
 BALL_SPIN_MULTIPLIER = 5.0  # How easily ball spins when hit (1.0=normal, 4.0=very spinny)
 BALL_ANGULAR_FRICTION = 0.99  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
@@ -6801,7 +6802,8 @@ collision_tips_b2 = ti.field(ti.i32, shape=())
 # backend); with sustained bot contact (~5.5 collisions/frame) the ~8
 # reads per pair were ~half the response cost. One to_numpy() = one sync.
 # Layout: [x, y, z, count, has_tips, tips_b1, tips_b2, hook]
-collision_pack = ti.field(ti.f32, shape=(8,))
+collision_has_non_leg = ti.field(ti.i32, shape=())  # 1 if any pair-owned NON-leg voxel is in the contact (leg-only taps get scaled response)
+collision_pack = ti.field(ti.f32, shape=(9,))
 collision_has_hook_interiors = ti.field(ti.i32, shape=())  # 1 if stag hook interior voxels involved, 0 otherwise
 
 # OPTIMIZATION: Spatial hash for O(N+M) collision point calculation instead of O(N×M)
@@ -8865,6 +8867,7 @@ def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
     collision_tips_b1[None] = 0
     collision_tips_b2[None] = 0
     collision_has_hook_interiors[None] = 0  # Reset hook interior detection
+    collision_has_non_leg[None] = 0  # Reset leg-only classification
 
     # Scan through overlapping voxel columns
     y_scan_start = ti.max(0, int(RENDER_Y_OFFSET) - 5)
@@ -8907,6 +8910,19 @@ def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
                     if vtype == simulation.STAG_HOOK_INTERIOR_BLUE or vtype == simulation.STAG_HOOK_INTERIOR_RED:
                         collision_has_hook_interiors[None] = 1
 
+                    # Leg-only classification: does this pair's contact
+                    # include any NON-leg voxel of either member? Owner-
+                    # filtered (the column scan also sees floor/bystander
+                    # voxels — those must not count). Ball voxels count as
+                    # non-leg. Leg-only taps get a scaled response.
+                    _vown = simulation.beetle_owner(vtype)
+                    if ((_vown >= 0 and (_vown == simulation.beetle_owner(color1)
+                                         or _vown == simulation.beetle_owner(color2)))
+                            or vtype == 16 or vtype == 17):
+                        _vp2 = simulation.voxel_part[vtype]
+                        if _vp2 != simulation.PART_LEGS and _vp2 != simulation.PART_LEG_TIP:
+                            collision_has_non_leg[None] = 1
+
                     # Accumulate collision position
                     ti.atomic_add(collision_point_x[None], float(vx2) - simulation.n_grid / 2.0)
                     ti.atomic_add(collision_point_z[None], float(vz2) - simulation.n_grid / 2.0)
@@ -8929,6 +8945,7 @@ def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
     collision_pack[5] = ti.cast(collision_tips_b1[None], ti.f32)
     collision_pack[6] = ti.cast(collision_tips_b2[None], ti.f32)
     collision_pack[7] = ti.cast(collision_has_hook_interiors[None], ti.f32)
+    collision_pack[8] = ti.cast(collision_has_non_leg[None], ti.f32)
 
 
 def calculate_horn_length(shaft_len, prong_len, horn_type):
@@ -9879,6 +9896,38 @@ def horn_segment_articulates(beetle, seg_index, n_segs):
     if beetle.horn_type == "spider":
         return False  # prosoma is body-fixed; abdomen rides spider_aim (own channel)
     return True
+
+def _body_spine_capsule(beetle):
+    """World-space body SPINE capsule (x0,y0,z0,x1,y1,z1,radius) — the same
+    spine the ball's analytic layer builds inside _ball_surface_contact,
+    duplicated spine-only for beetle-PAIR body separation (refactoring the
+    ball path risks its tuned feel). Per-type ramp offsets included; aim
+    channels (spider abdomen swing, bombardier body tilt) and per-type
+    extras (bombardier head block) deliberately skipped — body-vs-body
+    needs the dominant trunk shape only, and under-covering is the safe
+    direction (voxel impulse owns surface contact). Axis = offset +
+    half-height (abnormal_body_collision_plan.md gotcha #3)."""
+    global _COLOR_TO_SLOT
+    if _COLOR_TO_SLOT is None:
+        _COLOR_TO_SLOT = {simulation.BEETLE_BLUE: 0, simulation.BEETLE_RED: 1,
+                          simulation.BEETLE_P3: 2, simulation.BEETLE_P4: 3}
+    _bl, _bb = _slot_body_dims(_COLOR_TO_SLOT.get(beetle.color, 0))
+    _r = float(_bb) * 0.5
+    _rear_up = 0.0
+    _front_up = 0.0
+    if beetle.horn_type == "scorpion":
+        _rear_up = 4.0
+    elif beetle.horn_type == "bombardier":
+        _front_up = 4.0
+    elif beetle.horn_type == "giraffe":
+        _front_up = 2.0
+    _cr = math.cos(beetle.rotation)
+    _sr = math.sin(beetle.rotation)
+    _rx = -(float(_bl) - 1.0)
+    return (beetle.x + _rx * _cr, beetle.y + _rear_up + float(_bb) * 0.5,
+            beetle.z + _rx * _sr,
+            beetle.x + 3.0 * _cr, beetle.y + _front_up + float(_bb) * 0.5,
+            beetle.z + 3.0 * _sr, _r)
 
 def _ball_surface_contact(ball, beetle):
     """Deepest analytic contact of the ball with a beetle's collision
@@ -15817,6 +15866,49 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _cb.horn_burial = 4.0
                 _cb.angular_velocity *= 0.5
 
+    # BODY-BODY ANALYTIC SEPARATION (2026-07-16 audit): grounded body overlap
+    # had NO positional response — vertical separation is airborne-only, and
+    # the velocity impulse only opposes CLOSING motion, so two shoving
+    # beetles ground into each other until force equilibrium (the visible
+    # body clipping). Worse, deep overlap ERASES voxel contact (entities
+    # overwrite each other's grid cells), so the voxel-driven response
+    # weakens exactly as clipping deepens. Depth comes from the analytic
+    # spine capsules instead (grid-independent). Push is horizontal-only
+    # (vertical belongs to floor/lift systems), with a dead zone so surface
+    # contact stays owned by the normal impulse stack.
+    if (not is_ball_collision and physics_frame > 30
+            and (b1.x - b2.x) ** 2 + (b1.z - b2.z) ** 2 < 900.0):  # 30^2: spines can't overlap beyond
+        _bsp_rate = params.get("BODY_SEP_RATE", 0.2)
+        if _bsp_rate > 0.0:
+            _bcap1 = _body_spine_capsule(b1)
+            _bcap2 = _body_spine_capsule(b2)
+            _bres = closest_points_between_segments(
+                _bcap1[0], _bcap1[1], _bcap1[2], _bcap1[3], _bcap1[4], _bcap1[5],
+                _bcap2[0], _bcap2[1], _bcap2[2], _bcap2[3], _bcap2[4], _bcap2[5])
+            _bpen = (_bcap1[6] + _bcap2[6]) - _bres[8] - params.get("BODY_SEP_DEADZONE", 1.0)
+            if _bpen > 0.0:
+                _bdx = _bres[3] - _bres[0]   # closest point on b1's spine -> b2's
+                _bdz = _bres[5] - _bres[2]
+                _bh = math.sqrt(_bdx * _bdx + _bdz * _bdz)
+                if _bh > 0.3:  # stacked-on-top is degenerate: leave it to lift/floor
+                    _bnx = _bdx / _bh
+                    _bnz = _bdz / _bh
+                    _bpush = min(_bpen * _bsp_rate, 0.5) * 0.5
+                    b1.x -= _bnx * _bpush
+                    b1.z -= _bnz * _bpush
+                    b2.x += _bnx * _bpush
+                    b2.z += _bnz * _bpush
+                    # Damp remaining closing velocity along the push axis
+                    _bcl = (b1.vx - b2.vx) * _bnx + (b1.vz - b2.vz) * _bnz
+                    if _bcl > 0.0:
+                        _bdv = _bcl * params.get("BODY_SEP_VEL_DAMP", 0.3) * 0.5
+                        b1.vx -= _bnx * _bdv
+                        b1.vz -= _bnz * _bdv
+                        b2.vx += _bnx * _bdv
+                        b2.vz += _bnz * _bdv
+                    collision_stats['body_sep_pushes'] = \
+                        collision_stats.get('body_sep_pushes', 0) + 1
+
     # Voxel-overlap check: normally precomputed by the batched pairs kernel
     # (one launch for all pairs in the main loop); standalone kernel otherwise.
     # NOTE (2026-07-16): batching the CLUSTER kernels across pairs was tried
@@ -15844,6 +15936,11 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
         collision_z = float(_cpk[2])
         contact_count = int(_cpk[3])
         has_horn_tips = int(_cpk[4])
+        # Leg-only contact -> scaled response (legs are springy grazers, not
+        # battering rams; and animated leg tips flicker contact on/off, so
+        # full-strength impulses arrived as jittery bursts). Any body/horn
+        # voxel in the contact restores full force automatically.
+        leg_contact_scale = 1.0 if _cpk[8] > 0.5 else params.get("LEG_CONTACT_FORCE", 0.35)
         # Pair tip weight: strongest TIP_FACTOR among the sides whose tip
         # voxels are actually in this contact (bystander tips: neither flag
         # set -> factor 0 -> no escalation from someone else's horn)
@@ -17286,8 +17383,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             _bsq.z += (-_outz + _tuz) * _shift
 
                 # BODY COLLISION TILT: Bodies tilt in opposite directions on impact
+                # (scaled down for leg-only contacts — a leg tap shouldn't rock the body)
                 if not is_ball_collision:
-                    body_tilt_strength = params.get("BODY_TILT_STRENGTH", 1.2)
+                    body_tilt_strength = params.get("BODY_TILT_STRENGTH", 1.2) * leg_contact_scale
 
                     # Calculate lever arms in each beetle's local space
                     world_lever1_x = collision_x - b1.x
@@ -17505,7 +17603,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     impulse = -(1 + restitution) * vel_along_normal * params["BALL_MOMENTUM_TRANSFER"]
                 else:
                     # Beetle collision: use beetle combat physics
-                    impulse = -(1 + params["RESTITUTION"]) * vel_along_normal * params["IMPULSE_MULTIPLIER"]
+                    # (leg-only contacts push at leg strength, not body strength)
+                    impulse = -(1 + params["RESTITUTION"]) * vel_along_normal * params["IMPULSE_MULTIPLIER"] * leg_contact_scale
 
                 # Apply 3D linear impulse
                 impulse_x = impulse * normal_x
@@ -18926,6 +19025,11 @@ physics_params = {
     "SHAFT_PEN_LIFT_CAP": 1.5,  # Per-step pending_lift cap for shaft-under-body lever (was 4.0 — 3x the horn-lift cap)
     "BODY_IMPULSE_Y_CAP": 3.0,  # Per-step vertical impulse cap on body-to-body contacts (normal carries a horn_leverage up-bias)
     "CROSSING_RANGE": 4.0,  # Horn crossing detector proximity gate (horn_tunneling_plan.md T1); 0 = detector off
+    # Body-body analytic separation (2026-07-16 body-clip audit)
+    "BODY_SEP_RATE": 0.2,  # Positional push per voxel of spine-capsule overlap per step (0 = off)
+    "BODY_SEP_DEADZONE": 1.0,  # Overlap depth ignored before pushing (surface contact stays impulse-owned)
+    "BODY_SEP_VEL_DAMP": 0.3,  # Closing-velocity damp along the push axis while overlapped
+    "LEG_CONTACT_FORCE": 0.6,  # Response scale when the contact is LEG-ONLY (impulse + body tilt). Feel history 2026-07-16: 0.35 too weak in fights, 1.0 shoved still beetles too hard — 0.6 is the live middle; TUNE IN-GAME with the slider. NOTE: does NOT touch ball physics (ball has its own impulse branch)
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
@@ -18936,6 +19040,12 @@ physics_params = {
     "BALL_MASS_RATIO": BALL_MASS_RATIO,  # Ball weight vs beetle
     "BALL_ROLLING_FRICTION": BALL_ROLLING_FRICTION,  # Horizontal slowdown
     "BALL_GROUND_BOUNCE": BALL_GROUND_BOUNCE,  # Floor bounce coefficient
+    # Edge (ice-ring) bounce feel, 2026-07-16 "scoots in instead of bouncing up":
+    # BOWL_BOUNCE_NORMAL 1.0→0.5 halves the reflection normal's inward tilt
+    # (~11 deg instead of the full 22 — bounce goes mostly UP with a modest
+    # inward nudge) and BALL_ICE_BOUNCE 0.4→0.55 keeps more bounce energy
+    "BALL_ICE_BOUNCE": 0.6,
+    "BOWL_BOUNCE_NORMAL": 0.5,
     "BALL_PUSH_MULTIPLIER": BALL_PUSH_MULTIPLIER,  # How easily beetles can push the ball
     "BALL_SPIN_MULTIPLIER": BALL_SPIN_MULTIPLIER,  # How easily ball spins when hit
     "BALL_ANGULAR_FRICTION": BALL_ANGULAR_FRICTION,  # How quickly ball spin slows
@@ -27502,7 +27612,7 @@ try:
                 new_friction = window.GUI.slider_float("Rolling Friction", physics_params["BALL_ROLLING_FRICTION"], 0.80, 0.99)
                 if new_friction != physics_params["BALL_ROLLING_FRICTION"]:
                     physics_params["BALL_ROLLING_FRICTION"] = new_friction
-                new_ground_bounce = window.GUI.slider_float("Ground Bounce", physics_params["BALL_GROUND_BOUNCE"], 0.0, 0.8)
+                new_ground_bounce = window.GUI.slider_float("Ground Bounce", physics_params["BALL_GROUND_BOUNCE"], 0.0, 0.95)
                 if new_ground_bounce != physics_params["BALL_GROUND_BOUNCE"]:
                     physics_params["BALL_GROUND_BOUNCE"] = new_ground_bounce
                 # Horizontal slow-down: per-tick air drag + per-bounce grip scrub
@@ -27598,6 +27708,9 @@ try:
             physics_params["SHAFT_PEN_LIFT_CAP"] = window.GUI.slider_float("Shaft Pen Lift Cap", physics_params["SHAFT_PEN_LIFT_CAP"], 0.0, 4.0)
             physics_params["BODY_IMPULSE_Y_CAP"] = window.GUI.slider_float("Body Impulse Y Cap", physics_params["BODY_IMPULSE_Y_CAP"], 0.0, 20.0)
             physics_params["CROSSING_RANGE"] = window.GUI.slider_float("Cross Fix Range", physics_params["CROSSING_RANGE"], 0.0, 8.0)
+            physics_params["BODY_SEP_RATE"] = window.GUI.slider_float("Body Sep Push", physics_params["BODY_SEP_RATE"], 0.0, 1.0)
+            physics_params["BODY_SEP_DEADZONE"] = window.GUI.slider_float("Body Sep Deadzone", physics_params["BODY_SEP_DEADZONE"], 0.0, 3.0)
+            physics_params["LEG_CONTACT_FORCE"] = window.GUI.slider_float("Leg Contact Force", physics_params["LEG_CONTACT_FORCE"], 0.0, 1.0)
             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
             physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
