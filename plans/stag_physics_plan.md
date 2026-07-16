@@ -119,3 +119,22 @@ code only where verification shows a gap) -> GATE -> P3 polish. Perf:
 pocket test is a point-in-region check on existing segments — negligible.
 With no grip mechanic, P2's only risk is discovering suppressed wall
 responses in the gap (tip-gate class), which are fixes, not features.
+
+## P2 AUDIT RESULTS 2026-07-16 (implemented, uncommitted, awaiting user gate test)
+Both audit items were REAL, both fixed generically (no per-type code):
+1. TIP-GATE SUPPRESSION: the frontal-tip gate (`_int_front > -1.0 and _pdist > 5.0`)
+   suppressed the pincer WALL pushes on a clamped victim — flanking arms sit right at
+   ~4-6 from a boxed body's center, so wall engagement flickered at the boundary. Fix:
+   flank-opposition bypass — if ANOTHER arm of the same owner is within body reach
+   (10 vox) with an OPPOSING push direction, the victim is clamped, not jousting, and
+   the push-out fires. Generic multi-arm geometry (any concave weapon benefits).
+2. SEGMENT ATTRIBUTION: seg_latch hysteresis (0.75-vox stickiness) was BALL-ONLY;
+   beetle intruders re-picked the closest arm every step, alternating between the two
+   pincer walls. Latch extended to all intruders; ball keeps its extra center-geometry
+   recompute.
+BOT BASELINE NOTE (same session): bot horn activity massively increased (near-constant
+in melee, combos, flick bursts, approach pre-positioning) for honest baselines — ALL
+canary metrics rebaseline from here; post-change reference run (75s stag/stag/herc/herc):
+deep_clip 120, horn_cross_clip 1087, crossing fires 4 (contact-supp 5, mag-supp 111),
+frame 18.8ms. GATE P2 still pending: user clamps a bot mid-charge (boxed / dragged /
+lifted / released), non-clamp fights unchanged.

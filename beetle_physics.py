@@ -1465,16 +1465,34 @@ def get_bot_inputs(slot):
     elif obs['target_d2'] < 2500 and rng.random() < 0.006:
         st['feint_timer'] = rng.randint(6, 12)
 
-    # Horn work when engaged — a randomly chosen move held a short while (not a
-    # fixed cycle), frequency scaled by aggression.
-    if obs['target_d2'] < 1600:
-        if st['horn_timer'] > 0:
-            st['horn_timer'] -= 1
-            inputs |= st['horn']
-        elif rng.random() < 0.05 * (0.5 + p['aggression']):
-            st['horn'] = rng.choice((INPUT_HORN_UP, INPUT_HORN_DOWN,
-                                     INPUT_HORN_LEFT, INPUT_HORN_RIGHT))
-            st['horn_timer'] = rng.randint(8, 20)
+    # Horn work — real players hammer pitch/yaw through melee, combo them,
+    # and pre-set the horn on approach; that motion is what exercises the
+    # articulation/anti-clip/tunneling paths, so bots mirror it for honest
+    # canary baselines (2026-07-16; was one key at 5%/frame engaged-only —
+    # horns sat still most of a fight). Near-constant activity in melee:
+    # combo holds (pitch+yaw together, ~35%), rapid flick bursts (~45% of
+    # picks hold only 3-8 frames), plus occasional pre-positioning inbound.
+    if st['horn_timer'] > 0:
+        st['horn_timer'] -= 1
+        inputs |= st['horn']
+    elif obs['target_d2'] < 1600:
+        if rng.random() < 0.22 * (0.5 + p['aggression']):
+            _hm = rng.choice((INPUT_HORN_UP, INPUT_HORN_DOWN,
+                              INPUT_HORN_LEFT, INPUT_HORN_RIGHT))
+            if rng.random() < 0.35:  # combo: add the other axis
+                if _hm & (INPUT_HORN_UP | INPUT_HORN_DOWN):
+                    _hm |= rng.choice((INPUT_HORN_LEFT, INPUT_HORN_RIGHT))
+                else:
+                    _hm |= rng.choice((INPUT_HORN_UP, INPUT_HORN_DOWN))
+            st['horn'] = _hm
+            if rng.random() < 0.45:
+                st['horn_timer'] = rng.randint(3, 8)    # flick
+            else:
+                st['horn_timer'] = rng.randint(8, 20)   # deliberate hold
+    elif obs['target_d2'] < 4900 and rng.random() < 0.02:
+        # Pre-position the horn while closing in (players do this)
+        st['horn'] = rng.choice((INPUT_HORN_UP, INPUT_HORN_DOWN))
+        st['horn_timer'] = rng.randint(6, 14)
     return inputs
 
 
@@ -2325,8 +2343,23 @@ class Beetle:
             # clamp just covers the one tick before that lands (belt-and-braces)
             ice_speed_mult = 2.0 if (on_ice and self.on_ground) else 1.0
             bonus_scale = 0.0 if self.air_no_traction else 1.0
-            forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus * bonus_scale) * ice_speed_mult
-            backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus * bonus_scale) * ice_speed_mult
+            # Max-nerf SPEED CAP cut (2026-07-16): the nerfs above zero the
+            # drive force but the cap only fell to base — now each source
+            # also cuts the cap itself by up to NERF_SPEED_CUT (10%) at its
+            # max: height ramps grace->dead lift, tilt ramps from
+            # TILT_DRIVE_START to 90 deg. Both maxed stack to ~19%.
+            _cut = physics_params.get("NERF_SPEED_CUT", 0.10)
+            _cap_mult = 1.0
+            _ag = physics_params.get("AIR_GRACE_LIFT", 1.0)
+            _ad = physics_params.get("AIR_DEAD_LIFT", 2.5)
+            if self.air_gap > _ag:
+                _cap_mult *= 1.0 - _cut * min((self.air_gap - _ag) / max(1e-6, _ad - _ag), 1.0)
+            _tfrac = max(abs(self.pitch), abs(self.roll)) / (math.pi * 0.5)
+            _tstart = physics_params.get("TILT_DRIVE_START", 0.2)
+            if _tfrac > _tstart:
+                _cap_mult *= 1.0 - _cut * min((_tfrac - _tstart) / max(1e-6, 1.0 - _tstart), 1.0)
+            forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus * bonus_scale) * ice_speed_mult * _cap_mult
+            backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus * bonus_scale) * ice_speed_mult * _cap_mult
             if dot_product >= 0:  # Moving forward
                 if speed > forward_max:
                     self.vx = (self.vx / speed) * forward_max
@@ -15999,27 +16032,30 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _so_segs = horn_collision_segments(shaft_owner)
                     _scx, _scy, _scz, _sseg, _st_local, _sdist = _closest_on_horn_segments(
                         _so_segs, collision_x, collision_y, collision_z)
-                    # SEGMENT HYSTERESIS (ball): multi-arm skeletons fork
-                    # (rhino midline + prongs at the tip) and the closest-
-                    # segment winner flips between arms for a ball bouncing
-                    # at the fork — every downstream value (rest height,
-                    # surface point) alternated between two targets, so the
-                    # ball visibly fought for two spots. Keep last substep's
-                    # segment unless another is CLEARLY closer
+                    # SEGMENT HYSTERESIS: multi-arm skeletons fork (rhino
+                    # midline + prongs, stag both pincers) and the closest-
+                    # segment winner flips between arms frame to frame —
+                    # every downstream value (push direction, rest height)
+                    # alternated between two targets. Keep last substep's
+                    # segment unless another is CLEARLY closer. Was ball-
+                    # only; extended to beetle intruders per stag plan P2
+                    # audit (inside the concave pincer gap the winner
+                    # alternated between the two WALLS, flipping the wall
+                    # push direction every step)
+                    _latch = getattr(intruder, 'seg_latch', None)
+                    if (_latch is not None and _latch[0] == shaft_owner.color
+                            and _latch[1] != _sseg and _latch[1] < len(_so_segs)):
+                        _lseg = _so_segs[_latch[1]]
+                        _lcx, _lcy, _lcz, _lt, _ld = closest_point_on_segment(
+                            collision_x, collision_y, collision_z,
+                            _lseg[0], _lseg[1], _lseg[2], _lseg[3], _lseg[4], _lseg[5])
+                        if _ld <= _sdist + 0.75:
+                            _scx, _scy, _scz = _lcx, _lcy, _lcz
+                            _sseg = _latch[1]
+                            _st_local = _lt
+                            _sdist = _ld
+                    intruder.seg_latch = (shaft_owner.color, _sseg)
                     if intruder.horn_type == "ball":
-                        _latch = getattr(intruder, 'seg_latch', None)
-                        if (_latch is not None and _latch[0] == shaft_owner.color
-                                and _latch[1] != _sseg and _latch[1] < len(_so_segs)):
-                            _lseg = _so_segs[_latch[1]]
-                            _lcx, _lcy, _lcz, _lt, _ld = closest_point_on_segment(
-                                collision_x, collision_y, collision_z,
-                                _lseg[0], _lseg[1], _lseg[2], _lseg[3], _lseg[4], _lseg[5])
-                            if _ld <= _sdist + 0.75:
-                                _scx, _scy, _scz = _lcx, _lcy, _lcz
-                                _sseg = _latch[1]
-                                _st_local = _lt
-                                _sdist = _ld
-                        intruder.seg_latch = (shaft_owner.color, _sseg)
                         # Response geometry from the BALL CENTER, not the
                         # voxel contact cluster: the cluster average jumps
                         # whole voxels as animated stamping shifts columns,
@@ -16269,9 +16305,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         continue
                     # Tip voxels in the contact normally mean a tip battle
                     # (existing physics handles it) — EXCEPT when the horn is
-                    # burying in from behind the victim, or the shaft already
-                    # sits near their body center (deep clip). Those aren't
-                    # jousts; the push-out must still fire.
+                    # burying in from behind the victim, the shaft already
+                    # sits near their body center (deep clip), or the victim
+                    # is FLANKED by two opposing arms (a clamp is not a
+                    # joust — stag plan P2: the frontal-tip gate suppressed
+                    # the pincer WALL pushes on a clamped victim whenever it
+                    # sat >5 from an arm, which is exactly where a boxed
+                    # body sits). Flank test is generic multi-arm geometry:
+                    # another arm of the same owner within body reach whose
+                    # push direction OPPOSES this one's.
                     if has_horn_tips == 1:
                         if intruder.horn_type == "ball":
                             # Tips striking the ball are the normal hit (main
@@ -16284,7 +16326,22 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             _isin = math.sin(intruder.rotation)
                             _int_front = ((collision_x - intruder.x) * _icos +
                                           (collision_z - intruder.z) * _isin)
-                            if _int_front > -1.0 and _pdist > 5.0:
+                            _flank_opposed = False
+                            if _nseg > 1:
+                                for _oi in range(_nseg):
+                                    if _oi == _sseg:
+                                        continue
+                                    _os = _so_segs[_oi]
+                                    _ocx, _ocy, _ocz, _ot2, _od2 = closest_point_on_segment(
+                                        intruder.x, intruder.y, intruder.z,
+                                        _os[0], _os[1], _os[2], _os[3], _os[4], _os[5])
+                                    if _od2 > 10.0:
+                                        continue
+                                    if ((intruder.x - _scx) * (intruder.x - _ocx)
+                                            + (intruder.z - _scz) * (intruder.z - _ocz)) < 0.0:
+                                        _flank_opposed = True
+                                        break
+                            if _int_front > -1.0 and _pdist > 5.0 and not _flank_opposed:
                                 continue  # genuine frontal tip contact — leave it alone
                     _pnx = _px / _pdist
                     _pnz = _pz / _pdist
@@ -18817,7 +18874,7 @@ physics_params = {
     "IMPULSE_MULTIPLIER": IMPULSE_MULTIPLIER,
     "RESTITUTION": RESTITUTION,
     "MOMENT_OF_INERTIA_FACTOR": MOMENT_OF_INERTIA_FACTOR,
-    "GRAVITY": 72.0,  # Adjustable gravity (60→72 user tune 2026-07-16, snappier falls)
+    "GRAVITY": 90.0,  # Adjustable gravity (60→72→90 user tune 2026-07-16, snappier falls)
     "SEPARATION_FORCE": 0.7,  # Gradual position separation on collision
     "FORWARD_SPEED": 12.5,  # Forward top speed (base before momentum bonus)
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
@@ -18825,6 +18882,9 @@ physics_params = {
     # Air traction (pop-up nerf): lift measured as air_gap = lowest geometry
     # point above floor surface, so thresholds are build/leg-length independent
     "AIR_CONTROL": 0.0,  # MINIMUM drive floor once past AIR_DEAD_LIFT (0 = ballistic; raise toward 1.0 to soften)
+    "TILT_DRIVE_START": 0.2,  # Tilt (fraction of 90 deg) where drive starts fading — stacks with the air nerf, active grounded too
+    "TILT_DRIVE_FLOOR": 0.0,  # Drive multiplier at full 90-deg tilt (0 = a sideways beetle can't push at all)
+    "NERF_SPEED_CUT": 0.10,  # Extra SPEED CAP cut at max nerf, per source (height + tilt each ramp to this; both maxed ~19%)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
     "AIR_DEAD_LIFT": 2.5,  # At/above this lift: drive at the AIR_CONTROL floor until landing
     "AIR_SLOW_LIFT": 1.5,  # Lift (daylight under leg tips) that triggers the one-shot speed cut
@@ -20647,6 +20707,20 @@ try:
                     drive_mult = 1.0 + (_air_floor - 1.0) * t
                 # While popped up, the speed cap also drops to base (update_physics)
                 beetle.air_no_traction = not on_board
+
+                # TILT DRIVE NERF (2026-07-16): drive force fades once the
+                # body tilts past TILT_DRIVE_START (fraction of 90 deg,
+                # default 0.2 = ~18 deg) — legs off the ground plane can't
+                # push. INDEPENDENT of the air nerf and STACKS with it: a
+                # tilted airborne beetle gets both, a beetle tipped up on
+                # its side can't drive at full force even grounded.
+                # Turning stays full, same as the air design
+                _tilt_frac = max(abs(beetle.pitch), abs(beetle.roll)) / (math.pi * 0.5)
+                _td_start = physics_params.get("TILT_DRIVE_START", 0.2)
+                if _tilt_frac > _td_start:
+                    _td_floor = physics_params.get("TILT_DRIVE_FLOOR", 0.0)
+                    _td_t = min((_tilt_frac - _td_start) / max(1e-6, 1.0 - _td_start), 1.0)
+                    drive_mult *= 1.0 + (_td_floor - 1.0) * _td_t
 
                 if p_inputs & INPUT_FORWARD:
                     # Move forward in facing direction
@@ -27530,6 +27604,9 @@ try:
 
             window.GUI.text("--- Airborne Tumbling ---")
             physics_params["AIR_CONTROL"] = window.GUI.slider_float("Air Drive Floor", physics_params["AIR_CONTROL"], 0.0, 1.0)
+            physics_params["TILT_DRIVE_START"] = window.GUI.slider_float("Tilt Drive Start", physics_params["TILT_DRIVE_START"], 0.0, 1.0)
+            physics_params["TILT_DRIVE_FLOOR"] = window.GUI.slider_float("Tilt Drive Floor", physics_params["TILT_DRIVE_FLOOR"], 0.0, 1.0)
+            physics_params["NERF_SPEED_CUT"] = window.GUI.slider_float("Nerf Speed Cut", physics_params["NERF_SPEED_CUT"], 0.0, 0.5)
             physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
             physics_params["AIR_DEAD_LIFT"] = window.GUI.slider_float("Air Dead Lift", physics_params["AIR_DEAD_LIFT"], 1.5, 7.0)
             physics_params["AIR_SLOW_LIFT"] = window.GUI.slider_float("Air Slow Lift", physics_params["AIR_SLOW_LIFT"], 1.1, 5.0)
