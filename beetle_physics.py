@@ -2415,6 +2415,23 @@ class Beetle:
                 RESTORING_STRENGTH = physics_params.get("RESTORING_STRENGTH", 35.0)
                 self.pitch_velocity -= self.pitch * RESTORING_STRENGTH * dt
                 self.roll_velocity -= self.roll * RESTORING_STRENGTH * dt
+                # CLOSE-ENOUGH FINISH (2026-07-17): the restoring spring is
+                # asymptotic and heavily damped, so the last ~1.5 deg crept
+                # visibly (the S3 render glide made the always-present tail
+                # perceptible). Inside the band, ease the remainder out over
+                # a few frames — smooth, no snap-pop — and bleed velocity
+                # with it. Combat tilt never qualifies: any real torque puts
+                # angle or angular velocity outside the band
+                if abs(self.pitch) < 0.026 and abs(self.pitch_velocity) < 0.6:
+                    self.pitch *= 0.7
+                    self.pitch_velocity *= 0.5
+                    if abs(self.pitch) < 0.002:
+                        self.pitch = 0.0
+                if abs(self.roll) < 0.026 and abs(self.roll_velocity) < 0.6:
+                    self.roll *= 0.7
+                    self.roll_velocity *= 0.5
+                    if abs(self.roll) < 0.002:
+                        self.roll = 0.0
             elif self.on_ground and abs(self.vy) >= 2.0:
                 # Bouncing/landing - moderate restoring: tumble but still settle
                 WEAK_RESTORING = physics_params.get("WEAK_RESTORING", 25.0)
@@ -16511,7 +16528,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     _grip = params.get("BALL_BEETLE_BOUNCE_GRIP", 0.6)
                                     intruder.vx = _sfvx + (intruder.vx - _sfvx) * _grip
                                     intruder.vz = _sfvz + (intruder.vz - _sfvz) * _grip
-                                    globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_rel - _bb_min) / 35.0 * 0.35)
+                                    globals()['ball_squash_amount'] = min(0.44, 0.05 + (_bb_rel - _bb_min) / 35.0 * 0.39)
                                     globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
                                 else:
                                     # Settle riding the surface — SYMMETRIC
@@ -17647,7 +17664,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _grip = params.get("BALL_BEETLE_BOUNCE_GRIP", 0.6)
                         _bb_ball.vx = _bsvx + (_bb_ball.vx - _bsvx) * _grip
                         _bb_ball.vz = _bsvz + (_bb_ball.vz - _bsvz) * _grip
-                        globals()['ball_squash_amount'] = min(0.40, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.35)
+                        globals()['ball_squash_amount'] = min(0.44, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.39)
                         globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
                     else:
                         _bb_ball.vy = _bb_svy  # settle riding the surface
@@ -17783,7 +17800,19 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
 
                 # For horn contact, lifting logic handles vertical forces explicitly
                 # Only apply vertical impulse for non-horn collisions
-                if is_horn_contact:
+                if is_ball_collision:
+                    # BALL: full 3D impulse along the analytic surface normal
+                    # (2026-07-17). The horn-contact vertical zeroing below is
+                    # a BEETLE rule (pending-lift owns beetle vertical) — for
+                    # the ball its "lifting logic" is just the scoop, capped
+                    # at 4 u/s ≈ a 0.05-voxel hop, so zeroing here meant horn
+                    # strikes pushed the ball FLAT no matter where they hit.
+                    # The ball's normal is honest (real surface contact), so
+                    # hitting its lower half now launches it upward at hit
+                    # strength. (The beetle body-ram Y cap must not apply to
+                    # the ball either — it flattened body hits to 3 u/s.)
+                    impulse_y = impulse * normal_y
+                elif is_horn_contact:
                     impulse_y = 0.0  # Disable vertical impulse - lifting logic handles it
                 else:
                     # Capped: the smoothed normal carries the horn_leverage*2.5
@@ -19159,7 +19188,7 @@ physics_params = {
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
     "AIR_DEAD_LIFT": 2.5,  # At/above this lift: drive at the AIR_CONTROL floor until landing
     "AIR_SLOW_LIFT": 1.5,  # Lift (daylight under leg tips) that triggers the one-shot speed cut
-    "AIR_POP_SLOW": 0.50,  # One-shot horizontal speed cut when crossing AIR_SLOW_LIFT (0.50 = lose half)
+    "AIR_POP_SLOW": 0.30,  # One-shot horizontal speed cut when crossing AIR_SLOW_LIFT (0.50→0.30 2026-07-17 — the ramping NERF_SPEED_CUT now covers gradual slowdown, the one-shot cliff can be gentler)
     "AIR_FRICTION": 0.985,  # Horizontal friction while popped up (vs ground 0.88 — launches keep their momentum)
     # Airborne tumbling physics parameters
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
@@ -19219,6 +19248,15 @@ physics_params = {
     # inward nudge) and BALL_ICE_BOUNCE 0.4→0.55 keeps more bounce energy
     "BALL_ICE_BOUNCE": 0.6,
     "BOWL_BOUNCE_NORMAL": 0.5,
+    # Ball-on-BEETLE bounce, 2026-07-17 "not bouncy enough / sometimes no
+    # bounce at all": restitution 0.45→0.65 (was HALF the floor's 0.9), and
+    # the min-impact gate 2.0→0.75 voxel-drop equivalent — the old 2-voxel
+    # deadband settled (killed) every dribble and second-bounce on a back
+    # or horn, an asymmetry the floor never had (floor reflects everything
+    # down to 2 u/s). The max(3.0, ...) floor still kills micro-chatter.
+    "BALL_BEETLE_BOUNCE": 0.65,
+    "BALL_BOUNCE_MIN_DROP": 0.75,
+    "SHAFT_PENETRATION_LIFT": 0.32,  # Shaft-under-body/ball scoop strength (was .get-fallback 0.25; 2026-07-17 raised for ball scoops — beetle side stays bounded by SHAFT_PEN_LIFT_CAP)
     "BALL_PUSH_MULTIPLIER": BALL_PUSH_MULTIPLIER,  # How easily beetles can push the ball
     "BALL_SPIN_MULTIPLIER": BALL_SPIN_MULTIPLIER,  # How easily ball spins when hit
     "BALL_ANGULAR_FRICTION": BALL_ANGULAR_FRICTION,  # How quickly ball spin slows
@@ -23771,10 +23809,18 @@ try:
                                 # ramping hard with fall height
                                 if impact_speed >= _sq_min_impact:
                                     _sq_over = (impact_speed - _sq_min_impact) / 35.0  # 0 at gate -> ~1 at huge slams
-                                    g['ball_squash_amount'] = min(0.40, 0.05 + _sq_over * 0.35)
+                                    g['ball_squash_amount'] = min(0.44, 0.05 + _sq_over * 0.39)
                                     g['ball_squash_timer'] = BALL_SQUASH_DURATION
-                                # If bounce is very small, stop bouncing and settle
-                                if abs(beetle_ball.vy) < 2.0:
+                                # If bounce is very small, stop bouncing and settle.
+                                # Threshold SCALES WITH GRAVITY (2026-07-17): at
+                                # rest the ball gains g*dt downward each step and
+                                # the bounce reflects it — with gravity 90*1.8 and
+                                # bounce 0.9 that reflected 2.43 u/s, above the old
+                                # fixed 2.0, so a resting ball bounced FOREVER
+                                _settle_v = max(2.0, physics_params["GRAVITY"]
+                                                * physics_params["BALL_GRAVITY_MULTIPLIER"]
+                                                * PHYSICS_TIMESTEP * 1.3)
+                                if abs(beetle_ball.vy) < _settle_v:
                                     beetle_ball.vy = 0.0
                                     beetle_ball.y = floor_surface + beetle_ball.radius  # Settle on floor exactly
 
@@ -27896,6 +27942,7 @@ try:
             # Smoothness caps (plans/smoothness_plan.md S1; max = old uncapped feel)
             physics_params["SVS_LIFT_CAP"] = window.GUI.slider_float("Horn Sep Lift Cap", physics_params["SVS_LIFT_CAP"], 0.0, 25.0)
             physics_params["SHAFT_PEN_LIFT_CAP"] = window.GUI.slider_float("Shaft Pen Lift Cap", physics_params["SHAFT_PEN_LIFT_CAP"], 0.0, 4.0)
+            physics_params["SHAFT_PENETRATION_LIFT"] = window.GUI.slider_float("Shaft Scoop Lift", physics_params["SHAFT_PENETRATION_LIFT"], 0.0, 1.0)
             physics_params["BODY_IMPULSE_Y_CAP"] = window.GUI.slider_float("Body Impulse Y Cap", physics_params["BODY_IMPULSE_Y_CAP"], 0.0, 20.0)
             physics_params["CROSSING_RANGE"] = window.GUI.slider_float("Cross Fix Range", physics_params["CROSSING_RANGE"], 0.0, 8.0)
             physics_params["BODY_SEP_RATE"] = window.GUI.slider_float("Body Sep Push", physics_params["BODY_SEP_RATE"], 0.0, 1.0)
