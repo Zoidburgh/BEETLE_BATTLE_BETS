@@ -770,6 +770,7 @@ def save_perf_log():
     w(f"  horn_crossing_fires: {collision_stats.get('horn_crossing_fires', 0)} (T1 tunneling detector: certain pass-throughs caught)")
     w(f"  horn_crossing_supp: contact={collision_stats.get('horn_crossing_supp_contact', 0)} mag={collision_stats.get('horn_crossing_supp_mag', 0)} (flips suppressed by gates)")
     w(f"  body_sep_pushes: {collision_stats.get('body_sep_pushes', 0)} (analytic body-overlap separations)")
+    w(f"  leg_cage_contacts: {collision_stats.get('leg_cage_contacts', 0)} (horn-vs-leg-strut spring responses)")
     for _hk, _hv in sorted(collision_stats['horn_cross_by_type'].items(), key=lambda kv: -kv[1]):
         w(f"    {_hk}: {_hv}")
     for _ck, _cv in sorted(collision_stats['deep_clip_by_type'].items(), key=lambda kv: -kv[1]):
@@ -1319,6 +1320,10 @@ def _bot_state(slot):
             'feint_timer': 0,     # frames left in a feint juke
             'horn': 0,            # currently held horn move
             'horn_timer': 0,      # frames left holding it
+            'mode': 'seek',       # seek / charge / orbit / reset (2026-07-16 upgrade)
+            'mode_timer': 0,      # frames left in the current mode
+            'orbit_dir': 1,       # circling direction (also reset-turn direction)
+            'engaged_frames': 0,  # sustained-contact counter (drives hit-and-run)
             'pers': {
                 'wander_max': rng.uniform(0.25, 0.60),  # how curvy the charges are
                 'edge_caution': rng.uniform(6.0, 10.0), # how early to flee the rim (units)
@@ -1326,6 +1331,16 @@ def _bot_state(slot):
                 'aggression': rng.uniform(0.55, 1.00),  # horn frequency / commitment
             },
         }
+        # Style archetype: how often the bot picks committed charges vs
+        # circling approaches (the remainder falls through to wandery seek).
+        # Different styles per bot = diverse contact geometry in canary data
+        _style = rng.random()
+        if _style < 0.4:      # rusher: long straight runs, big impacts
+            st['pers']['style_charge'], st['pers']['style_orbit'] = 0.60, 0.15
+        elif _style < 0.75:   # circler: flanks and glancing contacts
+            st['pers']['style_charge'], st['pers']['style_orbit'] = 0.25, 0.45
+        else:                 # balanced
+            st['pers']['style_charge'], st['pers']['style_orbit'] = 0.35, 0.25
         _bot_ai_state[slot] = st
     return st
 
@@ -1346,7 +1361,7 @@ def _bot_observe(slot):
         ux, uz = b.x / dist_c, b.z / dist_c
     else:
         ux, uz = math.cos(b.rotation), math.sin(b.rotation)
-    best, best_d2 = None, 1e18
+    best, best_d2, best_slot = None, 1e18, None
     for other in range(active_player_count):
         if other == slot:
             continue
@@ -1355,7 +1370,7 @@ def _bot_observe(slot):
             continue
         d2 = (ob.x - b.x) ** 2 + (ob.z - b.z) ** 2
         if d2 < best_d2:
-            best_d2, best = d2, ob
+            best_d2, best, best_slot = d2, ob, other
     return {
         'b': b,
         'dist_center': dist_c,
@@ -1363,6 +1378,7 @@ def _bot_observe(slot):
         'radial_out': b.vx * ux + b.vz * uz,    # >0 = drifting toward the rim
         'to_center_ang': math.atan2(-b.z, -b.x),
         'target': best,
+        'target_slot': best_slot,
         'target_d2': best_d2,
     }
 
@@ -1388,6 +1404,47 @@ def get_bot_inputs(slot):
     radial_out = obs['radial_out']
     center_diff = _wrap_pi(obs['to_center_ang'] - b.rotation)  # turn needed to face center
     inputs = 0
+
+    # HORNS ALWAYS WORKING (user 2026-07-16: "always moving and sweeping in
+    # all directions at almost all times"): hoisted ABOVE the movement
+    # priority branches so horn motion continues through edge-flees, breaks,
+    # orbits and recovery — every early return below carries these bits.
+    # A new sweep is picked the moment the previous hold ends (~85%: tiny
+    # idle gaps only). In contact the verb mix biases to combat moves.
+    _tslot = obs['target_slot']
+    _in_contact = 0
+    if _tslot is not None:
+        _in_contact = pair_collision_last.get((min(slot, _tslot), max(slot, _tslot)), 0)
+    if st['horn_timer'] > 0:
+        st['horn_timer'] -= 1
+        inputs |= st['horn']
+    elif rng.random() < 0.85:
+        if _in_contact:
+            # ENGAGED: lifts and yaw grinds dominate (the real combat verbs)
+            _r2 = rng.random()
+            if _r2 < 0.45:
+                _hm = INPUT_HORN_UP
+            elif _r2 < 0.65:
+                _hm = INPUT_HORN_LEFT if rng.random() < 0.5 else INPUT_HORN_RIGHT
+            elif _r2 < 0.80:
+                _hm = INPUT_HORN_UP | (INPUT_HORN_LEFT if rng.random() < 0.5 else INPUT_HORN_RIGHT)
+            else:
+                _hm = INPUT_HORN_DOWN  # press-down wedge
+            st['horn'] = _hm
+            st['horn_timer'] = rng.randint(6, 25)
+        else:
+            # FREE SWEEP: full pitch/yaw space, combos ~40%, hold lengths
+            # from quick flicks to long traverses
+            _hm = (INPUT_HORN_UP, INPUT_HORN_DOWN,
+                   INPUT_HORN_LEFT, INPUT_HORN_RIGHT)[rng.randint(0, 3)]
+            if rng.random() < 0.4:
+                if _hm & (INPUT_HORN_UP | INPUT_HORN_DOWN):
+                    _hm |= INPUT_HORN_LEFT if rng.random() < 0.5 else INPUT_HORN_RIGHT
+                else:
+                    _hm |= INPUT_HORN_UP if rng.random() < 0.5 else INPUT_HORN_DOWN
+            st['horn'] = _hm
+            st['horn_timer'] = rng.randint(4, 30)
+        inputs |= st['horn']
 
     # Heading-noise random walk — drifts the charge angle so approaches curve
     # and two bots never re-derive an identical head-on orbit.
@@ -1442,15 +1499,83 @@ def get_bot_inputs(slot):
             inputs |= INPUT_RIGHT if st['break_turn'] > 0 else INPUT_LEFT
             return inputs
 
-    # --- Normal seek, with heading noise so the charge isn't dead straight.
-    want = math.atan2(target.z - b.z, target.x - b.x) + st['wander']
-    diff = _wrap_pi(want - b.rotation)
-    if abs(diff) < p['charge_cone']:
+    # --- Combat mode machine (2026-07-16 "better data" upgrade): players
+    # don't just seek — they commit to straight charge runs, circle for a
+    # flank, and break off after long grinds to re-approach. Different
+    # modes = diverse contact geometry (head-ons, T-bones, glancing hits,
+    # separation/re-approach events) instead of one endless front grind.
+    # (_tslot / _in_contact computed up top with the horn block)
+    if _in_contact:
+        st['engaged_frames'] += 1
+    else:
+        st['engaged_frames'] = max(0, st['engaged_frames'] - 2)
+
+    # Popped up / heavily tilted: drive is nerfed anyway — aim the landing
+    # like a player instead of burning inputs (recovery behavior)
+    if b.air_no_traction or abs(b.pitch) > 0.5 or abs(b.roll) > 0.5:
+        _rdiff = _wrap_pi(math.atan2(target.z - b.z, target.x - b.x) - b.rotation)
+        if _rdiff > 0.12:
+            inputs |= INPUT_RIGHT
+        elif _rdiff < -0.12:
+            inputs |= INPUT_LEFT
+        return inputs
+
+    if st['mode_timer'] > 0:
+        st['mode_timer'] -= 1
+    else:
+        _r = rng.random()
+        if st['engaged_frames'] > 100:
+            # Hit-and-run: a long grind ends with a breakaway + re-approach
+            st['mode'] = 'reset'
+            st['mode_timer'] = rng.randint(30, 55)
+            st['orbit_dir'] = 1 if rng.random() < 0.5 else -1
+            st['engaged_frames'] = 0
+        elif obs['target_d2'] > 900 and _r < p['style_charge']:
+            st['mode'] = 'charge'
+            st['mode_timer'] = rng.randint(45, 90)
+        elif obs['target_d2'] < 2500 and _r < p['style_charge'] + p['style_orbit']:
+            st['mode'] = 'orbit'
+            st['mode_timer'] = rng.randint(30, 70)
+            st['orbit_dir'] = 1 if rng.random() < 0.5 else -1
+        else:
+            st['mode'] = 'seek'
+            st['mode_timer'] = rng.randint(30, 60)
+
+    want = math.atan2(target.z - b.z, target.x - b.x)
+    if st['mode'] == 'charge':
+        # Committed straight run: no wander, wide steering deadband — builds
+        # the forward hold-bonus and lands full-speed impacts
+        diff = _wrap_pi(want - b.rotation)
         inputs |= INPUT_FORWARD
-    if diff > 0.12:
-        inputs |= INPUT_RIGHT
-    elif diff < -0.12:
-        inputs |= INPUT_LEFT
+        if diff > 0.25:
+            inputs |= INPUT_RIGHT
+        elif diff < -0.25:
+            inputs |= INPUT_LEFT
+    elif st['mode'] == 'orbit':
+        # Circle the target (~72 deg off the nose) then re-decide — produces
+        # flanks, T-bones and glancing contacts
+        diff = _wrap_pi(want + st['orbit_dir'] * 1.25 - b.rotation)
+        if abs(diff) < 1.0:
+            inputs |= INPUT_FORWARD
+        if diff > 0.12:
+            inputs |= INPUT_RIGHT
+        elif diff < -0.12:
+            inputs |= INPUT_LEFT
+        if obs['target_d2'] < 400:
+            st['mode_timer'] = 0  # got close — re-decide next frame
+    elif st['mode'] == 'reset':
+        diff = _wrap_pi(want - b.rotation)
+        inputs |= INPUT_BACKWARD
+        inputs |= INPUT_RIGHT if st['orbit_dir'] > 0 else INPUT_LEFT
+    else:
+        # Classic seek with heading noise so the approach isn't dead straight
+        diff = _wrap_pi(want + st['wander'] - b.rotation)
+        if abs(diff) < p['charge_cone']:
+            inputs |= INPUT_FORWARD
+        if diff > 0.12:
+            inputs |= INPUT_RIGHT
+        elif diff < -0.12:
+            inputs |= INPUT_LEFT
 
     # Strategic reverse in melee: if we're being out-shoved toward the rim, stop
     # pushing and back off to reset the angle instead of riding it to the edge.
@@ -1473,27 +1598,8 @@ def get_bot_inputs(slot):
     # horns sat still most of a fight). Near-constant activity in melee:
     # combo holds (pitch+yaw together, ~35%), rapid flick bursts (~45% of
     # picks hold only 3-8 frames), plus occasional pre-positioning inbound.
-    if st['horn_timer'] > 0:
-        st['horn_timer'] -= 1
-        inputs |= st['horn']
-    elif obs['target_d2'] < 1600:
-        if rng.random() < 0.22 * (0.5 + p['aggression']):
-            _hm = rng.choice((INPUT_HORN_UP, INPUT_HORN_DOWN,
-                              INPUT_HORN_LEFT, INPUT_HORN_RIGHT))
-            if rng.random() < 0.35:  # combo: add the other axis
-                if _hm & (INPUT_HORN_UP | INPUT_HORN_DOWN):
-                    _hm |= rng.choice((INPUT_HORN_LEFT, INPUT_HORN_RIGHT))
-                else:
-                    _hm |= rng.choice((INPUT_HORN_UP, INPUT_HORN_DOWN))
-            st['horn'] = _hm
-            if rng.random() < 0.45:
-                st['horn_timer'] = rng.randint(3, 8)    # flick
-            else:
-                st['horn_timer'] = rng.randint(8, 20)   # deliberate hold
-    elif obs['target_d2'] < 4900 and rng.random() < 0.02:
-        # Pre-position the horn while closing in (players do this)
-        st['horn'] = rng.choice((INPUT_HORN_UP, INPUT_HORN_DOWN))
-        st['horn_timer'] = rng.randint(6, 14)
+    # (Horn work handled at the TOP of this function — horns sweep in every
+    # movement state, not just here)
     return inputs
 
 
@@ -15909,6 +16015,71 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     collision_stats['body_sep_pushes'] = \
                         collision_stats.get('body_sep_pushes', 0) + 1
 
+    # LEG-CAGE CONTACT (2026-07-16, spider-legs audit option b): legs are
+    # voxel-thin and the cage is mostly air, so an opponent's horn sails
+    # through silently — worst for the spider's stilted stance, where horns
+    # reached the body core untouched (hercules->spider led the deep-clip
+    # table). Reuse the analytic leg-strut capsules (built for the ball
+    # layer; static stance pose): the deepest horn-vs-strut overlap per
+    # side gets a SOFT spring response — a nudge and a mild closing damp,
+    # scaled by LEG_CONTACT_FORCE. Deliberately NO burial feed and no big
+    # forces: legs deflect, they don't block.
+    if (not is_ball_collision and physics_frame > 30
+            and (b1.x - b2.x) ** 2 + (b1.z - b2.z) ** 2 < 2025.0):
+        _lc_push = params.get("LEG_CAGE_PUSH", 0.12)
+        if _lc_push > 0.0:
+            _lc_scale = params.get("LEG_CONTACT_FORCE", 0.6)
+            for _lv, _la in ((b1, b2), (b2, b1)):  # _lv's legs vs _la's horn
+                if _la.horn_type not in _CROSSING_TYPES:
+                    continue
+                _la_segs = horn_collision_segments(_la)  # memoized
+                # Cheap reject: is this horn segment anywhere near the leg
+                # owner's stance circle? (1 closest-point test skips up to
+                # 8 strut tests)
+                _lv_reach = 6.0 + float(_slot_leg_length(_slot_of(_lv))) * 1.3
+                _lc_best = None
+                _lv_struts = None
+                for _hs in _la_segs:
+                    _hcx, _hcy, _hcz, _ht2, _hd2 = closest_point_on_segment(
+                        _lv.x, _lv.y, _lv.z,
+                        _hs[0], _hs[1], _hs[2], _hs[3], _hs[4], _hs[5])
+                    if _hd2 > _lv_reach:
+                        continue
+                    if _lv_struts is None:
+                        _lv_struts = _leg_strut_capsules(_lv)
+                    for _ls in _lv_struts:
+                        _lres = closest_points_between_segments(
+                            _hs[0], _hs[1], _hs[2], _hs[3], _hs[4], _hs[5],
+                            _ls[0], _ls[1], _ls[2], _ls[3], _ls[4], _ls[5])
+                        # strut radius + ~1.2 horn thickness
+                        _lpen = (_ls[6] + 1.2) - _lres[8]
+                        if _lpen > 0.0 and (_lc_best is None or _lpen > _lc_best[0]):
+                            _lc_best = (_lpen, _lres)
+                if _lc_best is not None:
+                    _lpen, _lres = _lc_best
+                    # Push the horn owner away from the strut (horizontal
+                    # only; a leg brushing a horn must never lift anyone)
+                    _ldx = _lres[0] - _lres[3]
+                    _ldz = _lres[2] - _lres[5]
+                    _lh = math.sqrt(_ldx * _ldx + _ldz * _ldz)
+                    if _lh > 0.2:
+                        _lnx = _ldx / _lh
+                        _lnz = _ldz / _lh
+                        _amt = min(_lpen * _lc_push, 0.35) * _lc_scale
+                        _la.x += _lnx * _amt
+                        _la.z += _lnz * _amt
+                        _lv.x -= _lnx * _amt * 0.5
+                        _lv.z -= _lnz * _amt * 0.5
+                        _rvn = (_la.vx - _lv.vx) * _lnx + (_la.vz - _lv.vz) * _lnz
+                        if _rvn < 0.0:  # still closing through the cage
+                            _ldv = -_rvn * 0.15 * _lc_scale
+                            _la.vx += _lnx * _ldv
+                            _la.vz += _lnz * _ldv
+                            _lv.vx -= _lnx * _ldv * 0.5
+                            _lv.vz -= _lnz * _ldv * 0.5
+                        collision_stats['leg_cage_contacts'] = \
+                            collision_stats.get('leg_cage_contacts', 0) + 1
+
     # Voxel-overlap check: normally precomputed by the batched pairs kernel
     # (one launch for all pairs in the main loop); standalone kernel otherwise.
     # NOTE (2026-07-16): batching the CLUSTER kernels across pairs was tried
@@ -18977,13 +19148,14 @@ physics_params = {
     "SEPARATION_FORCE": 0.7,  # Gradual position separation on collision
     "FORWARD_SPEED": 12.5,  # Forward top speed (base before momentum bonus)
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
+    "SPEED_RAMP_TIME": 2.0,  # Seconds of held forward/back to reach the full hold-speed bonus (was hardcoded 3.0)
 
     # Air traction (pop-up nerf): lift measured as air_gap = lowest geometry
     # point above floor surface, so thresholds are build/leg-length independent
     "AIR_CONTROL": 0.0,  # MINIMUM drive floor once past AIR_DEAD_LIFT (0 = ballistic; raise toward 1.0 to soften)
     "TILT_DRIVE_START": 0.2,  # Tilt (fraction of 90 deg) where drive starts fading — stacks with the air nerf, active grounded too
     "TILT_DRIVE_FLOOR": 0.0,  # Drive multiplier at full 90-deg tilt (0 = a sideways beetle can't push at all)
-    "NERF_SPEED_CUT": 0.10,  # Extra SPEED CAP cut at max nerf, per source (height + tilt each ramp to this; both maxed ~19%)
+    "NERF_SPEED_CUT": 0.26,  # Extra SPEED CAP cut at max nerf, per source. Height + tilt STACK multiplicatively: 0.74^2 ≈ 45% total below base when both maxed (user target 2026-07-16; and the hold speed-bonus is already gone while popped)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
     "AIR_DEAD_LIFT": 2.5,  # At/above this lift: drive at the AIR_CONTROL floor until landing
     "AIR_SLOW_LIFT": 1.5,  # Lift (daylight under leg tips) that triggers the one-shot speed cut
@@ -19030,6 +19202,7 @@ physics_params = {
     "BODY_SEP_DEADZONE": 1.0,  # Overlap depth ignored before pushing (surface contact stays impulse-owned)
     "BODY_SEP_VEL_DAMP": 0.3,  # Closing-velocity damp along the push axis while overlapped
     "LEG_CONTACT_FORCE": 0.6,  # Response scale when the contact is LEG-ONLY (impulse + body tilt). Feel history 2026-07-16: 0.35 too weak in fights, 1.0 shoved still beetles too hard — 0.6 is the live middle; TUNE IN-GAME with the slider. NOTE: does NOT touch ball physics (ball has its own impulse branch)
+    "LEG_CAGE_PUSH": 0.12,  # Analytic horn-vs-leg-strut spring (spider cage fix); push per voxel of overlap, 0 = off
     "RESTORING_STRENGTH": 35.0,  # How fast beetles level out when settled on ground
     "WEAK_RESTORING": 25.0,  # How fast beetles level out while bouncing
 
@@ -20746,7 +20919,7 @@ try:
                         normalized_bonus = beetle.forward_bonus / 1.50
                     else:
                         normalized_bonus = beetle.backward_bonus / 0.80
-                    turn_penalty = max(0.65, 1.0 - normalized_bonus * 0.35)  # Scales to 65% turn speed (35% penalty) over 3 sec
+                    turn_penalty = max(0.70, 1.0 - normalized_bonus * 0.30)  # Scales to 70% turn speed (30% penalty) at full ramp (35%→30% user tune 2026-07-17; tracks SPEED_RAMP_TIME automatically)
                     rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty * horn_lock_mult
                     # Per-type turn speed (BEETLE TUNING panel; spider ships 1.35)
                     rotation_multiplier *= BEETLE_TYPE_STATS[beetle.horn_type_id]["turn"]
@@ -20800,9 +20973,13 @@ try:
                         beetle.backward_hold_time += PHYSICS_TIMESTEP
                     else:
                         beetle.backward_hold_time = 0.0
-                # Calculate bonuses (forward: 70% over 3 sec, backward: 30% over 3 sec)
-                beetle.forward_bonus = min(1.50, beetle.forward_hold_time / 3.0 * 1.50)
-                beetle.backward_bonus = min(0.80, beetle.backward_hold_time / 3.0 * 0.80)
+                # Hold-speed ramp: linear to the cap over SPEED_RAMP_TIME
+                # seconds (3.0->2.0 user tune 2026-07-16 — the ramp resets
+                # hard on release/pop-up, so 3s was rarely reachable in a
+                # real fight). Same +150%/+80% caps, just reached sooner
+                _ramp_t = physics_params.get("SPEED_RAMP_TIME", 2.0)
+                beetle.forward_bonus = min(1.50, beetle.forward_hold_time / _ramp_t * 1.50)
+                beetle.backward_bonus = min(0.80, beetle.backward_hold_time / _ramp_t * 0.80)
 
                 # Height-graded drive: full for small hops, fading to the AIR_CONTROL
                 # floor once lifted past AIR_DEAD_LIFT voxels of daylight. Turning
@@ -23826,18 +24003,31 @@ try:
                 b.rotation_direction = -1  # Turning left
             else:
                 b.rotation_direction = 1   # Turning right
-        elif p_speed > 0.5:  # Normal forward/backward movement
+        elif p_speed > 0.5 or p_moving:  # Moving, OR TRYING to (input held)
             # Cancel animation completion if player resumes input
             b.is_completing_animation = False
             # Check if moving forward or backward using dot product with facing direction
             facing_x = math.cos(b.rotation)
             facing_z = math.sin(b.rotation)
             move_dot = b.vx * facing_x + b.vz * facing_z
+            # INPUT-DRIVEN FLOOR (2026-07-16): the cycle was velocity-driven
+            # only, so legs FROZE while pressing forward against a blocked
+            # opponent (shoving matches!) or paddling mid-air with drive
+            # nerfed. Holding a key now guarantees a scramble-rate minimum;
+            # direction comes from the KEY when velocity is too small to trust
+            # Grounded shove-scramble 3.0; AIRBORNE paddle much faster (a
+            # launched beetle pumping its legs reads frantic, not strolling)
+            _anim_floor = 9.0 if getattr(b, 'air_gap', 0.0) > 1.0 else 3.0
+            _anim_speed = p_speed
+            if p_moving and _anim_speed < _anim_floor:
+                _anim_speed = _anim_floor
+                if p_speed <= 0.5:
+                    move_dot = 1.0 if (p_inputs & INPUT_FORWARD) else -1.0
             if move_dot >= 0:  # Moving forward
-                b.walk_phase += p_speed * WALK_CYCLE_SPEED * frame_dt
+                b.walk_phase += _anim_speed * WALK_CYCLE_SPEED * frame_dt
                 b.is_moving_backward = False
             else:  # Moving backward - reverse animation
-                b.walk_phase -= p_speed * WALK_CYCLE_SPEED * frame_dt
+                b.walk_phase -= _anim_speed * WALK_CYCLE_SPEED * frame_dt
                 b.is_moving_backward = True
             b.walk_phase = b.walk_phase % TWO_PI
             b.is_moving = True
@@ -27711,8 +27901,10 @@ try:
             physics_params["BODY_SEP_RATE"] = window.GUI.slider_float("Body Sep Push", physics_params["BODY_SEP_RATE"], 0.0, 1.0)
             physics_params["BODY_SEP_DEADZONE"] = window.GUI.slider_float("Body Sep Deadzone", physics_params["BODY_SEP_DEADZONE"], 0.0, 3.0)
             physics_params["LEG_CONTACT_FORCE"] = window.GUI.slider_float("Leg Contact Force", physics_params["LEG_CONTACT_FORCE"], 0.0, 1.0)
+            physics_params["LEG_CAGE_PUSH"] = window.GUI.slider_float("Leg Cage Push", physics_params["LEG_CAGE_PUSH"], 0.0, 0.5)
             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
             physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
+            physics_params["SPEED_RAMP_TIME"] = window.GUI.slider_float("Speed Ramp Time", physics_params["SPEED_RAMP_TIME"], 0.5, 5.0)
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
 
             window.GUI.text("--- Airborne Tumbling ---")
