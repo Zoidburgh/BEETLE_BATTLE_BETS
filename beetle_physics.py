@@ -2494,7 +2494,12 @@ class Beetle:
             _kt = getattr(self, 'knockback_timer', 0.0)
             if _kt > 0.0:
                 self.knockback_timer = _kt - dt
-                _kcap = physics_params.get("KNOCKBACK_CAP", 10.0)
+                # Per-hit ceiling (set at the impulse site): tracks the
+                # actual transferred momentum so big charges carry fully;
+                # KNOCKBACK_CAP is the floor, not the limit
+                _kcap = getattr(self, 'knockback_cap_hit', 0.0)
+                if _kcap <= 0.0:
+                    _kcap = physics_params.get("KNOCKBACK_CAP", 12.0)
                 forward_max = max(forward_max, _kcap)
                 backward_max = max(backward_max, _kcap)
             if dot_product >= 0:  # Moving forward
@@ -17899,12 +17904,42 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # executed a toss's backward velocity within ~2 steps and
                 # launches popped up but never carried. Walking bumps
                 # (impulse < 6 u/s) don't qualify; ball has its own caps
+                # PER-HIT CEILING (2026-07-17 "speed should feel powerful"):
+                # the carry ceiling TRACKS the hit — max(KNOCKBACK_CAP, 95%
+                # of the transferred horizontal) — so a full-ramp charge
+                # carries its whole momentum instead of being clipped to the
+                # same 12 as a moderate hit. The cap's only remaining job is
+                # its legitimate one: chained hits take the MAX ceiling of
+                # the chain, never a sum — no accumulation
                 if not is_ball_collision:
                     _imp_h = math.sqrt(impulse_x * impulse_x + impulse_z * impulse_z)
                     _kb_grace = params.get("KNOCKBACK_GRACE", 0.5)
+                    _kb_floor = params.get("KNOCKBACK_CAP", 12.0)
+                    # RAM POP (2026-07-17): the duration-based lift system is
+                    # cap-saturated per step, so launch size = contact TIME —
+                    # a charge that blasts the victim away in 3 steps lifted
+                    # LESS than a patient grind. This one-shot quantum makes
+                    # kinetic energy count: a qualifying hit queues lift
+                    # proportional to the transferred momentum (through the
+                    # pending drain — a heave, not a teleport). Grind lifts
+                    # unchanged; 0 = off
+                    _ram_pop = params.get("RAM_POP", 0.2)
+                    _ram_cap = params.get("RAM_POP_CAP", 3.5)
                     if _imp_h * _b1_scale > 6.0:
+                        _prev1 = getattr(b1, 'knockback_cap_hit', 0.0) \
+                            if getattr(b1, 'knockback_timer', 0.0) > 0.0 else 0.0
+                        b1.knockback_cap_hit = max(_kb_floor, _imp_h * _b1_scale * 0.95, _prev1)
+                        # One pop per grace window: only a FRESH hit (no
+                        # active window) pops, so shove-trains can't pump
+                        if getattr(b1, 'knockback_timer', 0.0) <= 0.0 and _ram_pop > 0.0:
+                            b1.pending_lift += min(_imp_h * _b1_scale * _ram_pop, _ram_cap)
                         b1.knockback_timer = _kb_grace
                     if _imp_h * _b2_scale > 6.0:
+                        _prev2 = getattr(b2, 'knockback_cap_hit', 0.0) \
+                            if getattr(b2, 'knockback_timer', 0.0) > 0.0 else 0.0
+                        b2.knockback_cap_hit = max(_kb_floor, _imp_h * _b2_scale * 0.95, _prev2)
+                        if getattr(b2, 'knockback_timer', 0.0) <= 0.0 and _ram_pop > 0.0:
+                            b2.pending_lift += min(_imp_h * _b2_scale * _ram_pop, _ram_cap)
                         b2.knockback_timer = _kb_grace
 
                 # Calculate and apply torque (angular impulse)
@@ -19252,7 +19287,9 @@ physics_params = {
     "TILT_DRIVE_FLOOR": 0.0,  # Drive multiplier at full 90-deg tilt (0 = a sideways beetle can't push at all)
     "NERF_SPEED_CUT": 0.26,  # Extra SPEED CAP cut at max nerf, per source. Height + tilt STACK multiplicatively: 0.74^2 ≈ 45% total below base when both maxed. (Split air/tilt variant tried + REVERTED 2026-07-17 — user preferred this feel; the analysis that height-cut = anti-lethality, tilt-cut = anti-escape is in plans/air_feel_notes.md if revisited)
     "LIFT_NORMAL_BIAS": 0.9,  # Up-bias multiplier on the impulse normal (was hardcoded 2.5; 1.5→1.1→0.9 2026-07-17 "easier to knock back while lifting"). Lower = more BACKWARD push survives a high-leverage toss; toss HEIGHT unaffected (lift system owns vertical; airborne recipients get the capped AIR_NUDGE)
-    "KNOCKBACK_CAP": 12.0,  # Speed-cap FLOOR during the knockback grace window (vs base ~7 / nerfed ~4-5) — how far tosses carry (10→11→12 tracking the bias cuts so the extra shove isn't clipped)
+    "KNOCKBACK_CAP": 12.0,  # FLOOR of the knockback carry ceiling. The ceiling TRACKS each hit (95% of transferred momentum, min this) — full charges carry fully, chained hits take the chain max (never additive). 2026-07-17
+    "RAM_POP": 0.2,  # One-shot lift per unit of transferred hit momentum (fresh hits only — one pop per grace window). Makes charge speed COUNT vertically; 0 = off
+    "RAM_POP_CAP": 3.5,  # Max queued lift from a single ram pop
     "KNOCKBACK_GRACE": 0.5,  # Seconds of raised cap floor after a real hit (impulse > 6 u/s)
     "AIR_NUDGE_CAP": 5.0,  # Per-hit vertical impulse cap on AIRBORNE horn-contact recipients (natural mid-air nudges; 0 = old no-vertical behavior)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
@@ -28066,6 +28103,8 @@ try:
             physics_params["NERF_SPEED_CUT"] = window.GUI.slider_float("Nerf Speed Cut", physics_params["NERF_SPEED_CUT"], 0.0, 0.5)
             physics_params["LIFT_NORMAL_BIAS"] = window.GUI.slider_float("Lift Normal Bias", physics_params["LIFT_NORMAL_BIAS"], 0.0, 2.5)
             physics_params["KNOCKBACK_CAP"] = window.GUI.slider_float("Knockback Cap", physics_params["KNOCKBACK_CAP"], 5.0, 20.0)
+            physics_params["RAM_POP"] = window.GUI.slider_float("Ram Pop", physics_params["RAM_POP"], 0.0, 0.6)
+            physics_params["RAM_POP_CAP"] = window.GUI.slider_float("Ram Pop Cap", physics_params["RAM_POP_CAP"], 0.0, 8.0)
             physics_params["KNOCKBACK_GRACE"] = window.GUI.slider_float("Knockback Grace", physics_params["KNOCKBACK_GRACE"], 0.0, 1.5)
             physics_params["AIR_NUDGE_CAP"] = window.GUI.slider_float("Air Nudge Cap", physics_params["AIR_NUDGE_CAP"], 0.0, 12.0)
             physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
