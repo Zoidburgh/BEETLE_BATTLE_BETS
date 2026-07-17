@@ -2395,6 +2395,8 @@ class Beetle:
                 damp = ground_damp
             self.pitch_velocity *= damp
             self.roll_velocity *= damp
+            # (Speed-poise roll damping tried + REVERTED same day
+            # 2026-07-17 — "not good" in play; git history if revisited)
         else:
             # Light damping when airborne to allow dramatic tumbling (tunable via slider)
             airborne_damping = physics_params.get("AIRBORNE_DAMPING", 0.98)
@@ -2469,10 +2471,10 @@ class Beetle:
             bonus_scale = 0.0 if self.air_no_traction else 1.0
             # Max-nerf SPEED CAP cut (2026-07-16): the nerfs above zero the
             # drive force but the cap only fell to base — now each source
-            # also cuts the cap itself by up to NERF_SPEED_CUT (10%) at its
-            # max: height ramps grace->dead lift, tilt ramps from
-            # TILT_DRIVE_START to 90 deg. Both maxed stack to ~19%.
-            _cut = physics_params.get("NERF_SPEED_CUT", 0.10)
+            # also cuts the cap itself by up to NERF_SPEED_CUT at its max:
+            # height ramps grace->dead lift, tilt ramps from
+            # TILT_DRIVE_START to 90 deg. Both maxed stack multiplicatively.
+            _cut = physics_params.get("NERF_SPEED_CUT", 0.26)
             _cap_mult = 1.0
             _ag = physics_params.get("AIR_GRACE_LIFT", 1.0)
             _ad = physics_params.get("AIR_DEAD_LIFT", 2.5)
@@ -2484,6 +2486,17 @@ class Beetle:
                 _cap_mult *= 1.0 - _cut * min((_tfrac - _tstart) / max(1e-6, 1.0 - _tstart), 1.0)
             forward_max = base_forward * self.silk_speed_mult * (1.0 + self.forward_bonus * bonus_scale) * ice_speed_mult * _cap_mult
             backward_max = base_backward * self.silk_speed_mult * (1.0 + self.backward_bonus * bonus_scale) * ice_speed_mult * _cap_mult
+            # KNOCKBACK CARRY (air_feel_notes step B): for a short window
+            # after a real hit the cap FLOOR rises, so the toss arcs
+            # backward instead of being executed by the clamp within two
+            # steps. Timer set only by collision impulses > 6 u/s; normal
+            # rules resume on expiry (or the window just runs out mid-air)
+            _kt = getattr(self, 'knockback_timer', 0.0)
+            if _kt > 0.0:
+                self.knockback_timer = _kt - dt
+                _kcap = physics_params.get("KNOCKBACK_CAP", 10.0)
+                forward_max = max(forward_max, _kcap)
+                backward_max = max(backward_max, _kcap)
             if dot_product >= 0:  # Moving forward
                 if speed > forward_max:
                     self.vx = (self.vx / speed) * forward_max
@@ -2521,17 +2534,24 @@ class Beetle:
             self.pitch += self.pitch_velocity * dt
             self.roll += self.roll_velocity * dt
 
-        # Clamp pitch/roll only when TRULY on ground - allow full rotations
-        # when airborne. air_gap gate matters: on_ground is STICKY through
-        # launches (see floor-rest clamp), so without it the cap would
-        # visibly arrest a horn-launch flip for its first few frames.
-        # Ball is exempt: it must roll continuously past 60 deg (rolling stripe)
+        # Ground tilt limit: BLOCKS further outward rotation, never snaps
+        # (2026-07-17: the old position clamp TELEPORTED a beetle landing
+        # mid-flip to the boundary in one step — "pitch changes too fast in
+        # too few frames"; only bit once the limit dropped 300->80). Beyond
+        # the limit, outward angular velocity is zeroed and the restoring
+        # spring walks the angle back smoothly. air_gap gate: on_ground is
+        # STICKY through launches. Ball exempt (must roll continuously)
         if self.on_ground and self.air_gap <= 0.5 and self.horn_type != "ball":
-            # Tunable max tilt angle when grounded (slider controls in degrees, converted to radians)
             ground_tilt_degrees = physics_params.get("GROUND_TILT_ANGLE", 60.0)
             MAX_TILT_ANGLE = math.radians(ground_tilt_degrees)
-            self.pitch = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.pitch))
-            self.roll = max(-MAX_TILT_ANGLE, min(MAX_TILT_ANGLE, self.roll))
+            if self.pitch > MAX_TILT_ANGLE and self.pitch_velocity > 0.0:
+                self.pitch_velocity = 0.0
+            elif self.pitch < -MAX_TILT_ANGLE and self.pitch_velocity < 0.0:
+                self.pitch_velocity = 0.0
+            if self.roll > MAX_TILT_ANGLE and self.roll_velocity > 0.0:
+                self.roll_velocity = 0.0
+            elif self.roll < -MAX_TILT_ANGLE and self.roll_velocity < 0.0:
+                self.roll_velocity = 0.0
         # When airborne, allow full 360° tumbling (no clamping)
 
     # NOTE: the old arena_collision() wall-bounce method was DEAD CODE
@@ -17073,8 +17093,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     else:
                         horn_leverage *= shaft_leverage_mult + (1.0 - shaft_leverage_mult) * pair_tip_factor
 
-                    # Add MASSIVE upward bias to the collision normal
-                    normal_y += horn_leverage * 2.5  # 5x stronger than before!
+                    # Upward bias on the collision normal, leverage-scaled.
+                    # NOTE (2026-07-17): for horn contacts impulse_y is
+                    # ZEROED below (pending_lift owns vertical), so this
+                    # bias contributes NOTHING to toss height — its only
+                    # effect there is SHRINKING the horizontal push after
+                    # renormalization. 2.5 (hardcoded since the lift era)
+                    # collapsed backward shove to ~16% at max leverage;
+                    # 1.5 ≈ 26% — "thrown up AND a tad back". Slider.
+                    normal_y += horn_leverage * params.get("LIFT_NORMAL_BIAS", 1.5)
 
                     # Re-normalize
                     norm_len = math.sqrt(normal_x**2 + normal_y**2 + normal_z**2)
@@ -17151,6 +17178,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     LIFT_COOLDOWN_DURATION = 0.1  # Seconds between lift applications
 
                     # Calculate height penalty (reduces lift when beetles are already airborne)
+                    # (Juggle-bracing variant tried + REVERTED 2026-07-17 —
+                    # user preferred the original feel; see git history at
+                    # c6d2c48..revert for the directional-bracing version)
                     NORMAL_HEIGHT = 2.0  # Height where lifts start weakening (lower = earlier penalty)
                     HEIGHT_PENALTY_FACTOR = 0.35  # How quickly lift weakens with height (higher = steeper)
                     avg_height = (b1.y + b2.y) / 2.0
@@ -17813,7 +17843,19 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # the ball either — it flattened body hits to 3 u/s.)
                     impulse_y = impulse * normal_y
                 elif is_horn_contact:
-                    impulse_y = 0.0  # Disable vertical impulse - lifting logic handles it
+                    # AIR NUDGE (2026-07-17, natural juggling — NO dedicated
+                    # mechanic): zero vertical is correct for GROUNDED
+                    # recipients (pending_lift owns grounded vertical), but
+                    # the lift system fades with height, so airborne victims
+                    # had NO vertical owner — mid-air hits transferred zero
+                    # up/down momentum and beetles were un-nudgeable in
+                    # flight. Same rule as the ball loft fix, capped small:
+                    # a nudge, not a launch. Applied PER SIDE at the impulse
+                    # application (grounded side still gets zero). Beetle
+                    # mass does the rest — restitution 0.025, gravity, no
+                    # trampoline — so chains die naturally
+                    _nudge_cap = params.get("AIR_NUDGE_CAP", 5.0)
+                    impulse_y = max(-_nudge_cap, min(_nudge_cap, impulse * normal_y))
                 else:
                     # Capped: the smoothed normal carries the horn_leverage*2.5
                     # up-bias, so a hard body ram could dump a large one-step
@@ -17834,12 +17876,36 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _b2_scale = _recoil
                     else:
                         _b1_scale = _recoil
+                # Horn-contact vertical is PER SIDE: only airborne recipients
+                # take it (see AIR NUDGE above); grounded stays lift-owned
+                _iy1 = impulse_y
+                _iy2 = impulse_y
+                if is_horn_contact and not is_ball_collision:
+                    if b1.air_gap <= 1.0:
+                        _iy1 = 0.0
+                    if b2.air_gap <= 1.0:
+                        _iy2 = 0.0
+                # (Breakaway grip tried + REVERTED same day 2026-07-17 —
+                # "not good" in play; see git history if revisited)
                 b1.vx += impulse_x * _b1_scale
-                b1.vy += impulse_y * _b1_scale
+                b1.vy += _iy1 * _b1_scale
                 b1.vz += impulse_z * _b1_scale
                 b2.vx -= impulse_x * _b2_scale
-                b2.vy -= impulse_y * _b2_scale
+                b2.vy -= _iy2 * _b2_scale
                 b2.vz -= impulse_z * _b2_scale
+                # KNOCKBACK CARRY GRACE (air_feel_notes step B, 2026-07-17):
+                # a real hit opens a short window where the directional speed
+                # cap's floor rises (update_physics) — without it the clamp
+                # executed a toss's backward velocity within ~2 steps and
+                # launches popped up but never carried. Walking bumps
+                # (impulse < 6 u/s) don't qualify; ball has its own caps
+                if not is_ball_collision:
+                    _imp_h = math.sqrt(impulse_x * impulse_x + impulse_z * impulse_z)
+                    _kb_grace = params.get("KNOCKBACK_GRACE", 0.5)
+                    if _imp_h * _b1_scale > 6.0:
+                        b1.knockback_timer = _kb_grace
+                    if _imp_h * _b2_scale > 6.0:
+                        b2.knockback_timer = _kb_grace
 
                 # Calculate and apply torque (angular impulse)
                 # Torque = r × F (cross product in 2D: rx*Fz - rz*Fx)
@@ -19184,7 +19250,11 @@ physics_params = {
     "AIR_CONTROL": 0.0,  # MINIMUM drive floor once past AIR_DEAD_LIFT (0 = ballistic; raise toward 1.0 to soften)
     "TILT_DRIVE_START": 0.2,  # Tilt (fraction of 90 deg) where drive starts fading — stacks with the air nerf, active grounded too
     "TILT_DRIVE_FLOOR": 0.0,  # Drive multiplier at full 90-deg tilt (0 = a sideways beetle can't push at all)
-    "NERF_SPEED_CUT": 0.26,  # Extra SPEED CAP cut at max nerf, per source. Height + tilt STACK multiplicatively: 0.74^2 ≈ 45% total below base when both maxed (user target 2026-07-16; and the hold speed-bonus is already gone while popped)
+    "NERF_SPEED_CUT": 0.26,  # Extra SPEED CAP cut at max nerf, per source. Height + tilt STACK multiplicatively: 0.74^2 ≈ 45% total below base when both maxed. (Split air/tilt variant tried + REVERTED 2026-07-17 — user preferred this feel; the analysis that height-cut = anti-lethality, tilt-cut = anti-escape is in plans/air_feel_notes.md if revisited)
+    "LIFT_NORMAL_BIAS": 0.9,  # Up-bias multiplier on the impulse normal (was hardcoded 2.5; 1.5→1.1→0.9 2026-07-17 "easier to knock back while lifting"). Lower = more BACKWARD push survives a high-leverage toss; toss HEIGHT unaffected (lift system owns vertical; airborne recipients get the capped AIR_NUDGE)
+    "KNOCKBACK_CAP": 12.0,  # Speed-cap FLOOR during the knockback grace window (vs base ~7 / nerfed ~4-5) — how far tosses carry (10→11→12 tracking the bias cuts so the extra shove isn't clipped)
+    "KNOCKBACK_GRACE": 0.5,  # Seconds of raised cap floor after a real hit (impulse > 6 u/s)
+    "AIR_NUDGE_CAP": 5.0,  # Per-hit vertical impulse cap on AIRBORNE horn-contact recipients (natural mid-air nudges; 0 = old no-vertical behavior)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
     "AIR_DEAD_LIFT": 2.5,  # At/above this lift: drive at the AIR_CONTROL floor until landing
     "AIR_SLOW_LIFT": 1.5,  # Lift (daylight under leg tips) that triggers the one-shot speed cut
@@ -19192,8 +19262,9 @@ physics_params = {
     "AIR_FRICTION": 0.985,  # Horizontal friction while popped up (vs ground 0.88 — launches keep their momentum)
     # Airborne tumbling physics parameters
     "AIRBORNE_DAMPING": 0.95,  # Angular damping when airborne (0.95 = 5% loss per frame, more tumbling)
-    "AIRBORNE_TILT_SPEED": 14.0,  # Max pitch/roll speed when airborne (was 900 since Nov 2025 = no cap at all; the "tilts super fast" complaint — 14 still flips in ~13 frames)
+    "AIRBORNE_TILT_SPEED": 10.0,  # Max pitch/roll speed when airborne (900=uncapped Nov 2025 → 14 → 10 2026-07-17: at 14 a horn lift pitched the victim 13 deg/frame, 90 deg in ~7 frames — still read as a snap. 10 ≈ 9.5 deg/frame, 90 deg in ~0.16s)
     "GROUND_TILT_SPEED": 8.0,  # Max pitch/roll speed when grounded (was hardcoded 8.0)
+    "VISUAL_TILT_STEP": 10.0,  # Max DISPLAYED tilt change per RENDER frame (degrees) — render slew limiter, no-op at 60 FPS, halves the 30-FPS snap; 0 = off
     "GROUND_TILT_ANGLE": 80.0,  # Max tilt angle in degrees when TRULY grounded (air_gap-gated; was 300 = no clamp since Nov 2025 — grounded beetles could roll fully over. Slider to 300 restores)
     "TUMBLE_MULTIPLIER": 6.2,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
     "HORN_LIFT_STRENGTH": 1.36,  # Multiplier for horn combat lift force (higher = more intense lifts) — 2026-07-12 tune
@@ -19339,6 +19410,13 @@ def _bank_vis_delta(slot_idx, dx, dy, dz, dyaw=0.0, dpitch=0.0, droll=0.0):
     _ro[0] = max(-math.pi, min(math.pi, _ro[0] + dyaw))
     _ro[1] = max(-math.pi, min(math.pi, _ro[1] + dpitch))
     _ro[2] = max(-math.pi, min(math.pi, _ro[2] + droll))
+
+# Render slew limiter state (air_feel_notes.md, 2026-07-17): last DISPLAYED
+# pitch/roll per slot. Physics tilt caps are per PHYSICS step, so at 30 FPS
+# two steps land between displayed frames = double the visual jump with
+# identical physics. The limiter caps displayed rotation per RENDER frame.
+vis_tilt_last = [[0.0, 0.0] for _ in range(4)]
+vis_tilt_init = [False, False, False, False]
 
 def _reset_vis_offsets():
     for _v in net_vis_offset:
@@ -24016,6 +24094,33 @@ try:
                     _nvo[_k] = 0.0
                 if abs(_nro[_k]) < 0.0005:
                     _nro[_k] = 0.0
+        # RENDER SLEW LIMITER on displayed tilt (air_feel_notes.md): cap
+        # pitch/roll change per RENDER frame so low-FPS frames don't show
+        # multiple physics steps of rotation as one visual snap (at 30 FPS
+        # two 9.5-deg steps displayed as one 19-deg jump). At 60 FPS the
+        # default (10 deg/frame) is a no-op — physics can't exceed it.
+        # Display lag is bounded (0.5 rad) so sustained max-rate tumbles
+        # can't drift toward the pi ambiguity. Purely visual; 0 = off
+        _vt_step = math.radians(physics_params.get("VISUAL_TILT_STEP", 10.0))
+        if _vt_step > 0.0001:
+            _vt = vis_tilt_last[slot]
+            if not vis_tilt_init[slot]:
+                _vt[0] = render_pitch[slot]
+                _vt[1] = render_roll[slot]
+                vis_tilt_init[slot] = True
+            for _vi, _vtgt in ((0, render_pitch[slot]), (1, render_roll[slot])):
+                _vd = (_vtgt - _vt[_vi] + math.pi) % TWO_PI - math.pi
+                _vnew = _vt[_vi] + max(-_vt_step, min(_vt_step, _vd))
+                _vlag = (_vtgt - _vnew + math.pi) % TWO_PI - math.pi
+                if _vlag > 0.5:
+                    _vnew = _vtgt - 0.5
+                elif _vlag < -0.5:
+                    _vnew = _vtgt + 0.5
+                _vt[_vi] = _vnew
+            render_pitch[slot] = _vt[0]
+            render_roll[slot] = _vt[1]
+        else:
+            vis_tilt_init[slot] = False
 
     # === ANIMATION TIMING ===
     perf_monitor.start('animation')
@@ -27959,6 +28064,10 @@ try:
             physics_params["TILT_DRIVE_START"] = window.GUI.slider_float("Tilt Drive Start", physics_params["TILT_DRIVE_START"], 0.0, 1.0)
             physics_params["TILT_DRIVE_FLOOR"] = window.GUI.slider_float("Tilt Drive Floor", physics_params["TILT_DRIVE_FLOOR"], 0.0, 1.0)
             physics_params["NERF_SPEED_CUT"] = window.GUI.slider_float("Nerf Speed Cut", physics_params["NERF_SPEED_CUT"], 0.0, 0.5)
+            physics_params["LIFT_NORMAL_BIAS"] = window.GUI.slider_float("Lift Normal Bias", physics_params["LIFT_NORMAL_BIAS"], 0.0, 2.5)
+            physics_params["KNOCKBACK_CAP"] = window.GUI.slider_float("Knockback Cap", physics_params["KNOCKBACK_CAP"], 5.0, 20.0)
+            physics_params["KNOCKBACK_GRACE"] = window.GUI.slider_float("Knockback Grace", physics_params["KNOCKBACK_GRACE"], 0.0, 1.5)
+            physics_params["AIR_NUDGE_CAP"] = window.GUI.slider_float("Air Nudge Cap", physics_params["AIR_NUDGE_CAP"], 0.0, 12.0)
             physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
             physics_params["AIR_DEAD_LIFT"] = window.GUI.slider_float("Air Dead Lift", physics_params["AIR_DEAD_LIFT"], 1.5, 7.0)
             physics_params["AIR_SLOW_LIFT"] = window.GUI.slider_float("Air Slow Lift", physics_params["AIR_SLOW_LIFT"], 1.1, 5.0)
@@ -27967,6 +28076,7 @@ try:
             physics_params["AIRBORNE_DAMPING"] = window.GUI.slider_float("Air Damping", physics_params["AIRBORNE_DAMPING"], 0.2, 0.99)
             physics_params["AIRBORNE_TILT_SPEED"] = window.GUI.slider_float("Air Tilt Speed", physics_params["AIRBORNE_TILT_SPEED"], 4.0, 200.0)
             physics_params["GROUND_TILT_SPEED"] = window.GUI.slider_float("Ground Tilt Speed", physics_params["GROUND_TILT_SPEED"], 2.0, 20.0)
+            physics_params["VISUAL_TILT_STEP"] = window.GUI.slider_float("Tilt Vis Step", physics_params["VISUAL_TILT_STEP"], 0.0, 30.0)
             physics_params["GROUND_TILT_ANGLE"] = window.GUI.slider_float("Ground Tilt Max", physics_params["GROUND_TILT_ANGLE"], 30.0, 300.0)
             physics_params["TUMBLE_MULTIPLIER"] = window.GUI.slider_float("Tumble Multiplier", physics_params["TUMBLE_MULTIPLIER"], 1.0, 8.0)
             physics_params["RESTORING_STRENGTH"] = window.GUI.slider_float("Restoring (Settled)", physics_params["RESTORING_STRENGTH"], 5.0, 50.0)
