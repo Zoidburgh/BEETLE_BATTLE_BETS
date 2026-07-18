@@ -12196,26 +12196,27 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
 def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
                           dir_x: ti.f32, dir_z: ti.f32,
                           color_r: ti.f32, color_g: ti.f32, color_b: ti.f32,
-                          scale: ti.f32, num_particles: ti.i32):
+                          scale: ti.f32, num_particles: ti.i32,
+                          height_mult: ti.f32, speed_mult: ti.f32):
     """Spawn 2 dust particles in narrow cone spread - for spinning"""
-    for i in range(2):  # Always spawn 2 particles per call
+    for i in range(num_particles):  # was hardcoded 2 — ramp scales count now
         idx = ti.atomic_add(simulation.num_debris[None], 1)
         if idx < simulation.MAX_DEBRIS:
             simulation.debris_active[idx] = 1  # Mark slot as active (free list pattern)
             ti.atomic_add(simulation.debris_active_count[None], 1)  # Track live count
             # Cluster spawn around leg tip with random spread
-            spread = 1.5 * scale
+            spread = 0.9 * scale  # tightened 2026-07-18: a narrow STREAK off the leg tip, not a splash
             spawn_x = pos_x + (ti.random() - 0.5) * spread
             spawn_z = pos_z + (ti.random() - 0.5) * spread
 
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, pos_y, spawn_z)
 
             # Outward kick - very slow so they fall very close
-            outward_speed = 1.5 + ti.random() * 0.8  # Very slow, fall in very soon
-            upward_speed = outward_speed * 0.466  # ~25° angle like walking dust
+            outward_speed = (1.5 + ti.random() * 0.8) * speed_mult  # ramp-scaled kick
+            upward_speed = outward_speed * 0.466 * height_mult  # ~25° base angle, rises with the turn ramp
             # Narrow cone spread: particle 0 goes slightly left, particle 1 slightly right
-            cone_angle = 0.15  # ~8.5° half-angle cone
-            side = ti.cast(i, ti.f32) * 2.0 - 1.0  # -1 for i=0, +1 for i=1
+            cone_angle = 0.08  # ~4.5° half-angle — narrow streak (was 0.15)
+            side = ti.cast(i % 2, ti.f32) * 2.0 - 1.0  # alternate sides at any count
             drift_angle = side * cone_angle + (ti.random() - 0.5) * 0.1  # Narrow cone with tiny random
             vx = dir_x * outward_speed + drift_angle * dir_z * outward_speed
             vz = dir_z * outward_speed - drift_angle * dir_x * outward_speed
@@ -12230,7 +12231,11 @@ def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             blended_g = color_g * color_var * (1.0 - blend_to_light) + 0.68 * blend_to_light
             blended_b = color_b * color_var * (1.0 - blend_to_light) + 0.65 * blend_to_light
             simulation.debris_material[idx] = ti.math.vec3(blended_r, blended_g, blended_b)
-            simulation.debris_lifetime[idx] = 1.0 + ti.random() * 0.1  # 1.0-1.1s consistent trail
+            # Fast-spin particles die a touch sooner (2026-07-18: at 2.2x
+            # kick speed the same 1s lifetime carried them too far — trail
+            # length should come from speed, lingering shouldn't)
+            _life_trim = 1.0 - (speed_mult - 1.0) * 0.25
+            simulation.debris_lifetime[idx] = (1.0 + ti.random() * 0.1) * _life_trim
 
 @ti.kernel
 def spawn_downwash_dust(pos_x: ti.f32, pos_z: ti.f32, strength: ti.f32):
@@ -18024,7 +18029,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # push stays byte-identical; hits that earn upward
                     # geometry get amplified height (an inflated ball is
                     # genuinely bouncier vertically). 1.0 = pure momentum
-                    impulse_y = impulse * normal_y * params.get("BALL_LOFT", 1.2)
+                    impulse_y = impulse * normal_y * params.get("BALL_LOFT", 1.35)
                 elif is_horn_contact:
                     # AIR NUDGE (2026-07-17, natural juggling — NO dedicated
                     # mechanic): zero vertical is correct for GROUNDED
@@ -18124,6 +18129,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         if getattr(b1, 'knockback_timer', 0.0) <= 0.0 and _ram_pop > 0.0:
                             b1.pending_lift += min(_imp_h * _b1_scale * _ram_pop, _ram_cap)
                         b1.knockback_timer = _kb_grace
+                        b1.turn_hold_time = 0.0  # a real knock wipes the turn ramp
                     if _imp_h * _b2_scale > 6.0:
                         _prev2 = getattr(b2, 'knockback_cap_hit', 0.0) \
                             if getattr(b2, 'knockback_timer', 0.0) > 0.0 else 0.0
@@ -18131,6 +18137,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         if getattr(b2, 'knockback_timer', 0.0) <= 0.0 and _ram_pop > 0.0:
                             b2.pending_lift += min(_imp_h * _b2_scale * _ram_pop, _ram_cap)
                         b2.knockback_timer = _kb_grace
+                        b2.turn_hold_time = 0.0  # a real knock wipes the turn ramp
 
                 # HORIZONTAL SQUISH (2026-07-18): a push compresses the ball
                 # along the impact axis (extract rotates the squash frame by
@@ -19503,6 +19510,8 @@ physics_params = {
     "FORWARD_SPEED": 12.5,  # Forward top speed (base before momentum bonus)
     "BACKWARD_SPEED": 7.0,  # Backward top speed (slower)
     "SPEED_RAMP_TIME": 2.0,  # Seconds of held forward/back to reach the full hold-speed bonus (was hardcoded 3.0)
+    "TURN_RAMP_BONUS": 0.4,  # Extra turn speed at full pivot ramp (pure pivots only — turn_ramp_plan.md). 0.3→0.4 user tune 2026-07-18
+    "TURN_RAMP_TIME": 2.0,  # Seconds of pure pivoting to reach the full turn bonus
 
     # Air traction (pop-up nerf): lift measured as air_gap = lowest geometry
     # point above floor surface, so thresholds are build/leg-length independent
@@ -19590,7 +19599,7 @@ physics_params = {
     # or horn, an asymmetry the floor never had (floor reflects everything
     # down to 2 u/s). The max(3.0, ...) floor still kills micro-chatter.
     "BALL_BEETLE_BOUNCE": 0.7,  # 0.65->0.7 2026-07-18 "bounce slightly more"
-    "BALL_LOFT": 1.2,  # Vertical-only gain on ball hit impulses (1.0 = pure momentum; horizontal untouched)
+    "BALL_LOFT": 1.35,  # Vertical-only gain on ball hit impulses (1.0 = pure momentum; horizontal untouched). 1.2->1.35 user tune 2026-07-18
     "BALL_BOUNCE_MIN_DROP": 0.5,  # 0.75->0.5 2026-07-18: softer aerial touches count as volleys
     "SHAFT_PENETRATION_LIFT": 0.32,  # Shaft-under-body/ball scoop strength (was .get-fallback 0.25; 2026-07-17 raised for ball scoops — beetle side stays bounded by SHAFT_PEN_LIFT_CAP)
     "BALL_PUSH_MULTIPLIER": BALL_PUSH_MULTIPLIER,  # How easily beetles can push the ball
@@ -19949,7 +19958,7 @@ spawn_tornado_dust(0.0, -100.0, 0.0)
 spawn_tornado_ground_dust(0.0, -100.0, 0.0, -1.0)
 spawn_sandstorm_dust(1.0, 0.0, 1.0, 0.0, 1)
 spawn_leg_dust_staggered(0.0, -100.0, 0.0, 1.0, 0.0, 10.0, 0.45, 0.40, 0.35, 0.0, 0.0, 1.0, 1, 1.0)
-spawn_spin_dust_puff(0.0, -100.0, 0.0, 1.0, 0.0, 0.45, 0.40, 0.35, 1.0, 1)
+spawn_spin_dust_puff(0.0, -100.0, 0.0, 1.0, 0.0, 0.45, 0.40, 0.35, 1.0, 1, 1.0, 1.0)
 check_floor_collision(0.0, 0.0)
 calculate_beetle_lowest_point(0.0, 0.0, 0.0, 0.0, 0.0)
 clear_ufo_bounded(0.0, -100.0, 0.0)
@@ -21296,7 +21305,13 @@ try:
                     else:
                         normalized_bonus = beetle.backward_bonus / 0.80
                     turn_penalty = max(0.70, 1.0 - normalized_bonus * 0.30)  # Scales to 70% turn speed (30% penalty) at full ramp (35%→30% user tune 2026-07-17; tracks SPEED_RAMP_TIME automatically)
-                    rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty * horn_lock_mult
+                    # TURN RAMP: pure grounded pivots build +TURN_RAMP_BONUS
+                    # over TURN_RAMP_TIME (reads last substep's hold — 1-frame
+                    # lag, same as every other input-derived state here)
+                    _tramp = 1.0 + physics_params.get("TURN_RAMP_BONUS", 0.3) * min(
+                        getattr(beetle, 'turn_hold_time', 0.0)
+                        / max(0.1, physics_params.get("TURN_RAMP_TIME", 2.0)), 1.0)
+                    rotation_multiplier = (1.0 if is_moving else 1.3) * turn_penalty * horn_lock_mult * _tramp
                     # Per-type turn speed (BEETLE TUNING panel; spider ships 1.35)
                     rotation_multiplier *= BEETLE_TYPE_STATS[beetle.horn_type_id]["turn"]
 
@@ -21337,6 +21352,23 @@ try:
                 # Getting popped up WIPES the built-up boost — you land at base
                 # speed and only start rebuilding once actually on the ground
                 # (holding through the flight doesn't preserve or rebuild it)
+                # TURN RAMP (turn_ramp_plan.md): PURE PIVOTS ONLY — exactly
+                # one turn key, NO drive input, grounded. Direction flips,
+                # any forward/backward press, release, pop-up, or a knock
+                # (knockback-grace site) all hard-wipe it (feel compass)
+                _tr_l = bool(p_inputs & INPUT_LEFT)
+                _tr_r = bool(p_inputs & INPUT_RIGHT)
+                _tr_drive = bool(p_inputs & (INPUT_FORWARD | INPUT_BACKWARD))
+                if not on_board or _tr_drive or (_tr_l == _tr_r):
+                    beetle.turn_hold_time = 0.0
+                    beetle.turn_dir_held = 0
+                else:
+                    _tr_dir = -1 if _tr_l else 1
+                    if getattr(beetle, 'turn_dir_held', 0) != _tr_dir:
+                        beetle.turn_hold_time = 0.0
+                        beetle.turn_dir_held = _tr_dir
+                    beetle.turn_hold_time = getattr(beetle, 'turn_hold_time', 0.0) + PHYSICS_TIMESTEP
+
                 if not on_board:
                     beetle.forward_hold_time = 0.0
                     beetle.backward_hold_time = 0.0
@@ -24744,7 +24776,7 @@ try:
                             # ramp (dust RACES backward instead of climbing;
                             # slope 1.9→2.4→3.0 2026-07-18 — trail length
                             # comes from SPEED, not lifetime)
-                            _dust_spd = DUST_SPEED_WALK * (0.65 + _spd_frac * 3.2)
+                            _dust_spd = DUST_SPEED_WALK * (0.65 + _spd_frac * 4.4)  # top slope 3.2→4.4 2026-07-18: full-charge particles ~26 u/s, speed reads in the trail
                             # Spawn height sinks toward the floor at low speed
                             _dust_y = RENDER_Y_OFFSET + 0.15 + _spd_frac * 0.62
                             spawn_leg_dust_staggered(tip_x, _dust_y, tip_z, dir_x, dir_z, _dust_spd,
@@ -24755,7 +24787,10 @@ try:
             # Right turn (side=1): back LEFT leg (leg 4, and 6 for scorpion)
             elif b.is_rotating_only:
                 b.spin_dust_timer += frame_dt
-                if b.spin_dust_timer >= 0.04:  # Every 0.04 seconds
+                # TURN RAMP dust: puffs quicken + grow as the pivot powers up
+                _tr_frac = min(getattr(b, 'turn_hold_time', 0.0)
+                               / max(0.1, physics_params.get("TURN_RAMP_TIME", 2.0)), 1.0)
+                if b.spin_dust_timer >= 0.055 - _tr_frac * 0.035:
                     b.spin_dust_timer = 0.0
                     side = b.rotation_direction  # -1 = left turn, 1 = right turn
                     if side != 0:
@@ -24775,7 +24810,10 @@ try:
                                     dir_x /= dir_len
                                     dir_z /= dir_len
                                 spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
-                                                    DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], stagger_scale, 1)
+                                                    DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2],
+                                                    stagger_scale, 2 + int(_tr_frac * 2.0),
+                                                    0.4 + _tr_frac * 1.0 + _tr_frac * _tr_frac * 4.6,
+                                                    1.0 + _tr_frac * 1.2)  # low scuffs -> fast tall streaks; contrast IS the ramp language
 
                         # FRONT leg on SAME side of turn
                         # Left turn -> leg 0 (front_left)
@@ -24790,7 +24828,10 @@ try:
                                 dir_x /= dir_len
                                 dir_z /= dir_len
                             spawn_spin_dust_puff(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z,
-                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], stagger_scale, 1)
+                                                DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2],
+                                                stagger_scale, 2 + int(_tr_frac * 2.0),
+                                                0.4 + _tr_frac * 1.0 + _tr_frac * _tr_frac * 4.6,
+                                                1.0 + _tr_frac * 1.2)  # low scuffs -> fast tall streaks
             else:
                 b.spin_dust_timer = 0.0  # Reset timer when not spinning
 
@@ -28592,6 +28633,8 @@ try:
             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
             physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
             physics_params["SPEED_RAMP_TIME"] = window.GUI.slider_float("Speed Ramp Time", physics_params["SPEED_RAMP_TIME"], 0.5, 5.0)
+            physics_params["TURN_RAMP_BONUS"] = window.GUI.slider_float("Turn Ramp Bonus", physics_params["TURN_RAMP_BONUS"], 0.0, 0.8)
+            physics_params["TURN_RAMP_TIME"] = window.GUI.slider_float("Turn Ramp Time", physics_params["TURN_RAMP_TIME"], 0.5, 5.0)
             new_inertia_factor = window.GUI.slider_float("Inertia", physics_params["MOMENT_OF_INERTIA_FACTOR"], 0.1, 5.0)
 
             window.GUI.text("--- Airborne Tumbling ---")
