@@ -15,12 +15,21 @@ identical, THEN new capability.
   in `for _mb_ball in balls:` via the ZERO-REINDENT transform: replace
   `if beetle_ball.active:` header with for + `if not active: continue` guard at
   the same depth — body indentation untouched, rename inside. USE THIS PATTERN.
-- REMAINING (MB1c — these are ENTANGLED sibling blocks, read before wrapping):
-  ball ice/goal/scoring region (~21564-21712), per-frame render+collision call
-  cluster incl. anti-teleport governor (~21734-21770), explosion trigger
-  (~22578) + assembly lifecycle (~22668), render stamp/squash section (~25085+),
-  silk/spray/hazard ball checks (small), BALL_TRACE row (debug, low priority).
-  Then GATE: canary + full play regression before MB2.
+- DONE (MB1c): the per-substep physics/goal/beetle-collision SUPER-BLOCK
+  (update_physics, friction/rolling/rest-latch, bowl, goal detection, collision
+  cluster + anti-teleport governor), explosion trigger + explosion particles,
+  and the render block (interp/net-offset/squash/stamp/shadow) — all wrapped
+  with the zero-reindent transform. beetle_ball refs 376 → 317; the rest are
+  DELIBERATE singletons for count=1:
+  * celebration/respawn machinery (match-level; MB4's center-stack replaces it)
+  * network send/guest-apply + guest explode (protocol v6 single-ball; MB5)
+  * ice detection (`ball_on_ice` is a shared global → make per-ball attr in
+    MB3 — friction/roll-blend read it inside the loop already)
+  * render identity: ball_last_grid_*/ball_last_rendered Taichi singletons +
+    owner slot 4 + shared voxel ids (MB2's whole job)
+  * silk/spray/UFO/comet/hazard ball checks, arena-mode setup UI, BALL_TRACE
+- GATE NOW: full play regression (score cycle, explosion, respawn, squash,
+  bounce feel) + one canary. Then MB2.
 
 ## Scope of the problem (surveyed 2026-07-18)
 
