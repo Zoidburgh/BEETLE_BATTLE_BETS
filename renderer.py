@@ -1490,16 +1490,32 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                             p = ti.math.vec3(p[0], p[1] * cr - p[2] * sr,
                                              p[1] * sr + p[2] * cr)
                             pos = p + pv
-                        # Squash & stretch: gravity-aligned scale around the
-                        # contact point (x/z about the center, y about the
-                        # owner's bottom so the top compresses down)
+                        # Squash & stretch: scale around the contact point in
+                        # a YAW-ROTATED frame (2026-07-18): sq[0] compresses
+                        # along the impact axis given by owner_squash_yaw
+                        # (0 = world-aligned, identical to the old vertical
+                        # bounce math), sq[1] vertical about squash_pivot_y,
+                        # sq[2] tangential. Deformation stays impact-aligned
+                        # while the ball's spin rotates through it — which is
+                        # what a real compressed ball does
                         sq = owner_squash[frac_owner]
-                        if sq[1] != 1.0:
+                        if sq[0] != 1.0 or sq[1] != 1.0 or sq[2] != 1.0:
                             pv2 = owner_rot_pivot[frac_owner]
                             spy = owner_squash_pivot_y[frac_owner]
-                            pos = ti.math.vec3(pv2[0] + (pos[0] - pv2[0]) * sq[0],
-                                               spy + (pos[1] - spy) * sq[1],
-                                               pv2[2] + (pos[2] - pv2[2]) * sq[2])
+                            syaw = owner_squash_yaw[frac_owner]
+                            cqy = ti.cos(syaw)
+                            sqy = ti.sin(syaw)
+                            qx = pos[0] - pv2[0]
+                            qy = pos[1] - spy
+                            qz = pos[2] - pv2[2]
+                            rqx = qx * cqy + qz * sqy
+                            rqz = -qx * sqy + qz * cqy
+                            rqx *= sq[0]
+                            qy *= sq[1]
+                            rqz *= sq[2]
+                            pos = ti.math.vec3(pv2[0] + rqx * cqy - rqz * sqy,
+                                               spy + qy,
+                                               pv2[2] + rqx * sqy + rqz * cqy)
                     voxel_positions[idx] = pos + off
                     voxel_colors[idx] = color
                     if vtype == 23 or vtype == 24:  # SCORE_DIGIT_BLUE or SCORE_DIGIT_RED
@@ -1521,6 +1537,8 @@ owner_rot_pivot = ti.Vector.field(3, dtype=ti.f32, shape=6)
 # stamped grid stays a perfect sphere. [sx, sy, sz] scale, 1 = none
 owner_squash = ti.Vector.field(3, dtype=ti.f32, shape=6)
 owner_squash_pivot_y = ti.field(dtype=ti.f32, shape=6)
+# Impact-axis yaw for the squash frame (0 = world-aligned/vertical bounce)
+owner_squash_yaw = ti.field(dtype=ti.f32, shape=6)
 for _sq_i in range(6):
     owner_squash[_sq_i] = [1.0, 1.0, 1.0]
 

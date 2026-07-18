@@ -3123,6 +3123,8 @@ ball_explosion_pos_z = 0.0
 ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
 ball_squash_timer = 0.0   # Bounce squash-stretch animation time remaining
 ball_squash_amount = 0.0  # Peak squash of the current bounce (from rebound speed)
+ball_squash_yaw = 0.0     # Impact axis for HORIZONTAL squish (rotated squash frame)
+ball_squash_horiz = False # True = compress along the impact axis; False = classic vertical
 BALL_SQUASH_DURATION = 0.32  # Seconds: squash -> vertical overshoot -> round (0.22 read too snappy)
 
 # Donut arena mode (hole in the middle)
@@ -4679,14 +4681,24 @@ ASSEMBLY_IDS = [
 
 # Pre-computed scatter offsets for assembly animation (computed once at startup)
 MAX_ASSEMBLY_VOXELS = 2000  # Same as MAX_BODY_VOXELS
+# Ball voxel cache capacity (defined here, above its first use by the
+# scatter fields). 1000 silently TRUNCATED radius >= 7 (~(4/3)*pi*r^3
+# voxels; the dx loop fills low-x first, so the +x hemisphere vanished —
+# "half the ball"). 4500 covers radius ~10; kernels loop ball_cache_size,
+# not this, so the only cost is field memory (2026-07-18)
+MAX_BALL_VOXELS = 4500
 assembly_scatter_x = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
 assembly_scatter_y = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
 assembly_scatter_z = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
 
-# Ball-specific scatter offsets (more compact since ball is smaller)
-ball_scatter_x = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
-ball_scatter_y = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
-ball_scatter_z = ti.field(ti.f32, shape=MAX_ASSEMBLY_VOXELS)
+# Ball-specific scatter offsets — sized to MAX_BALL_VOXELS, NOT
+# MAX_ASSEMBLY_VOXELS (2026-07-18 crash fix: the assembly kernels index
+# these by ball-cache index, and a radius-9/10 ball has 3k-4.2k cache
+# voxels — reads past the old 2000-slot fields were silent OOB memory
+# corruption on the CPU backend, crashing at "Ball assembly started!")
+ball_scatter_x = ti.field(ti.f32, shape=MAX_BALL_VOXELS)
+ball_scatter_y = ti.field(ti.f32, shape=MAX_BALL_VOXELS)
+ball_scatter_z = ti.field(ti.f32, shape=MAX_BALL_VOXELS)
 
 # Pre-compute scatter offsets once at startup
 import random as _random
@@ -4698,6 +4710,7 @@ for _i in range(MAX_ASSEMBLY_VOXELS):
     assembly_scatter_x[_i] = _random.uniform(-52, 52)
     assembly_scatter_y[_i] = _random.uniform(18, 32)
     assembly_scatter_z[_i] = _random.uniform(-52, 52)
+for _i in range(MAX_BALL_VOXELS):
     # Ball scatter - same flat-pancake shape as the beetles: strong horizontal
     # spread, squished vertical band (still starts above) for a dramatic gather
     _random.seed(_i * 31337 + 1)  # Different seed for variation
@@ -4716,7 +4729,7 @@ def clear_assembly_voxels():
             simulation.voxel_type[i, j, k] = simulation.EMPTY
 
 # Ball voxel cache for assembly animation (pre-computed sphere voxels)
-MAX_BALL_VOXELS = 1000  # Ball is much smaller than beetles
+# (MAX_BALL_VOXELS defined above the scatter fields that share it)
 ball_cache_x = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
 ball_cache_y = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
 ball_cache_z = ti.field(ti.i32, shape=MAX_BALL_VOXELS)
@@ -8038,6 +8051,16 @@ def apply_bowl_slide(entity, params):
                     # ALSO add restitution this step — both firing at the lip
                     # corner stacked into a rocket toward mid-arena
                     entity.rim_bounce_frame = physics_frame
+                    # HORIZONTAL SQUISH on board bounces (2026-07-18): the
+                    # impact axis is radial; same override arbitration as
+                    # the beetle-hit squish
+                    _rb_amt = min(0.44, 0.08 + max(0.0, outward_vel - 6.0) / 16.0 * 0.36)  # steeper scale (see beetle side-hit squish)
+                    if (globals()['ball_squash_timer'] <= 0.0
+                            or _rb_amt > globals()['ball_squash_amount']):
+                        globals()['ball_squash_amount'] = _rb_amt
+                        globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
+                        globals()['ball_squash_yaw'] = math.atan2(entity.z, entity.x)
+                        globals()['ball_squash_horiz'] = True
                 else:
                     # Dampen outward velocity (stronger dampening further out).
                     # RAMP MOMENTUM: the ball keeps most of its speed on the
@@ -16571,6 +16594,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     intruder.vz = _sfvz + (intruder.vz - _sfvz) * _grip
                                     globals()['ball_squash_amount'] = min(0.44, 0.05 + (_bb_rel - _bb_min) / 35.0 * 0.39)
                                     globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
+                                    globals()['ball_squash_horiz'] = False
                                 else:
                                     # Settle riding the surface — SYMMETRIC
                                     # within a small band: the old one-sided
@@ -17721,6 +17745,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _bb_ball.vz = _bsvz + (_bb_ball.vz - _bsvz) * _grip
                         globals()['ball_squash_amount'] = min(0.44, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.39)
                         globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
+                        globals()['ball_squash_horiz'] = False
                     else:
                         _bb_ball.vy = _bb_svy  # settle riding the surface
                         # CARRY FRICTION (Coulomb-capped): a resting ball
@@ -17973,6 +17998,25 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         if getattr(b2, 'knockback_timer', 0.0) <= 0.0 and _ram_pop > 0.0:
                             b2.pending_lift += min(_imp_h * _b2_scale * _ram_pop, _ram_cap)
                         b2.knockback_timer = _kb_grace
+
+                # HORIZONTAL SQUISH (2026-07-18): a push compresses the ball
+                # along the impact axis (extract rotates the squash frame by
+                # yaw). Keyed on the HORIZONTAL COMPONENT of the impulse —
+                # the first cut gated on |normal_y| < 0.6, but the analytic
+                # normal is radial to the ball CENTER and beetles contact a
+                # big ball far below its equator, so the normal is steeply
+                # tilted and the gate never passed (user: "not seeing it at
+                # all"). Corner arbitration: bigger hit overrides
+                if is_ball_collision:
+                    _hs_h = impulse * math.sqrt(normal_x * normal_x + normal_z * normal_z)
+                    if _hs_h > 4.5:
+                        _hs_amt = min(0.44, 0.08 + (_hs_h - 4.5) / 14.0 * 0.36)
+                        if (globals()['ball_squash_timer'] <= 0.0
+                                or _hs_amt > globals()['ball_squash_amount']):
+                            globals()['ball_squash_amount'] = _hs_amt
+                            globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
+                            globals()['ball_squash_yaw'] = math.atan2(normal_z, normal_x)
+                            globals()['ball_squash_horiz'] = True
 
                 # RUN-INTO-BALL DUST (2026-07-17): a real beetle hit on the
                 # ball kicks a dust puff at the contact — same spawner and
@@ -23973,6 +24017,7 @@ try:
                                 if impact_speed >= _sq_min_impact:
                                     _sq_over = (impact_speed - _sq_min_impact) / 35.0  # 0 at gate -> ~1 at huge slams
                                     g['ball_squash_amount'] = min(0.44, 0.05 + _sq_over * 0.39)
+                                    g['ball_squash_horiz'] = False
                                     g['ball_squash_timer'] = BALL_SQUASH_DURATION
                                 # If bounce is very small, stop bouncing and settle.
                                 # Threshold SCALES WITH GRAVITY (2026-07-17): at
@@ -25077,10 +25122,20 @@ try:
                 _sq_k = _sq_k * _sq_k * (3.0 - 2.0 * _sq_k)
                 _sq_y = (1.0 + _sq_a * 0.35) * (1.0 - _sq_k) + _sq_k  # -> round
             _sq_xz = 1.0 / math.sqrt(max(_sq_y, 0.4))  # volume-preserving bulge
-            renderer.owner_squash[4] = [_sq_xz, _sq_y, _sq_xz]
-            renderer.owner_squash_pivot_y[4] = ball_render_y + RENDER_Y_OFFSET - beetle_ball.radius
+            if ball_squash_horiz:
+                # Side hit: compress along the impact axis (sq[0] in the
+                # yaw-rotated squash frame), bulge vertical + tangential;
+                # pivot at ball CENTER (no floor to press against)
+                renderer.owner_squash[4] = [_sq_y, _sq_xz, _sq_xz]
+                renderer.owner_squash_yaw[4] = ball_squash_yaw
+                renderer.owner_squash_pivot_y[4] = ball_render_y + RENDER_Y_OFFSET
+            else:
+                renderer.owner_squash[4] = [_sq_xz, _sq_y, _sq_xz]
+                renderer.owner_squash_yaw[4] = 0.0
+                renderer.owner_squash_pivot_y[4] = ball_render_y + RENDER_Y_OFFSET - beetle_ball.radius
         else:
             renderer.owner_squash[4] = [1.0, 1.0, 1.0]
+            renderer.owner_squash_yaw[4] = 0.0
 
         # Only render ball if it hasn't exploded - OPTIMIZED (clear+render in one call)
         # CPU OPTIMIZATION: Skip re-render if ball hasn't moved significantly
@@ -28048,6 +28103,18 @@ try:
                 window.GUI.text("=== BALL PHYSICS ===")
                 new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
                 if new_ball_radius != int(beetle_ball.radius):
+                    # Clear the OLD stamped ball with the OLD cache FIRST —
+                    # init_ball_cache resets ball_last_rendered, which made
+                    # the next render skip its clear pass and orphan the old-
+                    # radius ball in the voxel grid (ghost shell artifacts +
+                    # phantom collisions). UI-frame only, scalar reads fine
+                    if ball_last_rendered[None] == 1:
+                        try:
+                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None],
+                                            ball_last_grid_z[None], ball_cache_size[None])
+                        except Exception:
+                            pass
+                        ball_last_rendered[None] = 0
                     beetle_ball.radius = float(new_ball_radius)
                     init_ball_cache(beetle_ball.radius)
                 window.GUI.text(f"Ball Position: ({beetle_ball.x:.1f}, {beetle_ball.y:.1f}, {beetle_ball.z:.1f})")
