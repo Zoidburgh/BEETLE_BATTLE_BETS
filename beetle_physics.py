@@ -2084,7 +2084,7 @@ BALL_MOMENTUM_TRANSFER = 0.96  # How much beetle velocity transfers to ball (0.0
 BALL_RESTITUTION = 0.2  # Bounciness coefficient (0=no bounce, 1=full bounce)
 BALL_MASS_RATIO = 0.6  # Ball weight vs beetle (0.1=very light, 2.0=heavy)
 BALL_ROLLING_FRICTION = 0.99  # Horizontal slowdown (0.80=high friction, 0.99=ice)
-BALL_GROUND_BOUNCE = 0.9  # Floor bounce coefficient (0.8→0.87→0.9 2026-07-16 "loses too much height"; height kept per bounce = coeff^2 = ~81%)
+BALL_GROUND_BOUNCE = 0.92  # 0.9->0.92 2026-07-18; Floor bounce coefficient (0.8→0.87→0.9 2026-07-16 "loses too much height"; height kept per bounce = coeff^2 = ~81%)
 BALL_PUSH_MULTIPLIER = 3.9  # How easily beetles can push the ball (1.0=normal, 3.0=very easy)
 BALL_SPIN_MULTIPLIER = 5.0  # How easily ball spins when hit (1.0=normal, 4.0=very spinny)
 BALL_ANGULAR_FRICTION = 0.99  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
@@ -9738,7 +9738,10 @@ def _horn_push_radii(beetle, n):
     """Per-segment halfwidths for the ball's analytic horn shapes — real
     thickness where the voxels are MASSIVE blocks rather than rods
     (push-face consistency): scorpion claw masses ~2.5, hercules jaws
-    1.8, everything else the shaft default 1.5."""
+    1.8, everything else the shaft default 1.5. (A +0.5 "wider sweet
+    spot" was tried + reverted 2026-07-18 — carried balls floated off
+    the horn surface; aerial hittability comes from the Bounce Min Drop
+    gate instead.)"""
     if beetle.horn_type == "scorpion" and n >= 2:
         return [2.5, 2.5] + [1.5] * (n - 2)
     if beetle.horn_type == "hercules":
@@ -18017,7 +18020,11 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # hitting its lower half now launches it upward at hit
                     # strength. (The beetle body-ram Y cap must not apply to
                     # the ball either — it flattened body hits to 3 u/s.)
-                    impulse_y = impulse * normal_y
+                    # BALL_LOFT (2026-07-18): vertical-ONLY gain — horizontal
+                    # push stays byte-identical; hits that earn upward
+                    # geometry get amplified height (an inflated ball is
+                    # genuinely bouncier vertically). 1.0 = pure momentum
+                    impulse_y = impulse * normal_y * params.get("BALL_LOFT", 1.2)
                 elif is_horn_contact:
                     # AIR NUDGE (2026-07-17, natural juggling — NO dedicated
                     # mechanic): zero vertical is correct for GROUNDED
@@ -19582,8 +19589,9 @@ physics_params = {
     # deadband settled (killed) every dribble and second-bounce on a back
     # or horn, an asymmetry the floor never had (floor reflects everything
     # down to 2 u/s). The max(3.0, ...) floor still kills micro-chatter.
-    "BALL_BEETLE_BOUNCE": 0.65,
-    "BALL_BOUNCE_MIN_DROP": 0.75,
+    "BALL_BEETLE_BOUNCE": 0.7,  # 0.65->0.7 2026-07-18 "bounce slightly more"
+    "BALL_LOFT": 1.2,  # Vertical-only gain on ball hit impulses (1.0 = pure momentum; horizontal untouched)
+    "BALL_BOUNCE_MIN_DROP": 0.5,  # 0.75->0.5 2026-07-18: softer aerial touches count as volleys
     "SHAFT_PENETRATION_LIFT": 0.32,  # Shaft-under-body/ball scoop strength (was .get-fallback 0.25; 2026-07-17 raised for ball scoops — beetle side stays bounded by SHAFT_PEN_LIFT_CAP)
     "BALL_PUSH_MULTIPLIER": BALL_PUSH_MULTIPLIER,  # How easily beetles can push the ball
     "BALL_SPIN_MULTIPLIER": BALL_SPIN_MULTIPLIER,  # How easily ball spins when hit
@@ -28509,6 +28517,7 @@ try:
                 # into inward speed; deader than the concrete floor's)
                 physics_params["BALL_ICE_BOUNCE"] = window.GUI.slider_float("Ice Bounce", physics_params.get("BALL_ICE_BOUNCE", 0.4), 0.0, 0.8)
                 physics_params["BALL_BALL_BOUNCE"] = window.GUI.slider_float("Ball-Ball Bounce", physics_params["BALL_BALL_BOUNCE"], 0.0, 0.9)
+                physics_params["BALL_LOFT"] = window.GUI.slider_float("Ball Loft", physics_params["BALL_LOFT"], 1.0, 1.8)
                 physics_params["BALL_BALL_GRIP"] = window.GUI.slider_float("Ball-Ball Grip", physics_params["BALL_BALL_GRIP"], 0.0, 0.5)
                 # How far past the arena edge each entity travels free
                 # before the rim band bites (voxels)
