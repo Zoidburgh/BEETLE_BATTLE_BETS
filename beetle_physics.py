@@ -819,6 +819,7 @@ def save_perf_log():
     w(f"  min_shaft_shaft_dist: {'n/a' if _mss > 900 else f'{_mss:.1f}'} voxels (horn-vs-horn crossing; <2 = clipping)")
     w(f"  horn_cross_clip_events: {collision_stats['horn_cross_clip_events']} (horn-horn within 2 voxels, pre-gate)")
     w(f"  horn_crossing_fires: {collision_stats.get('horn_crossing_fires', 0)} (T1 tunneling detector: certain pass-throughs caught)")
+    w(f"  ball_crossing_fires: {collision_stats.get('ball_crossing_fires', 0)} (D detector: horn-through-ball pass-throughs caught)")
     w(f"  horn_crossing_supp: contact={collision_stats.get('horn_crossing_supp_contact', 0)} mag={collision_stats.get('horn_crossing_supp_mag', 0)} (flips suppressed by gates)")
     w(f"  body_sep_pushes: {collision_stats.get('body_sep_pushes', 0)} (analytic body-overlap separations)")
     w(f"  leg_cage_contacts: {collision_stats.get('leg_cage_contacts', 0)} (horn-vs-leg-strut spring responses)")
@@ -3187,12 +3188,15 @@ def spawn_extra_balls(count):
     # exactly ONE ball — a host spawning extras online would play balls the
     # guest can't see (guest gets shoved by invisible balls). The Ball Count
     # menu slider persists in MULTI_BALL_COUNT, so the in-match BEETLE BALL
-    # toggle would hit this by accident. Clamp to 1 in online matches; the
-    # guard sits HERE so every call site (and future ones) is covered.
-    # Remove when protocol v7 ships multi-ball sync.
-    if game_state == GAME_STATE_ONLINE_PLAY and count > 1:
-        print(f"[MultiBall] Online match: ball count {count} clamped to 1 "
-              f"(multi-ball sync ships with protocol v7)")
+    # toggle would hit this by accident. Clamp ONLY when a real guest is
+    # connected: solo bot matches (host + --bots, the multi-ball test rig)
+    # have nobody to desync and keep full ball count. Guard sits HERE so
+    # every call site (and future ones) is covered. Remove when protocol
+    # v7 ships multi-ball sync.
+    if (game_state == GAME_STATE_ONLINE_PLAY and count > 1
+            and network_manager and network_manager.has_real_guests()):
+        print(f"[MultiBall] Real guest connected: ball count {count} clamped "
+              f"to 1 (multi-ball sync ships with protocol v7)")
         count = 1
     _ids = (simulation.BALL, simulation.BALL2, simulation.BALL3)
     while len(balls) > count:
@@ -10646,6 +10650,11 @@ def closest_point_on_segment(px, py, pz, ax, ay, az, bx, by, bz):
 # frame, so match resets / gaps can never produce a phantom crossing.
 horn_cross_sign_prev = {}
 horn_cross_fire_frame = {}  # (slot1, slot2) -> physics_frame of last fire (refire cooldown)
+# BALL CROSSING DETECTOR state (tunneling fix D, 2026-07-18): same pattern
+# for horn-vs-BALL — previous-step side-sign of the ball center against each
+# horn segment's vertical plane, per (owner slot, ball index, segment).
+ball_cross_sign_prev = {}
+ball_cross_fire_frame = {}  # (owner slot, ball index) -> last fire frame
 _CROSSING_TYPES = ("rhino", "stag", "hercules", "atlas",
                    "spider", "bombardier", "scorpion", "giraffe")
 
@@ -16227,6 +16236,85 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _cb.horn_burial = 4.0
                 _cb.angular_velocity *= 0.5
 
+    # BALL CROSSING DETECTOR (tunneling fix D 2026-07-18, mirrors T1 above):
+    # a fast yaw sweep can put a thin horn on the OTHER side of the ball
+    # between substeps — on the tunnel step there's no voxel contact, so no
+    # response layer ever sees it ("horn clicks fully through the ball").
+    # Track which side of each horn segment's vertical plane the ball center
+    # sits on; a sign flip on consecutive frames while the segment is inside
+    # the ball's volume is a certain pass-through. Response: put the ball
+    # back on its PREVIOUS side (= the side the horn was sweeping toward)
+    # and deliver the exit velocity the strike should have given it.
+    if is_ball_collision and physics_frame > 30:
+        _bcd_bt = b2 if b1.horn_type == "ball" else b1
+        _bcd_pb = b1 if b1.horn_type == "ball" else b2
+        if _bcd_bt.horn_type in _CROSSING_TYPES:
+            _bcd_slot = _slot_of(_bcd_bt)
+            _bcd_segs = horn_collision_segments(_bcd_bt)
+            _bcd_fire = None
+            for _bci in range(len(_bcd_segs)):
+                _bsg = _bcd_segs[_bci]
+                _bsdx = _bsg[3] - _bsg[0]
+                _bsdz = _bsg[5] - _bsg[2]
+                _bsdl = math.sqrt(_bsdx * _bsdx + _bsdz * _bsdz)
+                _bk = (_bcd_slot, _bcd_pb.index, _bci)
+                if _bsdl < 0.5:  # near-vertical segment: plane undefined
+                    ball_cross_sign_prev.pop(_bk, None)
+                    continue
+                _bpnx = -_bsdz / _bsdl  # horizontal perpendicular of the segment
+                _bpnz = _bsdx / _bsdl
+                _bs_now = (_bcd_pb.x - _bsg[0]) * _bpnx + (_bcd_pb.z - _bsg[2]) * _bpnz
+                _bprev = ball_cross_sign_prev.get(_bk)
+                ball_cross_sign_prev[_bk] = (physics_frame, _bs_now)
+                if _bprev is None or _bprev[0] != physics_frame - 1:
+                    continue
+                if _bprev[1] * _bs_now >= 0.0:
+                    continue  # no flip
+                # True tunnels blow through the plane fast; grind
+                # oscillations move fractions of a voxel (T1 gate)
+                if abs(_bprev[1]) + abs(_bs_now) < 1.2:
+                    continue
+                # The segment must be inside the ball's volume NOW —
+                # passing in front of / behind / above the ball flips the
+                # plane sign too, with no tunnel
+                _bccx, _bccy, _bccz, _bcct, _bccd = closest_point_on_segment(
+                    _bcd_pb.x, _bcd_pb.y, _bcd_pb.z,
+                    _bsg[0], _bsg[1], _bsg[2], _bsg[3], _bsg[4], _bsg[5])
+                if _bccd > _bcd_pb.radius + 1.5 or not (0.03 < _bcct < 0.97):
+                    continue
+                if _bcd_fire is None or _bccd < _bcd_fire[0]:
+                    _bsgn = 1.0 if _bprev[1] > 0.0 else -1.0
+                    _bcd_fire = (_bccd, _bsgn * _bpnx, _bsgn * _bpnz,
+                                 _bccx, _bccz)
+            # Voxel contact this step = the normal response stack owns the
+            # frame (oscillating grind contacts are intersections, not
+            # tunnels — same suppression as T1)
+            if _bcd_fire is not None and precomputed_collision:
+                _bcd_fire = None
+            if _bcd_fire is not None and (physics_frame -
+                    ball_cross_fire_frame.get((_bcd_slot, _bcd_pb.index), -99)) < 9:
+                _bcd_fire = None  # refire cooldown (~0.15s per pair)
+            if _bcd_fire is not None:
+                ball_cross_fire_frame[(_bcd_slot, _bcd_pb.index)] = physics_frame
+                collision_stats['ball_crossing_fires'] = \
+                    collision_stats.get('ball_crossing_fires', 0) + 1
+                _bfd, _bfnx, _bfnz, _bfcx, _bfcz = _bcd_fire
+                # Un-cross: horizontal positional restore to the previous
+                # side (vertical belongs to the floor/bounce systems)
+                _bf_push = min((_bcd_pb.radius + 1.0) - _bfd + 1.0, 2.5)
+                _bcd_pb.x += _bfnx * _bf_push
+                _bcd_pb.z += _bfnz * _bf_push
+                # Deliver the strike: exit at least at the horn's
+                # contact-point sweep speed along the un-cross direction
+                _bswx = -(_bfcz - _bcd_bt.z) * _bcd_bt.angular_velocity
+                _bswz = (_bfcx - _bcd_bt.x) * _bcd_bt.angular_velocity
+                _bswm = abs(_bswx * _bfnx + _bswz * _bfnz)
+                _bvn = _bcd_pb.vx * _bfnx + _bcd_pb.vz * _bfnz
+                if _bvn < _bswm:
+                    _bfdv = min(_bswm - _bvn, 25.0)
+                    _bcd_pb.vx += _bfnx * _bfdv
+                    _bcd_pb.vz += _bfnz * _bfdv
+
     # BODY-BODY ANALYTIC SEPARATION (2026-07-16 audit): grounded body overlap
     # had NO positional response — vertical separation is airborne-only, and
     # the velocity impulse only opposes CLOSING motion, so two shoving
@@ -16346,6 +16434,14 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
     else:
         has_collision = precomputed_collision
 
+    # NOTE (2026-07-18): a "low-horn analytic rescue" briefly lived here
+    # (segment-inside-sphere => has_collision, for the atlas-low case the
+    # voxel column test can't see). REVERTED same day: ghost pushes
+    # everywhere — the v1 analytic-detection lesson AGAIN. The analytic
+    # segments do not match visual voxels closely enough to gate detection,
+    # at ANY threshold that also catches the real contacts. The atlas-low
+    # detection gap needs a GRID-side fix instead (see 4_player_steam.md /
+    # ball plans).
     if has_collision:
         _lift_winner = 0
         _ball_pre = None
@@ -16778,6 +16874,43 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 # (linear + turn sweep + articulation/channel)
                                 _sfvx = shaft_owner.vx - (intruder.z - shaft_owner.z) * shaft_owner.angular_velocity + _art_vx
                                 _sfvz = shaft_owner.vz + (intruder.x - shaft_owner.x) * shaft_owner.angular_velocity + _art_vz
+                                # SWEEP BULLDOZER, on-top flavor (2026-07-18,
+                                # the atlas-low case): this branch's only
+                                # horizontal coupling was the Coulomb-CAPPED
+                                # carry friction — a fast sweep moves the
+                                # horn surface far beyond the cap, so a low
+                                # horn under the ball's center column rotated
+                                # through it ("super low horn + turn = clip").
+                                # Same principle as the side-path bulldozer:
+                                # while penetrated, the ball rides
+                                # POSITIONALLY with the moving surface,
+                                # penetration-scaled — resting balls on slow
+                                # horns get a negligible nudge, sweeps that
+                                # out-run the ball get proportional correction
+                                _bdz3 = params.get("SWEEP_BULLDOZE", 1.0)
+                                if _bdz3 > 0.0:
+                                    _sfm2 = math.sqrt(_sfvx * _sfvx + _sfvz * _sfvz)
+                                    if _sfm2 > 3.0:
+                                        # Same smoothness pass as the side
+                                        # flavor: faded speed gate + low-pass
+                                        # penetration (own attr — on-top and
+                                        # side contacts are distinct regimes)
+                                        _sw_f3 = min(1.0, (_sfm2 - 3.0) / 4.0)
+                                        _otp_rec = getattr(intruder, 'bdz_pen_ot', None)
+                                        _otp_s = (_otp_rec[1] if _otp_rec is not None
+                                                  and _otp_rec[0] >= physics_frame - 1 else 0.0)
+                                        _otp_s += (min(_pen / 1.5, 1.0) - _otp_s) * 0.4
+                                        intruder.bdz_pen_ot = (physics_frame, _otp_s)
+                                        # proportional, same as side flavor
+                                        _amt3 = (min(1.2, _sfm2 * PHYSICS_TIMESTEP * 1.6)
+                                                 * _otp_s * _bdz3 * _sw_f3)
+                                        intruder.x += (_sfvx / _sfm2) * _amt3
+                                        intruder.z += (_sfvz / _sfm2) * _amt3
+                                # (A "low-sweep pop" — sideways sweep on a
+                                # below-equator contact converts to lift via
+                                # the 3D radial normal — lived here briefly
+                                # on 2026-07-18 and was REMOVED same day by
+                                # user call: didn't read well in play)
                                 _bb_rel = _surf_vy - intruder.vy  # closing onto the shaft
                                 _bb_g = params["GRAVITY"] * params["BALL_GRAVITY_MULTIPLIER"]
                                 # Real-drop cutoff (relative frame); slider 0 = old feel
@@ -16991,6 +17124,71 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                           intruder.vz + (_relz - _reln * _pnz),
                                           _cg2 * _ball_seg_pen,
                                           params.get("BALL_CARRY_MAX_DV", 2.5))
+                    # SWEEP BULLDOZER (tunneling fix B, 2026-07-18): the horn
+                    # is KINEMATIC — input advances it through space every
+                    # substep no matter what — while the ball's escape is
+                    # velocity-based and capped, so a fast sweep OUT-RUNS the
+                    # response and passes through. Worst with a LOWERED horn:
+                    # contact is on the ball's bottom hemisphere, the radial
+                    # normal points up, and the push POPS the ball (loft-
+                    # amplified) instead of clearing it sideways. While the
+                    # sweep is driving into the ball, displace the ball
+                    # POSITIONALLY along the sweep tangent — it stays ahead
+                    # of the blade like dirt ahead of a bulldozer. The
+                    # anti-teleport governor still caps the total. Slider
+                    # SWEEP BULLDOZE, 0 = off (old behavior)
+                    if intruder.horn_type == "ball":
+                        _bdz_scale = params.get("SWEEP_BULLDOZE", 1.0)
+                        if _bdz_scale > 0.0 and _ball_seg_pen > 0.05:
+                            _swpx = -(_scz - shaft_owner.z) * shaft_owner.angular_velocity + _horn_vx
+                            _swpz = (_scx - shaft_owner.x) * shaft_owner.angular_velocity + _horn_vz
+                            _swpm = math.sqrt(_swpx * _swpx + _swpz * _swpz)
+                            # Any inward drive counts (turn-carry included —
+                            # the old 0.3 alignment gate missed tangential
+                            # prong grinds). SMOOTHNESS PASS (2026-07-18,
+                            # "a little choppy"): three HARD edges made the
+                            # carry pulse — the on/off speed gate toggling
+                            # at the turn ramp, the alignment gate toggling
+                            # as the ball rides around, and RAW penetration
+                            # scaling the shove (pen oscillates in the
+                            # push/re-penetrate loop = limit cycle). All
+                            # three are now continuous ramps + a low-pass on
+                            # penetration; steady-state strength unchanged.
+                            # The frame-continuity check restarts the
+                            # low-pass at 0 on a NEW contact, so first touch
+                            # ramps in over ~4 substeps instead of kicking
+                            _swal = (_swpx * _pnx + _swpz * _pnz) / _swpm if _swpm > 1e-6 else 0.0
+                            if _swpm > 3.0 and _swal > 0.0:
+                                _sw_speed_f = min(1.0, (_swpm - 3.0) / 4.0)
+                                _sw_align_f = min(1.0, _swal / 0.2)
+                                _bp_rec = getattr(intruder, 'bdz_pen_s', None)
+                                _bp_s = (_bp_rec[1] if _bp_rec is not None
+                                         and _bp_rec[0] >= physics_frame - 1 else 0.0)
+                                _bp_s += (_ball_seg_pen - _bp_s) * 0.4
+                                intruder.bdz_pen_s = (physics_frame, _bp_s)
+                                _swux = _swpx / _swpm
+                                _swuz = _swpz / _swpm
+                                # PROPORTIONAL displacement (2026-07-18 fix:
+                                # the old +0.3 constant dwarfed the actual
+                                # horn advance at low sweep speeds — a MICRO
+                                # turn shoved the ball a disproportionate
+                                # chunk, "teleports on a micro turn". Now the
+                                # push tracks the horn's real motion with a
+                                # 60% catch-up margin: micro turns micro-push)
+                                _bdz_amt = (min(1.2, _swpm * PHYSICS_TIMESTEP * 1.6)
+                                            * _bp_s * _bdz_scale
+                                            * _sw_speed_f * _sw_align_f)
+                                intruder.x += _swux * _bdz_amt
+                                intruder.z += _swuz * _bdz_amt
+                                # Keep pace: converge tangential velocity
+                                # toward the sweep's so the next substep
+                                # starts ahead — capped, not a power buff
+                                _swvn = intruder.vx * _swux + intruder.vz * _swuz
+                                if _swvn < _swpm:
+                                    _swdv = (min((_swpm - _swvn) * 0.5 * _bp_s, 3.0)
+                                             * _sw_speed_f * _sw_align_f)
+                                    intruder.vx += _swux * _swdv
+                                    intruder.vz += _swuz * _swdv
                     if _closing > 0.0:
                         # Momentum transfer: driving or sweeping a horn into a
                         # body shoves it, with a reaction on the horn owner.
@@ -16998,8 +17196,17 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         # away from the shaft reduces the closing speed.
                         intruder.vx += _pnx * _closing * shaft_vel_damp
                         intruder.vz += _pnz * _closing * shaft_vel_damp
-                        shaft_owner.vx -= _pnx * _closing * shaft_vel_damp * 0.3
-                        shaft_owner.vz -= _pnz * _closing * shaft_vel_damp * 0.3
+                        # Reaction on the horn owner — but NOT from the ball
+                        # (2026-07-18): the ball is light, and during a
+                        # turn-carry this reaction fired every substep,
+                        # nudging the beetle back = camera jitter while
+                        # turning against the ball. The main impulse path
+                        # already scales beetle recoil via BALL_BEETLE_RECOIL;
+                        # the shaft path now follows the same rule: the turn
+                        # pushes the ball, the ball doesn't push the turn
+                        if intruder.horn_type != "ball":
+                            shaft_owner.vx -= _pnx * _closing * shaft_vel_damp * 0.3
+                            shaft_owner.vz -= _pnz * _closing * shaft_vel_damp * 0.3
 
                         # NATURAL TILT: an off-center shove tips the body away
                         # from the contact (same local-frame pattern as the
@@ -17840,7 +18047,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _pshx = normal_x if _bsq is b1 else -normal_x
                         _pshz = normal_z if _bsq is b1 else -normal_z
                         _outc = _pshx * _outx + _pshz * _outz
-                        if _outc > 0.3:
+                        # 0.3 -> 0.15 (2026-07-18): angled pins fell through
+                        # the redirect and ground straight into the boards
+                        # (edge horn clipping) — catch them too
+                        if _outc > 0.15:
                             _tx = _pshx - _outc * _outx
                             _tz = _pshz - _outc * _outz
                             _tl = math.sqrt(_tx * _tx + _tz * _tz)
@@ -19677,6 +19887,10 @@ physics_params = {
     "BALL_BEETLE_BOUNCE": 0.7,  # 0.65->0.7 2026-07-18 "bounce slightly more"
     "BALL_LOFT": 1.35,  # Vertical-only gain on ball hit impulses (1.0 = pure momentum; horizontal untouched). 1.2->1.35 user tune 2026-07-18
     "BALL_BOUNCE_MIN_DROP": 0.5,  # 0.75->0.5 2026-07-18: softer aerial touches count as volleys
+    "BALL_FLOOR_MIN_DROP": 2.0,  # 2026-07-18 floor micro-bounce cut: drops below N voxels settle, restitution ramps to full by ~4N (0 = old flat restitution)
+    "SWEEP_BULLDOZE": 1.0,  # 2026-07-18 tunneling fix B: fast horn sweeps displace the penetrated ball positionally along the sweep tangent (0 = off/old)
+    "GOAL_EDGE_BOUNCE": 0.3,  # 2026-07-18 dead-corner fix: damped pop for non-pitward landings in the near-pit band (0 = old dead stop)
+    "LIP_GUARD_BOUNCE": 0.2,  # 2026-07-18: small vertical arc kept on same-substep rim+floor lip hits (0 = old flat)
     "SHAFT_PENETRATION_LIFT": 0.32,  # Shaft-under-body/ball scoop strength (was .get-fallback 0.25; 2026-07-17 raised for ball scoops — beetle side stays bounded by SHAFT_PEN_LIFT_CAP)
     "BALL_PUSH_MULTIPLIER": BALL_PUSH_MULTIPLIER,  # How easily beetles can push the ball
     "BALL_SPIN_MULTIPLIER": BALL_SPIN_MULTIPLIER,  # How easily ball spins when hit
@@ -22061,6 +22275,16 @@ try:
                 _in_contact_p = any(
                     _ballpair_hit.get((_mb_ball.index, _cs2), 0)
                     for _cs2 in range(active_player_count))
+                if not _in_contact_p:
+                    # RIM EXCEPTION (2026-07-18): pinned-at-the-boards is
+                    # where a stale stamp reads as horn clipping — the bowl
+                    # conveyor moves the ball back under the horn every
+                    # substep at low closing speed, so late detection is
+                    # maximally visible. Keep the tight gates in the band
+                    _bgd2 = _mb_ball.x * _mb_ball.x + _mb_ball.z * _mb_ball.z
+                    _bg_rim = ARENA_RADIUS + physics_params.get("BOWL_BALL_GRACE", 8.0) - 2.0
+                    if _bgd2 > _bg_rim * _bg_rim:
+                        _in_contact_p = True
                 _pos_gate = 0.35 if _in_contact_p else 1.0
                 _rot_gate = 0.06 if _in_contact_p else 0.25
                 _lms = getattr(_mb_ball, 'last_midtick_stamp', None)
@@ -24353,7 +24577,16 @@ try:
             # at z 12..16 past the bevels was falling THROUGH that real
             # floor strip because the margin swallowed it
             if abs(_mb_ball.x) > 37.5 and _mb_ball.y < 8.0:
-                if az < goal_pit_half_width or (_mb_ball.y < 2.0
+                # BACK-CORNER CLIP FIX (2026-07-18): the z-margin swallow
+                # used y < 2.0 — but a ball CENTER in 0.5..2.0 over the z
+                # 12..16 shoulder is above the floor top with only its
+                # underside sunk: that's a catchable landing (low sideways
+                # arcs at the back corners fell THROUGH the real shoulder
+                # floor = the corner clipping). Swallow only when the center
+                # is below the floor top (y < 0.5) — the true teleport case
+                # this margin exists for (deep pit ball drifting sideways
+                # getting snapped 4+ voxels up onto the lip)
+                if az < goal_pit_half_width or (_mb_ball.y < 0.5
                         and az < goal_pit_half_width + _mb_ball.radius):
                     in_goal_pit = True
 
@@ -24361,6 +24594,60 @@ try:
                 # Ball is in goal pit - no floor collision, let it fall
                 _mb_ball.on_ground = False
                 floor_cache_ball = (None, None, -1000.0)  # Invalidate cache in goal pit
+                # PIT EDGE DEFLECTION (2026-07-18, user diagnosis): floor
+                # support is CENTER-sampled — the moment the center crosses
+                # the pit edge the ball free-falls straight down while its
+                # curved side still overlaps the lip (visible clip-through
+                # at the goal edges/corners). Sphere-vs-EDGE contact against
+                # the analytic pit outline at floor-top height (mouth line
+                # x=35, rounded corners: r=5 arcs about (32, +-12), side
+                # shoulders z=+-12): push out along edge->center, kill the
+                # approach velocity — the ball ROLLS OFF the lip away from
+                # the edge as it falls instead of sinking through it
+                if -8.0 < _mb_ball.y < 6.0 and az <= 12.5:
+                    _px = abs(_mb_ball.x)   # fold to one goal side
+                    _psx = 1.0 if _mb_ball.x >= 0.0 else -1.0
+                    _psz = 1.0 if _mb_ball.z >= 0.0 else -1.0
+                    # Nearest point on the pit boundary (folded 2D)
+                    if az <= 8.0:
+                        _ebx, _ebz = 35.0, _mb_ball.z      # mouth straight edge
+                    elif _px >= 37.0:
+                        _ebx, _ebz = _px, _psz * 12.0      # side shoulder edge
+                    else:
+                        # Rounded corner: boundary is the r=5 arc about the
+                        # (32, +-12) corner center (floor bulges into the pit)
+                        _cdx = _px - 32.0
+                        _cdz = az - 12.0
+                        _cl = math.sqrt(_cdx * _cdx + _cdz * _cdz)
+                        if _cl > 1e-4:
+                            _ebx = 32.0 + _cdx / _cl * 5.0
+                            _ebz = _psz * (12.0 + _cdz / _cl * 5.0)
+                        else:
+                            _ebx, _ebz = 35.0, _psz * 12.0
+                    _edx = _px - _ebx
+                    _edy = _mb_ball.y - 0.5                # edge at floor top
+                    _edz = _mb_ball.z - _ebz
+                    _el = math.sqrt(_edx * _edx + _edy * _edy + _edz * _edz)
+                    # Contact radius slightly UNDER the true radius (user
+                    # tune 2026-07-18): full radius let the ball hover a
+                    # touch too far past the lip — a ~0.45 voxel underlap
+                    # tips it in sooner; the sliver of visual overlap at the
+                    # lip is unnoticeable at roll-off speed
+                    _er = _mb_ball.radius - 0.45
+                    if 1e-4 < _el < _er:
+                        _enx = _psx * (_edx / _el)
+                        _eny = _edy / _el
+                        _enz = _edz / _el
+                        _epush = min(_er - _el, 1.0)
+                        _mb_ball.x += _enx * _epush
+                        _mb_ball.y += _eny * _epush
+                        _mb_ball.z += _enz * _epush
+                        _evn = (_mb_ball.vx * _enx + _mb_ball.vy * _eny
+                                + _mb_ball.vz * _enz)
+                        if _evn < 0.0:  # moving into the edge
+                            _mb_ball.vx -= _evn * _enx
+                            _mb_ball.vy -= _evn * _eny
+                            _mb_ball.vz -= _evn * _enz
             else:
                 # Check if we can reuse cached floor height
                 cache_x, cache_z, cache_y = floor_cache_ball
@@ -24401,6 +24688,24 @@ try:
                             _sq_g = physics_params["GRAVITY"] * physics_params["BALL_GRAVITY_MULTIPLIER"]
                             _sq_min_impact = math.sqrt(2.0 * _sq_g * 2.0)
 
+                            # MICRO-BOUNCE CONTROL (2026-07-18): flat
+                            # restitution gave the floor a long tail of tiny
+                            # hops (real balls go INELASTIC at low impact —
+                            # the beetle-back branch has had this via
+                            # BALL_BOUNCE_MIN_DROP since 7/17; the floor
+                            # never did). Effective restitution ramps:
+                            #   impact <= a FLOOR_MIN_DROP-voxel fall: 0
+                            #   ramping linearly to FULL by 2x that speed
+                            #   (~4x the drop height) — regular hits arc way
+                            #   above the band and are untouched.
+                            # Slider FLOOR MIN DROP, 0 = old flat restitution
+                            _fmd = physics_params.get("BALL_FLOOR_MIN_DROP", 2.0)
+                            if _fmd > 0.001:
+                                _v_micro = math.sqrt(2.0 * _sq_g * _fmd)
+                                _micro = max(0.0, min(1.0, (impact_speed - _v_micro) / _v_micro))
+                            else:
+                                _micro = 1.0
+
                             # Dust ring: subtle few motes at the gate, splashier
                             # with fall height (kernel scales count/speed/height).
                             # Spawn at the ACTUAL floor surface — the hardcoded
@@ -24414,22 +24719,53 @@ try:
 
                             # Suppress bounce if ball is near goal pit edge (prevent bouncing out of goal)
                             if near_goal_pit:
-                                _mb_ball.vy = 0.0
+                                # DEAD-CORNER FIX (2026-07-18): the near-pit
+                                # rectangle (|x|>32-r, y<1) overlaps REAL
+                                # floor — the mouth strip and the rounded
+                                # corner wedges — so corner-skim landings got
+                                # vy=0 and died flat ("ball loses all bounce
+                                # at the pit corner"). Full suppression only
+                                # when the ball is actually heading INTO the
+                                # pit (the bounce-out case this exists for);
+                                # other landings keep a damped pop — still
+                                # can't arc out of the goal approach.
+                                # Slider GOAL EDGE BOUNCE, 0 = old dead stop
+                                _pitward = (_mb_ball.vx > 0.5 if _mb_ball.x > 0
+                                            else _mb_ball.vx < -0.5)
+                                if _pitward:
+                                    _mb_ball.vy = 0.0
+                                else:
+                                    _mb_ball.vy = impact_speed * physics_params.get("GOAL_EDGE_BOUNCE", 0.3) * _micro
                             elif getattr(_mb_ball, 'rim_bounce_frame', -1) == physics_frame:
                                 # LIP GUARD (consistency plan ph2): the rim
                                 # band already reflected the ball THIS substep
-                                # — a second restitution here stacked into a
-                                # rocket toward mid-arena at the lip corner.
-                                # Keep the position resolve, just kill the
-                                # leftover downward velocity (inelastic touch)
+                                # — a second FULL restitution here stacked
+                                # into a rocket toward mid-arena at the lip
+                                # corner. Keep the position resolve but leave
+                                # a SMALL arc (2026-07-18): total vy kill made
+                                # lip-corner board bounces come back weirdly
+                                # flat. Slider LIP BOUNCE, 0 = old flat
                                 if _mb_ball.vy < 0:
-                                    _mb_ball.vy = 0.0
+                                    _mb_ball.vy = impact_speed * physics_params.get("LIP_GUARD_BOUNCE", 0.2) * _micro
                             else:
                                 _grip = physics_params.get("BALL_BOUNCE_GRIP", 0.899)
                                 _bfd = math.sqrt(_mb_ball.x ** 2 + _mb_ball.z ** 2)
                                 _slope_mix = physics_params.get("BOWL_BOUNCE_NORMAL", 1.0)
                                 _on_ice_ring = (_bfd > ARENA_RADIUS and _bfd > 0.01
                                                 and not _in_goal_lane(_mb_ball.x, _mb_ball.z))
+                                # RING RAMP AT HALF WIDTH (2026-07-18): the
+                                # ice bounce base (0.4) is ALREADY the edge
+                                # damp — stacking the full-width micro ramp
+                                # on it double-counted and killed mid-size
+                                # edge bounces (0.4 * 0.4 = nearly dead).
+                                # Half threshold keeps true settle-chatter
+                                # suppression; mid-size bounces get 0.4 back.
+                                # Inward slope redirect unchanged
+                                if _fmd > 0.001:
+                                    _vm_ring = math.sqrt(2.0 * _sq_g * _fmd * 0.5)
+                                    _micro_ring = max(0.0, min(1.0, (impact_speed - _vm_ring) / _vm_ring))
+                                else:
+                                    _micro_ring = 1.0
                                 if _on_ice_ring and _slope_mix > 0.001:
                                     # SLOPE-AWARE BOUNCE (consistency plan ph1):
                                     # reflect about the ANALYTIC ice-slope
@@ -24460,7 +24796,7 @@ try:
                                         # fall speed into INWARD speed, and
                                         # at the floor's 0.8 a dropping ball
                                         # rocketed back to mid-arena
-                                        _rest = physics_params.get("BALL_ICE_BOUNCE", 0.4)
+                                        _rest = physics_params.get("BALL_ICE_BOUNCE", 0.4) * _micro_ring
                                         _tvx = _mb_ball.vx - _vn * _nx
                                         _tvy = _mb_ball.vy - _vn * _ny
                                         _tvz = _mb_ball.vz - _vn * _nz
@@ -24470,9 +24806,9 @@ try:
                                     else:
                                         # moving along/off the slope already —
                                         # no reflection, just settle handling
-                                        _mb_ball.vy = abs(_mb_ball.vy) * physics_params.get("BALL_ICE_BOUNCE", 0.4)
+                                        _mb_ball.vy = abs(_mb_ball.vy) * physics_params.get("BALL_ICE_BOUNCE", 0.4) * _micro_ring
                                 else:
-                                    _mb_ball.vy = -_mb_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
+                                    _mb_ball.vy = -_mb_ball.vy * physics_params["BALL_GROUND_BOUNCE"] * _micro
                                     # Bounce grip: contact friction scrubs some
                                     # horizontal speed on every bounce (real balls
                                     # lose tangential energy at each hop)
@@ -28681,9 +29017,13 @@ try:
                 physics_params["BALL_SQUASH"] = window.GUI.slider_float("Ball Squash", physics_params.get("BALL_SQUASH", 1.0), 0.0, 2.0)
                 # Bounciness of beetle backs/horns (0 = roll off like before)
                 physics_params["BALL_BEETLE_BOUNCE"] = window.GUI.slider_float("Beetle Bounce", physics_params.get("BALL_BEETLE_BOUNCE", 0.45), 0.0, 0.8)
+                physics_params["SWEEP_BULLDOZE"] = window.GUI.slider_float("Sweep Bulldoze", physics_params.get("SWEEP_BULLDOZE", 1.0), 0.0, 2.0)
                 # Min fall (voxels) before the ball bounces off a beetle at
                 # all — below it contact settles (kills mini-bounce chatter)
                 physics_params["BALL_BOUNCE_MIN_DROP"] = window.GUI.slider_float("Bounce Min Drop", physics_params.get("BALL_BOUNCE_MIN_DROP", 2.0), 0.0, 8.0)
+                # Floor micro-bounce cut (2026-07-18): drops below N voxels
+                # don't bounce, ramping to full by ~4N (0 = old flat rest.)
+                physics_params["BALL_FLOOR_MIN_DROP"] = window.GUI.slider_float("Floor Min Drop", physics_params.get("BALL_FLOOR_MIN_DROP", 2.0), 0.0, 8.0)
                 # Penetration (voxels) into a beetle's shapes for FULL ball
                 # push-out; shoves taper below it, so a resting ball isn't
                 # constantly nudged (0 = old always-full separation)
@@ -28695,6 +29035,9 @@ try:
                 # into the band (0 = old soft ooze), and how much speed the
                 # ball keeps on the ice (higher = rides the ramp farther)
                 physics_params["BALL_RIM_BOUNCE"] = window.GUI.slider_float("Rim Bounce", physics_params.get("BALL_RIM_BOUNCE", 0.21), 0.0, 0.9)
+                # Dead-corner fixes 2026-07-18 (0 = old dead-stop behavior)
+                physics_params["GOAL_EDGE_BOUNCE"] = window.GUI.slider_float("Goal Edge Bounce", physics_params.get("GOAL_EDGE_BOUNCE", 0.3), 0.0, 0.8)
+                physics_params["LIP_GUARD_BOUNCE"] = window.GUI.slider_float("Lip Bounce", physics_params.get("LIP_GUARD_BOUNCE", 0.2), 0.0, 0.8)
                 physics_params["BALL_RIM_MOMENTUM"] = window.GUI.slider_float("Rim Momentum", physics_params.get("BALL_RIM_MOMENTUM", 0.97), 0.85, 1.0)
                 # How hard the ice conveyor slings the ball back to mid
                 # (the return force; 1 = old full-strength slide)

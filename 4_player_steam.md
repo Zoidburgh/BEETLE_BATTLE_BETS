@@ -265,9 +265,11 @@ plans/multi_ball_plan.md; this section is the network-side plan + traps.
 ### TRAP (guard SHIPPED 2026-07-18): the Ball Count menu slider persists
 in MULTI_BALL_COUNT, and the in-game BEETLE BALL toggle spawns extras from
 it — including while hosting online. GUARD: spawn_extra_balls() itself
-clamps to 1 when game_state is ONLINE_PLAY (prints a notice), so every
+clamps to 1 when game_state is ONLINE_PLAY AND a real guest is connected
+(has_real_guests(); prints a notice) — solo bot matches keep full ball
+count, they're the multi-ball test rig and have nobody to desync. Every
 call site present and future is covered. REMOVE the clamp when v7 lands —
-it is the single line keeping online matches single-ball.
+it is the single line keeping real online matches single-ball.
 
 ### Order of work (v6 must not stack untested under v7)
 0. Commit outstanding physics work + add the online 1-ball guard.
