@@ -19350,7 +19350,7 @@ physics_params = {
     "AIRBORNE_TILT_SPEED": 10.0,  # Max pitch/roll speed when airborne (900=uncapped Nov 2025 → 14 → 10 2026-07-17: at 14 a horn lift pitched the victim 13 deg/frame, 90 deg in ~7 frames — still read as a snap. 10 ≈ 9.5 deg/frame, 90 deg in ~0.16s)
     "GROUND_TILT_SPEED": 8.0,  # Max pitch/roll speed when grounded (was hardcoded 8.0)
     "VISUAL_TILT_STEP": 10.0,  # Max DISPLAYED tilt change per RENDER frame (degrees) — render slew limiter, no-op at 60 FPS, halves the 30-FPS snap; 0 = off
-    "GROUND_TILT_ANGLE": 80.0,  # Max tilt angle in degrees when TRULY grounded (air_gap-gated; was 300 = no clamp since Nov 2025 — grounded beetles could roll fully over. Slider to 300 restores)
+    "GROUND_TILT_ANGLE": 92.0,  # Max tilt angle in degrees when TRULY grounded (air_gap-gated velocity wall; was 300 = no clamp since Nov 2025; 80→90→95→92 user tune 2026-07-18 — a touch past vertical for the teeter moment, without the over-the-back hang of 95)
     "TUMBLE_MULTIPLIER": 6.2,  # Multiplier for pitch/roll torque when launching (creates dramatic flips) — 2026-07-12 tune
     "HORN_LIFT_STRENGTH": 1.36,  # Multiplier for horn combat lift force (higher = more intense lifts) — 2026-07-12 tune
     "HORN_TIP_STRENGTH": 1.5,  # Tipping torque strength for horn collisions (replaces separation)
