@@ -507,7 +507,17 @@ BEETLE_P4_HORN_TIP = 62
 STAG_HOOK_INTERIOR_P4 = 63
 VENOM_TIP_P4 = 64
 
-MAX_VOXEL_TYPE = 70  # Highest voxel type id in use (65-70 = P3/P4 assembly anim)
+# Multi-ball voxel ids (plans/multi_ball_plan.md MB2, 2026-07-18): each ball
+# needs its OWN ids so the renderer's type->owner mapping gives every ball its
+# own sub-voxel smoothing (shared ids would voxel-step balls 2/3). Stripe is
+# ALWAYS body+1 (the 16/17 pattern) so kernel checks stay `v==c or v==c+1`.
+BALL2 = 71
+BALL2_STRIPE = 72
+BALL3 = 73
+BALL3_STRIPE = 74
+BALL_BODY_IDS = (BALL, BALL2, BALL3)
+
+MAX_VOXEL_TYPE = 74  # Highest voxel type id in use (71-74 = balls 2/3)
 
 # Body-part codes for the voxel_part[] lookup
 PART_NONE = 0
@@ -546,6 +556,25 @@ for _slot, _ids in enumerate(PLAYER_VOXEL_IDS):
         voxel_owner[_vt] = _slot
         voxel_part[_vt] = _part
 voxel_part[STINGER_TIP_BLACK] = PART_STINGER  # Shared part, no owner
+
+
+@ti.func
+def is_ball_color(c: ti.i32) -> ti.i32:
+    """1 if c is any ball's BODY voxel id (16/71/73), else 0."""
+    result = 0
+    if c == BALL or c == BALL2 or c == BALL3:
+        result = 1
+    return result
+
+
+@ti.func
+def is_ball_voxel(vt: ti.i32) -> ti.i32:
+    """1 if vt is any ball voxel, body or stripe (stripe = body+1)."""
+    result = 0
+    if (vt == BALL or vt == BALL + 1 or vt == BALL2 or vt == BALL2 + 1
+            or vt == BALL3 or vt == BALL3 + 1):
+        result = 1
+    return result
 
 
 @ti.func

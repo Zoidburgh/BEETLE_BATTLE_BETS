@@ -28,8 +28,42 @@ identical, THEN new capability.
   * render identity: ball_last_grid_*/ball_last_rendered Taichi singletons +
     owner slot 4 + shared voxel ids (MB2's whole job)
   * silk/spray/UFO/comet/hazard ball checks, arena-mode setup UI, BALL_TRACE
-- GATE NOW: full play regression (score cycle, explosion, respawn, squash,
-  bounce feel) + one canary. Then MB2.
+- GATED: MB1 passed full lifecycle regression + canary. Committed 7b9b684.
+
+**STATUS: MB2 IMPLEMENTED (uncommitted), awaiting user test with --balls N.**
+- simulation: BALL2/2S=71/72, BALL3/3S=73/74 (stripe ALWAYS body+1),
+  MAX_VOXEL_TYPE 74, is_ball_color()/is_ball_voxel() ti.funcs
+- renderer: palette maps new ids to shared ball colors; frac_owner 71/72→6,
+  73/74→7; ALL owner fields (frac/rot/pivot/squash x3) shape 6→8
+- kernels parameterized by body_id: render_ball, render_ball_fast,
+  clear_ball_fast (+arg at all 21 call sites), clear_ball sweeps all ids;
+  pair-contact + occupied kernels use is_ball_color with color-relative
+  stripe checks; leg-classifier uses is_ball_voxel
+- per-ball render identity: ball_last_grid_*/rendered fields shape (3,);
+  clear_and_render_ball_fast takes the ball (ids/index/owner_slot);
+  render-loop squash writes go to ball.owner_slot
+- spawn_extra_balls()/deactivate_extra_balls() + `--balls N` dev flag;
+  extras spawn SIDE-BY-SIDE for now (center stack needs MB3's ball-ball
+  physics or they interpenetrate); hooked into ball-mode on/off + guest
+  set_network_ball_mode
+- KNOWN LIMITS until MB3/4: no ball-ball collision (they pass through each
+  other); extra balls that score/fall off explode but never respawn
+  (celebration machinery only respawns ball 1); network syncs ball 1 only.
+- GATED 2026-07-18: user confirms 3 balls spawn, roll and bounce smoothly.
+  Extras' post-score respawn broken as expected (MB4). NOTE: ball activation
+  has THREE sites — arena-select panel (~25815), older init block (~26810),
+  guest set_network_ball_mode (deliberately single-ball until MB5); the spawn
+  hook lives at the first two (dedupe into a helper during MB4).
+- SPAWN DESIGN FINAL (user 2026-07-18, second revision): NO STACKS anywhere.
+  Each ball has its own FIXED spawn point by index (center / +z / -z side
+  offsets, the current --balls layout). Match start AND mid-play respawn
+  both use the ball's own point. Simplifies MB4: respawn = the existing
+  celebration timeline but resetting THE SCORING BALL to its own spawn
+  point instead of always ball 1 to center.
+- MB3 PERF FIX (same day): ball-beetle checks BATCHED (one launch + one
+  readback per substep, fields grown to 18 pairs; results one substep
+  stale — same staleness pair_collision_last already has). Unbatched was
+  ~12 standalone launch+sync round-trips per substep = the FPS-15 report.
 
 ## Scope of the problem (surveyed 2026-07-18)
 
@@ -86,6 +120,17 @@ Network protocol v6 syncs exactly one ball block.
 - GATE MB2: 3 balls rolling smoothly side by side (each glides sub-voxel, each
   squashes independently), radius slider resizes all three without ghosts.
 
+**STATUS: MB3 IMPLEMENTED (uncommitted) — awaiting user feel test.** Full-3D
+center-line contact (air-air/air-ground/stacking all one formula); equal-mass
+impulse w/ BALL_BALL_BOUNCE 0.55 + micro-contact guard (below per-step gravity
+delta contacts are INELASTIC — the floor's rest-bounce lesson, else resting
+stacks bounce forever); spin exchange BALL_BALL_GRIP 0.15; 50/50 positional
+de-overlap capped 0.6/substep with grounded-down-share TRANSFER (top ball rides
+up — this is what makes stack-toppling work); per-ball squish along the impact
+axis (vertical-dominant = classic vertical squash) + ground-contact dust;
+ball_ball_hits stat; sliders Ball-Ball Bounce/Grip. Pure Python, <=3 pairs,
+zero kernel involvement — perf is noise by construction.
+
 ## Phase MB3 — ball-on-ball physics (the fun part, and the easiest physics)
 
 Sphere-vs-sphere is the simplest contact in the whole game — fully analytic:
@@ -104,6 +149,16 @@ Sphere-vs-sphere is the simplest contact in the whole game — fully analytic:
 - GATE MB3: drop 3 balls together — they settle into a mutually-exclusive rest
   (no interpenetration, no jitter pile); billiard break feels right.
 
+**STATUS: MB4 CORE IMPLEMENTED (uncommitted) — per-ball lifecycle complete
+offline.** reset_ball_to_spawn(ball) + spawn_x/y/z recorded at both init
+hooks; celebration end respawns EVERY exploded ball at its own point;
+fallback (no-goal loss) triggers on any exploded ball; assembly starts/
+ticks/renders per ball with each ghost at its ball's own spawn. REMAINING
+MB4: pre-match Ball Count UI option (currently --balls flag only); dedupe
+the two init hooks into one helper. Note: two balls exploding during one
+celebration share the timeline and both respawn at its end — simple and
+intended.
+
 ## Phase MB4 — spawn/score/lifecycle
 
 - Ball Count option (1-3) in the ball-mode setup UI.
@@ -120,6 +175,34 @@ Sphere-vs-sphere is the simplest contact in the whole game — fully analytic:
 - GATE MB4: 3-ball match start topples the stack into play; score one ball while
   another sits at center — respawn stacks on top and topples off; no
   double-counts, no interpenetrating spawns.
+
+## Phase MB-PERF — fully-analytic ball collision (NEXT UP, before MB5)
+
+Perf logs 2026-07-18 (14:03, busy 3-ball + 4 bots): frame 54.8ms (~18 FPS),
+ball_physics 15.7ms dominant, substep death-spiral at 3.3 iters/frame.
+The check batching fixed detection, but every CONTACTING (beetle, ball)
+pair still runs the full voxel cluster pipeline (occupied x2 + cluster
+kernel + pack sync ≈ 1ms each) — several per substep under fire.
+
+THE FIX: ball-beetle contact goes FULLY ANALYTIC — the ball already owns
+the complete analytic layer (_ball_surface_contact: penetration, true
+normals, multi-contact manifold) and the response code already trusts it
+for nearly everything. Restructure the ball branch of beetle_collision to
+detect AND respond from the manifold alone: zero kernel launches, zero
+syncs, pure Python (the MB3 ball-ball model). Cluster-supplied values to
+replace: collision point average (use deepest-contact point), contact_count
+gates (use pen>0), has_horn_tips/per-side tips (derive from which manifold
+segment is a horn arm + its TIP region param). Est: ball_physics -> 3-4ms,
+breaks the substep spiral, ~28+ FPS worst case, identical feel.
+Also then possible: drop the mid-tick ball re-stamps entirely (the stamp
+exists so the VOXEL check can see the ball — analytic doesn't need it;
+render-frame stamping suffices) — another ~1ms and less grid churn.
+
+KNOWN-OPEN (minor): resting ball jitter still slightly visible after the
+separation deadband ("not that bad" — user). Suspects: stale batched-check
+responses (1-substep-late cluster pushes), rest-latch vs ball-ball
+interplay. Revisit during MB-PERF (analytic contact may fix it for free —
+stale voxel results disappear entirely).
 
 ## Phase MB5 — network (protocol v7)
 

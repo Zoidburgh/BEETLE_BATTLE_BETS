@@ -354,6 +354,17 @@ _last_perf_auto_save = time.time()
 # Combine with --bot-types to pick the matchup.
 CANARY_MODE = '--canary' in sys.argv
 
+# --balls N (1-3): multi-ball dev flag (MB2 testing; the real pre-match
+# option ships in MB4). Extra balls spawn stacked at center when ball mode
+# starts — physics topples the stack (user design)
+MULTI_BALL_COUNT = 1
+if '--balls' in sys.argv:
+    try:
+        MULTI_BALL_COUNT = max(1, min(3, int(sys.argv[sys.argv.index('--balls') + 1])))
+    except (ValueError, IndexError):
+        MULTI_BALL_COUNT = 2
+    print(f"[MultiBall] Ball count: {MULTI_BALL_COUNT}")
+
 # --balltrace: per-substep ball CSV (position/velocity + which contact
 # branch fired, pen, rest target, surface vy, segment, contact count) for
 # offline jitter diagnosis. Dumps ball_trace.csv on exit.
@@ -771,6 +782,7 @@ def save_perf_log():
     w(f"  horn_crossing_supp: contact={collision_stats.get('horn_crossing_supp_contact', 0)} mag={collision_stats.get('horn_crossing_supp_mag', 0)} (flips suppressed by gates)")
     w(f"  body_sep_pushes: {collision_stats.get('body_sep_pushes', 0)} (analytic body-overlap separations)")
     w(f"  leg_cage_contacts: {collision_stats.get('leg_cage_contacts', 0)} (horn-vs-leg-strut spring responses)")
+    w(f"  ball_ball_hits: {collision_stats.get('ball_ball_hits', 0)} (MB3 sphere-sphere contacts)")
     for _hk, _hv in sorted(collision_stats['horn_cross_by_type'].items(), key=lambda kv: -kv[1]):
         w(f"    {_hk}: {_hv}")
     for _ck, _cv in sorted(collision_stats['deep_clip_by_type'].items(), key=lambda kv: -kv[1]):
@@ -3106,6 +3118,73 @@ beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of a
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
 beetle_ball.active = False  # Ball starts disabled
 beetle_ball.radius = 4.0  # Default ball radius
+beetle_ball.index = 0            # MB2: position in balls[] / last-grid fields
+beetle_ball.owner_slot = 4       # MB2: renderer owner slot (balls use 4, 6, 7)
+BALL_OWNER_SLOTS = (4, 6, 7)     # renderer owner slot per ball index
+
+def spawn_extra_balls(count):
+    """Ensure balls[] holds `count` (1-3) fully-initialized balls (MB2).
+    Extra balls get their own voxel ids (71-74), owner slots, and every MB1
+    lifecycle attribute. Created INACTIVE — the ball-mode init activates and
+    stacks them. Shrinking clears the removed ball's stamp first."""
+    _ids = (simulation.BALL, simulation.BALL2, simulation.BALL3)
+    while len(balls) > count:
+        _rm = balls.pop()
+        _rm.active = False
+        if ball_last_rendered[_rm.index] == 1 and ball_cache_size[None] > 0:
+            clear_ball_fast(ball_last_grid_x[_rm.index], ball_last_grid_y[_rm.index],
+                            ball_last_grid_z[_rm.index], ball_cache_size[None], _rm.color)
+            ball_last_rendered[_rm.index] = 0
+    while len(balls) < count:
+        _i = len(balls)
+        _nb = Beetle(0.0, 0.0, 0.0, _ids[_i])
+        _nb.horn_type = "ball"
+        _nb.active = False
+        _nb.radius = beetle_ball.radius
+        _nb.index = _i
+        _nb.owner_slot = BALL_OWNER_SLOTS[_i]
+        _nb.has_exploded = False
+        _nb.explosion_delay = 0.0
+        _nb.explosion_timer = 0.0
+        _nb.explosion_pos_x = _nb.explosion_pos_y = _nb.explosion_pos_z = 0.0
+        _nb.assembling = False
+        _nb.assembly_timer = 0.0
+        _nb.squash_amount = 0.0
+        _nb.squash_timer = 0.0
+        _nb.squash_yaw = 0.0
+        _nb.squash_horiz = False
+        _nb.last_render = (None, None, None, None, None, None)
+        _nb.net_vis_offset = [0.0, 0.0, 0.0]
+        _nb.scored_this_fall = False
+        _nb.visible = True
+        balls.append(_nb)
+
+def reset_ball_to_spawn(ball):
+    """MB4: reset a ball to ITS OWN spawn point (per-ball fixed locations,
+    user design — no stacks). spawn_x/y/z are set by the ball-mode init."""
+    ball.x = getattr(ball, 'spawn_x', 0.0)
+    ball.y = getattr(ball, 'spawn_y', 22.5)
+    ball.z = getattr(ball, 'spawn_z', 0.0)
+    ball.vx = ball.vy = ball.vz = 0.0
+    ball.rotation = ball.pitch = ball.roll = 0.0
+    ball.angular_velocity = ball.pitch_velocity = ball.roll_velocity = 0.0
+    ball.has_exploded = False
+    ball.explosion_delay = 0.0
+    ball.explosion_timer = 0.0
+    ball.assembling = False
+    ball.assembly_timer = 0.0
+    ball.scored_this_fall = False
+    ball.visible = True
+    ball.save_previous_state()
+
+def deactivate_extra_balls():
+    """Turn off + clear balls 2/3 (mode switches; MB4 owns the real lifecycle)."""
+    for _xb in balls[1:]:
+        _xb.active = False
+        if ball_last_rendered[_xb.index] == 1 and ball_cache_size[None] > 0:
+            clear_ball_fast(ball_last_grid_x[_xb.index], ball_last_grid_y[_xb.index],
+                            ball_last_grid_z[_xb.index], ball_cache_size[None], _xb.color)
+            ball_last_rendered[_xb.index] = 0
 
 # MULTI-BALL (plans/multi_ball_plan.md MB1, 2026-07-18): balls[] is the
 # canonical list; beetle_ball is an ALIAS of balls[0] (the beetles[] refactor
@@ -4746,10 +4825,10 @@ ball_cache_is_stripe = ti.field(ti.i32, shape=MAX_BALL_VOXELS)  # 1 if stripe, 0
 ball_cache_size = ti.field(ti.i32, shape=())
 
 # Track last rendered ball position for fast clearing (grid coordinates)
-ball_last_grid_x = ti.field(ti.i32, shape=())
-ball_last_grid_y = ti.field(ti.i32, shape=())
-ball_last_grid_z = ti.field(ti.i32, shape=())
-ball_last_rendered = ti.field(ti.i32, shape=())  # 1 if ball was rendered, 0 if not
+ball_last_grid_x = ti.field(ti.i32, shape=(3,))  # per-ball (MB2)
+ball_last_grid_y = ti.field(ti.i32, shape=(3,))
+ball_last_grid_z = ti.field(ti.i32, shape=(3,))
+ball_last_rendered = ti.field(ti.i32, shape=(3,))  # 1 if that ball was rendered
 
 # Floor height cache for fast collision lookups (128x128 grid)
 floor_height_cache = ti.field(ti.f32, shape=(128, 128))
@@ -4800,7 +4879,8 @@ def init_ball_cache(radius: float):
                         ball_cache_is_stripe[idx] = 1 if abs(dx) <= stripe_width else 0
                         idx += 1
     ball_cache_size[None] = idx
-    ball_last_rendered[None] = 0  # No ball rendered yet
+    for _bri in range(3):
+        ball_last_rendered[_bri] = 0  # No balls rendered yet
     print(f"Ball cache initialized with {idx} voxels (radius={radius})")
 
 def make_render_assembly_kernel(slot):
@@ -5137,8 +5217,8 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
         # Check if voxel belongs to entity 1 (based on color1)
         belongs_to_1 = 0
         is_leg_tip_1 = 0
-        if color1 == simulation.BALL:  # Ball (16 and 17 for stripe)
-            if voxel == 16 or voxel == 17:
+        if simulation.is_ball_color(color1) == 1:  # Any ball (stripe = body+1)
+            if voxel == color1 or voxel == color1 + 1:
                 belongs_to_1 = 1
         elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color1):
             # Any of this player's parts, venom bulb INCLUDED — the scorpion's
@@ -5152,8 +5232,8 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
         # Check if voxel belongs to entity 2 (based on color2)
         belongs_to_2 = 0
         is_leg_tip_2 = 0
-        if color2 == simulation.BALL:  # Ball (16 and 17 for stripe)
-            if voxel == 16 or voxel == 17:
+        if simulation.is_ball_color(color2) == 1:  # Any ball (stripe = body+1)
+            if voxel == color2 or voxel == color2 + 1:
                 belongs_to_2 = 1
         elif voxel_owner_v >= 0 and voxel_owner_v == simulation.beetle_owner(color2):
             # Any of this player's parts, venom bulb INCLUDED (see the
@@ -5193,7 +5273,7 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
         # Use stricter tolerance (±5 voxels) for hook interior collisions to catch them earlier
         # Use normal tolerance (±2 voxels) for beetle-beetle, tight (±0) for ball collisions
         is_ball_involved = 0
-        if color1 == simulation.BALL or color2 == simulation.BALL:
+        if simulation.is_ball_color(color1) == 1 or simulation.is_ball_color(color2) == 1:
             is_ball_involved = 1
 
         # Check if collision involves only leg tips (less sensitive)
@@ -5316,7 +5396,7 @@ def check_collision_kernel(x1: ti.f32, z1: ti.f32, y1: ti.f32, x2: ti.f32, z2: t
 # physics step. Per-pair launches cost ~0.8ms each on the CPU backend (mostly
 # launch/sync overhead, not scan work) — 6 pairs in 4P made this the top
 # physics cost. Detection logic is shared via _column_pair_contact.
-MAX_COLLISION_PAIRS = 6  # 4P worst case: n*(n-1)/2
+MAX_COLLISION_PAIRS = 18  # 6 beetle pairs (4P) + up to 12 (beetle x ball) pairs (MB3 batch — the ball checks share these fields in a SEPARATE launch earlier in the substep)
 PAIR_TILE = 77           # max intersection box width (2 * 38 reach + 1)
 pair_check_data = ti.field(dtype=ti.f32, shape=(MAX_COLLISION_PAIRS, 6))   # x1, z1, y1, x2, z2, y2
 pair_check_colors = ti.field(dtype=ti.i32, shape=(MAX_COLLISION_PAIRS, 2))
@@ -9016,8 +9096,8 @@ def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_co
             for j in range(y_min, y_max):
                 vtype = simulation.voxel_type[i, j, k]
                 # Check if voxel belongs to target beetle/ball
-                if beetle_color == simulation.BALL:  # Ball
-                    if vtype == simulation.BALL:
+                if simulation.is_ball_color(beetle_color) == 1:  # Any ball
+                    if vtype == beetle_color:
                         found_in_column = 1
                 # Any of the target player's parts except hook interiors,
                 # plus the shared stinger tip (matches the old per-color sets)
@@ -9098,7 +9178,7 @@ def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
                     _vown = simulation.beetle_owner(vtype)
                     if ((_vown >= 0 and (_vown == simulation.beetle_owner(color1)
                                          or _vown == simulation.beetle_owner(color2)))
-                            or vtype == 16 or vtype == 17):
+                            or simulation.is_ball_voxel(vtype) == 1):
                         _vp2 = simulation.voxel_part[vtype]
                         if _vp2 != simulation.PART_LEGS and _vp2 != simulation.PART_LEG_TIP:
                             collision_has_non_leg[None] = 1
@@ -9243,11 +9323,11 @@ def clear_ball():
     """Clear all ball voxels from the grid (GPU kernel)"""
     # Clear all BALL and BALL_STRIPE voxels
     for i, j, k in simulation.voxel_type:
-        if simulation.voxel_type[i, j, k] == simulation.BALL or simulation.voxel_type[i, j, k] == simulation.BALL_STRIPE:
+        if simulation.is_ball_voxel(simulation.voxel_type[i, j, k]) == 1:
             simulation.voxel_type[i, j, k] = 0
 
 @ti.kernel
-def render_ball(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, radius: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32):
+def render_ball(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, radius: ti.f32, rotation: ti.f32, pitch: ti.f32, roll: ti.f32, body_id: ti.i32):
     """Render ball as sphere voxels with 3D rotating stripe pattern (GPU kernel)"""
     # Convert to grid coordinates
     grid_x = int(ball_x + simulation.n_grid / 2.0)
@@ -9297,14 +9377,14 @@ def render_ball(ball_x: ti.f32, ball_y: ti.f32, ball_z: ti.f32, radius: ti.f32, 
                             # Stripe appears when rotated X is near 0 (center)
                             stripe_width = 2.0
 
-                            # Use BALL_STRIPE for center stripe, BALL for rest
+                            # Stripe id is ALWAYS body_id + 1 (16/17 pattern)
                             if abs(final_x) <= stripe_width:
-                                simulation.voxel_type[vx, vy, vz] = simulation.BALL_STRIPE
+                                simulation.voxel_type[vx, vy, vz] = body_id + 1
                             else:
-                                simulation.voxel_type[vx, vy, vz] = simulation.BALL
+                                simulation.voxel_type[vx, vy, vz] = body_id
 
 @ti.kernel
-def clear_ball_fast(last_gx: ti.i32, last_gy: ti.i32, last_gz: ti.i32, num_voxels: ti.i32):
+def clear_ball_fast(last_gx: ti.i32, last_gy: ti.i32, last_gz: ti.i32, num_voxels: ti.i32, body_id: ti.i32):
     """Clear ball voxels using cached positions (FAST - only clears ~257 voxels instead of 2M)"""
     for i in range(num_voxels):
         vx = last_gx + ball_cache_x[i]
@@ -9312,12 +9392,13 @@ def clear_ball_fast(last_gx: ti.i32, last_gy: ti.i32, last_gz: ti.i32, num_voxel
         vz = last_gz + ball_cache_z[i]
         if 0 <= vx < 128 and 0 <= vy < 128 and 0 <= vz < 128:
             vtype = simulation.voxel_type[vx, vy, vz]
-            if vtype == simulation.BALL or vtype == simulation.BALL_STRIPE:
+            if vtype == body_id or vtype == body_id + 1:
                 simulation.voxel_type[vx, vy, vz] = 0
 
 @ti.kernel
 def render_ball_fast(grid_x: ti.i32, grid_y: ti.i32, grid_z: ti.i32,
-                     rotation: ti.f32, pitch: ti.f32, roll: ti.f32, num_voxels: ti.i32):
+                     rotation: ti.f32, pitch: ti.f32, roll: ti.f32, num_voxels: ti.i32,
+                     body_id: ti.i32):
     """Render ball using cached positions with 3D rotating stripe (FAST)"""
     # Pre-calculate trig for full 3D rotation
     cos_yaw = ti.cos(rotation)
@@ -9353,25 +9434,29 @@ def render_ball_fast(grid_x: ti.i32, grid_y: ti.i32, grid_z: ti.i32,
                 # Step 3: Roll rotation (around X axis)
                 final_x = rot_x
 
-                # Use BALL_STRIPE for center stripe, BALL for rest
+                # Stripe id is ALWAYS body_id + 1 (16/17 pattern)
                 if ti.abs(final_x) <= stripe_width:
-                    simulation.voxel_type[vx, vy, vz] = simulation.BALL_STRIPE
+                    simulation.voxel_type[vx, vy, vz] = body_id + 1
                 else:
-                    simulation.voxel_type[vx, vy, vz] = simulation.BALL
+                    simulation.voxel_type[vx, vy, vz] = body_id
 
-def clear_and_render_ball_fast(ball_x, ball_y, ball_z, rotation, pitch, roll):
-    """Clear old ball position and render at new position using cache (wrapper function)"""
+def clear_and_render_ball_fast(ball, ball_x, ball_y, ball_z, rotation, pitch, roll):
+    """Clear a ball's old stamp and render at the new position using the shared
+    cache. PER-BALL (MB2): ids from ball.color (stripe = +1), last-grid by
+    ball.index, renderer owner fields by ball.owner_slot (4/6/7)."""
     num_voxels = ball_cache_size[None]
     if num_voxels == 0:
         return  # Cache not initialized
+    _bi = ball.index
+    _slot = ball.owner_slot
 
     # Calculate new grid position
     grid_x = int(ball_x + simulation.n_grid / 2.0)
     grid_y = int(ball_y + RENDER_Y_OFFSET)
     grid_z = int(ball_z + simulation.n_grid / 2.0)
 
-    # Sub-voxel render offset (owner slot 4 = ball): the fraction int() drops
-    renderer.owner_frac_offset[4] = [
+    # Sub-voxel render offset: the fraction int() drops
+    renderer.owner_frac_offset[_slot] = [
         ball_x + simulation.n_grid / 2.0 - grid_x,
         ball_y + RENDER_Y_OFFSET - grid_y,
         ball_z + simulation.n_grid / 2.0 - grid_z]
@@ -9382,25 +9467,25 @@ def clear_and_render_ball_fast(ball_x, ball_y, ball_z, rotation, pitch, roll):
     _rq = round(rotation / 0.05) * 0.05
     _pq = round(pitch / 0.05) * 0.05
     _lq = round(roll / 0.05) * 0.05
-    renderer.owner_rot_residual[4] = [rotation - _rq, pitch - _pq, roll - _lq]
-    renderer.owner_rot_pivot[4] = [float(grid_x) - 64.0, float(grid_y), float(grid_z) - 64.0]
+    renderer.owner_rot_residual[_slot] = [rotation - _rq, pitch - _pq, roll - _lq]
+    renderer.owner_rot_pivot[_slot] = [float(grid_x) - 64.0, float(grid_y), float(grid_z) - 64.0]
     rotation, pitch, roll = _rq, _pq, _lq
 
-    # Clear old position if ball was previously rendered
-    if ball_last_rendered[None] == 1:
+    # Clear old position if this ball was previously rendered
+    if ball_last_rendered[_bi] == 1:
         try:
-            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
+            clear_ball_fast(ball_last_grid_x[_bi], ball_last_grid_y[_bi], ball_last_grid_z[_bi], num_voxels, ball.color)
         except (RuntimeError, Exception):
-            ball_last_rendered[None] = 0  # Reset so next frame starts fresh
+            ball_last_rendered[_bi] = 0  # Reset so next frame starts fresh
 
     # Render at new position
-    render_ball_fast(grid_x, grid_y, grid_z, rotation, pitch, roll, num_voxels)
+    render_ball_fast(grid_x, grid_y, grid_z, rotation, pitch, roll, num_voxels, ball.color)
 
     # Store current position for next clear
-    ball_last_grid_x[None] = grid_x
-    ball_last_grid_y[None] = grid_y
-    ball_last_grid_z[None] = grid_z
-    ball_last_rendered[None] = 1
+    ball_last_grid_x[_bi] = grid_x
+    ball_last_grid_y[_bi] = grid_y
+    ball_last_grid_z[_bi] = grid_z
+    ball_last_rendered[_bi] = 1
 
 def check_ball_beetle_collision(beetle_x, beetle_y, beetle_z, beetle_vx, beetle_vz):
     """Check if ball collides with beetle using voxel-perfect detection and apply impulse"""
@@ -12716,13 +12801,14 @@ def set_network_ball_mode(active):
         queue_arena_switch('ball')
         print("Ball mode ON (from host)")
     else:
-        if ball_last_rendered[None] == 1:
+        if ball_last_rendered[0] == 1:
             num_voxels = ball_cache_size[None]
             if num_voxels > 0:
-                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-            ball_last_rendered[None] = 0
+                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+            ball_last_rendered[0] = 0
         else:
             clear_ball()
+        deactivate_extra_balls()  # MB2: balls 2/3 off + cleared
         simulation.clear_bowl_perimeter()
         beetle_ball.active = False
         scores[0] = 0
@@ -19456,6 +19542,8 @@ physics_params = {
     # (~11 deg instead of the full 22 — bounce goes mostly UP with a modest
     # inward nudge) and BALL_ICE_BOUNCE 0.4→0.55 keeps more bounce energy
     "BALL_ICE_BOUNCE": 0.6,
+    "BALL_BALL_BOUNCE": 0.55,  # Ball-vs-ball restitution (MB3 billiards; livelier than beetle contacts)
+    "BALL_BALL_GRIP": 0.15,  # Spin exchange on ball-ball glances (fraction of tangential rel vel -> rolling spin)
     "BOWL_BOUNCE_NORMAL": 0.5,
     # Ball-on-BEETLE bounce, 2026-07-17 "not bouncy enough / sometimes no
     # bounce at all": restitution 0.45→0.65 (was HALF the floor's 0.9), and
@@ -21590,6 +21678,44 @@ try:
         # NOTE: direct module global — `g` is NOT globals() at this point
         if ball_dust_cooldown > 0.0:
             ball_dust_cooldown -= PHYSICS_TIMESTEP
+        # MB3 PERF (the FPS-15 fix): batch ALL (beetle, ball) voxel checks
+        # into ONE kernel launch + ONE readback per substep. Unbatched, each
+        # close pair ran its own standalone check kernel + sync — 3 balls x
+        # 4 close bots = ~12 launch+sync round-trips per substep (the July-7
+        # sync-storm failure mode, reintroduced by multi-ball). The shared
+        # pair fields are safe to reuse: the beetle-beetle batch runs LATER
+        # in the substep, after these results are consumed.
+        _ballpair_hit = {}
+        _ballpair_rows = []
+        for _pb in balls:
+            if not _pb.active or _pb.has_exploded:
+                continue
+            for _ps in range(active_player_count):
+                _pbb = beetles[_ps]
+                if not _pbb.active or _pbb.is_falling:
+                    continue
+                _pdx = _pb.x - _pbb.x
+                _pdy = _pb.y - _pbb.y
+                _pdz = _pb.z - _pbb.z
+                if _pdx * _pdx + _pdy * _pdy + _pdz * _pdz < 900.0:
+                    _row = len(_ballpair_rows)
+                    if _row >= MAX_COLLISION_PAIRS:
+                        break
+                    pair_check_data[_row, 0] = _pbb.x
+                    pair_check_data[_row, 1] = _pbb.z
+                    pair_check_data[_row, 2] = _pbb.y
+                    pair_check_data[_row, 3] = _pb.x
+                    pair_check_data[_row, 4] = _pb.z
+                    pair_check_data[_row, 5] = _pb.y
+                    pair_check_colors[_row, 0] = _pbb.color
+                    pair_check_colors[_row, 1] = _pb.color
+                    _ballpair_rows.append((_pb.index, _ps))
+        if _ballpair_rows:
+            check_collision_pairs_kernel(len(_ballpair_rows))
+            _bp_results = pair_check_result.to_numpy()
+            for _ri, (_rbi, _rps) in enumerate(_ballpair_rows):
+                _ballpair_hit[(_rbi, _rps)] = int(_bp_results[_ri])
+
         for _mb_ball in balls:  # MB1c: per-ball physics + goal + beetle collision
             if not _mb_ball.active or _mb_ball.has_exploded:
                 continue
@@ -21732,13 +21858,9 @@ try:
             BALL_COLLISION_THRESHOLD_SQ = 30.0 * 30.0  # 900 = 30 units squared
 
             # Check distance from ball to each beetle (fast squared distance)
-            close_to_ball = [False] * active_player_count
-            for slot in range(active_player_count):
-                b = beetles[slot]
-                b_dx = _mb_ball.x - b.x
-                b_dy = _mb_ball.y - b.y
-                b_dz = _mb_ball.z - b.z
-                close_to_ball[slot] = b.active and (b_dx*b_dx + b_dy*b_dy + b_dz*b_dz) < BALL_COLLISION_THRESHOLD_SQ
+            # Closeness + hit results come from the pre-substep batch
+            close_to_ball = [(_mb_ball.index, slot) in _ballpair_hit
+                             for slot in range(active_player_count)]
 
             # Re-render ball only if any beetle is close (OPTIMIZATION)
             if any(close_to_ball):
@@ -21752,13 +21874,27 @@ try:
                                   and _mb_ball.angular_velocity == 0.0
                                   and _mb_ball.pitch_velocity == 0.0
                                   and _mb_ball.roll_velocity == 0.0)
-                if not _mb_ball.has_exploded and not _ball_parked_p:
-                    clear_and_render_ball_fast(_mb_ball.x, _mb_ball.y, _mb_ball.z, _mb_ball.rotation, _mb_ball.pitch, _mb_ball.roll)
+                # Movement gate (FPS fix #2): a mid-tick re-stamp below the
+                # stamp's own voxel quantization is 2 wasted kernel launches
+                # per ball per substep — skip until it moves/rotates enough
+                _lms = getattr(_mb_ball, 'last_midtick_stamp', None)
+                _needs_stamp = True
+                if _lms is not None:
+                    _needs_stamp = (abs(_mb_ball.x - _lms[0]) + abs(_mb_ball.y - _lms[1])
+                                    + abs(_mb_ball.z - _lms[2]) > 0.35
+                                    or abs(_mb_ball.rotation - _lms[3])
+                                    + abs(_mb_ball.pitch - _lms[4])
+                                    + abs(_mb_ball.roll - _lms[5]) > 0.06)
+                if not _mb_ball.has_exploded and not _ball_parked_p and _needs_stamp:
+                    clear_and_render_ball_fast(_mb_ball, _mb_ball.x, _mb_ball.y, _mb_ball.z, _mb_ball.rotation, _mb_ball.pitch, _mb_ball.roll)
+                    _mb_ball.last_midtick_stamp = (_mb_ball.x, _mb_ball.y, _mb_ball.z,
+                                                   _mb_ball.rotation, _mb_ball.pitch, _mb_ball.roll)
                 # Run ball collision only for close beetles (skip if beetle is falling)
                 _bpx, _bpy, _bpz = _mb_ball.x, _mb_ball.y, _mb_ball.z
                 for slot in range(active_player_count):
                     if close_to_ball[slot] and not beetles[slot].is_falling:
-                        beetle_collision(beetles[slot], _mb_ball, physics_params)
+                        beetle_collision(beetles[slot], _mb_ball, physics_params,
+                                         precomputed_collision=_ballpair_hit[(_mb_ball.index, slot)])
                 # Anti-teleport governor: pushes from MULTIPLE beetles in one
                 # substep stack with conflicting normals (net = a jump). Cap
                 # the ball's total positional correction per substep;
@@ -21772,6 +21908,123 @@ try:
                     _mb_ball.x = _bpx + _bdx * _bscale
                     _mb_ball.y = _bpy + _bdy * _bscale
                     _mb_ball.z = _bpz + _bdz * _bscale
+
+        # BALL-BALL COLLISION (MB3, 2026-07-18): full-3D sphere-vs-sphere —
+        # the easiest contact in the game (analytic centers, equal masses).
+        # Pure Python float math on <=3 pairs, ZERO kernel launches / Taichi
+        # reads — perf cost is noise. Air-air, air-ground, landing-on-top
+        # all emerge from the 3D center-line; no special cases.
+        if len(balls) > 1:
+            for _bbi in range(len(balls) - 1):
+                for _bbj in range(_bbi + 1, len(balls)):
+                    _ba = balls[_bbi]
+                    _bb = balls[_bbj]
+                    if (not _ba.active or not _bb.active
+                            or _ba.has_exploded or _bb.has_exploded):
+                        continue
+                    _ddx = _bb.x - _ba.x
+                    _ddy = _bb.y - _ba.y
+                    _ddz = _bb.z - _ba.z
+                    _rsum = _ba.radius + _bb.radius
+                    _d2 = _ddx * _ddx + _ddy * _ddy + _ddz * _ddz
+                    if _d2 >= _rsum * _rsum or _d2 < 1e-9:
+                        continue
+                    _dist = math.sqrt(_d2)
+                    _nx = _ddx / _dist
+                    _ny = _ddy / _dist
+                    _nz = _ddz / _dist
+                    _pen = _rsum - _dist
+                    collision_stats['ball_ball_hits'] = \
+                        collision_stats.get('ball_ball_hits', 0) + 1
+                    # 1) Impulse along the center line: reflect the closing
+                    #    component with restitution (billiard-lively)
+                    _van = ((_bb.vx - _ba.vx) * _nx + (_bb.vy - _ba.vy) * _ny
+                            + (_bb.vz - _ba.vz) * _nz)
+                    if _van < 0.0:  # closing
+                        _rest = physics_params.get("BALL_BALL_BOUNCE", 0.55)
+                        # MICRO-CONTACT GUARD (the floor's rest-bounce lesson,
+                        # gravity-scaled): a ball RESTING on another gains
+                        # ~g*dt of closing every step — reflecting that with
+                        # restitution = bouncing forever. Below the per-step
+                        # gravity delta, contacts are inelastic (stacks rest)
+                        if -_van < (physics_params["GRAVITY"]
+                                    * physics_params["BALL_GRAVITY_MULTIPLIER"]
+                                    * PHYSICS_TIMESTEP * 1.5):
+                            _rest = 0.0
+                        _jj = -(1.0 + _rest) * _van * 0.5  # equal-mass split
+                        _ba.vx -= _nx * _jj
+                        _ba.vy -= _ny * _jj
+                        _ba.vz -= _nz * _jj
+                        _bb.vx += _nx * _jj
+                        _bb.vy += _ny * _jj
+                        _bb.vz += _nz * _jj
+                        # Spin exchange: brief surface grip converts a slice
+                        # of tangential relative velocity into rolling spin
+                        # on both (billiards, not snooker)
+                        _bgrip = physics_params.get("BALL_BALL_GRIP", 0.15)
+                        if _bgrip > 0.0:
+                            _tvx = (_bb.vx - _ba.vx) - _van * _nx
+                            _tvz = (_bb.vz - _ba.vz) - _van * _nz
+                            _ba.pitch_velocity += (-_tvx / _ba.radius) * _bgrip
+                            _ba.roll_velocity += (-_tvz / _ba.radius) * _bgrip
+                            _bb.pitch_velocity += (_tvx / _bb.radius) * _bgrip
+                            _bb.roll_velocity += (_tvz / _bb.radius) * _bgrip
+                        # Visuals: both balls squish along the impact axis
+                        # (vertical-dominant contact = classic vertical
+                        # squash: one ball landing on another); ground-level
+                        # hits puff dust (shared cooldown)
+                        _imp_mag = abs(_van) * (1.0 + _rest) * 0.5
+                        if _imp_mag > 4.0:
+                            _nh2 = math.sqrt(_nx * _nx + _nz * _nz)
+                            _amt = min(0.44, 0.08 + (_imp_mag - 4.0) / 16.0 * 0.36)
+                            for _sb in (_ba, _bb):
+                                if _sb.squash_timer <= 0.0 or _amt > _sb.squash_amount:
+                                    _sb.squash_amount = _amt
+                                    _sb.squash_timer = BALL_SQUASH_DURATION
+                                    if _nh2 > abs(_ny):
+                                        _sb.squash_horiz = True
+                                        _sb.squash_yaw = math.atan2(_nz, _nx)
+                                    else:
+                                        _sb.squash_horiz = False
+                            if (ball_dust_cooldown <= 0.0
+                                    and min(_ba.y - _ba.radius,
+                                            _bb.y - _bb.radius) < 3.0):
+                                spawn_ball_bounce_dust(
+                                    (_ba.x + _bb.x) * 0.5, RENDER_Y_OFFSET + 0.5,
+                                    (_ba.z + _bb.z) * 0.5, _imp_mag,
+                                    _ba.radius, 4.0)
+                                globals()['ball_dust_cooldown'] = 0.15
+                    # 2) Positional de-overlap: 50/50 along the 3D normal,
+                    #    capped per substep. NEVER push a grounded ball
+                    #    DOWNWARD (the floor just fights it) — that share
+                    #    transfers to the other ball, which makes the
+                    #    center-stack topple work: the top ball rides up
+                    #    and rolls off
+                    # Rest deadband (jitter fix): sub-voxel overlap between
+                    # RESTING touching balls is invisible — separating it
+                    # every step ping-ponged them ("jittery at rest").
+                    # Meaningful overlap still separates, gentler
+                    if _pen < 0.2:
+                        continue
+                    _sep = min((_pen - 0.2) * 0.35, 0.6)
+                    _sax = -_nx * _sep
+                    _saz = -_nz * _sep
+                    _sbx = _nx * _sep
+                    _sbz = _nz * _sep
+                    _say = -_ny * _sep
+                    _sby = _ny * _sep
+                    if _say < 0.0 and _ba.on_ground:
+                        _sby += -_say
+                        _say = 0.0
+                    if _sby < 0.0 and _bb.on_ground:
+                        _say += -_sby
+                        _sby = 0.0
+                    _ba.x += _sax
+                    _ba.y += _say
+                    _ba.z += _saz
+                    _bb.x += _sbx
+                    _bb.y += _sby
+                    _bb.z += _sbz
 
         # === BALL PHYSICS TIMING END ===
         _t_ball_end = time.perf_counter()
@@ -22589,6 +22842,7 @@ try:
             _mb_ball.explosion_delay = 0.02  # Slightly shorter delay than beetles
             _mb_ball.explosion_timer = EXPLOSION_DURATION
             _mb_ball.has_exploded = True
+            _mb_ball.respawn_delay = 1.5  # per-ball pipeline (MB4 rework)
             # Network mode: host sends ball explode event to guest
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
                 network_manager.send_ball_explode(_mb_ball.explosion_pos_x, _mb_ball.explosion_pos_y, _mb_ball.explosion_pos_z)
@@ -22606,6 +22860,7 @@ try:
                 beetle_ball.explosion_delay = 0.02
                 beetle_ball.explosion_timer = EXPLOSION_DURATION
                 beetle_ball.has_exploded = True
+                beetle_ball.respawn_delay = 1.5
                 print("BALL EXPLOSION (from host)!")
 
         # Continue spawning ball particles during explosion (after delay)
@@ -22617,12 +22872,13 @@ try:
                 # Hide ball when delay expires (right as particles start)
                 if _mb_ball.explosion_delay <= 0.0:
                     _mb_ball.visible = False
-                    # Clear ball voxels
-                    if ball_last_rendered[None] == 1:
+                    # Clear this ball's voxels
+                    if ball_last_rendered[_mb_ball.index] == 1:
                         num_voxels = ball_cache_size[None]
                         if num_voxels > 0:
-                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                        ball_last_rendered[None] = 0
+                            clear_ball_fast(ball_last_grid_x[_mb_ball.index], ball_last_grid_y[_mb_ball.index],
+                                            ball_last_grid_z[_mb_ball.index], num_voxels, _mb_ball.color)
+                        ball_last_rendered[_mb_ball.index] = 0
             elif _mb_ball.explosion_timer > 0.0:
                 _mb_ball.explosion_timer = _mb_ball.explosion_timer - PHYSICS_TIMESTEP
                 # Calculate which batch to spawn
@@ -22636,6 +22892,29 @@ try:
                                               _mb_ball.explosion_pos_z,
                                               batch_offset, batch_size, TOTAL_PARTICLES)
 
+        # PER-BALL RESPAWN PIPELINE (MB4 rework, 2026-07-18): explosion ->
+        # own 1.5s delay -> own 3.0s assembly at its OWN spawn -> respawn.
+        # ZERO shared state — the celebration-coupled version hover-stranded
+        # ghosts whenever goals overlapped (each new goal reset the shared
+        # timer) and confused spawn identities. Total downtime ~4.5s (old
+        # pacing was 4.0 with the assembly cut at half; now it plays out)
+        for _rb in balls:
+            if not _rb.has_exploded or not _rb.active:
+                continue
+            if getattr(_rb, 'respawn_delay', 0.0) > 0.0:
+                _rb.respawn_delay -= PHYSICS_TIMESTEP
+                if _rb.respawn_delay <= 0.0:
+                    if ball_cache_size[None] == 0:
+                        init_ball_cache(beetle_ball.radius)
+                    _rb.assembling = True
+                    _rb.assembly_timer = 0.0
+                    print(f"Ball {_rb.index + 1} assembly started!")
+            elif _rb.assembling:
+                _rb.assembly_timer += PHYSICS_TIMESTEP
+                if _rb.assembly_timer >= BALL_ASSEMBLY_DURATION:
+                    reset_ball_to_spawn(_rb)
+                    print(f"Ball {_rb.index + 1} respawned!")
+
         # === DEATH/EXPLOSIONS TIMING END ===
         _t_death_end = time.perf_counter()
         _physics_timing['death_explosions'] += (_t_death_end - _t_particles_end) * 1000
@@ -22645,10 +22924,8 @@ try:
         # thing that respawns the ball, so run the same timeline with a
         # neutral "scorer" — "NOBODY" matches neither BLUE nor RED, so the
         # confetti/pulse branches stay silent and only assembly+respawn run
-        if (beetle_ball.has_exploded and g['goal_scored_by'] is None
-                and not beetle_ball.visible):
-            g['goal_scored_by'] = "NOBODY"
-            g['goal_celebration_timer'] = ASSEMBLY_START_TIME  # Straight to assembly
+        # (The old NOBODY-celebration fallback is gone: the per-ball
+        # pipeline respawns non-goal losses without celebration machinery)
 
         # Goal celebration - winner gets confetti/flash after ball explodes
         if g['goal_scored_by'] is not None:
@@ -22673,17 +22950,8 @@ try:
             CELEBRATION_DURATION = 4.0  # Total celebration time
 
             # Start ball assembly animation at 2.5 seconds into celebration
-            if g['goal_celebration_timer'] >= ASSEMBLY_START_TIME and not beetle_ball.assembling:
-                # Initialize ball cache for assembly animation if not already done
-                if ball_cache_size[None] == 0:
-                    init_ball_cache(beetle_ball.radius)
-                beetle_ball.assembling = True
-                beetle_ball.assembly_timer = 0.0
-                print("Ball assembly started!")
-
-            # Update ball assembly timer during assembly
-            if beetle_ball.assembling:
-                beetle_ball.assembly_timer += PHYSICS_TIMESTEP
+            # (Assembly/respawn moved OUT of the celebration — per-ball
+            # pipeline below. Celebration = confetti/flags only now.)
 
             if g['goal_celebration_timer'] >= CELEBRATION_DURATION:
                 g['goal_scored_by'] = None
@@ -22695,33 +22963,8 @@ try:
                 red_pulse_timer = 0.0
                 blue_confetti_timer = 0.0
                 red_confetti_timer = 0.0
-                # Reset ball for next round - respawn at center
-                beetle_ball.has_exploded = False
-                beetle_ball.explosion_delay = 0.0
-                beetle_ball.explosion_timer = 0.0
-                beetle_ball.assembling = False
-                beetle_ball.assembly_timer = 0.0
-                beetle_ball.scored_this_fall = False  # Reset score flag for new ball
-                beetle_ball.x = 0.0
-                beetle_ball.y = 22.5  # Beetle drop height + 6 (assembly ghost matches below)
-                beetle_ball.z = 0.0
-                beetle_ball.vx = 0.0
-                beetle_ball.vy = 0.0
-                beetle_ball.vz = 0.0
-                beetle_ball.angular_velocity = 0.0
-                beetle_ball.pitch_velocity = 0.0
-                beetle_ball.roll_velocity = 0.0
-                # Default orientation so the stripes match the assembly ghost
-                # (the ghost forms unrotated; keeping death spin mismatched it)
-                beetle_ball.rotation = 0.0
-                beetle_ball.pitch = 0.0
-                beetle_ball.roll = 0.0
-                beetle_ball.visible = True  # Make ball visible again
-                # Sync the interp snapshot to the spawn — without this, one
-                # render frame lerps the ball from the goal pit to center
-                # (the "1-frame flash" streak)
-                beetle_ball.save_previous_state()
-                print("Ball respawned!")
+                # (Respawn is the per-ball pipeline's job now — nothing
+                # ball-related happens at celebration end)
 
         # Stage 2: Full removal - deactivate completely
         # IMPORTANT: Only host detects deaths - guest relies on MSG_SCORE from host
@@ -24957,7 +25200,7 @@ try:
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
     # Track if any assembly is happening this frame
-    any_assembling = any(assembling) or beetle_ball.assembling
+    any_assembling = any(assembling) or any(_b.assembling for _b in balls)
     # Only clear assembly voxels if assembly is happening OR we need one final clear (OPTIMIZATION)
     if any_assembling or g['assembly_needs_final_clear']:
         clear_assembly_voxels()  # Clear previous frame's assembly voxels
@@ -24982,13 +25225,14 @@ try:
                 _asx, _asz, _asrot = assembly_spawn[slot]
                 render_beetle_assembly_fast(slot, _asx, 16.5 + RENDER_Y_OFFSET, _asz, progress, _asrot)
 
-    # Render ball assembly animation (voxel rain effect)
-    if beetle_ball.assembling and ball_cache_size[None] > 0:
-        progress = min(beetle_ball.assembly_timer / BALL_ASSEMBLY_DURATION, 1.0)
-        # Assemble high above arena, ball will drop from y=28 after assembly
-        # Ball materializes at physics y=22.5 -> render at 22.5+RENDER_Y_OFFSET;
-        # ghost and drop-in stay exactly aligned
-        render_ball_assembly_fast(0.0, 22.5 + RENDER_Y_OFFSET, 0.0, progress)
+    # Render ball assembly animation (voxel rain effect) — per ball (MB4),
+    # each ghost forms at ITS ball's own spawn point
+    for _ab in balls:
+        if _ab.assembling and ball_cache_size[None] > 0:
+            progress = min(_ab.assembly_timer / BALL_ASSEMBLY_DURATION, 1.0)
+            render_ball_assembly_fast(getattr(_ab, 'spawn_x', 0.0),
+                                      getattr(_ab, 'spawn_y', 22.5) + RENDER_Y_OFFSET,
+                                      getattr(_ab, 'spawn_z', 0.0), progress)
 
     # Clear and render ladybugs using bounded clearing (much faster than full grid scan)
     # Each ladybug clears both previous and current positions to prevent leftover voxels on movement
@@ -25140,16 +25384,16 @@ try:
                 # Side hit: compress along the impact axis (sq[0] in the
                 # yaw-rotated squash frame), bulge vertical + tangential;
                 # pivot at ball CENTER (no floor to press against)
-                renderer.owner_squash[4] = [_sq_y, _sq_xz, _sq_xz]
-                renderer.owner_squash_yaw[4] = _mb_ball.squash_yaw
-                renderer.owner_squash_pivot_y[4] = ball_render_y + RENDER_Y_OFFSET
+                renderer.owner_squash[_mb_ball.owner_slot] = [_sq_y, _sq_xz, _sq_xz]
+                renderer.owner_squash_yaw[_mb_ball.owner_slot] = _mb_ball.squash_yaw
+                renderer.owner_squash_pivot_y[_mb_ball.owner_slot] = ball_render_y + RENDER_Y_OFFSET
             else:
-                renderer.owner_squash[4] = [_sq_xz, _sq_y, _sq_xz]
-                renderer.owner_squash_yaw[4] = 0.0
-                renderer.owner_squash_pivot_y[4] = ball_render_y + RENDER_Y_OFFSET - _mb_ball.radius
+                renderer.owner_squash[_mb_ball.owner_slot] = [_sq_xz, _sq_y, _sq_xz]
+                renderer.owner_squash_yaw[_mb_ball.owner_slot] = 0.0
+                renderer.owner_squash_pivot_y[_mb_ball.owner_slot] = ball_render_y + RENDER_Y_OFFSET - _mb_ball.radius
         else:
-            renderer.owner_squash[4] = [1.0, 1.0, 1.0]
-            renderer.owner_squash_yaw[4] = 0.0
+            renderer.owner_squash[_mb_ball.owner_slot] = [1.0, 1.0, 1.0]
+            renderer.owner_squash_yaw[_mb_ball.owner_slot] = 0.0
 
         # Only render ball if it hasn't exploded - OPTIMIZED (clear+render in one call)
         # CPU OPTIMIZATION: Skip re-render if ball hasn't moved significantly
@@ -25182,7 +25426,7 @@ try:
                         should_render_ball = False  # Ball is stationary, skip render
 
             if should_render_ball:
-                clear_and_render_ball_fast(ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
+                clear_and_render_ball_fast(_mb_ball, ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
                 _mb_ball.last_render = (ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
 
             # Add shadow under ball when airborne (ball center must be high enough that bottom clears ground)
@@ -25717,13 +25961,14 @@ try:
                         # Clicked this arena mode - switch to it
                         # First disable all modes
                         if beetle_ball.active:
-                            if ball_last_rendered[None] == 1:
+                            if ball_last_rendered[0] == 1:
                                 num_voxels = ball_cache_size[None]
                                 if num_voxels > 0:
-                                    clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                                ball_last_rendered[None] = 0
+                                    clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                                ball_last_rendered[0] = 0
                             else:
                                 clear_ball()
+                            deactivate_extra_balls()  # MB2: balls 2/3 off + cleared
                             simulation.clear_bowl_perimeter()
                             beetle_ball.active = False
                             scores[0] = 0
@@ -25758,7 +26003,25 @@ try:
                             scores[0] = 0; scores[1] = 0
                             beetle_ball.scored_this_fall = False; beetle_ball.has_exploded = False
                             beetle_ball.explosion_delay = 0.0; beetle_ball.explosion_timer = 0.0
+                            beetle_ball.spawn_x, beetle_ball.spawn_y, beetle_ball.spawn_z = 0.0, 22.5, 0.0
                             beetle_ball.active = True
+                            # MULTI-BALL (--balls N): same hook as the other
+                            # ball-init site (side-by-side until MB3)
+                            spawn_extra_balls(MULTI_BALL_COUNT)
+                            for _xb in balls[1:]:
+                                _xb.radius = beetle_ball.radius
+                                _xb.x = 0.0
+                                _xb.y = beetle_ball.y
+                                _xb.z = (beetle_ball.radius * 2.0 + 3.0) * (1 if _xb.index == 1 else -1)
+                                _xb.spawn_x, _xb.spawn_y, _xb.spawn_z = _xb.x, _xb.y, _xb.z
+                                _xb.vx = _xb.vy = _xb.vz = 0.0
+                                _xb.rotation = _xb.pitch = _xb.roll = 0.0
+                                _xb.angular_velocity = _xb.pitch_velocity = _xb.roll_velocity = 0.0
+                                _xb.scored_this_fall = False
+                                _xb.has_exploded = False
+                                _xb.visible = True
+                                _xb.active = True
+                                _xb.save_previous_state()
                             queue_arena_switch('ball')
                         elif mode_id == 'donut':
                             donut_mode = True; donut_mode_active[None] = 1
@@ -26284,11 +26547,11 @@ try:
                     print(f"[Game] Host hazard seed: {hazard_seed}")
                     # Reset all arena modes to normal when starting network match (prevents desync)
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -26421,11 +26684,11 @@ try:
                 print(f"[Game] Guest hazard seed: {hazard_seed}")
                 # Reset all arena modes to normal when starting network match (prevents desync)
                 if beetle_ball.active:
-                    if ball_last_rendered[None] == 1:
+                    if ball_last_rendered[0] == 1:
                         num_voxels = ball_cache_size[None]
                         if num_voxels > 0:
-                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                        ball_last_rendered[None] = 0
+                            clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                        ball_last_rendered[0] = 0
                     else:
                         clear_ball()
                     simulation.clear_bowl_perimeter()
@@ -26622,11 +26885,11 @@ try:
             if window.GUI.button(circle_button_text):
                 # Disable all other arena modes
                 if beetle_ball.active:
-                    if ball_last_rendered[None] == 1:
+                    if ball_last_rendered[0] == 1:
                         num_voxels = ball_cache_size[None]
                         if num_voxels > 0:
-                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                        ball_last_rendered[None] = 0
+                            clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                        ball_last_rendered[0] = 0
                     else:
                         clear_ball()
                     simulation.clear_bowl_perimeter()
@@ -26677,11 +26940,11 @@ try:
             if window.GUI.button(ball_button_text):
                 if beetle_ball.active:
                     # Disabling ball - clear voxels and bowl perimeter immediately
-                    if ball_last_rendered[None] == 1:
+                    if ball_last_rendered[0] == 1:
                         num_voxels = ball_cache_size[None]
                         if num_voxels > 0:
-                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                        ball_last_rendered[None] = 0
+                            clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                        ball_last_rendered[0] = 0
                     else:
                         clear_ball()
                     simulation.clear_bowl_perimeter()
@@ -26740,7 +27003,27 @@ try:
                     beetle_ball.has_exploded = False
                     beetle_ball.explosion_delay = 0.0
                     beetle_ball.explosion_timer = 0.0
+                    beetle_ball.spawn_x, beetle_ball.spawn_y, beetle_ball.spawn_z = 0.0, 22.5, 0.0
                     beetle_ball.active = True
+                    # MULTI-BALL (--balls N): extras spawn OFFSET sideways for
+                    # now — the center-stack design needs ball-ball physics
+                    # (MB3) or they'd interpenetrate. Stack + full lifecycle
+                    # for extras land in MB3/MB4
+                    spawn_extra_balls(MULTI_BALL_COUNT)
+                    for _xb in balls[1:]:
+                        _xb.radius = beetle_ball.radius
+                        _xb.x = 0.0
+                        _xb.y = beetle_ball.y
+                        _xb.z = (beetle_ball.radius * 2.0 + 3.0) * (1 if _xb.index == 1 else -1)
+                        _xb.spawn_x, _xb.spawn_y, _xb.spawn_z = _xb.x, _xb.y, _xb.z
+                        _xb.vx = _xb.vy = _xb.vz = 0.0
+                        _xb.rotation = _xb.pitch = _xb.roll = 0.0
+                        _xb.angular_velocity = _xb.pitch_velocity = _xb.roll_velocity = 0.0
+                        _xb.scored_this_fall = False
+                        _xb.has_exploded = False
+                        _xb.visible = True
+                        _xb.active = True
+                        _xb.save_previous_state()
                     queue_arena_switch('ball')
                 # Sync to guest
                 if network_manager and network_manager.is_host:
@@ -26758,11 +27041,11 @@ try:
                 else:
                     # Enabling donut - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -26816,11 +27099,11 @@ try:
                 else:
                     # Enabling x stage - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -26874,11 +27157,11 @@ try:
                 else:
                     # Enabling barbell - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -26932,11 +27215,11 @@ try:
                 else:
                     # Enabling figure 8 - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -26990,11 +27273,11 @@ try:
                 else:
                     # Enabling yin-yang - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -27048,11 +27331,11 @@ try:
                 else:
                     # Enabling hourglass - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -27106,11 +27389,11 @@ try:
                 else:
                     # Enabling square bridge - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -27165,11 +27448,11 @@ try:
                 else:
                     # Enabling square - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -27224,11 +27507,11 @@ try:
                 else:
                     # Enabling cut square - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -27286,11 +27569,11 @@ try:
                 else:
                     # Enabling squiggle - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -27342,11 +27625,11 @@ try:
                 else:
                     # Enabling star - disable other arena modes first
                     if beetle_ball.active:
-                        if ball_last_rendered[None] == 1:
+                        if ball_last_rendered[0] == 1:
                             num_voxels = ball_cache_size[None]
                             if num_voxels > 0:
-                                clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
-                            ball_last_rendered[None] = 0
+                                clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0], ball_last_grid_z[0], num_voxels, beetle_ball.color)
+                            ball_last_rendered[0] = 0
                         else:
                             clear_ball()
                         simulation.clear_bowl_perimeter()
@@ -28115,6 +28398,21 @@ try:
             if beetle_ball.active:
                 window.GUI.text("")
                 window.GUI.text("=== BALL PHYSICS ===")
+                # BALL COUNT (MB4 UI): live add/remove — each ball gets its
+                # own fixed spawn point (center / +z / -z). Removing clears
+                # the ball's stamp (spawn_extra_balls handles it)
+                new_ball_count = window.GUI.slider_int("Ball Count", len(balls), 1, 3)
+                if new_ball_count != len(balls):
+                    MULTI_BALL_COUNT = new_ball_count  # future mode-entries keep it
+                    spawn_extra_balls(new_ball_count)
+                    for _xb in balls[1:]:
+                        if not _xb.active:
+                            _xb.radius = beetle_ball.radius
+                            _xb.spawn_x = 0.0
+                            _xb.spawn_y = 22.5
+                            _xb.spawn_z = (beetle_ball.radius * 2.0 + 3.0) * (1 if _xb.index == 1 else -1)
+                            reset_ball_to_spawn(_xb)
+                            _xb.active = True
                 new_ball_radius = window.GUI.slider_int("Ball Radius", int(beetle_ball.radius), 3, 10)
                 if new_ball_radius != int(beetle_ball.radius):
                     # Clear the OLD stamped ball with the OLD cache FIRST —
@@ -28122,13 +28420,13 @@ try:
                     # the next render skip its clear pass and orphan the old-
                     # radius ball in the voxel grid (ghost shell artifacts +
                     # phantom collisions). UI-frame only, scalar reads fine
-                    if ball_last_rendered[None] == 1:
+                    if ball_last_rendered[0] == 1:
                         try:
-                            clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None],
-                                            ball_last_grid_z[None], ball_cache_size[None])
+                            clear_ball_fast(ball_last_grid_x[0], ball_last_grid_y[0],
+                                            ball_last_grid_z[0], ball_cache_size[None])
                         except Exception:
                             pass
-                        ball_last_rendered[None] = 0
+                        ball_last_rendered[0] = 0
                     beetle_ball.radius = float(new_ball_radius)
                     init_ball_cache(beetle_ball.radius)
                 window.GUI.text(f"Ball Position: ({beetle_ball.x:.1f}, {beetle_ball.y:.1f}, {beetle_ball.z:.1f})")
@@ -28179,6 +28477,8 @@ try:
                 # Ice-ring bounce restitution (the slope converts fall speed
                 # into inward speed; deader than the concrete floor's)
                 physics_params["BALL_ICE_BOUNCE"] = window.GUI.slider_float("Ice Bounce", physics_params.get("BALL_ICE_BOUNCE", 0.4), 0.0, 0.8)
+                physics_params["BALL_BALL_BOUNCE"] = window.GUI.slider_float("Ball-Ball Bounce", physics_params["BALL_BALL_BOUNCE"], 0.0, 0.9)
+                physics_params["BALL_BALL_GRIP"] = window.GUI.slider_float("Ball-Ball Grip", physics_params["BALL_BALL_GRIP"], 0.0, 0.5)
                 # How far past the arena edge each entity travels free
                 # before the rim band bites (voxels)
                 physics_params["BOWL_BALL_GRACE"] = window.GUI.slider_float("Ball Rim Grace", physics_params.get("BOWL_BALL_GRACE", 8.0), 0.0, 12.0)

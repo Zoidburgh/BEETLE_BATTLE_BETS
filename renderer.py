@@ -30,7 +30,7 @@ voxel_radii = ti.field(dtype=ti.f32, shape=MAX_VOXELS)  # Per-vertex radius for 
 # fractional position that integer voxel-grid placement discards. Applied to
 # rendered particle positions ONLY, so beetle/ball motion glides at sub-voxel
 # resolution instead of stepping voxel-to-voxel. Grid/collision never see it.
-owner_frac_offset = ti.Vector.field(3, dtype=ti.f32, shape=6)  # 0-3 beetles, 4 ball, 5 ladybug (referee)
+owner_frac_offset = ti.Vector.field(3, dtype=ti.f32, shape=8)  # 0-3 beetles, 4 ball, 5 ladybug (referee)
 
 # Floor mesh fields (flat quads + bevel skirts — single merged mesh for one draw call)
 # Capacity kept tight: scene.mesh() uploads the FULL vertex buffer every frame
@@ -76,7 +76,7 @@ SKIRT_DEPTH = 2.0
 SKIRT_SHADE = 0.55
 
 # Shadow disc mesh fields (perfect circles instead of grid-based blobs)
-MAX_SHADOW_DISCS = 6  # 4 beetles + 1 ball + 1 spare
+MAX_SHADOW_DISCS = 9  # 4 beetles + 3 balls (MB2) + ladybug + spare — 6 crashed the mesh draw with --balls 3 (7 discs > buffer)
 SHADOW_DISC_SEGMENTS = 32
 SHADOW_VERTS_PER_DISC = SHADOW_DISC_SEGMENTS + 1  # center + ring
 SHADOW_TRIS_PER_DISC = SHADOW_DISC_SEGMENTS
@@ -379,12 +379,13 @@ def get_voxel_color(voxel_type: ti.i32, world_x: ti.f32, world_z: ti.f32) -> ti.
     elif voxel_type == 15:  # STINGER_TIP_BLACK
         color = ti.math.vec3(0.15, 0.15, 0.15)  # Dark grey/black
 
-    # Dung ball - use customizable ball color
-    elif voxel_type == 16:  # BALL
+    # Dung ball - use customizable ball color (balls 2/3 share the look;
+    # distinct ids exist for per-ball sub-voxel smoothing, not color)
+    elif voxel_type == 16 or voxel_type == 71 or voxel_type == 73:  # BALL / BALL2 / BALL3
         color = simulation.ball_color[None]
 
     # Dung ball stripe - use customizable ball stripe color
-    elif voxel_type == 17:  # BALL_STRIPE
+    elif voxel_type == 17 or voxel_type == 72 or voxel_type == 74:  # BALL*_STRIPE
         color = simulation.ball_stripe_color[None]
 
     # Stag beetle hook interior - use body color (inner curve of pincers)
@@ -883,14 +884,17 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
             shadow_colors[base + 1 + s] = edge_color
 
 def set_shadow_params(index, x, z, radius):
-    """Set shadow disc position/radius (called from beetle_physics)"""
+    """Set shadow disc position/radius (called from beetle_physics).
+    Bounds-clamped: an over-index would silently corrupt the Taichi field."""
+    if index >= MAX_SHADOW_DISCS:
+        return
     shadow_disc_params[index][0] = x
     shadow_disc_params[index][1] = z
     shadow_disc_params[index][2] = radius
 
 def set_num_shadows(count):
     """Set number of active shadow discs (called from beetle_physics)"""
-    num_shadow_discs[None] = count
+    num_shadow_discs[None] = min(count, MAX_SHADOW_DISCS)
 
 @ti.func
 def _emit_merged_quad(run_start: ti.i32, i_end: ti.i32, j: ti.i32, k: ti.i32,
@@ -1461,8 +1465,12 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
                     # owner's fractional render offset + rotation residual
                     off = ti.math.vec3(0.0, 0.0, 0.0)
                     frac_owner = simulation.beetle_owner(vtype)
-                    if vtype == 16 or vtype == 17:  # Ball body/stripe
+                    if vtype == 16 or vtype == 17:  # Ball 1 body/stripe
                         frac_owner = 4
+                    elif vtype == 71 or vtype == 72:  # Ball 2 (MB2)
+                        frac_owner = 6
+                    elif vtype == 73 or vtype == 74:  # Ball 3 (MB2)
+                        frac_owner = 7
                     elif 35 <= vtype <= 39:  # Ladybug shell/spots/head/legs/wings
                         # One shared slot: in practice only the flying referee
                         # exists (last-drawn ladybug wins if more are spawned)
@@ -1529,17 +1537,17 @@ def extract_voxels(voxel_field: ti.template(), n_grid: ti.i32, use_mesh_floor: t
 # extract. Slow turns glide as a rigid body between stamp steps instead of
 # re-snapping every voxel to the lattice each frame (rotation shimmer).
 # [yaw, pitch, roll] residuals — beetles use yaw only; ball uses all three
-owner_rot_residual = ti.Vector.field(3, dtype=ti.f32, shape=6)  # 0-3 beetles, 4 ball, 5 ladybug (referee)
-owner_rot_pivot = ti.Vector.field(3, dtype=ti.f32, shape=6)
+owner_rot_residual = ti.Vector.field(3, dtype=ti.f32, shape=8)  # 0-3 beetles, 4 ball1, 5 ladybug, 6-7 balls 2-3 (MB2)
+owner_rot_pivot = ti.Vector.field(3, dtype=ti.f32, shape=8)
 
 # Squash & stretch (ball bounce): applied in the FLOAT extract stage around
 # the owner's contact point, so the deformation is sub-voxel smooth — the
 # stamped grid stays a perfect sphere. [sx, sy, sz] scale, 1 = none
-owner_squash = ti.Vector.field(3, dtype=ti.f32, shape=6)
-owner_squash_pivot_y = ti.field(dtype=ti.f32, shape=6)
+owner_squash = ti.Vector.field(3, dtype=ti.f32, shape=8)
+owner_squash_pivot_y = ti.field(dtype=ti.f32, shape=8)
 # Impact-axis yaw for the squash frame (0 = world-aligned/vertical bounce)
-owner_squash_yaw = ti.field(dtype=ti.f32, shape=6)
-for _sq_i in range(6):
+owner_squash_yaw = ti.field(dtype=ti.f32, shape=8)
+for _sq_i in range(8):
     owner_squash[_sq_i] = [1.0, 1.0, 1.0]
 
 # Beetle respawn-assembly flight particles: FLOAT positions so the voxel rain
