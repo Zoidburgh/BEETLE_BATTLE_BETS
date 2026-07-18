@@ -1,6 +1,11 @@
 # Ball Performance Plan — measure first, then cut
-2026-07-18. Status: P0 IMPLEMENTED (uncommitted), awaiting worst-case scrum
-log. Companion: multi_ball_plan.md (MB-PERF history).
+2026-07-18. Status: **SUCCESS CRITERIA MET** (log 20260718_170854, matched
+scrum: frame 34.4ms avg / ~29 FPS vs 52ms/19 baseline; physics 34 -> 16.6ms,
+iters 3.3 -> 2.2). P0+P1 fill fix+stamp gate committed 62ade26; spiral
+breaker UNCOMMITTED (fired on only 14% of substeps — the other fixes killed
+the spiral; it's now worst-moment insurance). Worst single frames still
+spike ~49ms; next FPS ceiling is scene_render ~9ms (GPU story,
+GPU_CPU_OPT_PLAN.md — not this plan). Companion: multi_ball_plan.md.
 
 ## Baselines (user + perf logs)
 
@@ -77,8 +82,20 @@ the IDENTICAL pattern. numpy staging + one from_numpy = 4x faster.
 Expected: ball_physics ~21.7 -> ~9, beetle_collision ~18 -> ~10; iters
 should fall from 3.8, compounding the win.
 NOT taken (dead by data): manifold caching, response early-outs, ball-ball
-work. HELD IN RESERVE: spiral breaker (adaptive every-other-substep ball
-collision at iters>2) if the A/B lands short of 28 FPS.
+work.
+
+A/B RESULT (log 20260718_165326, committed 62ade26 after user feel pass):
+frame 52 -> 39.4ms avg (19 -> ~25 FPS), physics 34 -> 21.7, iters 3.3 ->
+2.5, ball_physics 15.5 -> 9.0, beetle_collision ~18 -> 7.8. Worst frames
+~47-50ms — still short of the 36ms target, so:
+
+3. SPIRAL BREAKER shipped same day (uncommitted): when the PREVIOUS frame
+   ran >2 substeps, ball batch + mid-tick stamps skip every other substep
+   and reuse the last detection set (_ballpair_hit_prev). Responses still
+   run every substep on fresh positions — forces stay continuous, only
+   DETECTION goes one substep stale, and only during spirals. Dev flag
+   --nospiral disables for A/B; spiral_skips counter in the P0 log block.
+   FEEL RISK: first-touch latency +1 substep during heavy scrums only.
 
 ## Phase P1 — candidate cuts (pick by P0 data, not vibes)
 

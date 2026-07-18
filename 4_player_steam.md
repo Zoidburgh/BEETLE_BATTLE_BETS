@@ -243,6 +243,57 @@ Ordering rationale: M1 proves 4 real connections with the simplest ruleset
 (nobody argues with "last standing"); M2 reuses M1's per-slot ceremony
 arrays and the v5 team byte; M3 is configuration.
 
+## MULTI-BALL ONLINE (MB5 — protocol v7, planned 2026-07-18)
+
+Context: multi-ball SHIPPED OFFLINE 2026-07-18 (3 balls, billiards,
+per-ball respawn pipeline, Ball Count menu slider; perf target met same
+day — 3-ball scrum ~29 FPS, plans/ball_perf_plan.md). The network layer
+is still deliberately single-ball. MB5 skeleton lives in
+plans/multi_ball_plan.md; this section is the network-side plan + traps.
+
+### Why 3 balls online breaks TODAY (v6) — three gaps, all known
+1. State sync carries exactly ONE ball block (balls[0]). Balls 2/3 never
+   cross the wire.
+2. Guests never spawn the extras: game options sync only ball ON/OFF, not
+   count; spawn_extra_balls() is only called from local UI paths. Host
+   would play 3 balls, guest sees 1 — and gets shoved by invisible balls
+   (their beetle corrects toward host state that includes collisions with
+   balls the guest can't see).
+3. Score/respawn/explode events don't carry a ball index — guest
+   celebration + respawn machinery is single-ball.
+
+### TRAP (guard SHIPPED 2026-07-18): the Ball Count menu slider persists
+in MULTI_BALL_COUNT, and the in-game BEETLE BALL toggle spawns extras from
+it — including while hosting online. GUARD: spawn_extra_balls() itself
+clamps to 1 when game_state is ONLINE_PLAY (prints a notice), so every
+call site present and future is covered. REMOVE the clamp when v7 lands —
+it is the single line keeping online matches single-ball.
+
+### Order of work (v6 must not stack untested under v7)
+0. Commit outstanding physics work + add the online 1-ball guard.
+1. Run the still-pending v6 test FIRST (Rung 1 below, ONE ball) — the
+   30Hz angular-rate sync has never seen 2 real PCs; if it has issues,
+   find them before v7 changes the same packets.
+2. MB5 session (protocol v7, ~one session — offline per-ball plumbing
+   from MB1 makes this protocol work, not physics work):
+   - send_state_sync: ball_count byte + N ball blocks (exact mirror of
+     the v4 player_count pattern). PROTOCOL_VERSION 6 → 7.
+   - Guest apply: loop balls — per-ball correction targets + per-ball
+     visual error offsets (de-singleton the apply path).
+   - set_network_ball_mode + game options carry ball count (ALL
+     send_game_options call sites, replace_all; one bump covers all).
+   - Ball-index byte on MSG_BALL_EXPLODE + score/respawn events.
+3. GATE MB5: --simlag/--simloss 3-ball run, then 2-PC 3-ball match.
+   Verify: balls stay DISTINCT (sync by index; count fixed at match
+   start so identities can't swap), goals credit correctly, per-ball
+   respawns clean on guest, guest feel under correction with 3 balls
+   moving, guest FPS (guest renders 3 balls too — the 2026-07-18 perf
+   fixes apply to both ends but were only measured on host).
+
+Host stays the ONLY ball authority — guests never simulate ball
+outcomes, only display corrected copies (the offline-validated physics
+feel is never at stake in this milestone).
+
 ## Implementation steps (each has a test gate; commit after each)
 
 ### A1. Host-side network bots — `--bots N`

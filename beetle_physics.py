@@ -357,6 +357,17 @@ _last_perf_auto_save = time.time()
 # Diagnostic runs only: the extra syncs slightly slow the frame overall.
 PERF_SYNC_MODE = '--perfsync' in sys.argv
 
+# P1 spiral breaker (ball_perf_plan.md): when the PREVIOUS frame needed >2
+# physics substeps (the slow-frame spiral: slow frames double physics work,
+# which slows frames...), the ball batch check + mid-tick stamps run every
+# OTHER substep, reusing the last substep's detection results. Collision
+# RESPONSES still run every substep with fresh positions, so contact forces
+# stay continuous — only the detection set goes one substep stale. Full
+# quality whenever the framerate is healthy. --nospiral disables for A/B.
+BALL_SPIRAL_BREAKER = '--nospiral' not in sys.argv
+_prev_frame_iters = 0
+_ballpair_hit_prev = {}
+
 # --canary [seconds]: hands-off clip/perf canary. Implies --local4, drives ALL
 # 4 slots with bot AI (no human input), auto-starts from the title screen,
 # saves the perf log and exits after N seconds of gameplay (default 75).
@@ -723,6 +734,7 @@ collision_stats = {
     'ball_manifold_calls': 0,  # _ball_surface_contact calls
     'ball_resp_calls': 0,      # beetle_collision ball-pair calls
     'ball_ball_checks': 0,     # MB3 active-pair distance tests
+    'ball_spiral_skips': 0,    # substeps where the spiral breaker skipped batch+stamps
 }
 
 # Last physics step's batched pair-collision results: (i, j) -> 0/1.
@@ -832,6 +844,7 @@ def save_perf_log():
         w(f"  manifold_calls: {collision_stats['ball_manifold_calls']} ({collision_stats['ball_manifold_calls'] / _bss:.2f})")
         w(f"  response_calls: {collision_stats['ball_resp_calls']} ({collision_stats['ball_resp_calls'] / _bss:.2f})")
         w(f"  ball_ball_checks: {collision_stats['ball_ball_checks']} ({collision_stats['ball_ball_checks'] / _bss:.2f}), hits {collision_stats.get('ball_ball_hits', 0)}")
+        w(f"  spiral_skips: {collision_stats['ball_spiral_skips']} ({collision_stats['ball_spiral_skips'] / _bss:.2f}) (batch+stamps skipped, prev-frame iters>2; --nospiral disables)")
         if PERF_SYNC_MODE:
             w("  --perfsync ON: midtick stamp ms include ti.sync (true GPU cost)")
         else:
@@ -3170,6 +3183,17 @@ def spawn_extra_balls(count):
     Extra balls get their own voxel ids (71-74), owner slots, and every MB1
     lifecycle attribute. Created INACTIVE — the ball-mode init activates and
     stacks them. Shrinking clears the removed ball's stamp first."""
+    # NETWORK GUARD (4_player_steam.md MB5 section): protocol v6 syncs
+    # exactly ONE ball — a host spawning extras online would play balls the
+    # guest can't see (guest gets shoved by invisible balls). The Ball Count
+    # menu slider persists in MULTI_BALL_COUNT, so the in-match BEETLE BALL
+    # toggle would hit this by accident. Clamp to 1 in online matches; the
+    # guard sits HERE so every call site (and future ones) is covered.
+    # Remove when protocol v7 ships multi-ball sync.
+    if game_state == GAME_STATE_ONLINE_PLAY and count > 1:
+        print(f"[MultiBall] Online match: ball count {count} clamped to 1 "
+              f"(multi-ball sync ships with protocol v7)")
+        count = 1
     _ids = (simulation.BALL, simulation.BALL2, simulation.BALL3)
     while len(balls) > count:
         _rm = balls.pop()
@@ -21816,9 +21840,18 @@ try:
         if any(_b.active and not _b.has_exploded for _b in balls):
             collision_stats['ball_substeps'] += 1
         _t_bp0 = time.perf_counter()
-        _ballpair_hit = {}
-        _ballpair_rows = []
-        for _pb in balls:
+        # Spiral breaker: on odd substeps of a spiraling frame, reuse the
+        # previous substep's detection instead of re-running the batch
+        _spiral_skip = (BALL_SPIRAL_BREAKER and _prev_frame_iters > 2
+                        and (physics_iterations_this_frame % 2) == 1)
+        if _spiral_skip:
+            collision_stats['ball_spiral_skips'] += 1
+            _ballpair_hit = _ballpair_hit_prev
+            _ballpair_rows = []
+        else:
+            _ballpair_hit = {}
+            _ballpair_rows = []
+        for _pb in ([] if _spiral_skip else balls):
             if not _pb.active or _pb.has_exploded:
                 continue
             for _ps in range(active_player_count):
@@ -21852,6 +21885,8 @@ try:
                 _ballpair_hit[(_rbi, _rps)] = int(_bp_results[_ri])
             collision_stats['ball_batch_launches'] += 1
             collision_stats['ball_batch_rows'] += len(_ballpair_rows)
+        if not _spiral_skip:
+            _ballpair_hit_prev = _ballpair_hit
         _physics_timing['ball_batch_check'] += (time.perf_counter() - _t_bp0) * 1000
 
         for _mb_ball in balls:  # MB1c: per-ball physics + goal + beetle collision
@@ -22036,7 +22071,8 @@ try:
                                     or abs(_mb_ball.rotation - _lms[3])
                                     + abs(_mb_ball.pitch - _lms[4])
                                     + abs(_mb_ball.roll - _lms[5]) > _rot_gate)
-                if not _mb_ball.has_exploded and not _ball_parked_p and _needs_stamp:
+                if (not _mb_ball.has_exploded and not _ball_parked_p
+                        and _needs_stamp and not _spiral_skip):
                     _t_stamp = time.perf_counter()
                     clear_and_render_ball_fast(_mb_ball, _mb_ball.x, _mb_ball.y, _mb_ball.z, _mb_ball.rotation, _mb_ball.pitch, _mb_ball.roll)
                     if PERF_SYNC_MODE:
@@ -24582,6 +24618,7 @@ try:
 
     # ===== END FIXED TIMESTEP PHYSICS LOOP =====
     perf_monitor.stop('physics')
+    _prev_frame_iters = physics_iterations_this_frame  # spiral breaker trigger
 
     # Record this frame's physics breakdown into rolling history (for perf log avg/max)
     for _pt_key, _pt_val in _physics_timing.items():
