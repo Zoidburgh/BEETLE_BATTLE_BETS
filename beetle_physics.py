@@ -10332,7 +10332,8 @@ def _ball_surface_contact(ball, beetle):
                     if _hi2 < len(_pred):
                         _avx = _t * (_pred[_hi2][3] - _hsegs[_hi2][3]) / PHYSICS_TIMESTEP
                         _avz = _t * (_pred[_hi2][5] - _hsegs[_hi2][5]) / PHYSICS_TIMESTEP
-            _contacts.append((_pen, ball.x - _cx, ball.y - _cyy, ball.z - _cz, _cx, _cz, _avx, _avz))
+            _contacts.append((_pen, ball.x - _cx, ball.y - _cyy, ball.z - _cz, _cx, _cz, _avx, _avz,
+                              1 if _i >= _n_base else 0, _t))  # MB-PERF hybrid: horn-arm flag + param (tip derivation)
     # SEAM BLENDING: average the radials of every shape within 1 voxel of
     # the deepest, weighted by how close each is to the max. Winner-takes-
     # all flipped the normal per substep wherever two shapes trade the
@@ -16265,45 +16266,73 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
         has_collision = precomputed_collision
 
     if has_collision:
-        # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
-        calculate_occupied_voxels_kernel(b1.x, b1.z, b1.color,
-                                        beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
-        calculate_occupied_voxels_kernel(b2.x, b2.z, b2.color,
-                                        beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
-        calculate_collision_point_kernel(int(b1.color), int(b2.color))
-
-        # Read ALL results in ONE sync (packed field; the old per-scalar
-        # [None] reads were ~8 round-trips per colliding pair)
-        _cpk = collision_pack.to_numpy()
-        collision_x = float(_cpk[0])
-        collision_y = float(_cpk[1])
-        collision_z = float(_cpk[2])
-        contact_count = int(_cpk[3])
-        has_horn_tips = int(_cpk[4])
-        # Leg-only contact -> scaled response (legs are springy grazers, not
-        # battering rams; and animated leg tips flicker contact on/off, so
-        # full-strength impulses arrived as jittery bursts). Any body/horn
-        # voxel in the contact restores full force automatically.
-        leg_contact_scale = 1.0 if _cpk[8] > 0.5 else params.get("LEG_CONTACT_FORCE", 0.35)
-        # Set by the advantage-lift branches: the lift WINNER takes reduced
-        # recoil from this pair's impulses (see LIFT_RECOIL at the apply site)
         _lift_winner = 0
-        # Pair tip weight: strongest TIP_FACTOR among the sides whose tip
-        # voxels are actually in this contact (bystander tips: neither flag
-        # set -> factor 0 -> no escalation from someone else's horn)
-        pair_tip_factor = 0.0
-        if _cpk[5] > 0.5:
-            pair_tip_factor = TIP_FACTOR.get(b1.horn_type, 1.0)
-        if _cpk[6] > 0.5:
-            pair_tip_factor = max(pair_tip_factor, TIP_FACTOR.get(b2.horn_type, 1.0))
+        _ball_pre = None
+        if is_ball_collision:
+            # MB-PERF HYBRID (2026-07-18): detection stays VOXEL (the batch
+            # check — the safety net that catches analytic blind spots; the
+            # analytic-only detector shipped ghost pushes + clipping and was
+            # reverted same day). Only the CLUSTER kernels are replaced:
+            # under confirmed voxel contact, contact point / count / tips
+            # come from the analytic manifold — the expensive per-contact
+            # occupied+cluster+sync (~1ms/pair/substep) becomes pure Python.
+            _pb2 = b1 if b1.horn_type == "ball" else b2
+            _bt2 = b2 if b1.horn_type == "ball" else b1
+            _ball_pre = _ball_surface_contact(_pb2, _bt2)
+            _amani = _ball_pre[4]
+            _deep_mc = None
+            _pen_cnt = 0
+            has_horn_tips = 0
+            for _mc in _amani:
+                if _mc[0] > 0.0:
+                    _pen_cnt += 1
+                if _deep_mc is None or _mc[0] > _deep_mc[0]:
+                    _deep_mc = _mc
+                if _mc[8] == 1 and _mc[9] > 0.8 and _mc[0] > -0.2:
+                    has_horn_tips = 1
+            if _deep_mc is not None:
+                collision_x = _pb2.x - _deep_mc[1]
+                collision_y = _pb2.y - _deep_mc[2]
+                collision_z = _pb2.z - _deep_mc[3]
+            else:
+                collision_x = (b1.x + b2.x) * 0.5
+                collision_y = (b1.y + b2.y) * 0.5
+                collision_z = (b1.z + b2.z) * 0.5
+            contact_count = max(_pen_cnt, 1)
+            pair_tip_factor = TIP_FACTOR.get(_bt2.horn_type, 1.0) if has_horn_tips else 0.0
+            leg_contact_scale = 1.0  # ball impulse branch never uses it
+        else:
+            # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
+            calculate_occupied_voxels_kernel(b1.x, b1.z, b1.color,
+                                            beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
+            calculate_occupied_voxels_kernel(b2.x, b2.z, b2.color,
+                                            beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
+            calculate_collision_point_kernel(int(b1.color), int(b2.color))
+
+            # Read ALL results in ONE sync (packed field; the old per-scalar
+            # [None] reads were ~8 round-trips per colliding pair)
+            _cpk = collision_pack.to_numpy()
+            collision_x = float(_cpk[0])
+            collision_y = float(_cpk[1])
+            collision_z = float(_cpk[2])
+            contact_count = int(_cpk[3])
+            has_horn_tips = int(_cpk[4])
+            # Leg-only contact -> scaled response (legs are springy grazers,
+            # not battering rams). Any body/horn voxel restores full force.
+            leg_contact_scale = 1.0 if _cpk[8] > 0.5 else params.get("LEG_CONTACT_FORCE", 0.35)
+            # Pair tip weight: strongest TIP_FACTOR among sides with tip
+            # voxels in this contact
+            pair_tip_factor = 0.0
+            if _cpk[5] > 0.5:
+                pair_tip_factor = TIP_FACTOR.get(b1.horn_type, 1.0)
+            if _cpk[6] > 0.5:
+                pair_tip_factor = max(pair_tip_factor, TIP_FACTOR.get(b2.horn_type, 1.0))
+            if _cpk[7] < 0.5 and contact_count > collision_stats['max_contact_no_hook']:
+                collision_stats['max_contact_no_hook'] = contact_count
 
         collision_stats['voxel_collisions'] += 1
         if contact_count > collision_stats['max_contact_count']:
             collision_stats['max_contact_count'] = contact_count
-        # Track separately without stag pincer squeezes (hook interiors), whose
-        # wrap-around contact is legitimately huge — this max is the clip signal
-        if _cpk[7] < 0.5 and contact_count > collision_stats['max_contact_no_hook']:
-            collision_stats['max_contact_no_hook'] = contact_count
 
         # Collision detected! Calculate 3D collision geometry
         dx = b1.x - b2.x
@@ -16358,7 +16387,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             if is_ball_collision:
                 _sn_ball = b1 if b1.horn_type == "ball" else b2
                 _sn_btl = b2 if b1.horn_type == "ball" else b1
-                _ball_pen_raw, _rnx, _rny, _rnz, _ball_contacts = _ball_surface_contact(_sn_ball, _sn_btl)
+                # MB-PERF hybrid: reuse the synth-time analytic result
+                # (was a second full _ball_surface_contact per pair)
+                _ball_pen_raw, _rnx, _rny, _rnz, _ball_contacts = _ball_pre
                 _sn_mix = params.get("BALL_SURFACE_NORMAL", 1.0)
                 if _sn_mix > 0.0 and _ball_pen_raw > -2.0:
                     # Normal convention is b2 -> b1; radial is surface -> ball
@@ -16397,7 +16428,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     for _ci in range(len(_ball_contacts)):
                         if _ci == _deep_i:
                             continue  # deepest = the primary response's job
-                        _cp, _crx, _cry, _crz, _ccx3, _ccz3, _cavx, _cavz = _ball_contacts[_ci]
+                        _cp, _crx, _cry, _crz, _ccx3, _ccz3, _cavx, _cavz = _ball_contacts[_ci][:8]
                         _chl = math.sqrt(_crx * _crx + _crz * _crz)
                         if _chl < 0.3:
                             continue  # directly above/below: no lateral role

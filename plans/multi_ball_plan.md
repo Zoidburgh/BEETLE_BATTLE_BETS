@@ -176,6 +176,20 @@ intended.
   another sits at center — respawn stacks on top and topples off; no
   double-counts, no interpenetrating spawns.
 
+**STATUS: MB-PERF v2 HYBRID (uncommitted) — awaiting user test.**
+LESSON (v1 reverted same day): fully-analytic DETECTION shipped ghost
+pushes + clipping + weird hovers — the voxel check is the SAFETY NET for
+analytic blind spots ("the grid detects, analytics measure" is load-
+bearing architecture, not a habit). Gating at the -0.75 engagement zone
+also bled impulses across the pre-contact band (weak lofts).
+HYBRID KEEPS: voxel batch detection + mid-tick re-stamps (both feed the
+net). REPLACES: only the per-contact CLUSTER kernels for ball pairs —
+under confirmed voxel contact, contact point (deepest manifold contact),
+count, and tips (per-entry horn-arm flag + t > 0.8) synthesize from the
+analytic manifold, and the result is reused by the response (was a second
+manifold build). Saves the ~1ms occupied+cluster+sync per contacting pair
+— the dominant ball_physics cost — with zero blind-spot risk.
+
 ## Phase MB-PERF — fully-analytic ball collision (NEXT UP, before MB5)
 
 Perf logs 2026-07-18 (14:03, busy 3-ball + 4 bots): frame 54.8ms (~18 FPS),
