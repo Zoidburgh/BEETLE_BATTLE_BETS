@@ -57,6 +57,7 @@ except Exception:
 
 # Heavy imports (ti.init, field allocation — this is the ~4s the splash covers)
 import taichi as ti
+import numpy as np
 import simulation
 import renderer
 
@@ -347,6 +348,14 @@ LOCAL4_MODE, BOT_AI_MODE = get_local4_from_args()
 # sessions without clicking the SAVE PERF LOG button)
 PERF_AUTO_MODE = '--perfauto' in sys.argv
 _last_perf_auto_save = time.time()
+
+# --perfsync: P0 ball profiling (ball_perf_plan.md). Taichi kernel launches
+# are ASYNC — without a sync, the mid-tick ball stamp timer captures launch
+# overhead (~us) while the real GPU cost lands at the next sync point
+# (misattributed to beetle_collision's batch readback or render). This flag
+# adds a ti.sync() inside the stamp timer so the ranked table is honest.
+# Diagnostic runs only: the extra syncs slightly slow the frame overall.
+PERF_SYNC_MODE = '--perfsync' in sys.argv
 
 # --canary [seconds]: hands-off clip/perf canary. Implies --local4, drives ALL
 # 4 slots with bot AI (no human input), auto-starts from the title screen,
@@ -653,6 +662,15 @@ _physics_timing = {
     'input_controls': 0.0,
     'beetle_physics': 0.0,
     'ball_physics': 0.0,
+    # P0 ball sub-timers (ball_perf_plan.md): breakdown of ball_physics.
+    # ball_misc = ball_physics minus the other five (integration/friction/
+    # rest latch, goal detection, anti-teleport governor, dust spawns)
+    'ball_batch_check': 0.0,
+    'ball_midtick_stamps': 0.0,
+    'ball_manifold': 0.0,
+    'ball_responses': 0.0,
+    'ball_ball': 0.0,
+    'ball_misc': 0.0,
     'debris_update': 0.0,
     'spray_update': 0.0,
     'spray_collision': 0.0,
@@ -695,6 +713,16 @@ collision_stats = {
     'horn_crossing_fires': 0,       # T1 tunneling detector: certain pass-throughs caught (horn_tunneling_plan.md)
     'batch_check_ms': deque(maxlen=120),  # batched all-pairs kernel time per physics step
     'pair_time_ms': {},        # (i, j) -> rolling deque of beetle_collision() ms
+    # P0 ball call counters (ball_perf_plan.md) — cumulative; the perf log
+    # divides by ball_substeps for per-substep rates
+    'ball_substeps': 0,        # substeps with >=1 active ball (rate denominator)
+    'ball_batch_launches': 0,  # substeps where the ball batch kernel ran
+    'ball_batch_rows': 0,      # (beetle, ball) rows submitted to the batch
+    'ball_stamps': 0,          # mid-tick clear_and_render_ball_fast launches
+    'ball_stamp_skips': 0,     # stamps skipped (parked / sub-quantization / exploded)
+    'ball_manifold_calls': 0,  # _ball_surface_contact calls
+    'ball_resp_calls': 0,      # beetle_collision ball-pair calls
+    'ball_ball_checks': 0,     # MB3 active-pair distance tests
 }
 
 # Last physics step's batched pair-collision results: (i, j) -> 0/1.
@@ -793,6 +821,21 @@ def save_perf_log():
     for pair, hist in sorted(collision_stats['pair_time_ms'].items()):
         if hist:
             w(f"  pair {pair[0]}v{pair[1]}: {_avg(hist):.2f}ms avg, {max(hist):.2f}ms max (response only, per physics step)")
+
+    if collision_stats['ball_substeps'] > 0:
+        w("")
+        w("--- Ball Section P0 (ball_perf_plan.md; ms table is in Physics Breakdown above) ---")
+        _bss = max(1, collision_stats['ball_substeps'])
+        w(f"  ball_substeps: {collision_stats['ball_substeps']} (substeps with an active ball; rates below are per substep)")
+        w(f"  batch_check: {collision_stats['ball_batch_launches']} launches ({collision_stats['ball_batch_launches'] / _bss:.2f}), {collision_stats['ball_batch_rows']} rows ({collision_stats['ball_batch_rows'] / _bss:.2f})")
+        w(f"  midtick_stamps: {collision_stats['ball_stamps']} ({collision_stats['ball_stamps'] / _bss:.2f}), skipped {collision_stats['ball_stamp_skips']} (parked/sub-quantization/exploded)")
+        w(f"  manifold_calls: {collision_stats['ball_manifold_calls']} ({collision_stats['ball_manifold_calls'] / _bss:.2f})")
+        w(f"  response_calls: {collision_stats['ball_resp_calls']} ({collision_stats['ball_resp_calls'] / _bss:.2f})")
+        w(f"  ball_ball_checks: {collision_stats['ball_ball_checks']} ({collision_stats['ball_ball_checks'] / _bss:.2f}), hits {collision_stats.get('ball_ball_hits', 0)}")
+        if PERF_SYNC_MODE:
+            w("  --perfsync ON: midtick stamp ms include ti.sync (true GPU cost)")
+        else:
+            w("  --perfsync OFF: midtick stamp ms are LAUNCH cost only — GPU cost lands at the NEXT sync (batch readbacks/render). Rerun with --perfsync before trusting the stamp ranking")
 
     w("")
     w("--- Particle Counts ---")
@@ -5401,6 +5444,12 @@ PAIR_TILE = 77           # max intersection box width (2 * 38 reach + 1)
 pair_check_data = ti.field(dtype=ti.f32, shape=(MAX_COLLISION_PAIRS, 6))   # x1, z1, y1, x2, z2, y2
 pair_check_colors = ti.field(dtype=ti.i32, shape=(MAX_COLLISION_PAIRS, 2))
 pair_check_result = ti.field(dtype=ti.i32, shape=MAX_COLLISION_PAIRS)
+# P1 fill fix (ball_perf_plan.md, benchmarked 2026-07-18): writing these
+# fields element-by-element from Python costs ~26us PER WRITE through the
+# Taichi runtime — ~2.5ms/substep at 12 rows, the top ball cost by far.
+# Stage rows in numpy, upload with ONE from_numpy per batch (~0.1ms flat).
+_pair_np_data = np.zeros((MAX_COLLISION_PAIRS, 6), dtype=np.float32)
+_pair_np_colors = np.zeros((MAX_COLLISION_PAIRS, 2), dtype=np.int32)
 
 @ti.kernel
 def check_collision_pairs_kernel(pair_count: ti.i32):
@@ -16286,7 +16335,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             # occupied+cluster+sync (~1ms/pair/substep) becomes pure Python.
             _pb2 = b1 if b1.horn_type == "ball" else b2
             _bt2 = b2 if b1.horn_type == "ball" else b1
+            _t_mani = time.perf_counter()
             _ball_pre = _ball_surface_contact(_pb2, _bt2)
+            _physics_timing['ball_manifold'] += (time.perf_counter() - _t_mani) * 1000
+            collision_stats['ball_manifold_calls'] += 1
             _amani = _ball_pre[4]
             _deep_mc = None
             _pen_cnt = 0
@@ -21756,6 +21808,14 @@ try:
         # sync-storm failure mode, reintroduced by multi-ball). The shared
         # pair fields are safe to reuse: the beetle-beetle batch runs LATER
         # in the substep, after these results are consumed.
+        # P0 (ball_perf_plan.md): snapshot the sub-timer accumulators so the
+        # section end can compute ball_misc for THIS substep by difference
+        _bp0_snap = (_physics_timing['ball_batch_check'] + _physics_timing['ball_midtick_stamps']
+                     + _physics_timing['ball_manifold'] + _physics_timing['ball_responses']
+                     + _physics_timing['ball_ball'])
+        if any(_b.active and not _b.has_exploded for _b in balls):
+            collision_stats['ball_substeps'] += 1
+        _t_bp0 = time.perf_counter()
         _ballpair_hit = {}
         _ballpair_rows = []
         for _pb in balls:
@@ -21772,20 +21832,27 @@ try:
                     _row = len(_ballpair_rows)
                     if _row >= MAX_COLLISION_PAIRS:
                         break
-                    pair_check_data[_row, 0] = _pbb.x
-                    pair_check_data[_row, 1] = _pbb.z
-                    pair_check_data[_row, 2] = _pbb.y
-                    pair_check_data[_row, 3] = _pb.x
-                    pair_check_data[_row, 4] = _pb.z
-                    pair_check_data[_row, 5] = _pb.y
-                    pair_check_colors[_row, 0] = _pbb.color
-                    pair_check_colors[_row, 1] = _pb.color
+                    # P1 fill fix: stage in numpy (~ns/write), NOT the Taichi
+                    # fields (~26us/write through the runtime)
+                    _pair_np_data[_row, 0] = _pbb.x
+                    _pair_np_data[_row, 1] = _pbb.z
+                    _pair_np_data[_row, 2] = _pbb.y
+                    _pair_np_data[_row, 3] = _pb.x
+                    _pair_np_data[_row, 4] = _pb.z
+                    _pair_np_data[_row, 5] = _pb.y
+                    _pair_np_colors[_row, 0] = _pbb.color
+                    _pair_np_colors[_row, 1] = _pb.color
                     _ballpair_rows.append((_pb.index, _ps))
         if _ballpair_rows:
+            pair_check_data.from_numpy(_pair_np_data)
+            pair_check_colors.from_numpy(_pair_np_colors)
             check_collision_pairs_kernel(len(_ballpair_rows))
             _bp_results = pair_check_result.to_numpy()
             for _ri, (_rbi, _rps) in enumerate(_ballpair_rows):
                 _ballpair_hit[(_rbi, _rps)] = int(_bp_results[_ri])
+            collision_stats['ball_batch_launches'] += 1
+            collision_stats['ball_batch_rows'] += len(_ballpair_rows)
+        _physics_timing['ball_batch_check'] += (time.perf_counter() - _t_bp0) * 1000
 
         for _mb_ball in balls:  # MB1c: per-ball physics + goal + beetle collision
             if not _mb_ball.active or _mb_ball.has_exploded:
@@ -21948,24 +22015,51 @@ try:
                 # Movement gate (FPS fix #2): a mid-tick re-stamp below the
                 # stamp's own voxel quantization is 2 wasted kernel launches
                 # per ball per substep — skip until it moves/rotates enough
+                # P1 stamp gate (ball_perf_plan.md P0 data): each stamp is
+                # ~1.5ms of CPU kernel time and only 0.31 of the 1.54
+                # stamps/substep were for pairs in actual CONTACT. In contact:
+                # keep the tight gates (fresh grid under grinding/standing-on
+                # beetles). Close but NOT touching: relax to ~1 voxel — the
+                # grid position trails a fast approach by <1 voxel (detection
+                # fires one substep later at worst), slow near-beetle rolling
+                # mostly stops stamping. Stamp staleness precedent accepted.
+                _in_contact_p = any(
+                    _ballpair_hit.get((_mb_ball.index, _cs2), 0)
+                    for _cs2 in range(active_player_count))
+                _pos_gate = 0.35 if _in_contact_p else 1.0
+                _rot_gate = 0.06 if _in_contact_p else 0.25
                 _lms = getattr(_mb_ball, 'last_midtick_stamp', None)
                 _needs_stamp = True
                 if _lms is not None:
                     _needs_stamp = (abs(_mb_ball.x - _lms[0]) + abs(_mb_ball.y - _lms[1])
-                                    + abs(_mb_ball.z - _lms[2]) > 0.35
+                                    + abs(_mb_ball.z - _lms[2]) > _pos_gate
                                     or abs(_mb_ball.rotation - _lms[3])
                                     + abs(_mb_ball.pitch - _lms[4])
-                                    + abs(_mb_ball.roll - _lms[5]) > 0.06)
+                                    + abs(_mb_ball.roll - _lms[5]) > _rot_gate)
                 if not _mb_ball.has_exploded and not _ball_parked_p and _needs_stamp:
+                    _t_stamp = time.perf_counter()
                     clear_and_render_ball_fast(_mb_ball, _mb_ball.x, _mb_ball.y, _mb_ball.z, _mb_ball.rotation, _mb_ball.pitch, _mb_ball.roll)
+                    if PERF_SYNC_MODE:
+                        ti.sync()  # bill the GPU cost here, not to the next sync point
+                    _physics_timing['ball_midtick_stamps'] += (time.perf_counter() - _t_stamp) * 1000
+                    collision_stats['ball_stamps'] += 1
                     _mb_ball.last_midtick_stamp = (_mb_ball.x, _mb_ball.y, _mb_ball.z,
                                                    _mb_ball.rotation, _mb_ball.pitch, _mb_ball.roll)
+                else:
+                    collision_stats['ball_stamp_skips'] += 1
                 # Run ball collision only for close beetles (skip if beetle is falling)
                 _bpx, _bpy, _bpz = _mb_ball.x, _mb_ball.y, _mb_ball.z
+                # P0: response time = beetle_collision minus the manifold time
+                # it accumulates internally (manifold has its own timer)
+                _t_resp = time.perf_counter()
+                _mani_before = _physics_timing['ball_manifold']
                 for slot in range(active_player_count):
                     if close_to_ball[slot] and not beetles[slot].is_falling:
                         beetle_collision(beetles[slot], _mb_ball, physics_params,
                                          precomputed_collision=_ballpair_hit[(_mb_ball.index, slot)])
+                        collision_stats['ball_resp_calls'] += 1
+                _physics_timing['ball_responses'] += ((time.perf_counter() - _t_resp) * 1000
+                                                      - (_physics_timing['ball_manifold'] - _mani_before))
                 # Anti-teleport governor: pushes from MULTIPLE beetles in one
                 # substep stack with conflicting normals (net = a jump). Cap
                 # the ball's total positional correction per substep;
@@ -21986,6 +22080,7 @@ try:
         # reads — perf cost is noise. Air-air, air-ground, landing-on-top
         # all emerge from the 3D center-line; no special cases.
         if len(balls) > 1:
+            _t_bball = time.perf_counter()
             for _bbi in range(len(balls) - 1):
                 for _bbj in range(_bbi + 1, len(balls)):
                     _ba = balls[_bbi]
@@ -21993,6 +22088,7 @@ try:
                     if (not _ba.active or not _bb.active
                             or _ba.has_exploded or _bb.has_exploded):
                         continue
+                    collision_stats['ball_ball_checks'] += 1
                     _ddx = _bb.x - _ba.x
                     _ddy = _bb.y - _ba.y
                     _ddz = _bb.z - _ba.z
@@ -22096,10 +22192,19 @@ try:
                     _bb.x += _sbx
                     _bb.y += _sby
                     _bb.z += _sbz
+            _physics_timing['ball_ball'] += (time.perf_counter() - _t_bball) * 1000
 
         # === BALL PHYSICS TIMING END ===
         _t_ball_end = time.perf_counter()
         _physics_timing['ball_physics'] += (_t_ball_end - _t_beetle_phys_end) * 1000
+        # P0: ball_misc = this substep's ball section time minus what the
+        # sub-timers claimed (integration/friction/rest latch, goal detection,
+        # governor, dust). ball_responses already excludes manifold, so the
+        # sum below counts each wall-clock slice exactly once
+        _bp0_sub = (_physics_timing['ball_batch_check'] + _physics_timing['ball_midtick_stamps']
+                    + _physics_timing['ball_manifold'] + _physics_timing['ball_responses']
+                    + _physics_timing['ball_ball']) - _bp0_snap
+        _physics_timing['ball_misc'] += max(0.0, (_t_ball_end - _t_beetle_phys_end) * 1000 - _bp0_sub)
 
         # === DEBRIS UPDATE ===
         _t_debris_start = time.perf_counter()
@@ -24438,15 +24543,18 @@ try:
                         _active_pairs.append((i, j))
             if _active_pairs:
                 _t_batch_start = time.perf_counter()
+                # P1 fill fix: numpy staging + one upload (see field defs)
                 for _pi, (_bi, _bj) in enumerate(_active_pairs):
-                    pair_check_data[_pi, 0] = beetles[_bi].x
-                    pair_check_data[_pi, 1] = beetles[_bi].z
-                    pair_check_data[_pi, 2] = beetles[_bi].y
-                    pair_check_data[_pi, 3] = beetles[_bj].x
-                    pair_check_data[_pi, 4] = beetles[_bj].z
-                    pair_check_data[_pi, 5] = beetles[_bj].y
-                    pair_check_colors[_pi, 0] = beetles[_bi].color
-                    pair_check_colors[_pi, 1] = beetles[_bj].color
+                    _pair_np_data[_pi, 0] = beetles[_bi].x
+                    _pair_np_data[_pi, 1] = beetles[_bi].z
+                    _pair_np_data[_pi, 2] = beetles[_bi].y
+                    _pair_np_data[_pi, 3] = beetles[_bj].x
+                    _pair_np_data[_pi, 4] = beetles[_bj].z
+                    _pair_np_data[_pi, 5] = beetles[_bj].y
+                    _pair_np_colors[_pi, 0] = beetles[_bi].color
+                    _pair_np_colors[_pi, 1] = beetles[_bj].color
+                pair_check_data.from_numpy(_pair_np_data)
+                pair_check_colors.from_numpy(_pair_np_colors)
                 check_collision_pairs_kernel(len(_active_pairs))
                 _pair_results = pair_check_result.to_numpy()  # single sync for all pairs
                 collision_stats['batch_check_ms'].append((time.perf_counter() - _t_batch_start) * 1000)
