@@ -12043,8 +12043,12 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
 
             simulation.debris_pos[idx] = ti.math.vec3(spawn_x, pos_y, spawn_z)
 
-            # Kick outward at 45° angle - consistent speed for smooth motion
-            particle_speed = speed * (1.1 - ti.cast(i, ti.f32) * 0.04)  # Slight falloff, more uniform
+            # Kick outward at 45° angle - consistent speed for smooth motion.
+            # Falloff NORMALIZED by count (2026-07-18): the old per-index
+            # -0.04 was tuned for ~8 particles — at 22/touchdown the tail
+            # particles got 26% speed, tanking the batch's visible speed
+            # exactly when counts scale up. Same 1.1->0.78 range at any count
+            particle_speed = speed * (1.1 - ti.cast(i, ti.f32) / ti.cast(num_particles, ti.f32) * 0.32)
             rand_speed = particle_speed * (0.9 + ti.random() * 0.2)  # Less speed variance for smoother look
             cone_mult = 1.0 + (height_mult - 1.0) * 0.08  # Gently widen cone with speed (±40° to ±80° at max)
             rand_angle = (ti.random() - 0.5) * 1.33 * cone_mult  # Base ±40°, widens with speed
@@ -12056,7 +12060,16 @@ def spawn_leg_dust_staggered(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
             # Dust color with slight variation
             color_var = 0.95 + ti.random() * 0.1
             simulation.debris_material[idx] = ti.math.vec3(color_r * color_var, color_g * color_var, color_b * color_var)
-            simulation.debris_lifetime[idx] = 0.5 + ti.random() * 0.2  # 0.5-0.7s to complete full arc back to ground
+            # Lifetime variation: most complete their arc in 0.5-0.75s,
+            # ~20% are stragglers — ALL gone by 0.9s (user cap 2026-07-18;
+            # 1.3s stragglers hung around too long). Variation still breaks
+            # the synchronized-blink vanish
+            # (Speed-scaled lifetime tried + reverted 2026-07-18 — lasted
+            # too long; trail length comes from SPEED, all gone by ~0.9s)
+            _dust_life = 0.5 + ti.random() * 0.25
+            if ti.random() < 0.2:
+                _dust_life += 0.05 + ti.random() * 0.10
+            simulation.debris_lifetime[idx] = _dust_life
 
 @ti.kernel
 def spawn_spin_dust_puff(pos_x: ti.f32, pos_y: ti.f32, pos_z: ti.f32,
@@ -16154,6 +16167,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
         # full-strength impulses arrived as jittery bursts). Any body/horn
         # voxel in the contact restores full force automatically.
         leg_contact_scale = 1.0 if _cpk[8] > 0.5 else params.get("LEG_CONTACT_FORCE", 0.35)
+        # Set by the advantage-lift branches: the lift WINNER takes reduced
+        # recoil from this pair's impulses (see LIFT_RECOIL at the apply site)
+        _lift_winner = 0
         # Pair tip weight: strongest TIP_FACTOR among the sides whose tip
         # voxels are actually in this contact (bystander tips: neither flag
         # set -> factor 0 -> no escalation from someone else's horn)
@@ -17282,6 +17298,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _f = lift_force_full / LIFT_STEP_DIV
                         b2.pending_lift += min(_f, 12.0 / LIFT_STEP_DIV)
                         b1.vy -= lift_impulse * 0.03 / LIFT_STEP_DIV  # Reaction
+                        _lift_winner = 1  # b1 braced under the load — reduced recoil
+                        # (Continuous lift-shove tried + REVERTED same day
+                        # 2026-07-18 — "too reactive"; git history if revisited)
 
                         world_lever_x = collision_x - b2.x
                         world_lever_z = collision_z - b2.z
@@ -17296,6 +17315,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _f = lift_force_full / LIFT_STEP_DIV
                         b1.pending_lift += min(_f, 12.0 / LIFT_STEP_DIV)
                         b2.vy -= lift_impulse * 0.03 / LIFT_STEP_DIV  # Reaction
+                        _lift_winner = 2  # b2 braced under the load — reduced recoil
 
                         world_lever_x = collision_x - b1.x
                         world_lever_z = collision_z - b1.z
@@ -17881,6 +17901,18 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _b2_scale = _recoil
                     else:
                         _b1_scale = _recoil
+                # LIFT RECOIL (2026-07-18, equal-mass asymmetry fix): the
+                # active lift WINNER is braced under the load — it takes
+                # reduced recoil from this pair, the same pattern that fixed
+                # ball pokes shoving the poker (BALL_BEETLE_RECOIL). The
+                # victim's received force is UNCHANGED; the winner just stops
+                # being pushed back by its own throw. 1.0 = symmetric (off)
+                elif _lift_winner != 0:
+                    _lr = params.get("LIFT_RECOIL", 0.4)
+                    if _lift_winner == 1:
+                        _b1_scale = _lr
+                    else:
+                        _b2_scale = _lr
                 # Horn-contact vertical is PER SIDE: only airborne recipients
                 # take it (see AIR NUDGE above); grounded stays lift-owned
                 _iy1 = impulse_y
@@ -17941,6 +17973,21 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         if getattr(b2, 'knockback_timer', 0.0) <= 0.0 and _ram_pop > 0.0:
                             b2.pending_lift += min(_imp_h * _b2_scale * _ram_pop, _ram_cap)
                         b2.knockback_timer = _kb_grace
+
+                # RUN-INTO-BALL DUST (2026-07-17): a real beetle hit on the
+                # ball kicks a dust puff at the contact — same spawner and
+                # cooldown as the floor-bounce dust, scaling with hit
+                # strength. Near-ground only (a puff floating in the air at
+                # a mid-air volley would look wrong)
+                if is_ball_collision and impulse > 5.0:
+                    _bd_ball = b1 if b1.horn_type == "ball" else b2
+                    if (globals().get('ball_dust_cooldown', 0.0) <= 0.0
+                            and _bd_ball.y - _bd_ball.radius < 3.0):
+                        spawn_ball_bounce_dust(float(_bd_ball.x),
+                                               RENDER_Y_OFFSET + 0.5,
+                                               float(_bd_ball.z),
+                                               float(abs(impulse)), _bd_ball.radius, 5.0)
+                        globals()['ball_dust_cooldown'] = 0.15
 
                 # Calculate and apply torque (angular impulse)
                 # Torque = r × F (cross product in 2D: rx*Fz - rz*Fx)
@@ -19290,6 +19337,7 @@ physics_params = {
     "KNOCKBACK_CAP": 12.0,  # FLOOR of the knockback carry ceiling. The ceiling TRACKS each hit (95% of transferred momentum, min this) — full charges carry fully, chained hits take the chain max (never additive). 2026-07-17
     "RAM_POP": 0.2,  # One-shot lift per unit of transferred hit momentum (fresh hits only — one pop per grace window). Makes charge speed COUNT vertically; 0 = off
     "RAM_POP_CAP": 3.5,  # Max queued lift from a single ram pop
+    "LIFT_RECOIL": 0.18,  # Recoil scale on the ACTIVE lift winner (braced under the load; ball-recoil pattern). 0.4→0.18 user tune 2026-07-18. 1.0 = old symmetric feel
     "KNOCKBACK_GRACE": 0.5,  # Seconds of raised cap floor after a real hit (impulse > 6 u/s)
     "AIR_NUDGE_CAP": 5.0,  # Per-hit vertical impulse cap on AIRBORNE horn-contact recipients (natural mid-air nudges; 0 = old no-vertical behavior)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
@@ -24290,11 +24338,20 @@ try:
         if b.active and b.y < 5.0:  # Only when on/near ground (within 5 voxels)
             # Walking: legs kick dust on touchdown (back legs when forward, front legs when backward)
             if b.is_moving and not b.is_rotating_only:
-                # Scale dust particles with speed bonus (more dust when going faster)
-                active_bonus = b.backward_bonus if b.is_moving_backward else b.forward_bonus
-                # Spider has fewer base particles (slower base speed)
+                # Scale dust with ACTUAL speed (2026-07-17: was hold-bonus
+                # based — a wiped bonus or carried momentum showed base dust
+                # at full speed; true speed reads honestly everywhere).
+                # Slightly raised floor so ordinary walking is visible too
+                # Fraction keys on the RAMP portion (base speed -> full
+                # charge), NOT absolute speed — beetles hit base ~7 almost
+                # instantly, so a 0-based fraction put "first steps" at 40%
+                # intensity already (2026-07-17 iteration: starts flat now)
+                _spd_frac = max(0.0, min((math.sqrt(b.vx * b.vx + b.vz * b.vz) - 6.0) / 11.5, 1.0))
+                # Spider has fewer base particles (slower base speed).
+                # Count range widened 2026-07-18: slow steps ~5 particles,
+                # full ramp same 22 max — the trail THICKENS with the ramp
                 base_dust = 4 if b.horn_type_id == 6 else 8
-                dust_count = int(base_dust * (1.0 + active_bonus))
+                dust_count = max(2, int(base_dust * (0.6 + _spd_frac * 2.15)))
                 # Use front legs (0,1) when backward, back legs (4,5 + 6,7 for scorpion) when forward
                 if b.is_moving_backward:
                     dust_legs = [0, 1]  # Front legs
@@ -24329,9 +24386,29 @@ try:
                             # Per-leg random offset for variety
                             rand_x = (random.random() - 0.5) * 1.5
                             rand_z = (random.random() - 0.5) * 1.5
-                            # Height scales with speed bonus: 1.0 at base, 1.5 at max (50% higher)
-                            height_mult = 1.0 + active_bonus * 8.57
-                            spawn_leg_dust_staggered(tip_x, RENDER_Y_OFFSET + 0.5, tip_z, dir_x, dir_z, DUST_SPEED_WALK,
+                            # Height scales with ACTUAL speed: ~3.75 at a slow
+                            # walk, ~6 at base speed, ~12.7 at full ramp (old
+                            # curve was bonus-driven: 1.0 flat until the ramp
+                            # built, ~13.9 only at max hold)
+                            # Start LOW, cap unchanged (2026-07-17 iterations:
+                            # slow steps should SKIM the ground — dust sinks
+                            # near the floor and barely hops — then rise with
+                            # speed to the full ~12.75 rooster-tail)
+                            # SQUARED height curve, LOW cap (2026-07-18: the
+                            # old fountain angle was ~79 deg at full charge —
+                            # "too fucking high, not enough back". Now tops
+                            # out ~43 deg: a long LOW trail. NOTE vy = kick
+                            # speed x 0.364 x height_mult, so horizontal
+                            # boosts raise height too — height cap compensates
+                            height_mult = 0.35 + _spd_frac * _spd_frac * 2.2
+                            # Horizontal kick is the star now: ~3.85x at full
+                            # ramp (dust RACES backward instead of climbing;
+                            # slope 1.9→2.4→3.0 2026-07-18 — trail length
+                            # comes from SPEED, not lifetime)
+                            _dust_spd = DUST_SPEED_WALK * (0.65 + _spd_frac * 3.2)
+                            # Spawn height sinks toward the floor at low speed
+                            _dust_y = RENDER_Y_OFFSET + 0.15 + _spd_frac * 0.62
+                            spawn_leg_dust_staggered(tip_x, _dust_y, tip_z, dir_x, dir_z, _dust_spd,
                                                     DUST_COLOR[0], DUST_COLOR[1], DUST_COLOR[2], rand_x, rand_z, stagger_scale, dust_count, height_mult)
 
             # Spinning: spawn dust from back leg on opposite side
@@ -28105,6 +28182,7 @@ try:
             physics_params["KNOCKBACK_CAP"] = window.GUI.slider_float("Knockback Cap", physics_params["KNOCKBACK_CAP"], 5.0, 20.0)
             physics_params["RAM_POP"] = window.GUI.slider_float("Ram Pop", physics_params["RAM_POP"], 0.0, 0.6)
             physics_params["RAM_POP_CAP"] = window.GUI.slider_float("Ram Pop Cap", physics_params["RAM_POP_CAP"], 0.0, 8.0)
+            physics_params["LIFT_RECOIL"] = window.GUI.slider_float("Lift Recoil", physics_params["LIFT_RECOIL"], 0.0, 1.0)
             physics_params["KNOCKBACK_GRACE"] = window.GUI.slider_float("Knockback Grace", physics_params["KNOCKBACK_GRACE"], 0.0, 1.5)
             physics_params["AIR_NUDGE_CAP"] = window.GUI.slider_float("Air Nudge Cap", physics_params["AIR_NUDGE_CAP"], 0.0, 12.0)
             physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
