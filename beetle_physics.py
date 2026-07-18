@@ -2605,7 +2605,7 @@ def reset_match():
     global blue_pulse_timer, red_pulse_timer, blue_confetti_timer, red_confetti_timer
     global silk_charge_blue, silk_charge_red, silk_might_exist
     global floor_cache_ball
-    global ball_last_render, spray_might_exist
+    global spray_might_exist
     global venom_recharge_timer_blue, venom_recharge_timer_red
     global venom_tip_color_blue, venom_tip_color_red
     global physics_frame
@@ -2705,7 +2705,7 @@ def reset_match():
     floor_cache_ball = (None, None, -1000.0)
 
     # Reset ball render cache (CPU optimization)
-    ball_last_render = (None, None, None, None, None, None)
+    beetle_ball.last_render = (None, None, None, None, None, None)
 
     # Reset spray particles + existence flag. BUG FIX: the flag was cleared
     # WITHOUT clearing the particles - any venom/spray airborne at reset
@@ -3106,25 +3106,34 @@ beetle_ball = Beetle(0.0, 0.0, 0.0, simulation.BALL)  # Soccer ball (center of a
 beetle_ball.horn_type = "ball"  # Special type for sphere rendering
 beetle_ball.active = False  # Ball starts disabled
 beetle_ball.radius = 4.0  # Default ball radius
+
+# MULTI-BALL (plans/multi_ball_plan.md MB1, 2026-07-18): balls[] is the
+# canonical list; beetle_ball is an ALIAS of balls[0] (the beetles[] refactor
+# pattern — old name keeps working while call sites migrate). All per-ball
+# lifecycle state (explosion, assembly, squash, last_render, net_vis_offset,
+# scored_this_fall) lives as ATTRIBUTES on the ball object — the satellite
+# globals + g{} entries were folded in this phase. ball_dust_cooldown stays
+# global on purpose (it rate-limits dust VISUALLY, shared across balls).
+balls = [beetle_ball]
 ball_cache_initialized = False  # Will be initialized when ball is first activated
 
 # Ball mode scoring
 scores[0] = 0
 scores[1] = 0
-ball_scored_this_fall = False  # Prevent multiple scores while ball falling
+beetle_ball.scored_this_fall = False  # Prevent multiple scores while ball falling
 
 # Ball explosion state
-ball_has_exploded = False
-ball_explosion_delay = 0.0  # Delay before particles start spawning
-ball_explosion_timer = 0.0
-ball_explosion_pos_x = 0.0
-ball_explosion_pos_y = 0.0
-ball_explosion_pos_z = 0.0
+beetle_ball.has_exploded = False
+beetle_ball.explosion_delay = 0.0  # Delay before particles start spawning
+beetle_ball.explosion_timer = 0.0
+beetle_ball.explosion_pos_x = 0.0
+beetle_ball.explosion_pos_y = 0.0
+beetle_ball.explosion_pos_z = 0.0
 ball_dust_cooldown = 0.0  # Cooldown timer for bounce dust
-ball_squash_timer = 0.0   # Bounce squash-stretch animation time remaining
-ball_squash_amount = 0.0  # Peak squash of the current bounce (from rebound speed)
-ball_squash_yaw = 0.0     # Impact axis for HORIZONTAL squish (rotated squash frame)
-ball_squash_horiz = False # True = compress along the impact axis; False = classic vertical
+beetle_ball.squash_timer = 0.0   # Bounce squash-stretch animation time remaining
+beetle_ball.squash_amount = 0.0  # Peak squash of the current bounce (from rebound speed)
+beetle_ball.squash_yaw = 0.0     # Impact axis for HORIZONTAL squish (rotated squash frame)
+beetle_ball.squash_horiz = False # True = compress along the impact axis; False = classic vertical
 BALL_SQUASH_DURATION = 0.32  # Seconds: squash -> vertical overshoot -> round (0.22 read too snappy)
 
 # Donut arena mode (hole in the middle)
@@ -3476,7 +3485,7 @@ floor_cache_ball = (None, None, -1000.0)
 # thresholds keep the at-rest skip while rendering all real motion.
 BALL_RENDER_THRESHOLD = 0.02  # Re-render on any perceptible movement
 BALL_ROTATION_THRESHOLD = 0.005  # ~0.3 degrees
-ball_last_render = (None, None, None, None, None, None)
+beetle_ball.last_render = (None, None, None, None, None, None)
 
 # Spray existence flag - skip GPU syncs when no spray exists (CPU optimization)
 spray_might_exist = False  # Set True on spawn, False when count confirmed 0
@@ -4014,8 +4023,8 @@ HOVER_SPIN_SPEED = 1.5  # Goofy spinning speed (radians/sec) - gentle lazy spin
 assembly_spawn = [None] * 4
 
 # Ball assembly animation state (voxel rain effect)
-ball_assembling = False
-ball_assembly_timer = 0.0
+beetle_ball.assembling = False
+beetle_ball.assembly_timer = 0.0
 BALL_ASSEMBLY_DURATION = 3.0  # Time for ball voxels to assemble (slower, more dramatic)
 
 # Track if assembly happened last frame (need one final clear after assembly ends)
@@ -8055,12 +8064,12 @@ def apply_bowl_slide(entity, params):
                     # impact axis is radial; same override arbitration as
                     # the beetle-hit squish
                     _rb_amt = min(0.44, 0.08 + max(0.0, outward_vel - 6.0) / 16.0 * 0.36)  # steeper scale (see beetle side-hit squish)
-                    if (globals()['ball_squash_timer'] <= 0.0
-                            or _rb_amt > globals()['ball_squash_amount']):
-                        globals()['ball_squash_amount'] = _rb_amt
-                        globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
-                        globals()['ball_squash_yaw'] = math.atan2(entity.z, entity.x)
-                        globals()['ball_squash_horiz'] = True
+                    if (beetle_ball.squash_timer <= 0.0
+                            or _rb_amt > beetle_ball.squash_amount):
+                        beetle_ball.squash_amount = _rb_amt
+                        beetle_ball.squash_timer = BALL_SQUASH_DURATION
+                        beetle_ball.squash_yaw = math.atan2(entity.z, entity.x)
+                        beetle_ball.squash_horiz = True
                 else:
                     # Dampen outward velocity (stronger dampening further out).
                     # RAMP MOMENTUM: the ball keeps most of its speed on the
@@ -12699,10 +12708,10 @@ def set_network_ball_mode(active):
         scores[1] = 0
         g['blue_score'] = 0
         g['red_score'] = 0
-        g['ball_scored_this_fall'] = False
-        g['ball_has_exploded'] = False
-        g['ball_explosion_delay'] = 0.0
-        g['ball_explosion_timer'] = 0.0
+        beetle_ball.scored_this_fall = False
+        beetle_ball.has_exploded = False
+        beetle_ball.explosion_delay = 0.0
+        beetle_ball.explosion_timer = 0.0
         beetle_ball.active = True
         queue_arena_switch('ball')
         print("Ball mode ON (from host)")
@@ -16592,9 +16601,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                     _grip = params.get("BALL_BEETLE_BOUNCE_GRIP", 0.6)
                                     intruder.vx = _sfvx + (intruder.vx - _sfvx) * _grip
                                     intruder.vz = _sfvz + (intruder.vz - _sfvz) * _grip
-                                    globals()['ball_squash_amount'] = min(0.44, 0.05 + (_bb_rel - _bb_min) / 35.0 * 0.39)
-                                    globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
-                                    globals()['ball_squash_horiz'] = False
+                                    beetle_ball.squash_amount = min(0.44, 0.05 + (_bb_rel - _bb_min) / 35.0 * 0.39)
+                                    beetle_ball.squash_timer = BALL_SQUASH_DURATION
+                                    beetle_ball.squash_horiz = False
                                 else:
                                     # Settle riding the surface — SYMMETRIC
                                     # within a small band: the old one-sided
@@ -17743,9 +17752,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _grip = params.get("BALL_BEETLE_BOUNCE_GRIP", 0.6)
                         _bb_ball.vx = _bsvx + (_bb_ball.vx - _bsvx) * _grip
                         _bb_ball.vz = _bsvz + (_bb_ball.vz - _bsvz) * _grip
-                        globals()['ball_squash_amount'] = min(0.44, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.39)
-                        globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
-                        globals()['ball_squash_horiz'] = False
+                        beetle_ball.squash_amount = min(0.44, 0.05 + (_bb_impact - _bb_min) / 35.0 * 0.39)
+                        beetle_ball.squash_timer = BALL_SQUASH_DURATION
+                        beetle_ball.squash_horiz = False
                     else:
                         _bb_ball.vy = _bb_svy  # settle riding the surface
                         # CARRY FRICTION (Coulomb-capped): a resting ball
@@ -18011,12 +18020,12 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _hs_h = impulse * math.sqrt(normal_x * normal_x + normal_z * normal_z)
                     if _hs_h > 4.5:
                         _hs_amt = min(0.44, 0.08 + (_hs_h - 4.5) / 14.0 * 0.36)
-                        if (globals()['ball_squash_timer'] <= 0.0
-                                or _hs_amt > globals()['ball_squash_amount']):
-                            globals()['ball_squash_amount'] = _hs_amt
-                            globals()['ball_squash_timer'] = BALL_SQUASH_DURATION
-                            globals()['ball_squash_yaw'] = math.atan2(normal_z, normal_x)
-                            globals()['ball_squash_horiz'] = True
+                        if (beetle_ball.squash_timer <= 0.0
+                                or _hs_amt > beetle_ball.squash_amount):
+                            beetle_ball.squash_amount = _hs_amt
+                            beetle_ball.squash_timer = BALL_SQUASH_DURATION
+                            beetle_ball.squash_yaw = math.atan2(normal_z, normal_x)
+                            beetle_ball.squash_horiz = True
 
                 # RUN-INTO-BALL DUST (2026-07-17): a real beetle hit on the
                 # ball kicks a dust puff at the contact — same spawner and
@@ -18067,8 +18076,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # A beetle hit interrupts any leftover floor-bounce squash:
                     # the 0.32s deformation window often overlapped the next
                     # beetle contact and read as "squishing against the beetle"
-                    if globals()['ball_squash_timer'] > 0.05 and abs(impulse) > 2.0:
-                        globals()['ball_squash_timer'] = 0.05  # fast fade to round
+                    if beetle_ball.squash_timer > 0.05 and abs(impulse) > 2.0:
+                        beetle_ball.squash_timer = 0.05  # fast fade to round
 
                     # Get push and spin multipliers for lighter/heavier ball feel
                     push_mult = params["BALL_PUSH_MULTIPLIER"]
@@ -19525,7 +19534,7 @@ guest_opp_targets = {}
 # Host/offline: never written, stays zero (render subtract is a no-op).
 net_vis_offset = [[0.0, 0.0, 0.0] for _ in range(4)]      # [dx, dy, dz]
 net_vis_rot_offset = [[0.0, 0.0, 0.0] for _ in range(4)]  # [dyaw, dpitch, droll]
-net_ball_vis_offset = [0.0, 0.0, 0.0]
+beetle_ball.net_vis_offset = [0.0, 0.0, 0.0]
 NET_VIS_DECAY = 0.85   # retained per render frame (~4-frame half-life)
 NET_VIS_MAX = 6.0      # = SYNC_SNAP_DIST; bigger jumps still read as snaps
 
@@ -19552,7 +19561,7 @@ def _reset_vis_offsets():
         _v[0] = _v[1] = _v[2] = 0.0
     for _v in net_vis_rot_offset:
         _v[0] = _v[1] = _v[2] = 0.0
-    net_ball_vis_offset[0] = net_ball_vis_offset[1] = net_ball_vis_offset[2] = 0.0
+    beetle_ball.net_vis_offset[0] = beetle_ball.net_vis_offset[1] = beetle_ball.net_vis_offset[2] = 0.0
 
 # Net debug HUD (toggle with N key while in an online session)
 show_net_debug = False
@@ -20052,14 +20061,7 @@ g = {
     'red_score_delay_timer': 0.0,
     'blue_score_pending': 0,
     'red_score_pending': 0,
-    'ball_scored_this_fall': False,
     'goal_scored_by': None,
-    'ball_explosion_delay': 0.0,
-    'ball_explosion_timer': 0.0,
-    'ball_explosion_pos_x': 0.0,
-    'ball_explosion_pos_y': 0.0,
-    'ball_explosion_pos_z': 0.0,
-    'ball_has_exploded': False,
 }
 
 # Hover-to-spawn state (beetle flies from center to safe spawn point in donut mode)
@@ -20787,7 +20789,7 @@ try:
                 beetle_ball.pitch_velocity = 0.0
                 beetle_ball.roll_velocity = 0.0
                 # Respawn is a deliberate teleport - don't glide it
-                net_ball_vis_offset[0] = net_ball_vis_offset[1] = net_ball_vis_offset[2] = 0.0
+                beetle_ball.net_vis_offset[0] = beetle_ball.net_vis_offset[1] = beetle_ball.net_vis_offset[2] = 0.0
                 print(f"Ball respawn detected (Y jump: {y_diff:.1f}), snapping to spawn")
             else:
                 # Bank the lerp step as a visual offset - the ball was the
@@ -20798,9 +20800,9 @@ try:
                 beetle_ball.x += _bdx
                 beetle_ball.y += _bdy
                 beetle_ball.z += _bdz
-                net_ball_vis_offset[0] = max(-NET_VIS_MAX, min(NET_VIS_MAX, net_ball_vis_offset[0] + _bdx))
-                net_ball_vis_offset[1] = max(-NET_VIS_MAX, min(NET_VIS_MAX, net_ball_vis_offset[1] + _bdy))
-                net_ball_vis_offset[2] = max(-NET_VIS_MAX, min(NET_VIS_MAX, net_ball_vis_offset[2] + _bdz))
+                beetle_ball.net_vis_offset[0] = max(-NET_VIS_MAX, min(NET_VIS_MAX, beetle_ball.net_vis_offset[0] + _bdx))
+                beetle_ball.net_vis_offset[1] = max(-NET_VIS_MAX, min(NET_VIS_MAX, beetle_ball.net_vis_offset[1] + _bdy))
+                beetle_ball.net_vis_offset[2] = max(-NET_VIS_MAX, min(NET_VIS_MAX, beetle_ball.net_vis_offset[2] + _bdz))
                 # Adopt host velocities so prediction between syncs tracks
                 beetle_ball.vx = host_ball['vx']
                 beetle_ball.vy = host_ball['vy']
@@ -21107,8 +21109,10 @@ try:
         # Save previous state for interpolation
         for _slot in range(active_player_count):
             beetles[_slot].save_previous_state()
-        if beetle_ball.active:
-            beetle_ball.save_previous_state()
+        for _mb_ball in balls:  # MB1: per-ball prev-state save
+            if not _mb_ball.active:
+                continue
+            _mb_ball.save_previous_state()
         # Save spray aim for interpolation
         prev_spray_aim[0] = spray_aim[0]
         prev_spray_aim[1] = spray_aim[1]
@@ -21586,13 +21590,13 @@ try:
         # NOTE: direct module global — `g` is NOT globals() at this point
         if ball_dust_cooldown > 0.0:
             ball_dust_cooldown -= PHYSICS_TIMESTEP
-        if beetle_ball.active and not g['ball_has_exploded']:
+        if beetle_ball.active and not beetle_ball.has_exploded:
             # If ball has scored, just apply gravity and let it fall (no collisions/bounces).
             # Horizontal motion CONTINUES — freezing vx/vz here used to be
             # invisible (score fired at y<-10), but with early detection at
             # y<-3 a ball arcing to the BACK of the goal visibly stopped dead
             # at the pit mouth and dropped at the front
-            if g['ball_scored_this_fall']:
+            if beetle_ball.scored_this_fall:
                 beetle_ball.vy -= physics_params["GRAVITY"] * PHYSICS_TIMESTEP
                 beetle_ball.y += beetle_ball.vy * PHYSICS_TIMESTEP
                 beetle_ball.x += beetle_ball.vx * PHYSICS_TIMESTEP
@@ -21693,10 +21697,10 @@ try:
             # 6-voxel window before crossing |x|=32, and once exploded the
             # detection block never runs again (goal silently missed)
             if is_host_or_local_ball and beetle_ball.y < -3:  # Below floor = only the pits are down here
-                if not g['ball_scored_this_fall']:  # Only score once per fall
+                if not beetle_ball.scored_this_fall:  # Only score once per fall
                     if abs(beetle_ball.z) < goal_pit_half_width:  # In goal lane (z is centered at 0 in physics space)
                         if beetle_ball.x < -30:  # Blue goal pit (west, incl. mouth corners) - RED scores
-                            g['ball_scored_this_fall'] = True
+                            beetle_ball.scored_this_fall = True
                             g['goal_scored_by'] = "RED"
                             g['goal_celebration_timer'] = 0.0
                             if g['red_score_delay_timer'] <= 0:
@@ -21707,7 +21711,7 @@ try:
                             print(f"RED SCORES!")
                             simulation.trigger_stadium_excitement()
                         elif beetle_ball.x > 30:  # Red goal pit (east, incl. mouth corners) - BLUE scores
-                            g['ball_scored_this_fall'] = True
+                            beetle_ball.scored_this_fall = True
                             g['goal_scored_by'] = "BLUE"
                             g['goal_celebration_timer'] = 0.0
                             if g['blue_score_delay_timer'] <= 0:
@@ -21717,7 +21721,7 @@ try:
                                 network_manager.send_score(0, score_type=1)  # Blue scores (ball goal)
                             print(f"BLUE SCORES!")
                             simulation.trigger_stadium_excitement()
-            # NOTE: ball_scored_this_fall is only reset on ball respawn, not when ball goes above ground
+            # NOTE: beetle_ball.scored_this_fall is only reset on ball respawn, not when ball goes above ground
             # This prevents double-scoring if ball bounces in the goal pit
 
             # Ball-beetle collision (uses same collision system as beetle-beetle)
@@ -21746,7 +21750,7 @@ try:
                                   and beetle_ball.angular_velocity == 0.0
                                   and beetle_ball.pitch_velocity == 0.0
                                   and beetle_ball.roll_velocity == 0.0)
-                if not g['ball_has_exploded'] and not _ball_parked_p:
+                if not beetle_ball.has_exploded and not _ball_parked_p:
                     clear_and_render_ball_fast(beetle_ball.x, beetle_ball.y, beetle_ball.z, beetle_ball.rotation, beetle_ball.pitch, beetle_ball.roll)
                 # Run ball collision only for close beetles (skip if beetle is falling)
                 _bpx, _bpy, _bpz = beetle_ball.x, beetle_ball.y, beetle_ball.z
@@ -22146,7 +22150,7 @@ try:
                     g['red_score_pending'] += 1
                     # Ball goal state (only for ball goals, not beetle deaths)
                     if not is_beetle_death and beetle_ball.active:
-                        g['ball_scored_this_fall'] = True
+                        beetle_ball.scored_this_fall = True
                         g['goal_scored_by'] = "RED"
                         g['goal_celebration_timer'] = 0.0
                     print(f"RED SCORES! ({'death' if is_beetle_death else 'ball goal'} from host)")
@@ -22179,7 +22183,7 @@ try:
                     g['blue_score_pending'] += 1
                     # Ball goal state (only for ball goals, not beetle deaths)
                     if not is_beetle_death and beetle_ball.active:
-                        g['ball_scored_this_fall'] = True
+                        beetle_ball.scored_this_fall = True
                         g['goal_scored_by'] = "BLUE"
                         g['goal_celebration_timer'] = 0.0
                     print(f"BLUE SCORES! ({'death' if is_beetle_death else 'ball goal'} from host)")
@@ -22573,39 +22577,39 @@ try:
         # Ball explosion - trigger when ball falls to same level as beetles
         # Host-authoritative: only host detects, then sends to guest
         g = globals()
-        if is_host_or_local and beetle_ball.active and not g['ball_has_exploded'] and beetle_ball.y < EXPLOSION_TRIGGER_Y:
+        if is_host_or_local and beetle_ball.active and not beetle_ball.has_exploded and beetle_ball.y < EXPLOSION_TRIGGER_Y:
             # Start ball explosion - store position
-            g['ball_explosion_pos_x'] = beetle_ball.x
-            g['ball_explosion_pos_y'] = beetle_ball.y + 30.0  # Same offset as beetles
-            g['ball_explosion_pos_z'] = beetle_ball.z
-            g['ball_explosion_delay'] = 0.02  # Slightly shorter delay than beetles
-            g['ball_explosion_timer'] = EXPLOSION_DURATION
-            g['ball_has_exploded'] = True
+            beetle_ball.explosion_pos_x = beetle_ball.x
+            beetle_ball.explosion_pos_y = beetle_ball.y + 30.0  # Same offset as beetles
+            beetle_ball.explosion_pos_z = beetle_ball.z
+            beetle_ball.explosion_delay = 0.02  # Slightly shorter delay than beetles
+            beetle_ball.explosion_timer = EXPLOSION_DURATION
+            beetle_ball.has_exploded = True
             # Network mode: host sends ball explode event to guest
             if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.is_host:
-                network_manager.send_ball_explode(g['ball_explosion_pos_x'], g['ball_explosion_pos_y'], g['ball_explosion_pos_z'])
+                network_manager.send_ball_explode(beetle_ball.explosion_pos_x, beetle_ball.explosion_pos_y, beetle_ball.explosion_pos_z)
             print("BALL EXPLOSION!")
 
         # Guest-side ball explosion (triggered after receiving explode event from host)
         if game_state == GAME_STATE_ONLINE_PLAY and network_manager and network_manager.pending_ball_explode:
             explode = network_manager.pending_ball_explode
             network_manager.pending_ball_explode = None  # Consume it
-            if beetle_ball.active and not g['ball_has_exploded']:
+            if beetle_ball.active and not beetle_ball.has_exploded:
                 # Use position from host
-                g['ball_explosion_pos_x'] = explode['x']
-                g['ball_explosion_pos_y'] = explode['y']
-                g['ball_explosion_pos_z'] = explode['z']
-                g['ball_explosion_delay'] = 0.02
-                g['ball_explosion_timer'] = EXPLOSION_DURATION
-                g['ball_has_exploded'] = True
+                beetle_ball.explosion_pos_x = explode['x']
+                beetle_ball.explosion_pos_y = explode['y']
+                beetle_ball.explosion_pos_z = explode['z']
+                beetle_ball.explosion_delay = 0.02
+                beetle_ball.explosion_timer = EXPLOSION_DURATION
+                beetle_ball.has_exploded = True
                 print("BALL EXPLOSION (from host)!")
 
         # Continue spawning ball particles during explosion (after delay)
-        if g['ball_has_exploded']:
-            if g['ball_explosion_delay'] > 0.0:
-                g['ball_explosion_delay'] -= PHYSICS_TIMESTEP
+        if beetle_ball.has_exploded:
+            if beetle_ball.explosion_delay > 0.0:
+                beetle_ball.explosion_delay -= PHYSICS_TIMESTEP
                 # Hide ball when delay expires (right as particles start)
-                if g['ball_explosion_delay'] <= 0.0:
+                if beetle_ball.explosion_delay <= 0.0:
                     beetle_ball.visible = False
                     # Clear ball voxels
                     if ball_last_rendered[None] == 1:
@@ -22613,17 +22617,17 @@ try:
                         if num_voxels > 0:
                             clear_ball_fast(ball_last_grid_x[None], ball_last_grid_y[None], ball_last_grid_z[None], num_voxels)
                         ball_last_rendered[None] = 0
-            elif g['ball_explosion_timer'] > 0.0:
-                g['ball_explosion_timer'] = g['ball_explosion_timer'] - PHYSICS_TIMESTEP
+            elif beetle_ball.explosion_timer > 0.0:
+                beetle_ball.explosion_timer = beetle_ball.explosion_timer - PHYSICS_TIMESTEP
                 # Calculate which batch to spawn
-                progress = 1.0 - (g['ball_explosion_timer'] / EXPLOSION_DURATION)
+                progress = 1.0 - (beetle_ball.explosion_timer / EXPLOSION_DURATION)
                 particles_spawned = int(progress * TOTAL_PARTICLES)
                 batch_offset = max(0, particles_spawned - PARTICLES_PER_FRAME)
                 batch_size = min(PARTICLES_PER_FRAME, TOTAL_PARTICLES - batch_offset)
 
                 if batch_size > 0:
-                    spawn_ball_explosion_batch(g['ball_explosion_pos_x'], g['ball_explosion_pos_y'],
-                                              g['ball_explosion_pos_z'],
+                    spawn_ball_explosion_batch(beetle_ball.explosion_pos_x, beetle_ball.explosion_pos_y,
+                                              beetle_ball.explosion_pos_z,
                                               batch_offset, batch_size, TOTAL_PARTICLES)
 
         # === DEATH/EXPLOSIONS TIMING END ===
@@ -22635,7 +22639,7 @@ try:
         # thing that respawns the ball, so run the same timeline with a
         # neutral "scorer" — "NOBODY" matches neither BLUE nor RED, so the
         # confetti/pulse branches stay silent and only assembly+respawn run
-        if (g['ball_has_exploded'] and g['goal_scored_by'] is None
+        if (beetle_ball.has_exploded and g['goal_scored_by'] is None
                 and not beetle_ball.visible):
             g['goal_scored_by'] = "NOBODY"
             g['goal_celebration_timer'] = ASSEMBLY_START_TIME  # Straight to assembly
@@ -22663,17 +22667,17 @@ try:
             CELEBRATION_DURATION = 4.0  # Total celebration time
 
             # Start ball assembly animation at 2.5 seconds into celebration
-            if g['goal_celebration_timer'] >= ASSEMBLY_START_TIME and not g['ball_assembling']:
+            if g['goal_celebration_timer'] >= ASSEMBLY_START_TIME and not beetle_ball.assembling:
                 # Initialize ball cache for assembly animation if not already done
                 if ball_cache_size[None] == 0:
                     init_ball_cache(beetle_ball.radius)
-                g['ball_assembling'] = True
-                g['ball_assembly_timer'] = 0.0
+                beetle_ball.assembling = True
+                beetle_ball.assembly_timer = 0.0
                 print("Ball assembly started!")
 
             # Update ball assembly timer during assembly
-            if g['ball_assembling']:
-                g['ball_assembly_timer'] += PHYSICS_TIMESTEP
+            if beetle_ball.assembling:
+                beetle_ball.assembly_timer += PHYSICS_TIMESTEP
 
             if g['goal_celebration_timer'] >= CELEBRATION_DURATION:
                 g['goal_scored_by'] = None
@@ -22686,12 +22690,12 @@ try:
                 blue_confetti_timer = 0.0
                 red_confetti_timer = 0.0
                 # Reset ball for next round - respawn at center
-                g['ball_has_exploded'] = False
-                g['ball_explosion_delay'] = 0.0
-                g['ball_explosion_timer'] = 0.0
-                g['ball_assembling'] = False
-                g['ball_assembly_timer'] = 0.0
-                g['ball_scored_this_fall'] = False  # Reset score flag for new ball
+                beetle_ball.has_exploded = False
+                beetle_ball.explosion_delay = 0.0
+                beetle_ball.explosion_timer = 0.0
+                beetle_ball.assembling = False
+                beetle_ball.assembly_timer = 0.0
+                beetle_ball.scored_this_fall = False  # Reset score flag for new ball
                 beetle_ball.x = 0.0
                 beetle_ball.y = 22.5  # Beetle drop height + 6 (assembly ghost matches below)
                 beetle_ball.z = 0.0
@@ -23841,22 +23845,24 @@ try:
                     # ledge is not "in the air" and must not trigger the slow
                     pass
         # Ball floor collision (same as beetles, but skip in goal pit areas)
-        if beetle_ball.active:
+        for _mb_ball in balls:  # MB1: per-ball floor collision
+            if not _mb_ball.active:
+                continue
             # Check if ball is in goal pit area (no floor there) — with rounded corners
             goal_pit_half_width = 12
-            near_goal_margin = beetle_ball.radius  # Ball edge can be over pit while center isn't
-            az = abs(beetle_ball.z)
+            near_goal_margin = _mb_ball.radius  # Ball edge can be over pit while center isn't
+            az = abs(_mb_ball.z)
             in_goal_pit = False
             near_goal_pit = False
 
             # Pit with rounded corners (world coords: blue at x<=-32, red at x>=32)
             corner_r = 5.0
-            if az < goal_pit_half_width and (beetle_ball.x <= -35 or beetle_ball.x >= 35):
+            if az < goal_pit_half_width and (_mb_ball.x <= -35 or _mb_ball.x >= 35):
                 # Distance from corner (where wall meets pit edge)
-                if beetle_ball.x <= -32:
-                    dx_corner = -32.0 - beetle_ball.x
+                if _mb_ball.x <= -32:
+                    dx_corner = -32.0 - _mb_ball.x
                 else:
-                    dx_corner = beetle_ball.x - 32.0
+                    dx_corner = _mb_ball.x - 32.0
                 dz_corner = goal_pit_half_width - az
 
                 if dx_corner < corner_r and dz_corner < corner_r:
@@ -23865,13 +23871,13 @@ try:
                         in_goal_pit = True
                 else:
                     in_goal_pit = True  # Main pit body
-            if az < goal_pit_half_width and (beetle_ball.x < -32 + near_goal_margin or beetle_ball.x > 32 - near_goal_margin):
+            if az < goal_pit_half_width and (_mb_ball.x < -32 + near_goal_margin or _mb_ball.x > 32 - near_goal_margin):
                 # Only suppress bounce when ball is actually dropping into pit (below floor)
-                if beetle_ball.y < 1.0:
+                if _mb_ball.y < 1.0:
                     near_goal_pit = True
 
             # Latch: once ball drops below floor in goal area, commit to falling (prevents corner pop-back)
-            if beetle_ball.y < -1.0 and beetle_ball.vy < 0:
+            if _mb_ball.y < -1.0 and _mb_ball.vy < 0:
                 in_goal_pit = True
 
             # GOAL BOX INTERIOR: past the bevels and LOW = inside the goal,
@@ -23885,48 +23891,48 @@ try:
             # would snap it) — an airborne ball above the floor shoulder
             # at z 12..16 past the bevels was falling THROUGH that real
             # floor strip because the margin swallowed it
-            if abs(beetle_ball.x) > 37.5 and beetle_ball.y < 8.0:
-                if az < goal_pit_half_width or (beetle_ball.y < 2.0
-                        and az < goal_pit_half_width + beetle_ball.radius):
+            if abs(_mb_ball.x) > 37.5 and _mb_ball.y < 8.0:
+                if az < goal_pit_half_width or (_mb_ball.y < 2.0
+                        and az < goal_pit_half_width + _mb_ball.radius):
                     in_goal_pit = True
 
             if in_goal_pit:
                 # Ball is in goal pit - no floor collision, let it fall
-                beetle_ball.on_ground = False
+                _mb_ball.on_ground = False
                 floor_cache_ball = (None, None, -1000.0)  # Invalidate cache in goal pit
             else:
                 # Check if we can reuse cached floor height
                 cache_x, cache_z, cache_y = floor_cache_ball
                 if cache_x is not None:
-                    dx = beetle_ball.x - cache_x
-                    dz = beetle_ball.z - cache_z
+                    dx = _mb_ball.x - cache_x
+                    dz = _mb_ball.z - cache_z
                     if dx*dx + dz*dz < FLOOR_CACHE_THRESHOLD * FLOOR_CACHE_THRESHOLD:
                         floor_y_ball = cache_y  # Reuse cached value
                     else:
-                        floor_y_ball = check_floor_collision(beetle_ball.x, beetle_ball.z)
-                        floor_cache_ball = (beetle_ball.x, beetle_ball.z, floor_y_ball)
+                        floor_y_ball = check_floor_collision(_mb_ball.x, _mb_ball.z)
+                        floor_cache_ball = (_mb_ball.x, _mb_ball.z, floor_y_ball)
                 else:
-                    floor_y_ball = check_floor_collision(beetle_ball.x, beetle_ball.z)
-                    floor_cache_ball = (beetle_ball.x, beetle_ball.z, floor_y_ball)
+                    floor_y_ball = check_floor_collision(_mb_ball.x, _mb_ball.z)
+                    floor_cache_ball = (_mb_ball.x, _mb_ball.z, floor_y_ball)
                 if floor_y_ball > -100.0:  # Floor detected under ball
                     # Ball's lowest point is center Y minus radius
-                    lowest_point_ball = beetle_ball.y - beetle_ball.radius
+                    lowest_point_ball = _mb_ball.y - _mb_ball.radius
                     floor_surface = floor_y_ball + 0.5  # Top of floor voxel in world space
 
                     if lowest_point_ball < floor_surface:  # Ball penetrating floor
                         # Push ball upward to sit on floor
-                        beetle_ball.y = floor_surface + beetle_ball.radius
+                        _mb_ball.y = floor_surface + _mb_ball.radius
                         # Clamp the interpolation start instead of teleporting
                         # (prev_y = y killed the interp and made every ground
                         # contact a visible pop) - the render can never dip
                         # below the surface but the bounce stays smooth
-                        if beetle_ball.prev_y < beetle_ball.y:
-                            beetle_ball.prev_y = beetle_ball.y
+                        if _mb_ball.prev_y < _mb_ball.y:
+                            _mb_ball.prev_y = _mb_ball.y
 
                         # Apply bounce (reverse velocity with bounce coefficient)
-                        if beetle_ball.vy < 0:
+                        if _mb_ball.vy < 0:
                             # Capture impact speed before reversing velocity
-                            impact_speed = abs(beetle_ball.vy)
+                            impact_speed = abs(_mb_ball.vy)
 
                             # Shared bounce gate: the impact speed of a 2-voxel
                             # drop at live gravity — dust and squash both key
@@ -23941,28 +23947,28 @@ try:
                             # bounces buried the dust inside the ice (invisible)
                             _dust_y = RENDER_Y_OFFSET + floor_surface
                             if impact_speed >= _sq_min_impact and g['ball_dust_cooldown'] <= 0.0:
-                                spawn_ball_bounce_dust(beetle_ball.x, _dust_y, beetle_ball.z,
-                                                       impact_speed, beetle_ball.radius, _sq_min_impact)
+                                spawn_ball_bounce_dust(_mb_ball.x, _dust_y, _mb_ball.z,
+                                                       impact_speed, _mb_ball.radius, _sq_min_impact)
                                 g['ball_dust_cooldown'] = 0.1  # 0.1 second cooldown
 
                             # Suppress bounce if ball is near goal pit edge (prevent bouncing out of goal)
                             if near_goal_pit:
-                                beetle_ball.vy = 0.0
-                            elif getattr(beetle_ball, 'rim_bounce_frame', -1) == physics_frame:
+                                _mb_ball.vy = 0.0
+                            elif getattr(_mb_ball, 'rim_bounce_frame', -1) == physics_frame:
                                 # LIP GUARD (consistency plan ph2): the rim
                                 # band already reflected the ball THIS substep
                                 # — a second restitution here stacked into a
                                 # rocket toward mid-arena at the lip corner.
                                 # Keep the position resolve, just kill the
                                 # leftover downward velocity (inelastic touch)
-                                if beetle_ball.vy < 0:
-                                    beetle_ball.vy = 0.0
+                                if _mb_ball.vy < 0:
+                                    _mb_ball.vy = 0.0
                             else:
                                 _grip = physics_params.get("BALL_BOUNCE_GRIP", 0.899)
-                                _bfd = math.sqrt(beetle_ball.x ** 2 + beetle_ball.z ** 2)
+                                _bfd = math.sqrt(_mb_ball.x ** 2 + _mb_ball.z ** 2)
                                 _slope_mix = physics_params.get("BOWL_BOUNCE_NORMAL", 1.0)
                                 _on_ice_ring = (_bfd > ARENA_RADIUS and _bfd > 0.01
-                                                and not _in_goal_lane(beetle_ball.x, beetle_ball.z))
+                                                and not _in_goal_lane(_mb_ball.x, _mb_ball.z))
                                 if _on_ice_ring and _slope_mix > 0.001:
                                     # SLOPE-AWARE BOUNCE (consistency plan ph1):
                                     # reflect about the ANALYTIC ice-slope
@@ -23975,8 +23981,8 @@ try:
                                     # floor system has no normals anywhere
                                     # else (flat), so only the ring changes.
                                     # Slider 0 = old vertical-only
-                                    _ox = beetle_ball.x / _bfd
-                                    _oz = beetle_ball.z / _bfd
+                                    _ox = _mb_ball.x / _bfd
+                                    _oz = _mb_ball.z / _bfd
                                     _inv = 1.0 / math.sqrt(1.16)
                                     _nx = -0.4 * _ox * _inv * _slope_mix
                                     _nz = -0.4 * _oz * _inv * _slope_mix
@@ -23985,8 +23991,8 @@ try:
                                     _nx /= _nl
                                     _ny /= _nl
                                     _nz /= _nl
-                                    _vn = (beetle_ball.vx * _nx + beetle_ball.vy * _ny
-                                           + beetle_ball.vz * _nz)
+                                    _vn = (_mb_ball.vx * _nx + _mb_ball.vy * _ny
+                                           + _mb_ball.vz * _nz)
                                     if _vn < 0.0:
                                         # Ice-ring restitution: DEADER than
                                         # concrete — the 22-deg normal turns
@@ -23994,31 +24000,31 @@ try:
                                         # at the floor's 0.8 a dropping ball
                                         # rocketed back to mid-arena
                                         _rest = physics_params.get("BALL_ICE_BOUNCE", 0.4)
-                                        _tvx = beetle_ball.vx - _vn * _nx
-                                        _tvy = beetle_ball.vy - _vn * _ny
-                                        _tvz = beetle_ball.vz - _vn * _nz
-                                        beetle_ball.vx = _tvx * _grip - _vn * _rest * _nx
-                                        beetle_ball.vy = _tvy - _vn * _rest * _ny
-                                        beetle_ball.vz = _tvz * _grip - _vn * _rest * _nz
+                                        _tvx = _mb_ball.vx - _vn * _nx
+                                        _tvy = _mb_ball.vy - _vn * _ny
+                                        _tvz = _mb_ball.vz - _vn * _nz
+                                        _mb_ball.vx = _tvx * _grip - _vn * _rest * _nx
+                                        _mb_ball.vy = _tvy - _vn * _rest * _ny
+                                        _mb_ball.vz = _tvz * _grip - _vn * _rest * _nz
                                     else:
                                         # moving along/off the slope already —
                                         # no reflection, just settle handling
-                                        beetle_ball.vy = abs(beetle_ball.vy) * physics_params.get("BALL_ICE_BOUNCE", 0.4)
+                                        _mb_ball.vy = abs(_mb_ball.vy) * physics_params.get("BALL_ICE_BOUNCE", 0.4)
                                 else:
-                                    beetle_ball.vy = -beetle_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
+                                    _mb_ball.vy = -_mb_ball.vy * physics_params["BALL_GROUND_BOUNCE"]
                                     # Bounce grip: contact friction scrubs some
                                     # horizontal speed on every bounce (real balls
                                     # lose tangential energy at each hop)
-                                    beetle_ball.vx *= _grip
-                                    beetle_ball.vz *= _grip
+                                    _mb_ball.vx *= _grip
+                                    _mb_ball.vz *= _grip
                                 # Squash & stretch: same 2-voxel gate as the
                                 # dust (computed above), SUBTLE at the gate and
                                 # ramping hard with fall height
                                 if impact_speed >= _sq_min_impact:
                                     _sq_over = (impact_speed - _sq_min_impact) / 35.0  # 0 at gate -> ~1 at huge slams
-                                    g['ball_squash_amount'] = min(0.44, 0.05 + _sq_over * 0.39)
-                                    g['ball_squash_horiz'] = False
-                                    g['ball_squash_timer'] = BALL_SQUASH_DURATION
+                                    _mb_ball.squash_amount = min(0.44, 0.05 + _sq_over * 0.39)
+                                    _mb_ball.squash_horiz = False
+                                    _mb_ball.squash_timer = BALL_SQUASH_DURATION
                                 # If bounce is very small, stop bouncing and settle.
                                 # Threshold SCALES WITH GRAVITY (2026-07-17): at
                                 # rest the ball gains g*dt downward each step and
@@ -24028,20 +24034,20 @@ try:
                                 _settle_v = max(2.0, physics_params["GRAVITY"]
                                                 * physics_params["BALL_GRAVITY_MULTIPLIER"]
                                                 * PHYSICS_TIMESTEP * 1.3)
-                                if abs(beetle_ball.vy) < _settle_v:
-                                    beetle_ball.vy = 0.0
-                                    beetle_ball.y = floor_surface + beetle_ball.radius  # Settle on floor exactly
+                                if abs(_mb_ball.vy) < _settle_v:
+                                    _mb_ball.vy = 0.0
+                                    _mb_ball.y = floor_surface + _mb_ball.radius  # Settle on floor exactly
 
                         # After bounce with upward velocity, mark airborne so gravity doesn't eat bounce
-                        if beetle_ball.vy > 0:
-                            beetle_ball.on_ground = False
+                        if _mb_ball.vy > 0:
+                            _mb_ball.on_ground = False
                         else:
-                            beetle_ball.on_ground = True
+                            _mb_ball.on_ground = True
                     elif lowest_point_ball < floor_surface + 0.5:  # Close to ground
-                        beetle_ball.on_ground = True
+                        _mb_ball.on_ground = True
                     else:
                         # Ball is airborne - clear on_ground so rolling friction doesn't apply
-                        beetle_ball.on_ground = False
+                        _mb_ball.on_ground = False
         if BALL_TRACE and beetle_ball.active:
             _ball_trace_rows.append((
                 physics_frame,
@@ -24945,7 +24951,7 @@ try:
     # Render beetle assembly animations (voxel rain effect) - GPU accelerated
     g = globals()
     # Track if any assembly is happening this frame
-    any_assembling = any(assembling) or g['ball_assembling']
+    any_assembling = any(assembling) or beetle_ball.assembling
     # Only clear assembly voxels if assembly is happening OR we need one final clear (OPTIMIZATION)
     if any_assembling or g['assembly_needs_final_clear']:
         clear_assembly_voxels()  # Clear previous frame's assembly voxels
@@ -24971,8 +24977,8 @@ try:
                 render_beetle_assembly_fast(slot, _asx, 16.5 + RENDER_Y_OFFSET, _asz, progress, _asrot)
 
     # Render ball assembly animation (voxel rain effect)
-    if g['ball_assembling'] and ball_cache_size[None] > 0:
-        progress = min(g['ball_assembly_timer'] / BALL_ASSEMBLY_DURATION, 1.0)
+    if beetle_ball.assembling and ball_cache_size[None] > 0:
+        progress = min(beetle_ball.assembly_timer / BALL_ASSEMBLY_DURATION, 1.0)
         # Assemble high above arena, ball will drop from y=28 after assembly
         # Ball materializes at physics y=22.5 -> render at 22.5+RENDER_Y_OFFSET;
         # ghost and drop-in stay exactly aligned
@@ -25094,14 +25100,14 @@ try:
         ball_render_z = beetle_ball.prev_z + (beetle_ball.z - beetle_ball.prev_z) * alpha
         # Net visual offset (guest): the ball's per-packet correction lerp
         # renders as a glide (it was the steppiest object on screen)
-        if net_ball_vis_offset[0] or net_ball_vis_offset[1] or net_ball_vis_offset[2]:
-            ball_render_x -= net_ball_vis_offset[0]
-            ball_render_y -= net_ball_vis_offset[1]
-            ball_render_z -= net_ball_vis_offset[2]
+        if beetle_ball.net_vis_offset[0] or beetle_ball.net_vis_offset[1] or beetle_ball.net_vis_offset[2]:
+            ball_render_x -= beetle_ball.net_vis_offset[0]
+            ball_render_y -= beetle_ball.net_vis_offset[1]
+            ball_render_z -= beetle_ball.net_vis_offset[2]
             for _k in range(3):
-                net_ball_vis_offset[_k] *= NET_VIS_DECAY
-                if abs(net_ball_vis_offset[_k]) < 0.001:
-                    net_ball_vis_offset[_k] = 0.0
+                beetle_ball.net_vis_offset[_k] *= NET_VIS_DECAY
+                if abs(beetle_ball.net_vis_offset[_k]) < 0.001:
+                    beetle_ball.net_vis_offset[_k] = 0.0
         ball_render_rotation = lerp_angle(beetle_ball.prev_rotation, beetle_ball.rotation, alpha)
         ball_render_pitch = lerp_angle(beetle_ball.prev_pitch, beetle_ball.pitch, alpha)
         ball_render_roll = lerp_angle(beetle_ball.prev_roll, beetle_ball.roll, alpha)
@@ -25109,10 +25115,10 @@ try:
         # Bounce squash & stretch — animated at render rate in float extract
         # space (sub-voxel smooth; the grid stays a sphere). Curve: squashed
         # at impact -> brief vertical overshoot -> ease back to round
-        if ball_squash_timer > 0.0:
-            ball_squash_timer = max(0.0, ball_squash_timer - frame_dt)
-            _sq_t = 1.0 - ball_squash_timer / BALL_SQUASH_DURATION
-            _sq_a = ball_squash_amount * physics_params.get("BALL_SQUASH", 1.0)
+        if beetle_ball.squash_timer > 0.0:
+            beetle_ball.squash_timer = max(0.0, beetle_ball.squash_timer - frame_dt)
+            _sq_t = 1.0 - beetle_ball.squash_timer / BALL_SQUASH_DURATION
+            _sq_a = beetle_ball.squash_amount * physics_params.get("BALL_SQUASH", 1.0)
             if _sq_t < 0.4:
                 _sq_k = _sq_t / 0.4
                 _sq_k = _sq_k * _sq_k * (3.0 - 2.0 * _sq_k)
@@ -25122,12 +25128,12 @@ try:
                 _sq_k = _sq_k * _sq_k * (3.0 - 2.0 * _sq_k)
                 _sq_y = (1.0 + _sq_a * 0.35) * (1.0 - _sq_k) + _sq_k  # -> round
             _sq_xz = 1.0 / math.sqrt(max(_sq_y, 0.4))  # volume-preserving bulge
-            if ball_squash_horiz:
+            if beetle_ball.squash_horiz:
                 # Side hit: compress along the impact axis (sq[0] in the
                 # yaw-rotated squash frame), bulge vertical + tangential;
                 # pivot at ball CENTER (no floor to press against)
                 renderer.owner_squash[4] = [_sq_y, _sq_xz, _sq_xz]
-                renderer.owner_squash_yaw[4] = ball_squash_yaw
+                renderer.owner_squash_yaw[4] = beetle_ball.squash_yaw
                 renderer.owner_squash_pivot_y[4] = ball_render_y + RENDER_Y_OFFSET
             else:
                 renderer.owner_squash[4] = [_sq_xz, _sq_y, _sq_xz]
@@ -25139,9 +25145,9 @@ try:
 
         # Only render ball if it hasn't exploded - OPTIMIZED (clear+render in one call)
         # CPU OPTIMIZATION: Skip re-render if ball hasn't moved significantly
-        if not ball_has_exploded:
+        if not beetle_ball.has_exploded:
             should_render_ball = True
-            last_x, last_y, last_z, last_rot, last_pitch, last_roll = ball_last_render
+            last_x, last_y, last_z, last_rot, last_pitch, last_roll = beetle_ball.last_render
             # PARKED FREEZE (rest-buzz fix): when the rest latch has the ball
             # fully stopped, freeze the render VERBATIM — same principle as
             # the beetles' integer render-Y, which is why their identical
@@ -25169,7 +25175,7 @@ try:
 
             if should_render_ball:
                 clear_and_render_ball_fast(ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
-                ball_last_render = (ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
+                beetle_ball.last_render = (ball_render_x, ball_render_y, ball_render_z, ball_render_rotation, ball_render_pitch, ball_render_roll)
 
             # Add shadow under ball when airborne (ball center must be high enough that bottom clears ground)
             # Ball bottom = ball_render_y - radius, so ball is airborne when bottom > ~1
@@ -25742,8 +25748,8 @@ try:
                             beetle_ball.prev_rotation = beetle_ball.rotation
                             beetle_ball.prev_pitch = beetle_ball.pitch; beetle_ball.prev_roll = beetle_ball.roll
                             scores[0] = 0; scores[1] = 0
-                            g['ball_scored_this_fall'] = False; g['ball_has_exploded'] = False
-                            g['ball_explosion_delay'] = 0.0; g['ball_explosion_timer'] = 0.0
+                            beetle_ball.scored_this_fall = False; beetle_ball.has_exploded = False
+                            beetle_ball.explosion_delay = 0.0; beetle_ball.explosion_timer = 0.0
                             beetle_ball.active = True
                             queue_arena_switch('ball')
                         elif mode_id == 'donut':
@@ -26722,10 +26728,10 @@ try:
                     beetle_ball.prev_roll = beetle_ball.roll
                     scores[0] = 0
                     scores[1] = 0
-                    g['ball_scored_this_fall'] = False
-                    g['ball_has_exploded'] = False
-                    g['ball_explosion_delay'] = 0.0
-                    g['ball_explosion_timer'] = 0.0
+                    beetle_ball.scored_this_fall = False
+                    beetle_ball.has_exploded = False
+                    beetle_ball.explosion_delay = 0.0
+                    beetle_ball.explosion_timer = 0.0
                     beetle_ball.active = True
                     queue_arena_switch('ball')
                 # Sync to guest
