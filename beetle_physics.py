@@ -1011,8 +1011,8 @@ BEETLE_TYPE_STATS = [  # indexed by horn_type_id (NOTE: BEETLE_STATS is taken �
          pitch_up=40.0,  pitch_dn=2.0,   yaw_max=28.0,  yaw_min=-28.0),
     dict(name="scorpion",   fwd=9.0/12.5, back=6.0/7.0,  turn=1.0,  tilt=0.92, yaw=1.0,   # slower claws; yaw unused (tail)
          pitch_up=58.0,  pitch_dn=-18.0, yaw_max=20.0,  yaw_min=-20.0),
-    dict(name="atlas",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.286, yaw=1.258, # faster scoop
-         pitch_up=28.55, pitch_dn=-40.0, yaw_max=20.0,  yaw_min=-20.0),
+    dict(name="atlas",      fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.187, yaw=1.258, # pitch re-tuned in-game 2026-07-19
+         pitch_up=28.55, pitch_dn=-38.23, yaw_max=20.0, yaw_min=-20.0),
     dict(name="bombardier", fwd=1.0,      back=1.0,      turn=1.0,  tilt=1.0,  yaw=1.0,   # no horn (ranges unused)
          pitch_up=0.0,   pitch_dn=0.0,   yaw_max=0.0,   yaw_min=0.0),
     dict(name="spider",     fwd=8.0/12.5, back=6.0/7.0,  turn=1.35, tilt=1.0,  yaw=1.0,   # slow mover, agile turner
@@ -9823,7 +9823,38 @@ def _horn_push_radii(beetle, n):
         return [2.5, 2.5] + [1.5] * (n - 2)
     if beetle.horn_type == "hercules":
         return [1.8] * n
+    if beetle.horn_type == "atlas":
+        # ATLAS (2026-07-19): the cephalic horn is a 3x3 -> 3x2 BLADE —
+        # the thickest horn in the game — but used the 1.5 rod default, so
+        # side/tip contacts read ~a voxel shallow and the pen-scaled
+        # responses (bulldozer/carry/push-out) barely engaged while
+        # body-turning into the ball ("prongs still clipping, sometimes
+        # lifts a little instead of pushing"). Same real-thickness rule as
+        # the hercules jaws / scorpion claws above. The pronotum chords
+        # (segments 1+) are curved 2x2 horns whose straight chord sags ~a
+        # voxel off the arc mid-prong — split the difference
+        return [1.9] + [1.6] * (n - 1)
     return [1.5] * n
+
+def _body_yaw_rate(beetle):
+    """TRUE kinematic yaw rate this substep (rad/s). Controlled turning
+    writes beetle.rotation DIRECTLY (input section) — angular_velocity is
+    only the physics-spin channel (tumbles) — so every contact-sweep term
+    reading angular_velocity saw 0 during player turns: the ball never
+    felt a body-turn sweep (2026-07-19 root cause: "yaw responds, body
+    turn doesn't"). The rotation delta captures ALL sources: input turn,
+    turn ramp, spin, arena forces. BALL CONTACTS ONLY — beetle-vs-beetle
+    deliberately keeps angular_velocity credit (the P3 controlled-turn
+    credit was reverted by user decision; do not re-add it there)."""
+    _d = beetle.rotation - getattr(beetle, 'prev_rotation', beetle.rotation)
+    while _d > math.pi:
+        _d -= 2.0 * math.pi
+    while _d < -math.pi:
+        _d += 2.0 * math.pi
+    _rate = _d / PHYSICS_TIMESTEP
+    # Spawn/teleport/correction snaps produce absurd deltas — clamp to
+    # ~3x the fastest ramped controlled turn
+    return max(-10.0, min(10.0, _rate))
 
 def _slot_of(beetle):
     """Slot index for a beetle object (color is a VOXEL ID, never compare
@@ -16306,8 +16337,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 _bcd_pb.z += _bfnz * _bf_push
                 # Deliver the strike: exit at least at the horn's
                 # contact-point sweep speed along the un-cross direction
-                _bswx = -(_bfcz - _bcd_bt.z) * _bcd_bt.angular_velocity
-                _bswz = (_bfcx - _bcd_bt.x) * _bcd_bt.angular_velocity
+                _bcd_om = _body_yaw_rate(_bcd_bt)  # true rate (ball path)
+                _bswx = -(_bfcz - _bcd_bt.z) * _bcd_om
+                _bswz = (_bfcx - _bcd_bt.x) * _bcd_om
                 _bswm = abs(_bswx * _bfnx + _bswz * _bfnz)
                 _bvn = _bcd_pb.vx * _bfnx + _bcd_pb.vz * _bfnz
                 if _bvn < _bswm:
@@ -16731,7 +16763,18 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     so_tip_x, so_tip_y, so_tip_z = _so_segs[_sseg][3], _so_segs[_sseg][4], _so_segs[_sseg][5]
                     # Contact must sit on the shaft (base through mid included —
                     # that's where bodies slip through; tip end has own handling)
-                    if _sdist > shaft_contact_dist or _st < 0.02 or _st > 0.95:
+                    if _sdist > shaft_contact_dist or _st < 0.02:
+                        continue
+                    # TIP-END GATE, BEETLES ONLY (2026-07-19): "tip end has
+                    # own handling" is a JOUST rule — tip battles run their
+                    # own physics. The BALL doesn't joust: skipping the last
+                    # 5% of the horn skipped ALL sideways machinery (carry,
+                    # bulldozer, faded lift) exactly when a low horn buries
+                    # its TIP in the ball's underside — pitch-up launched
+                    # (main response, vertical) but sideways turns did
+                    # nothing. The side path's own tip gates (_pdist > 4
+                    # skip) still keep normal tip STRIKES with the main hit
+                    if _st > 0.95 and intruder.horn_type != "ball":
                         continue
                     _px = intruder.x - _scx
                     _pz = intruder.z - _scz
@@ -16802,10 +16845,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 # positional lift is nearly disabled — the
                                 # wedge must eject via VELOCITY (the multi-
                                 # contact pass), or the teleport-up beat the
-                                # forward squirt and the ball just perched
-                                intruder.y += min(_pen, 0.3 if _ball_pinched else 1.2)
-                                if intruder.prev_y < intruder.y:
-                                    intruder.prev_y = intruder.y  # clamp interp, no pop
+                                # forward squirt and the ball just perched.
+                                # LOW-HORN LIFT FADE (2026-07-19): amount
+                                # computed here, APPLIED after the surface
+                                # velocity is known — a GROUND-LEVEL horn
+                                # sweeping fast pushes sideways instead of
+                                # levitating the ball (user rule: lift only
+                                # when actually moving it up); resting and
+                                # carry-height riding keep full lift
+                                _ot_lift = min(_pen, 0.3 if _ball_pinched else 1.2)
                                 # MOVING-SURFACE FRAME: bounce/settle against
                                 # the shaft's OWN vertical motion (body +
                                 # horn articulation + aim/tail channel), not
@@ -16872,8 +16920,32 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 _surf_vy = (0.0 if shaft_owner.on_ground else shaft_owner.vy) + _art_vy
                                 # Surface horizontal velocity at the contact
                                 # (linear + turn sweep + articulation/channel)
-                                _sfvx = shaft_owner.vx - (intruder.z - shaft_owner.z) * shaft_owner.angular_velocity + _art_vx
-                                _sfvz = shaft_owner.vz + (intruder.x - shaft_owner.x) * shaft_owner.angular_velocity + _art_vz
+                                # True kinematic yaw rate (ball-only branch —
+                                # controlled turns never set angular_velocity)
+                                _eff_om2 = _body_yaw_rate(shaft_owner)
+                                _sfvx = shaft_owner.vx - (intruder.z - shaft_owner.z) * _eff_om2 + _art_vx
+                                _sfvz = shaft_owner.vz + (intruder.x - shaft_owner.x) * _eff_om2 + _art_vz
+                                # Deferred on-top lift, LOW-HORN FADED
+                                # (2026-07-19 user rule: a super-low horn
+                                # pushes SIDEWAYS, lift only when actually
+                                # moving it up): full lift when the horn is
+                                # at carry height (_scy) OR the surface is
+                                # slow (resting/riding both keep the old
+                                # behavior); fades out when a GROUND-LEVEL
+                                # horn sweeps fast — the bulldozer below
+                                # owns that contact sideways. Covers body
+                                # turn AND horn yaw alike (both live in
+                                # _sfv* via sweep + articulation). Slider
+                                # LOW HORN LIFT, 1 = old always-lift
+                                _sfm2 = math.sqrt(_sfvx * _sfvx + _sfvz * _sfvz)
+                                _sw_f3 = min(1.0, max(0.0, (_sfm2 - 3.0) / 4.0))
+                                _low_f2 = min(1.0, max(0.0, (_scy - 1.5) / 2.0))
+                                _lift_f = max(_low_f2, 1.0 - _sw_f3,
+                                              params.get("LOW_HORN_LIFT_KEEP", 0.0))
+                                if _ot_lift > 0.0 and _lift_f > 0.0:
+                                    intruder.y += _ot_lift * _lift_f
+                                    if intruder.prev_y < intruder.y:
+                                        intruder.prev_y = intruder.y  # clamp interp, no pop
                                 # SWEEP BULLDOZER, on-top flavor (2026-07-18,
                                 # the atlas-low case): this branch's only
                                 # horizontal coupling was the Coulomb-CAPPED
@@ -16889,13 +16961,13 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 # out-run the ball get proportional correction
                                 _bdz3 = params.get("SWEEP_BULLDOZE", 1.0)
                                 if _bdz3 > 0.0:
-                                    _sfm2 = math.sqrt(_sfvx * _sfvx + _sfvz * _sfvz)
+                                    # _sfm2/_sw_f3 precomputed at the lift
+                                    # fade above (same surface velocity)
                                     if _sfm2 > 3.0:
                                         # Same smoothness pass as the side
                                         # flavor: faded speed gate + low-pass
                                         # penetration (own attr — on-top and
                                         # side contacts are distinct regimes)
-                                        _sw_f3 = min(1.0, (_sfm2 - 3.0) / 4.0)
                                         _otp_rec = getattr(intruder, 'bdz_pen_ot', None)
                                         _otp_s = (_otp_rec[1] if _otp_rec is not None
                                                   and _otp_rec[0] >= physics_frame - 1 else 0.0)
@@ -16970,6 +17042,13 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                         _bt_dbg['branch'] = 'settle'
                                         _bt_dbg['rest_y'] = round(_rest_y, 3)
                                     _dy_rest = (_rest_y - intruder.y) * 0.3
+                                    if _dy_rest > 0.0:
+                                        # low-horn lift fade (2026-07-19):
+                                        # the rest-height pull is also an
+                                        # upward lift when the horn is at
+                                        # ground level — same fade as the
+                                        # positional lift above
+                                        _dy_rest *= _lift_f
                                     if _dy_rest < 0.0:
                                         # DOWNWARD smoothing only when truly
                                         # centered on the crest (the micro-hop
@@ -17098,8 +17177,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # Closing speed at the contact: how fast the shaft (body
                     # motion + turn sweep + horn articulation) and the intruder's
                     # body are approaching along the outward normal. Positive = closing.
-                    _own_cvx = shaft_owner.vx - (_scz - shaft_owner.z) * shaft_owner.angular_velocity + _horn_vx
-                    _own_cvz = shaft_owner.vz + (_scx - shaft_owner.x) * shaft_owner.angular_velocity + _horn_vz
+                    # Ball contacts use the TRUE kinematic yaw rate — see
+                    # _body_yaw_rate (controlled turns never set
+                    # angular_velocity; beetle intruders keep the old term
+                    # per the P3 revert decision)
+                    _eff_om = (_body_yaw_rate(shaft_owner)
+                               if intruder.horn_type == "ball"
+                               else shaft_owner.angular_velocity)
+                    _own_cvx = shaft_owner.vx - (_scz - shaft_owner.z) * _eff_om + _horn_vx
+                    _own_cvz = shaft_owner.vz + (_scx - shaft_owner.x) * _eff_om + _horn_vz
                     _int_cvx = intruder.vx - (_scz - intruder.z) * intruder.angular_velocity
                     _int_cvz = intruder.vz + (_scx - intruder.x) * intruder.angular_velocity
                     _closing = (_own_cvx - _int_cvx) * _pnx + (_own_cvz - _int_cvz) * _pnz
@@ -17140,8 +17226,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     if intruder.horn_type == "ball":
                         _bdz_scale = params.get("SWEEP_BULLDOZE", 1.0)
                         if _bdz_scale > 0.0 and _ball_seg_pen > 0.05:
-                            _swpx = -(_scz - shaft_owner.z) * shaft_owner.angular_velocity + _horn_vx
-                            _swpz = (_scx - shaft_owner.x) * shaft_owner.angular_velocity + _horn_vz
+                            _swpx = -(_scz - shaft_owner.z) * _eff_om + _horn_vx
+                            _swpz = (_scx - shaft_owner.x) * _eff_om + _horn_vz
                             _swpm = math.sqrt(_swpx * _swpx + _swpz * _swpz)
                             # Any inward drive counts (turn-carry included —
                             # the old 0.3 alignment gate missed tangential
@@ -17237,7 +17323,20 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         if intruder.horn_type == "ball":
                             # Scaled by real 3D segment penetration AND by how
                             # horizontal the segment is — a level horn scoops,
-                            # a vertical tail must not act as a lift conveyor
+                            # a vertical tail must not act as a lift conveyor.
+                            # LOW-HORN LIFT FADE (2026-07-19): _closing is
+                            # HORIZONTAL closing — converting it to lift is
+                            # the wedge effect, which needs the horn under
+                            # the ball at wedge HEIGHT. At ground level a
+                            # sideways sweep pushes, it doesn't levitate
+                            # ("lifting even though I'm not moving it up").
+                            # TRUE upward motion (_vert_closing: pitching
+                            # the horn up, rising body) always lifts.
+                            # Slider LOW HORN LIFT, 1 = old always-lift
+                            _low_fs = min(1.0, max(0.0, (_scy - 1.5) / 2.0))
+                            _low_fs = max(_low_fs, params.get("LOW_HORN_LIFT_KEEP", 0.0))
+                            _lift_speed = (max(_closing, 0.0) * _low_fs
+                                           + max(_vert_closing, 0.0))
                             intruder.vy += min(_lift_speed * shaft_lift, 4.0) * _ball_seg_pen * _sg_flat
                         else:
                             # Cap matched to the horn-lift per-step cap (this
@@ -18153,8 +18252,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # popping (kills the mini-bounce chatter). Slider 0 = old
                     _bb_min = max(3.0, math.sqrt(2.0 * _bb_g * params.get("BALL_BOUNCE_MIN_DROP", 2.0)))
                     # Surface velocity at the contact (linear + turn sweep)
-                    _bsvx = _bb_beetle.vx - (_bb_ball.z - _bb_beetle.z) * _bb_beetle.angular_velocity
-                    _bsvz = _bb_beetle.vz + (_bb_ball.x - _bb_beetle.x) * _bb_beetle.angular_velocity
+                    _bb_om = _body_yaw_rate(_bb_beetle)  # true rate (ball path)
+                    _bsvx = _bb_beetle.vx - (_bb_ball.z - _bb_beetle.z) * _bb_om
+                    _bsvz = _bb_beetle.vz + (_bb_ball.x - _bb_beetle.x) * _bb_om
                     if _bb_impact > _bb_min:
                         _bb_ball.vy = _bb_svy + _bb_impact * params.get("BALL_BEETLE_BOUNCE", 0.45)
                         # Tangential scrub: the bounce inherits part of the
@@ -19889,6 +19989,7 @@ physics_params = {
     "BALL_BOUNCE_MIN_DROP": 0.5,  # 0.75->0.5 2026-07-18: softer aerial touches count as volleys
     "BALL_FLOOR_MIN_DROP": 2.0,  # 2026-07-18 floor micro-bounce cut: drops below N voxels settle, restitution ramps to full by ~4N (0 = old flat restitution)
     "SWEEP_BULLDOZE": 1.0,  # 2026-07-18 tunneling fix B: fast horn sweeps displace the penetrated ball positionally along the sweep tangent (0 = off/old)
+    "LOW_HORN_LIFT_KEEP": 0.0,  # 2026-07-19 user rule: ground-level horns push sideways, geometric lift fades below _scy ~3.5 (1 = old always-lift; true upward motion always lifts regardless)
     "GOAL_EDGE_BOUNCE": 0.3,  # 2026-07-18 dead-corner fix: damped pop for non-pitward landings in the near-pit band (0 = old dead stop)
     "LIP_GUARD_BOUNCE": 0.2,  # 2026-07-18: small vertical arc kept on same-substep rim+floor lip hits (0 = old flat)
     "SHAFT_PENETRATION_LIFT": 0.32,  # Shaft-under-body/ball scoop strength (was .get-fallback 0.25; 2026-07-17 raised for ball scoops — beetle side stays bounded by SHAFT_PEN_LIFT_CAP)
@@ -29018,6 +29119,7 @@ try:
                 # Bounciness of beetle backs/horns (0 = roll off like before)
                 physics_params["BALL_BEETLE_BOUNCE"] = window.GUI.slider_float("Beetle Bounce", physics_params.get("BALL_BEETLE_BOUNCE", 0.45), 0.0, 0.8)
                 physics_params["SWEEP_BULLDOZE"] = window.GUI.slider_float("Sweep Bulldoze", physics_params.get("SWEEP_BULLDOZE", 1.0), 0.0, 2.0)
+                physics_params["LOW_HORN_LIFT_KEEP"] = window.GUI.slider_float("Low Horn Lift", physics_params.get("LOW_HORN_LIFT_KEEP", 0.0), 0.0, 1.0)
                 # Min fall (voxels) before the ball bounces off a beetle at
                 # all — below it contact settles (kills mini-bounce chatter)
                 physics_params["BALL_BOUNCE_MIN_DROP"] = window.GUI.slider_float("Bounce Min Drop", physics_params.get("BALL_BOUNCE_MIN_DROP", 2.0), 0.0, 8.0)
