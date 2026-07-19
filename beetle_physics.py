@@ -19731,6 +19731,39 @@ BG_SKY_SPREAD = 0.679
 # 1.5 = OFF (slider max). Lower = biomes pushed further back.
 BG_CONTRAST_CEIL = 0.85
 DEFAULT_SKY_COLOR = (0.04, 0.04, 0.06)
+
+def _default_dome_colors():
+    """No-biome sky gradient, derived from the CURRENT background color
+    (2026-07-19, revising the old "stars keep the flat sky" contract):
+    the user's picked color is the ZENITH, and the horizon is the same hue
+    lifted toward a glow — so the Background picker in ARENA COLORS still
+    works, it just paints a gradient sky instead of a flat wall. With the
+    default near-black this lands on a deep indigo night-glow. Kept dark
+    by construction (2.2x + small lift): beetles stay the brightest thing
+    on screen."""
+    # Round 3 (2026-07-19): the gameplay camera pitches DOWN ~31 deg, so
+    # the visible sky band is almost entirely BELOW the gradient
+    # transition — the screen mostly shows the HORIZON color. Round 2
+    # put the BRIGHTENED pick at the horizon: bright picks clamped into
+    # one flat wash ("the color takes completely over"). Now the PICKED
+    # color IS the horizon (the band you actually see), with a gentle
+    # headroom-scaled warm glow (never clamps), grading UP into a
+    # strongly darkened cool zenith at the top of the view — darkening
+    # can't clamp, so the gradient survives ANY picked brightness
+    _bg = window.background_color
+    return ((_bg[0] + 0.17 * (1.0 - _bg[0]),
+             _bg[1] + 0.09 * (1.0 - _bg[1]),
+             _bg[2] + 0.05 * (1.0 - _bg[2])),
+            (_bg[0] * 0.30,
+             _bg[1] * 0.30,
+             min(1.0, _bg[2] * 0.35 + 0.03)))
+
+def refresh_default_sky():
+    """Re-bake the no-biome dome after a Background color change (the
+    picker and DEFAULT COLORS button call this)."""
+    if CURRENT_BIOME_THEME is None and SKY_DOME_ON:
+        _dh, _dz = _default_dome_colors()
+        renderer.set_sky_dome(_dh, _dz, BG_SKY_LEVEL, BG_SKY_SPREAD)
 # Biome ZENITH colors (top of the dome; also the flat clear color when the
 # dome is off, and the fog target for high-elevation voxels). Deliberately a
 # COOL hue that CONTRASTS the warm horizon glow below — the warm->cool shift
@@ -19767,6 +19800,12 @@ def apply_biome_sky(theme_id):
     if SKY_DOME_ON and theme_id in THEME_HORIZON_COLORS:
         renderer.set_sky_dome(THEME_HORIZON_COLORS[theme_id], THEME_SKY_COLORS[theme_id],
                               BG_SKY_LEVEL, BG_SKY_SPREAD)
+    elif SKY_DOME_ON:
+        # No biome: gradient derived from the background color (default =
+        # indigo night; custom picker colors become custom skies). SKY
+        # DOME toggle in the ATMOSPHERE panel still gives the flat look
+        _dh, _dz = _default_dome_colors()
+        renderer.set_sky_dome(_dh, _dz, BG_SKY_LEVEL, BG_SKY_SPREAD)
     else:
         renderer.disable_sky_dome()
 
@@ -19774,10 +19813,17 @@ def get_fog_sky_colors():
     """(horizon, zenith) fog targets for update_bg_cache: the dome gradient
     when the dome is up, else the flat clear color twice (old behavior,
     keeps the stars contract and the user's custom bg color working)."""
-    if renderer.sky_dome_enabled and CURRENT_BIOME_THEME in THEME_HORIZON_COLORS:
-        return THEME_HORIZON_COLORS[CURRENT_BIOME_THEME], THEME_SKY_COLORS[CURRENT_BIOME_THEME]
+    if renderer.sky_dome_enabled:
+        if CURRENT_BIOME_THEME in THEME_HORIZON_COLORS:
+            return THEME_HORIZON_COLORS[CURRENT_BIOME_THEME], THEME_SKY_COLORS[CURRENT_BIOME_THEME]
+        return _default_dome_colors()
     bg = window.background_color
     return bg, bg
+
+# Boot with the default night gradient (2026-07-19): the game previously
+# loaded flat black + stars; apply_biome_sky was only ever called on biome
+# toggles, so the no-biome dome never engaged at startup
+apply_biome_sky(None)
 
 camera = renderer.Camera()
 # Start camera at title screen position (will transition to game view on start)
@@ -28518,6 +28564,7 @@ try:
         new_bg_color = window.GUI.color_edit_3("Background", window.background_color)
         if new_bg_color != window.background_color:
             window.background_color = new_bg_color
+            refresh_default_sky()  # the no-biome dome derives from this color
 
         # Board color picker
         new_board_color = window.GUI.color_edit_3("Board", window.board_color)
@@ -28540,6 +28587,7 @@ try:
                 window.board_color = default_board
                 simulation.board_color[None] = ti.Vector([0.42, 0.3, 0.16])
                 renderer.invalidate_floor_cache()
+                refresh_default_sky()
 
         # Mesh floor toggle
         mesh_text = "FLAT FLOOR: ON" if renderer.mesh_floor_enabled else "FLAT FLOOR: OFF"
