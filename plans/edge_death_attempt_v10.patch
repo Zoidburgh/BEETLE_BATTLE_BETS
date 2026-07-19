@@ -1,0 +1,567 @@
+﻿diff --git a/beetle_physics.py b/beetle_physics.py
+index 05c48c4..af7efc6 100644
+--- a/beetle_physics.py
++++ b/beetle_physics.py
+@@ -389,6 +389,9 @@ if '--balls' in sys.argv:
+ # branch fired, pen, rest target, surface vy, segment, contact count) for
+ # offline jitter diagnosis. Dumps ball_trace.csv on exit.
+ BALL_TRACE = '--balltrace' in sys.argv
++# --tiptrace: print the edge-tipping kernel's inputs/outputs while a beetle
++# is unsupported (debugging tip direction/strength — falling_edge_clip_plan)
++TIP_TRACE = '--tiptrace' in sys.argv
+ _ball_trace_rows = []
+ _bt_dbg = {}
+ 
+@@ -737,6 +740,11 @@ collision_stats = {
+     'ball_spiral_skips': 0,    # substeps where the spiral breaker skipped batch+stamps
+ }
+ 
++# Straddle-support cache (falling_edge_clip_plan.md): slot -> (x, z,
++# effective_floor_y). Re-sampled only after >1 voxel of movement, like
++# floor_cache — a beetle parked over a small hole costs zero extra kernels.
++_straddle_cache = {}
++
+ # Last physics step's batched pair-collision results: (i, j) -> 0/1.
+ # Lets gameplay gates (e.g. the yaw-lift contact check in input processing)
+ # reuse the result instead of launching their own check_collision_kernel.
+@@ -820,6 +828,8 @@ def save_perf_log():
+     w(f"  horn_cross_clip_events: {collision_stats['horn_cross_clip_events']} (horn-horn within 2 voxels, pre-gate)")
+     w(f"  horn_crossing_fires: {collision_stats.get('horn_crossing_fires', 0)} (T1 tunneling detector: certain pass-throughs caught)")
+     w(f"  ball_crossing_fires: {collision_stats.get('ball_crossing_fires', 0)} (D detector: horn-through-ball pass-throughs caught)")
++    w(f"  lip_fulcrum_substeps: {collision_stats.get('lip_fulcrum_substeps', 0)} (edge-fall extremity catches — falling_edge_clip_plan.md)")
++    w(f"  straddle_substeps: {collision_stats.get('straddle_substeps', 0)} (small-hole stance bridging — beetles standing over sub-stance holes)")
+     w(f"  horn_crossing_supp: contact={collision_stats.get('horn_crossing_supp_contact', 0)} mag={collision_stats.get('horn_crossing_supp_mag', 0)} (flips suppressed by gates)")
+     w(f"  body_sep_pushes: {collision_stats.get('body_sep_pushes', 0)} (analytic body-overlap separations)")
+     w(f"  leg_cage_contacts: {collision_stats.get('leg_cage_contacts', 0)} (horn-vs-leg-strut spring responses)")
+@@ -2374,6 +2384,17 @@ class Beetle:
+         # Apply gravity (always on) - use global adjustable gravity
+         self.vy -= physics_params["GRAVITY"] * dt
+ 
++        # FALLING-BODY PHYSICS GATE (2026-07-19 audit, falling_edge_clip
++        # plan): on_ground is STICKY and host/local walk-off deaths never
++        # clear it, so the death tumble ran under STANDING physics — the
++        # level-restoring springs un-tumbled the dying beetle every
++        # substep, the ground tilt wall froze rotation at 92 deg, and the
++        # grounded tilt-speed cap throttled the spin (guests DO clear
++        # on_ground at death, so host and guest tumbled DIFFERENTLY). A
++        # beetle that is falling or hanging over void gets falling-body
++        # physics: no self-righting, no tilt wall, airborne rotation cap.
++        _dying = self.is_falling or getattr(self, 'no_floor_below', False)
++
+         # FLOOR REST CLAMP (root fix, measured via --balltrace): grounded
+         # beetles used to FREE-FALL between cache-amortized floor checks
+         # (floor only re-checks after ~1 voxel of movement), then snap
+@@ -2386,7 +2407,7 @@ class Beetle:
+         # movement-triggered floor recheck) are unaffected.
+         if (self.horn_type != "ball" and self.on_ground
+                 and self.air_gap <= 0.5 and self.vy < 0.0
+-                and not getattr(self, 'no_floor_below', False)):
++                and not _dying):
+             self.vy = 0.0
+ 
+         # Apply vertical velocity
+@@ -2472,15 +2493,18 @@ class Beetle:
+             self.pitch_velocity *= airborne_damping
+             self.roll_velocity *= airborne_damping
+ 
+-        # Airborne restoring torque - gently pull beetle upright while falling
+-        if not self.on_ground and self.horn_type != "ball":
++        # Airborne restoring torque - gently pull beetle upright while
++        # airborne OVER FLOOR (a launched beetle recovers); dying/over-void
++        # beetles do NOT self-right (falling-body gate)
++        if not self.on_ground and self.horn_type != "ball" and not _dying:
+             AIR_RESTORING = physics_params.get("AIR_RESTORING", 35.0)
+             self.pitch_velocity -= self.pitch * AIR_RESTORING * dt
+             self.roll_velocity -= self.roll * AIR_RESTORING * dt
+ 
+         # Ground restoring torque - automatically level out when on ground
+         # Ball is exempt: leveling pitch/roll to 0 fights continuous rolling
+-        if self.horn_type != "ball":
++        # Dying/over-void exempt too (falling-body gate — on_ground is stale)
++        if self.horn_type != "ball" and not _dying:
+             if self.on_ground and abs(self.vy) < 2.0:  # Settled, not bouncing
+                 # Apply torque to bring pitch/roll back to zero (level)
+                 RESTORING_STRENGTH = physics_params.get("RESTORING_STRENGTH", 35.0)
+@@ -2587,7 +2611,7 @@ class Beetle:
+         # Different tilt speed caps based on ground contact. Yaw has had a
+         # hard 8.0 clamp forever ("prevent jarring 180 spins"); pitch/roll
+         # airborne ran at 900 (= uncapped) from Nov 2025 until 2026-07-16
+-        if self.on_ground:
++        if self.on_ground and not _dying:  # dying: stale on_ground must not throttle the tumble
+             MAX_TILT_SPEED = physics_params.get("GROUND_TILT_SPEED", 8.0)
+         else:
+             MAX_TILT_SPEED = physics_params.get("AIRBORNE_TILT_SPEED", 14.0)
+@@ -2615,7 +2639,7 @@ class Beetle:
+         # the limit, outward angular velocity is zeroed and the restoring
+         # spring walks the angle back smoothly. air_gap gate: on_ground is
+         # STICKY through launches. Ball exempt (must roll continuously)
+-        if self.on_ground and self.air_gap <= 0.5 and self.horn_type != "ball":
++        if self.on_ground and self.air_gap <= 0.5 and self.horn_type != "ball" and not _dying:
+             ground_tilt_degrees = physics_params.get("GROUND_TILT_ANGLE", 60.0)
+             MAX_TILT_ANGLE = math.radians(ground_tilt_degrees)
+             if self.pitch > MAX_TILT_ANGLE and self.pitch_velocity > 0.0:
+@@ -7141,6 +7165,8 @@ collision_spatial_hash = ti.field(dtype=ti.i32, shape=(128, 128))
+ edge_tipping_vy = ti.field(ti.f32, shape=())  # Downward velocity to apply
+ edge_tipping_pitch_vel = ti.field(ti.f32, shape=())  # Pitch angular velocity
+ edge_tipping_roll_vel = ti.field(ti.f32, shape=())  # Roll angular velocity
++# --tiptrace debug: (over_edge_count, sum_fwd, sum_lat, one_sided)
++edge_tip_dbg = ti.Vector.field(4, ti.f32, shape=())
+ bb_tip_immune = ti.field(ti.i32, shape=())  # 1 = skip board break tipping for current beetle
+ 
+ # Donut mode state for GPU kernels (inner edge tipping)
+@@ -11706,7 +11732,7 @@ def check_stag_inner_edge_collision(stag_beetle, target_beetle, pitch, yaw):
+ STAG_SQUEEZE_DAMPING = 0.70
+ 
+ @ti.kernel
+-def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32, dt: ti.f32, pitch_inertia: ti.f32, roll_inertia: ti.f32):
++def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_rotation: ti.f32, beetle_color: ti.i32, dt: ti.f32, pitch_inertia: ti.f32, roll_inertia: ti.f32):
+     """GPU-accelerated edge tipping calculation - OPTIMIZED: 2 passes instead of 3"""
+     # Reset outputs
+     edge_tipping_vy[None] = 0.0
+@@ -11736,10 +11762,21 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
+     over_edge_count = 0
+     max_lever_dist = 0.0
+ 
+-    # Track top 3 farthest over-edge voxels (lever_x, lever_z, lever_dist)
+-    top3_lever_x = ti.Vector([0.0, 0.0, 0.0])
+-    top3_lever_z = ti.Vector([0.0, 0.0, 0.0])
+-    top3_lever_dist = ti.Vector([0.0, 0.0, 0.0])
++    # PIVOT-TRUE LEVER SUM (2026-07-19, --tiptrace diagnosed): levers
++    # measured about the whole-body COG SELF-CANCEL once the over-edge
++    # cloud surrounds the COG — trace showed torque collapsing 441->0
++    # within ~15 substeps of walking off while cnt held ~360, so falls
++    # got rotation only from the first fraction of a second ("minor/
++    # shitty tilt"). The physical pivot is the SUPPORTED region: torque
++    # = sum over unsupported voxels of (voxel - support centroid) —
++    # one-sided by construction while ANY support exists, and it GROWS
++    # with overhang. Fully unsupported = free fall (no torque, angular
++    # momentum carries). Computed from linear sums (no per-voxel state)
++    sum_over_x = 0.0
++    sum_over_z = 0.0
++    sup_sum_x = 0.0
++    sup_sum_z = 0.0
++    sup_count = 0
+ 
+     for i in range(x_min, x_max):
+         for k in range(z_min, z_max):
+@@ -11791,8 +11828,18 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
+ 
+                         dist_from_center = ti.sqrt((world_x_v - arena_center_x)**2 + (world_z_v - arena_center_z)**2)
+ 
+-                        # Check outer edge OR inner edge (donut pit) OR corner (X stage)
++                        # GRID-TRUTH over-edge (2026-07-19, falling_edge_clip
++                        # plan): "no floor below this column" IS the
++                        # definition of over-edge — read the floor cache
++                        # instead of only the analytic circle test. The
++                        # analytic catalog below doesn't know yin-yang eyes
++                        # or other uncatalogued mode holes, so tipping at
++                        # those edges was zero or WRONG-SIGNED (user: the
++                        # side closest to the BOARD dipped). The per-mode
++                        # branches below still refine where they apply.
+                         is_over_edge = dist_from_center > ARENA_EDGE_RADIUS
++                        if floor_height_cache[i, k] < -100.0:
++                            is_over_edge = 1
+                         if donut_mode_active[None] == 1 and dist_from_center < DONUT_INNER_EDGE_RADIUS:
+                             is_over_edge = 1
+                         # X stage: check if in corner (not in N/S or E/W arm)
+@@ -11992,67 +12039,53 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
+ 
+                         if is_over_edge:
+                             over_edge_count += 1
+-                            lever_x = world_x_v - cog_x
+-                            lever_z = world_z_v - cog_z
+-                            lever_dist = ti.sqrt(lever_x * lever_x + lever_z * lever_z)
+-
+-                            if lever_dist > max_lever_dist:
+-                                max_lever_dist = lever_dist
+-
+-                            # Track top 3 farthest voxels (insertion sort style)
+-                            if lever_dist > top3_lever_dist[2]:
+-                                if lever_dist > top3_lever_dist[1]:
+-                                    if lever_dist > top3_lever_dist[0]:
+-                                        # New #1, shift others down
+-                                        top3_lever_dist[2] = top3_lever_dist[1]
+-                                        top3_lever_x[2] = top3_lever_x[1]
+-                                        top3_lever_z[2] = top3_lever_z[1]
+-                                        top3_lever_dist[1] = top3_lever_dist[0]
+-                                        top3_lever_x[1] = top3_lever_x[0]
+-                                        top3_lever_z[1] = top3_lever_z[0]
+-                                        top3_lever_dist[0] = lever_dist
+-                                        top3_lever_x[0] = lever_x
+-                                        top3_lever_z[0] = lever_z
+-                                    else:
+-                                        # New #2, shift #3 down
+-                                        top3_lever_dist[2] = top3_lever_dist[1]
+-                                        top3_lever_x[2] = top3_lever_x[1]
+-                                        top3_lever_z[2] = top3_lever_z[1]
+-                                        top3_lever_dist[1] = lever_dist
+-                                        top3_lever_x[1] = lever_x
+-                                        top3_lever_z[1] = lever_z
+-                                else:
+-                                    # New #3
+-                                    top3_lever_dist[2] = lever_dist
+-                                    top3_lever_x[2] = lever_x
+-                                    top3_lever_z[2] = lever_z
+-
+-        # Only continue if voxels are over edge
+-        if over_edge_count > 0:
+-            tipping_force = float(over_edge_count) * EDGE_TIPPING_STRENGTH
+-
+-            # Apply torque from top 3 farthest voxels (those within 90% of max distance)
+-            total_vy = 0.0
+-            total_pitch = 0.0
+-            total_roll = 0.0
+-            threshold = max_lever_dist * 0.9
+-
+-            for idx in ti.static(range(3)):
+-                lever_dist = top3_lever_dist[idx]
+-                if lever_dist > threshold and lever_dist > 0.0:
+-                    lever_x = top3_lever_x[idx]
+-                    lever_z = top3_lever_z[idx]
+-
+-                    lever_x_norm = lever_x / lever_dist
+-                    lever_z_norm = lever_z / lever_dist
+-
+-                    total_vy -= tipping_force * dt
+-                    total_pitch += (lever_z_norm * tipping_force * lever_dist / pitch_inertia) * dt
+-                    total_roll += (lever_x_norm * tipping_force * lever_dist / roll_inertia) * dt
+-
+-            edge_tipping_vy[None] = total_vy
+-            edge_tipping_pitch_vel[None] = total_pitch
+-            edge_tipping_roll_vel[None] = total_roll
++                            sum_over_x += world_x_v
++                            sum_over_z += world_z_v
++                        else:
++                            sup_sum_x += world_x_v
++                            sup_sum_z += world_z_v
++                            sup_count += 1
++
++        # Torque only while BOTH some support and some overhang exist —
++        # fully unsupported is free fall (momentum carries the tumble)
++        if over_edge_count > 0 and sup_count > 0:
++            # BODY-FRAME TORQUE about the SUPPORT PIVOT (2026-07-19).
++            # torque vector = sum_over - count*pivot (linear identity for
++            # sum of (voxel - pivot)). SIGNS FROM THE PLACEMENT TRANSFORM
++            # (the live rendered truth — NOT apply_bowl_tilt, dead code
++            # with an inverted convention):
++            #   temp2_y = x*sin(pitch)+...  => POSITIVE pitch = nose UP
++            #   final_y = ...-z*sin(roll)   => POSITIVE roll = right DOWN
++            # Mass AHEAD of pivot -> nose dips => pitch NEGATIVE;
++            # mass RIGHT of pivot -> right dips => roll POSITIVE.
++            # EDGE_TIP_SCALE is the live dial; MAX_TILT_SPEED caps the
++            # accumulated rate (airborne cap once dying)
++            pivot_x = sup_sum_x / float(sup_count)
++            pivot_z = sup_sum_z / float(sup_count)
++            tq_x = sum_over_x - float(over_edge_count) * pivot_x
++            tq_z = sum_over_z - float(over_edge_count) * pivot_z
++            cos_r = ti.cos(beetle_rotation)
++            sin_r = ti.sin(beetle_rotation)
++            tq_fwd = tq_x * cos_r + tq_z * sin_r
++            tq_lat = -tq_x * sin_r + tq_z * cos_r
++            # SUPPORT CONFIDENCE (tiptrace round 2): with only a handful of
++            # supported columns left, the pivot is remnant noise — the
++            # trace showed a late-fall SIGN FLIP (fwd +809 -> -1363 at
++            # sup=15) that un-tipped the tumble. Fade torque out as
++            # support collapses; free-fall momentum takes over
++            # /15 not /30 (round 3): the flip-noise only appeared below
++            # ~15 remnant columns; fading from 30 trimmed the CLIMAX —
++            # low support = max overhang = the legitimate torque peak
++            sup_conf = ti.min(1.0, float(sup_count) / 15.0)
++            # Downward pull scaled by overhang FRACTION (gentle entry,
++            # full weight when committed); the per-substep cap is applied
++            # at the call site via the EDGE TIP DROP slider
++            over_frac = float(over_edge_count) / float(over_edge_count + sup_count)
++            edge_tipping_vy[None] = (-3.0 * float(over_edge_count)
++                                     * EDGE_TIPPING_STRENGTH * over_frac * dt)
++            edge_tipping_pitch_vel[None] = (-tq_fwd * EDGE_TIPPING_STRENGTH * 3.0 / pitch_inertia) * dt * sup_conf
++            edge_tipping_roll_vel[None] = (tq_lat * EDGE_TIPPING_STRENGTH * 3.0 / roll_inertia) * dt * sup_conf
++            edge_tip_dbg[None] = ti.Vector([float(over_edge_count), tq_fwd, tq_lat, float(sup_count)])
+ 
+ @ti.kernel
+ def update_debris_particles(dt: ti.f32):
+@@ -19990,6 +20023,11 @@ physics_params = {
+     "BALL_FLOOR_MIN_DROP": 2.0,  # 2026-07-18 floor micro-bounce cut: drops below N voxels settle, restitution ramps to full by ~4N (0 = old flat restitution)
+     "SWEEP_BULLDOZE": 1.0,  # 2026-07-18 tunneling fix B: fast horn sweeps displace the penetrated ball positionally along the sweep tangent (0 = off/old)
+     "LOW_HORN_LIFT_KEEP": 0.0,  # 2026-07-19 user rule: ground-level horns push sideways, geometric lift fades below _scy ~3.5 (1 = old always-lift; true upward motion always lifts regardless)
++    "STRADDLE_TIP_RELEASE": 0.5,  # 2026-07-19: straddling a small hole releases (falls in) once |pitch|+|roll| exceeds this (radians) — deep lean = committed
++    "EDGE_TIP_SCALE": 1.0,  # 2026-07-19: one dial on the whole edge tip (rotation + downward pull; 1 = kernel raw strength)
++    "EDGE_TIP_DROP": 4.0,  # 2026-07-19: per-substep cap on the edge-fall downward yank (higher = heavier/snappier falls; old uncapped was ~7)
++    "STRADDLE_LEAN": 0.35,  # 2026-07-19: how hard a straddler leans toward the hole (fraction of full tip torque)
++    "FULCRUM_TORQUE": 1.2,  # 2026-07-19: rim-catch rotation strength during falls (caught part lifts over the lip)
+     "GOAL_EDGE_BOUNCE": 0.3,  # 2026-07-18 dead-corner fix: damped pop for non-pitward landings in the near-pit band (0 = old dead stop)
+     "LIP_GUARD_BOUNCE": 0.2,  # 2026-07-18: small vertical arc kept on same-substep rim+floor lip hits (0 = old flat)
+     "SHAFT_PENETRATION_LIFT": 0.32,  # Shaft-under-body/ball scoop strength (was .get-fallback 0.25; 2026-07-17 raised for ball scoops — beetle side stays bounded by SHAFT_PEN_LIFT_CAP)
+@@ -20406,8 +20444,8 @@ simulation.num_debris[None] = 0  # Clear debris after warmup render
+ update_loading(3)
+ 
+ # PHASE 4: Edge tipping, beetle placement, and beetle clear kernels
+-calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_BLUE, 0.016, 1.0, 1.0)
+-calculate_edge_tipping_kernel(0.0, 0.0, simulation.BEETLE_RED, 0.016, 1.0, 1.0)
++calculate_edge_tipping_kernel(0.0, 0.0, 0.0, simulation.BEETLE_BLUE, 0.016, 1.0, 1.0)
++calculate_edge_tipping_kernel(0.0, 0.0, 0.0, simulation.BEETLE_RED, 0.016, 1.0, 1.0)
+ # Warm up beetle placement kernels for all player slots (540 lines each,
+ # compile on first game frame otherwise)
+ for _wslot in range(4):
+@@ -24598,6 +24636,81 @@ try:
+                     if 0 <= bb_gi < 128 and 0 <= bb_gk < 128:
+                         if renderer.board_break_mask[bb_gi, bb_gk] == 1:
+                             floor_y_by_slot[slot] = -1000.0
++                # STRADDLE SUPPORT (2026-07-19, falling_edge_clip_plan.md):
++                # the center sample scans 7x7, so holes 8-16 voxels wide read
++                # VOID even though the ~20-voxel stance spans them (yin-yang
++                # eyes, hole mode) — beetles clipped through floor their legs
++                # visibly stood on. When the center is void, sample the four
++                # STANCE points (rotated +-5 local): OPPOSING support
++                # (front+rear or left+right) = bridging a hole -> stand on
++                # the supporting floor with a damped LEAN toward the hole.
++                # One-sided support = genuine edge -> unchanged tip-and-fall
++                # (goal pits stay deadly: their far side is always void).
++                # Mode overrides (hole drop radius / board mask) are
++                # replicated PER SAMPLE — the height cache doesn't know
++                # dynamic holes, and straddling a broken board would be a
++                # phantom rescue. Cached per slot until >1 voxel movement.
++                if floor_y_by_slot[slot] <= -100.0:
++                    # TILT RELEASE (2026-07-19 v2, "suck them down more
++                    # naturally"): a straddler leaned deep into the hole
++                    # has its center of mass over the void — physically it
++                    # commits. Past the threshold the straddle stops
++                    # granting support and the tipping/fall takes over.
++                    # Slider STRADDLE TIP RELEASE (radians of pitch+roll)
++                    _ss_tilt_ok = (abs(beetles[slot].pitch) + abs(beetles[slot].roll)
++                                   <= physics_params.get("STRADDLE_TIP_RELEASE", 0.5))
++                    _ss_c = _straddle_cache.get(slot)
++                    if (_ss_c is not None
++                            and (beetles[slot].x - _ss_c[0]) ** 2
++                            + (beetles[slot].z - _ss_c[1]) ** 2 < 1.0):
++                        if _ss_c[2] > -100.0 and _ss_tilt_ok:
++                            floor_y_by_slot[slot] = _ss_c[2]
++                    else:
++                        _ss_cr = math.cos(beetles[slot].rotation)
++                        _ss_sr = math.sin(beetles[slot].rotation)
++                        _ss_f = [-1000.0, -1000.0, -1000.0, -1000.0]
++                        for _ss_i, (_ss_lx, _ss_lz) in enumerate(
++                                ((5.0, 0.0), (-5.0, 0.0), (0.0, -5.0), (0.0, 5.0))):
++                            _ss_px = beetles[slot].x + _ss_lx * _ss_cr - _ss_lz * _ss_sr
++                            _ss_pz = beetles[slot].z + _ss_lx * _ss_sr + _ss_lz * _ss_cr
++                            _ss_fy = check_floor_collision(_ss_px, _ss_pz)
++                            if _ss_fy > -100.0 and hole_mode and not beetle_ball.active:
++                                _ss_hdx = _ss_px - hole_x
++                                _ss_hdz = _ss_pz - hole_z
++                                if (_ss_hdx * _ss_hdx + _ss_hdz * _ss_hdz
++                                        < HOLE_FLOOR_DROP_RADIUS * HOLE_FLOOR_DROP_RADIUS):
++                                    _ss_fy = -1000.0
++                            if _ss_fy > -100.0 and board_break_active and not beetle_ball.active:
++                                _ss_gi = int(_ss_px + 64.0)
++                                _ss_gk = int(_ss_pz + 64.0)
++                                if (0 <= _ss_gi < 128 and 0 <= _ss_gk < 128
++                                        and renderer.board_break_mask[_ss_gi, _ss_gk] == 1):
++                                    _ss_fy = -1000.0
++                            _ss_f[_ss_i] = _ss_fy
++                        _ss_ok = ((_ss_f[0] > -100.0 and _ss_f[1] > -100.0)
++                                  or (_ss_f[2] > -100.0 and _ss_f[3] > -100.0))
++                        if not _ss_tilt_ok:
++                            _ss_ok = False  # leaned past recovery — commit
++                        _ss_floor = max(_ss_f) if _ss_ok else -1000.0
++                        _straddle_cache[slot] = (beetles[slot].x, beetles[slot].z, _ss_floor)
++                        if _ss_ok:
++                            floor_y_by_slot[slot] = _ss_floor
++                            collision_stats['straddle_substeps'] = \
++                                collision_stats.get('straddle_substeps', 0) + 1
++                            # Lean into the hole: damped tipping torque, no
++                            # fall — applied only on fresh samples (as you
++                            # move around the hole), so a parked straddler
++                            # can't accumulate runaway tilt
++                            bb_tip_immune[None] = 1 if spawn_immunity[slot] > 0 else 0
++                            calculate_edge_tipping_kernel(
++                                float(beetles[slot].x), float(beetles[slot].z),
++                                float(beetles[slot].rotation),
++                                simulation.PLAYER_VOXEL_IDS[slot][0], PHYSICS_TIMESTEP,
++                                float(beetles[slot].pitch_inertia),
++                                float(beetles[slot].roll_inertia))
++                            _ss_lean = physics_params.get("STRADDLE_LEAN", 0.35)
++                            beetles[slot].pitch_velocity += edge_tipping_pitch_vel[None] * _ss_lean
++                            beetles[slot].roll_velocity += edge_tipping_roll_vel[None] * _ss_lean
+                 if floor_y_by_slot[slot] > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
+                     # Calculate lowest point of beetle geometry after rotation
+                     lowest_point = lowest_point_kernels[slot](
+@@ -24974,13 +25087,162 @@ try:
+                 # beetles TIPPING over the goal pits - tipping moves too
+                 # little horizontally to trigger the amortized floor recheck)
+                 b.no_floor_below = floor_y_by_slot[slot] <= -100.0
+-                if floor_y_by_slot[slot] <= -100.0:  # No floor support (use cached value)
++                # Tipping is a FLOOR-LEVEL phenomenon (tiptrace round 2):
++                # hovering respawners read void floor and got junk
++                # micro-torques from band-edge voxels; deep-fallen beetles
++                # got remnant-column noise. Gate to near-floor, non-hover
++                if (floor_y_by_slot[slot] <= -100.0 and not hovering[slot]
++                        and -3.5 < b.y < 6.0):
+                     bb_tip_immune[None] = 1 if spawn_immunity[slot] > 0 else 0
+-                    calculate_edge_tipping_kernel(float(b.x), float(b.z), simulation.PLAYER_VOXEL_IDS[slot][0],
++                    calculate_edge_tipping_kernel(float(b.x), float(b.z), float(b.rotation),
++                                                  simulation.PLAYER_VOXEL_IDS[slot][0],
+                                                   PHYSICS_TIMESTEP, float(b.pitch_inertia), float(b.roll_inertia))
+-                    b.vy += edge_tipping_vy[None]
+-                    b.pitch_velocity += edge_tipping_pitch_vel[None]
+-                    b.roll_velocity += edge_tipping_roll_vel[None]
++                    # EDGE TIP SCALE (2026-07-19): one dial on the whole
++                    # tip — rotation AND the extra downward pull (1 = the
++                    # kernel's raw 0.45/voxel strength)
++                    _ets = physics_params.get("EDGE_TIP_SCALE", 1.0)
++                    # EDGE TIP DROP: per-substep cap on the extra downward
++                    # yank (uncapped -7/substep slammed beetles below the
++                    # torque band before rotation built; 0 = gravity only)
++                    b.vy += max(-physics_params.get("EDGE_TIP_DROP", 4.0),
++                                edge_tipping_vy[None] * _ets)
++                    b.pitch_velocity += edge_tipping_pitch_vel[None] * _ets
++                    b.roll_velocity += edge_tipping_roll_vel[None] * _ets
++                    if TIP_TRACE and physics_frame % 5 == 0:
++                        _td = edge_tip_dbg[None]
++                        print(f"[TipTrace] s{slot} f{physics_frame} y={b.y:.2f} rot={math.degrees(b.rotation):.0f} "
++                              f"pitch={math.degrees(b.pitch):.1f} pvel={b.pitch_velocity:.2f} "
++                              f"roll={math.degrees(b.roll):.1f} rvel={b.roll_velocity:.2f} | "
++                              f"cnt={_td[0]:.0f} fwd={_td[1]:.0f} lat={_td[2]:.0f} sup={_td[3]:.0f} "
++                              f"out_p={edge_tipping_pitch_vel[None]:.3f} out_r={edge_tipping_roll_vel[None]:.3f} "
++                              f"out_vy={edge_tipping_vy[None]:.3f}")
++
++        # LIP FULCRUM (falling_edge_clip_plan.md F1, 2026-07-19): a beetle
++        # going over an edge loses floor support (center over void) and
++        # tumbles — but its EXTREMITIES had no contact at all, so the horn
++        # swept straight through the lip voxels ("rhino dies butt-first,
++        # horn clips the arena"). Sample the REAL floor under horn tip +
++        # body ends (works for every arena shape by construction — we read
++        # the grid, no analytic edges); a supported point acts as an HONEST
++        # fulcrum: the lip damps descent (holds, never throws — zero
++        # restitution, no upward writes), rotation friction slows the
++        # sweep-through (the visual catch), and the body slides voidward
++        # around the caught point. Recovery: possible ONLY above the
++        # existing POINT_OF_NO_RETURN (-5) where the game already says
++        # you're alive — an earned horn-catch save; below it is_falling
++        # stays set and death at -16 proceeds (user rule: honest physics,
++        # but no weird interactions once clearly dead; band fades by -8)
++        for _lf_slot in range(active_player_count):
++            _lf_b = beetles[_lf_slot]
++            if (not _lf_b.active or _lf_b.has_exploded or hovering[_lf_slot]
++                    or _lf_b.vy >= 0.0 or not (-8.0 < _lf_b.y < 4.0)):
++                continue
++            if not _lf_b.is_falling and floor_y_by_slot[_lf_slot] > -100.0:
++                continue  # normally supported — floor/edge-tipping own it
++            # V2 (2026-07-19 user test): depth fade FIRST — in a hole the
++            # beetle is SURROUNDED by rim, so some extremity is "caught"
++            # every substep; the v1 constant damp compounded into a
++            # slow-motion float. The catch now fades to nothing by the
++            # point of no return (-5)
++            _lf_fade = max(0.0, min(1.0, (_lf_b.y + 5.0) / 5.0))
++            if _lf_fade <= 0.0:
++                continue
++            _lf_segs = horn_collision_segments(_lf_b)
++            _lf_cap = _body_spine_capsule(_lf_b)
++            _lf_pts = [(_lf_cap[0], _lf_cap[1], _lf_cap[2]),   # body rear
++                       (_lf_cap[3], _lf_cap[4], _lf_cap[5])]   # body front
++            if _lf_segs:
++                _lf_pts.append((_lf_segs[0][3], _lf_segs[0][4], _lf_segs[0][5]))  # horn tip
++            # V5: LEFT/RIGHT body points (local +-4 on the lateral axis, at
++            # spine mid height) — without them roll torque has no lever
++            # (the axis points above have ~zero lateral offset)
++            _lf_rx = -math.sin(_lf_b.rotation)
++            _lf_rz = math.cos(_lf_b.rotation)
++            _lf_my = (_lf_cap[1] + _lf_cap[4]) * 0.5
++            _lf_mx = (_lf_cap[0] + _lf_cap[3]) * 0.5
++            _lf_mz = (_lf_cap[2] + _lf_cap[5]) * 0.5
++            _lf_pts.append((_lf_mx + _lf_rx * 4.0, _lf_my, _lf_mz + _lf_rz * 4.0))  # right
++            _lf_pts.append((_lf_mx - _lf_rx * 4.0, _lf_my, _lf_mz - _lf_rz * 4.0))  # left
++            _lf_supported = False
++            _lf_jam = False
++            _lf_jp = None       # deepest penetrating point
++            _lf_jp_pen = 0.0
++            for _lf_px, _lf_py, _lf_pz in _lf_pts:
++                _lf_fy = check_floor_collision(_lf_px, _lf_pz)
++                if _lf_fy <= -100.0:
++                    continue  # this point is over void too
++                _lf_top = _lf_fy + 0.5
++                if _lf_top - 3.0 < _lf_py < _lf_top + 1.0:
++                    _lf_supported = True
++                    # PENETRATING (not just resting): the tilt has driven
++                    # this part INTO rim floor — the jam case
++                    if _lf_py < _lf_top - 0.2:
++                        _lf_jam = True
++                        if _lf_top - _lf_py > _lf_jp_pen:
++                            _lf_jp_pen = _lf_top - _lf_py
++                            _lf_jp = (_lf_px, _lf_py, _lf_pz)
++                    # Slide the body AROUND the caught point, voidward —
++                    # the contact constrains, it never propels arena-ward
++                    _lf_dx = _lf_b.x - _lf_px
++                    _lf_dz = _lf_b.z - _lf_pz
++                    _lf_dl = math.sqrt(_lf_dx * _lf_dx + _lf_dz * _lf_dz)
++                    if _lf_dl > 0.1:
++                        _lf_slide = 0.3 if _lf_py < _lf_top - 0.2 else 0.15
++                        _lf_b.x += (_lf_dx / _lf_dl) * _lf_slide * _lf_fade
++                        _lf_b.z += (_lf_dz / _lf_dl) * _lf_slide * _lf_fade
++            if _lf_supported:
++                # V3 (2026-07-19, "the tilt and then the horn instantly
++                # clips"): rotation is a CONTACT CONSTRAINT, not friction.
++                # V1 damped rotation always (froze the tumble); v2 damped
++                # never (the tilt swept parts through the far rim). Correct:
++                # tumble FREELY until a part actually PENETRATES rim floor,
++                # then the rotation that drove it there stops AT the
++                # contact pose — the beetle WEDGES, the stronger voidward
++                # slide scrapes it free, the depth fade releases it into
++                # clean fall. Resting-only contact keeps mild descent damp
++                # and full rotation (the natural turn continues)
++                _lf_b.vy *= 1.0 - (0.5 if _lf_jam else 0.25) * _lf_fade
++                if _lf_jam and _lf_jp is not None:
++                    _lf_b.pitch_velocity *= 1.0 - 0.7 * _lf_fade
++                    _lf_b.roll_velocity *= 1.0 - 0.7 * _lf_fade
++                    # V4 CONTACT TORQUE (2026-07-19, "pitched-down horn
++                    # clips instead of TURNING the beetle"): a jam doesn't
++                    # just stop rotation — the rim pushes UP on the caught
++                    # part, torquing the body so that part lifts OVER the
++                    # rim. SIGN FROM THE PLACEMENT TRANSFORM (positive
++                    # pitch = nose UP; the earlier apply_bowl_tilt-derived
++                    # sign was from DEAD CODE and inverted): front caught
++                    # -> pitch_velocity POSITIVE (nose rises over the rim);
++                    # rear caught -> negative (butt rises).
++                    # Penetration-proportional, depth-faded, capped
++                    _lf_flx = ((_lf_jp[0] - _lf_b.x) * math.cos(_lf_b.rotation)
++                               + (_lf_jp[2] - _lf_b.z) * math.sin(_lf_b.rotation))
++                    _lf_tq = (min(_lf_jp_pen, 1.5) * _lf_fade
++                              * physics_params.get("FULCRUM_TORQUE", 1.2))
++                    if abs(_lf_flx) > 1.0:
++                        if _lf_flx > 0.0:
++                            _lf_b.pitch_velocity += _lf_tq  # front caught: nose up
++                        else:
++                            _lf_b.pitch_velocity -= _lf_tq  # rear caught: rear up
++                    if TIP_TRACE:
++                        print(f"[FulcTrace] f{physics_frame} y={_lf_b.y:.2f} JAM pen={_lf_jp_pen:.2f} "
++                              f"flx={_lf_flx:.1f} tq={_lf_tq:.2f} pvel={_lf_b.pitch_velocity:.2f} "
++                              f"fade={_lf_fade:.2f}")
++                        _lf_b.pitch_velocity = max(-6.0, min(6.0, _lf_b.pitch_velocity))
++                    # V5 ROLL TORQUE (sign from the placement transform:
++                    # final_y = ...-z*sin(roll) => POSITIVE roll = right
++                    # side DOWN). Caught on the right -> roll NEGATIVE
++                    # (right side rises over the rim)
++                    _lf_flat = ((_lf_jp[0] - _lf_b.x) * _lf_rx
++                                + (_lf_jp[2] - _lf_b.z) * _lf_rz)
++                    if abs(_lf_flat) > 1.0:
++                        if _lf_flat > 0.0:
++                            _lf_b.roll_velocity -= _lf_tq   # right caught: right up
++                        else:
++                            _lf_b.roll_velocity += _lf_tq   # left caught: left up
++                        _lf_b.roll_velocity = max(-6.0, min(6.0, _lf_b.roll_velocity))
++                collision_stats['lip_fulcrum_substeps'] = \
++                    collision_stats.get('lip_fulcrum_substeps', 0) + 1
+ 
+         # === FLOOR COLLISION TIMING END ===
+         _t_floor_end = time.perf_counter()
+@@ -29220,6 +29482,12 @@ try:
+             physics_params["BODY_SEP_DEADZONE"] = window.GUI.slider_float("Body Sep Deadzone", physics_params["BODY_SEP_DEADZONE"], 0.0, 3.0)
+             physics_params["LEG_CONTACT_FORCE"] = window.GUI.slider_float("Leg Contact Force", physics_params["LEG_CONTACT_FORCE"], 0.0, 1.0)
+             physics_params["LEG_CAGE_PUSH"] = window.GUI.slider_float("Leg Cage Push", physics_params["LEG_CAGE_PUSH"], 0.0, 0.5)
++            window.GUI.text("--- Edge / Death Falls ---")
++            physics_params["EDGE_TIP_SCALE"] = window.GUI.slider_float("Edge Tip Scale", physics_params.get("EDGE_TIP_SCALE", 1.0), 0.2, 3.0)
++            physics_params["EDGE_TIP_DROP"] = window.GUI.slider_float("Edge Tip Drop", physics_params.get("EDGE_TIP_DROP", 4.0), 0.0, 8.0)
++            physics_params["STRADDLE_LEAN"] = window.GUI.slider_float("Straddle Lean", physics_params.get("STRADDLE_LEAN", 0.35), 0.0, 1.0)
++            physics_params["STRADDLE_TIP_RELEASE"] = window.GUI.slider_float("Straddle Tip Release", physics_params.get("STRADDLE_TIP_RELEASE", 0.5), 0.1, 1.2)
++            physics_params["FULCRUM_TORQUE"] = window.GUI.slider_float("Fulcrum Torque", physics_params.get("FULCRUM_TORQUE", 1.2), 0.0, 3.0)
+             physics_params["FORWARD_SPEED"] = window.GUI.slider_float("Forward Speed", physics_params["FORWARD_SPEED"], 1.0, 15.0)
+             physics_params["BACKWARD_SPEED"] = window.GUI.slider_float("Backward Speed", physics_params["BACKWARD_SPEED"], 1.0, 15.0)
+             physics_params["SPEED_RAMP_TIME"] = window.GUI.slider_float("Speed Ramp Time", physics_params["SPEED_RAMP_TIME"], 0.5, 5.0)
