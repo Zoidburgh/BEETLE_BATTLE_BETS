@@ -389,6 +389,9 @@ if '--balls' in sys.argv:
 # branch fired, pen, rest target, surface vy, segment, contact count) for
 # offline jitter diagnosis. Dumps ball_trace.csv on exit.
 BALL_TRACE = '--balltrace' in sys.argv
+# --bracetrace: print combat tilt-drain magnitudes vs the stance-brace
+# absorption (calibrating STANCE_BRACE against real fight numbers)
+BRACE_TRACE = '--bracetrace' in sys.argv
 _ball_trace_rows = []
 _bt_dbg = {}
 
@@ -2329,17 +2332,57 @@ class Beetle:
                 drain = min(self.pending_lift, 0.05)
             self.vy += drain
             self.pending_lift -= drain
+        # STANCE BRACING (2026-07-19, slider STANCE BRACE): a planted
+        # beetle's WEIGHT resists contact torque — pressing down on the
+        # horn is a see-saw about the front legs, and the rear body's
+        # weight moment must be beaten before the butt lifts. While
+        # grounded, up to BRACE*dt of incoming pitch/roll delta per
+        # substep is ABSORBED (grounded out through the legs — consumed,
+        # not delayed): light/medium leans do nothing, real hits lose only
+        # the fixed sliver and punch through. Yaw exempt (spinning flat
+        # doesn't fight gravity). 0 = off (old: any press rotates)
+        _brace = 0.0
+        if (self.horn_type != "ball" and self.on_ground
+                and not self.is_falling
+                and not getattr(self, 'no_floor_below', False)):
+            # PROXIMITY FADE, not a hard air_gap gate (--bracetrace
+            # 2026-07-19: the air_gap<=0.5 cutoff was FALSE on ~2/3 of
+            # combat substeps — lift battles float beetles fractionally
+            # off the floor, so the brace ran at a ~1/3 duty cycle and NO
+            # slider value felt different). Legs still brace within reach:
+            # full effect planted, fading smoothly to zero by 2.5 voxels
+            # of daylight — a genuinely HOISTED beetle gets no brace
+            _prox = max(0.0, 1.0 - self.air_gap / 2.5)
+            # CHARGE SCALING (2026-07-19 user design): momentum plants you.
+            # Brace ramps linearly with ground speed from STANCE_BRACE
+            # (standing) to STANCE_BRACE_CHARGE at full charge speed —
+            # user tune: 7 standing -> 20 at full charge
+            _spd = math.sqrt(self.vx * self.vx + self.vz * self.vz)
+            _chg = min(1.0, _spd / max(1.0, physics_params.get("FORWARD_SPEED", 7.0)))
+            _b0 = physics_params.get("STANCE_BRACE", 0.0)
+            _b1 = physics_params.get("STANCE_BRACE_CHARGE", 0.0)
+            _brace = (_b0 + (_b1 - _b0) * _chg) * dt * _prox
         if abs(self.pending_pitch) > 0.0:
             drain = self.pending_pitch * 0.2
             if abs(drain) < 0.02:
                 drain = math.copysign(min(abs(self.pending_pitch), 0.02), self.pending_pitch)
-            self.pitch_velocity += drain
+            _applied = drain
+            if _brace > 0.0:
+                _applied = math.copysign(max(0.0, abs(drain) - _brace), drain)
+            if BRACE_TRACE and abs(drain) > 0.005 and self.horn_type != "ball":
+                print(f"[Brace] pitch drain={drain:+.4f} applied={_applied:+.4f} "
+                      f"brace={_brace:.4f} queue={self.pending_pitch:+.3f} "
+                      f"pvel={self.pitch_velocity:+.3f} grounded={_brace > 0.0}")
+            self.pitch_velocity += _applied
             self.pending_pitch -= drain
         if abs(self.pending_roll) > 0.0:
             drain = self.pending_roll * 0.2
             if abs(drain) < 0.02:
                 drain = math.copysign(min(abs(self.pending_roll), 0.02), self.pending_roll)
-            self.roll_velocity += drain
+            _applied = drain
+            if _brace > 0.0:
+                _applied = math.copysign(max(0.0, abs(drain) - _brace), drain)
+            self.roll_velocity += _applied
             self.pending_roll -= drain
         if abs(self.pending_yaw) > 0.0:
             drain = self.pending_yaw * 0.2
@@ -17688,6 +17731,13 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # and set velocity to 0 for fixed parts, or invert for opposite-moving parts
                     b1_effective_vel = b1.horn_pitch_velocity
                     b2_effective_vel = b2.horn_pitch_velocity
+                    # (A "lift hold credit" — virtual pitch velocity for
+                    # holding UP at the cap — was added and REVERTED within
+                    # the hour 2026-07-19, user: "you shouldn't get a bonus
+                    # for holding the button, that's not how physics works".
+                    # The braced-holder problem needs a FORCE-side answer —
+                    # grounded beetles absorbing downward contact force
+                    # through their stance — not phantom velocity.)
 
                     # Helper to get collision point in beetle's local space
                     def get_local_collision(beetle, col_x, col_y, col_z):
@@ -19956,6 +20006,8 @@ physics_params = {
     "RAM_POP": 0.2,  # One-shot lift per unit of transferred hit momentum (fresh hits only — one pop per grace window). Makes charge speed COUNT vertically; 0 = off
     "RAM_POP_CAP": 3.5,  # Max queued lift from a single ram pop
     "LIFT_RECOIL": 0.18,  # Recoil scale on the ACTIVE lift winner (braced under the load; ball-recoil pattern). 0.4→0.18 user tune 2026-07-18. 1.0 = old symmetric feel
+    "STANCE_BRACE": 0.0,  # 2026-07-19: grounded weight-moment torque absorption (rad/s of pitch/roll delta absorbed per second) — light presses ground out through the legs; big hits punch through. USER CALL same day after tuning 4->3->5->7: DEFAULT OFF — "better without" for now; the mechanism + sliders stay (verified working via --bracetrace) for later tuning
+    "STANCE_BRACE_CHARGE": 0.0,  # 2026-07-19: brace at FULL charge speed (linear ramp from STANCE_BRACE with ground speed). OFF with the base (user call, see above) — was 20 during tuning
     "KNOCKBACK_GRACE": 0.5,  # Seconds of raised cap floor after a real hit (impulse > 6 u/s)
     "AIR_NUDGE_CAP": 5.0,  # Per-hit vertical impulse cap on AIRBORNE horn-contact recipients (natural mid-air nudges; 0 = old no-vertical behavior)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
@@ -27151,16 +27203,11 @@ try:
         window.GUI.begin("SETTINGS AND NETWORKING", 0.01, 0.01, 0.35, 0.95)
         window.GUI.text(f"FPS: {actual_fps:3.0f}")
 
-        # FFA-LIVES HUD (3-4P matches): lives per slot + winner banner
-        if active_player_count > 2:
-            _slot_names = ("BLUE", "RED", "GREEN", "GOLD")
-            for _ls in range(active_player_count):
-                if eliminated[_ls]:
-                    window.GUI.text(f"{_slot_names[_ls]}: ELIMINATED")
-                else:
-                    window.GUI.text(f"{_slot_names[_ls]}: {lives[_ls]} lives")
-            if win_banner_slot is not None:
-                window.GUI.text(f"*** {_slot_names[win_banner_slot]} WINS! ***")
+        # (FFA-LIVES HUD moved OUT of this panel 2026-07-19 — it sat at
+        # the TOP, so every lives tick / elimination / win banner /
+        # auto-rematch reset reshuffled every widget below it mid-match:
+        # "the menu spazzes, I can't change settings". Now a standalone
+        # LIVES panel near the net debug HUD.)
 
         # Fullscreen toggle button
         fs_text = "FULLSCREEN: ON" if is_fullscreen else "FULLSCREEN: OFF"
@@ -28719,12 +28766,15 @@ try:
 
         window.GUI.text("")
 
-        # Throttle beetle customization GUI during active LOCAL gameplay for performance
-        # Only show full sliders every 6 frames during local play, always show full in network mode
-        gui_frame_counter = physics_frame % 6
-        is_local_play = not network_manager or not network_manager.connected
-        in_active_gameplay = game_state == GAME_STATE_ONLINE_PLAY and beetles[0].active and beetles[1].active and is_local_play
-        show_full_customization = (gui_frame_counter == 0) or not in_active_gameplay
+        # (A customization-GUI throttle lived here — full sliders only every
+        # 6th frame during "active gameplay" — REMOVED 2026-07-19: its
+        # condition (ONLINE_PLAY + not connected + both beetles alive) was
+        # unreachable in the local play it claimed to optimize, and the
+        # SOLO BOT MATCH made it reachable: the flapping widget sections
+        # reshuffled the whole panel every few frames — "the menu spazzes,
+        # I can't change settings" — and stopped exactly when beetle 0
+        # died. Widget-count flapping is never an acceptable perf trick.)
+        show_full_customization = True
 
         # Determine which beetle this player can edit in network mode
         # Host edits BLUE, Guest edits RED, Local mode can edit both
@@ -29285,6 +29335,12 @@ try:
             physics_params["RAM_POP"] = window.GUI.slider_float("Ram Pop", physics_params["RAM_POP"], 0.0, 0.6)
             physics_params["RAM_POP_CAP"] = window.GUI.slider_float("Ram Pop Cap", physics_params["RAM_POP_CAP"], 0.0, 8.0)
             physics_params["LIFT_RECOIL"] = window.GUI.slider_float("Lift Recoil", physics_params["LIFT_RECOIL"], 0.0, 1.0)
+            # Weight-moment bracing: grounded beetles absorb this much
+            # contact pitch/roll torque through their stance (0 = old)
+            # Stance bracing (default 0 = OFF, user call 2026-07-19 "better
+            # without" — mechanism verified working, tune up if wanted)
+            physics_params["STANCE_BRACE"] = window.GUI.slider_float("Stance Brace", physics_params.get("STANCE_BRACE", 0.0), 0.0, 15.0)
+            physics_params["STANCE_BRACE_CHARGE"] = window.GUI.slider_float("Charge Brace", physics_params.get("STANCE_BRACE_CHARGE", 0.0), 0.0, 30.0)
             physics_params["KNOCKBACK_GRACE"] = window.GUI.slider_float("Knockback Grace", physics_params["KNOCKBACK_GRACE"], 0.0, 1.5)
             physics_params["AIR_NUDGE_CAP"] = window.GUI.slider_float("Air Nudge Cap", physics_params["AIR_NUDGE_CAP"], 0.0, 12.0)
             physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
@@ -29391,6 +29447,22 @@ try:
             beetle_tuning_note = "reloaded from file" if load_beetle_tuning() else "no file found"
         if beetle_tuning_note:
             window.GUI.text(beetle_tuning_note)
+        window.GUI.end()
+
+    # === FFA-LIVES HUD (standalone, fixed size — moved out of the
+    # settings panel 2026-07-19: its variable line count at the panel top
+    # made every widget below jump on lives/elimination/banner changes) ===
+    if active_player_count > 2 and not gui_skip_content:
+        window.GUI.begin("LIVES", 0.64, 0.01, 0.13, 0.14)
+        _lh_names = ("BLUE", "RED", "GREEN", "GOLD")
+        for _lh in range(active_player_count):
+            if eliminated[_lh]:
+                window.GUI.text(f"{_lh_names[_lh]}: OUT")
+            else:
+                window.GUI.text(f"{_lh_names[_lh]}: {lives[_lh]} lives")
+        # Banner line always rendered (empty when no winner) — fixed height
+        window.GUI.text(f"*** {_lh_names[win_banner_slot]} WINS! ***"
+                        if win_banner_slot is not None else "")
         window.GUI.end()
 
     # === OPPONENT DISCONNECTED BANNER (center screen, impossible to miss) ===
