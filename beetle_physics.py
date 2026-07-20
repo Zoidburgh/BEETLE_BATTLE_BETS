@@ -2173,6 +2173,7 @@ class Beetle:
         self.vy = 0.0  # Vertical velocity
         self.on_ground = True  # Ground contact state (STICKY: only death/respawn/hover clear it — use air_gap for "airborne")
         self.air_gap = 0.0  # Lowest geometry point height above floor surface (999 = no floor below); cached from floor block each step
+        self.airborne_h = False  # HYSTERETIC airborne flag (2026-07-20): latched version of air_gap~1.0 — leaves ground above AIR_GRACE_LIFT*(1+AIR_HYST), lands below *(1-AIR_HYST). Combat/feel gates read THIS, not bare air_gap, so a skimming beetle stops flipping six systems per substep
         self.air_no_traction = False  # True when popped up past AIR_GRACE_LIFT — drive nerfed, speed cap drops to base
         self.air_speed_cut_done = False  # One-shot: 40% horizontal slow already applied this flight (re-arms on landing)
         self.visible = True  # Render visibility (ball hides during explosion; was only set dynamically — first no-goal ball loss crashed reading it)
@@ -2455,7 +2456,7 @@ class Beetle:
             # Ball uses its own rolling friction only when on ground (applied in main loop)
             pass
         else:
-            if self.air_gap <= physics_params.get("AIR_GRACE_LIFT", 1.0):
+            if not self.airborne_h:  # hysteretic flag (was bare air_gap <= AIR_GRACE_LIFT)
                 linear_friction = ICE_LINEAR_FRICTION if (on_ice and self.on_ground) else FRICTION
             else:
                 linear_friction = physics_params.get("AIR_FRICTION", 0.985)
@@ -16007,6 +16008,14 @@ def calculate_horn_damping(beetle, collision_x, collision_y, collision_z, engage
 # per type instead: a bombardier head-bump is mostly a body shove.
 TIP_FACTOR = {"bombardier": 0.3, "spider": 0.6, "scorpion": 0.7}
 
+# TIP SMOOTHING state (2026-07-20 smoothness audit): per-pair EMA of the
+# tip/shaft leverage blend. has_horn_tips is a per-substep binary from the
+# voxel kernel, and tip vs shaft leverage is a 2.5x force swing — contact
+# sliding along a horn (or strobing) flipped the whole lift/tumble/spin
+# stack 2.5x per substep. Keyed by object ids; beetles persist, so this
+# stays tiny.
+_pair_tip_blend = {}
+
 def beetle_collision(b1, b2, params, precomputed_collision=None):
     """Handle collision with voxel-perfect detection, pushing, and horn leverage.
 
@@ -17707,10 +17716,24 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # Pseudo-weapon tips (TIP_FACTOR < 1) get proportionally
                     # shaft-like leverage instead of a real horn's full lift
                     shaft_leverage_mult = params.get("SHAFT_LEVERAGE_MULT", 0.4)
+                    # TIP SMOOTHING (2026-07-20): the tip/shaft blend used to
+                    # switch instantly with the per-substep has_horn_tips
+                    # binary — a 2.5x swing on lift_impulse (and everything
+                    # downstream: lift height, tumble, spin) that strobed as
+                    # contact slid along the horn. EMA the blend instead:
+                    # TIP_SMOOTH = per-substep retention (0 = old instant
+                    # flip, 0.8 ~ 0.08s settle). Same forces, no flicker
                     if has_horn_tips == 0:
-                        horn_leverage *= shaft_leverage_mult
+                        _tb_target = shaft_leverage_mult
                     else:
-                        horn_leverage *= shaft_leverage_mult + (1.0 - shaft_leverage_mult) * pair_tip_factor
+                        _tb_target = shaft_leverage_mult + (1.0 - shaft_leverage_mult) * pair_tip_factor
+                    _tsr = params.get("TIP_SMOOTH", 0.8)
+                    if _tsr > 0.01:
+                        _tkey = (id(b1), id(b2))
+                        _tb_prev = _pair_tip_blend.get(_tkey, _tb_target)
+                        _tb_target = _tb_prev * _tsr + _tb_target * (1.0 - _tsr)
+                        _pair_tip_blend[_tkey] = _tb_target
+                    horn_leverage *= _tb_target
 
                     # Upward bias on the collision normal, leverage-scaled.
                     # NOTE (2026-07-17): for horn contacts impulse_y is
@@ -17992,11 +18015,29 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     torque_b1 = base_torque_b1 * velocity_factor
                     torque_b2 = base_torque_b2 * velocity_factor
 
+                    # AIR TURN SMOOTHING (2026-07-20, own dial like the other
+                    # smoothing channels): yaw injections fire per contact
+                    # event at near-fixed strength, so an AIRBORNE beetle in
+                    # strobing contact gets spun in jerky increments. For
+                    # airborne recipients only, scale received yaw (geometric
+                    # torque AND away-bias below) by closing speed along the
+                    # normal — slow grazes barely turn you mid-air, real hits
+                    # spin full. Grounded yaw feel untouched. 0 = off/old
+                    _ats = params.get("AIR_TURN_SMOOTH", 6.0)
+                    _ay1 = 1.0
+                    _ay2 = 1.0
+                    if _ats > 0.05:
+                        _ayf = min(1.0, abs(rel_vx * normal_x + rel_vz * normal_z) / _ats)
+                        if b1.airborne_h:
+                            _ay1 = _ayf
+                        if b2.airborne_h:
+                            _ay2 = _ayf
+
                     # Apply angular impulses with horn leverage (smoothed)
                     angular_impulse_b1 = (torque_b1 / b1.moment_of_inertia) * horn_leverage * 1.3
                     angular_impulse_b2 = (torque_b2 / b2.moment_of_inertia) * horn_leverage * 1.3
-                    b1.pending_yaw += angular_impulse_b1
-                    b2.pending_yaw -= angular_impulse_b2
+                    b1.pending_yaw += angular_impulse_b1 * _ay1
+                    b2.pending_yaw -= angular_impulse_b2 * _ay2
 
                     # AWAY-FROM-ATTACKER BIAS: Ensure hit beetle spins away from attacker
                     # This fixes counterintuitive behavior where shaft hits cause turning INTO attacker
@@ -18033,7 +18074,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         # Scale by momentum difference
                         momentum_factor = (b1_toward_bias - b2_toward_bias) / (b1_toward_bias + b2_toward_bias + 0.01)
                         bias_torque = away_spin * bias_strength * momentum_factor * horn_leverage
-                        b2.pending_yaw += bias_torque / b2.moment_of_inertia
+                        b2.pending_yaw += bias_torque / b2.moment_of_inertia * _ay2
 
                     # b2 is attacking b1 - make b1 spin away from b2
                     elif b2_toward_bias > b1_toward_bias + 0.5:
@@ -18047,7 +18088,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
 
                         momentum_factor = (b2_toward_bias - b1_toward_bias) / (b1_toward_bias + b2_toward_bias + 0.01)
                         bias_torque = away_spin * bias_strength * momentum_factor * horn_leverage
-                        b1.pending_yaw += bias_torque / b1.moment_of_inertia
+                        b1.pending_yaw += bias_torque / b1.moment_of_inertia * _ay1
 
             # Separation/tipping to prevent stuck collisions
             separation_force = params["SEPARATION_FORCE"]
@@ -18203,7 +18244,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # push from the ball; airborne keeps a light share
                     _recoil = params.get("BALL_BEETLE_RECOIL", 0.25)
                     _beetle_e = b2 if b1.horn_type == "ball" else b1
-                    _bsep_scale = 0.0 if _beetle_e.air_gap <= 1.0 else _recoil
+                    _bsep_scale = _recoil if _beetle_e.airborne_h else 0.0
                     if b1.horn_type == "ball":
                         b1_sep *= _ball_depth_scale
                         b2_sep *= _bsep_scale
@@ -18260,6 +18301,21 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # (scaled down for leg-only contacts — a leg tap shouldn't rock the body)
                 if not is_ball_collision:
                     body_tilt_strength = params.get("BODY_TILT_STRENGTH", 1.2) * leg_contact_scale
+
+                    # TILT SMOOTHING (re-added 2026-07-20 from the rewind,
+                    # with its OWN threshold this time): this block fires
+                    # every overlap substep at fixed strength, so sustained
+                    # low-speed pushing fed both bodies slam-grade tilt
+                    # continuously (rocking during bulldozes). Below
+                    # TILT_SMOOTH_SPEED closing along the contact normal,
+                    # tilt injection scales down proportionally; slams at/
+                    # above it tumble exactly like before. 0 = off/old
+                    _tss = params.get("TILT_SMOOTH_SPEED", 4.0)
+                    if _tss > 0.05:
+                        _rvn = ((b1.vx - b2.vx) * normal_x
+                                + (b1.vy - b2.vy) * normal_y
+                                + (b1.vz - b2.vz) * normal_z)
+                        body_tilt_strength *= min(1.0, abs(_rvn) / _tss)
 
                     # Calculate lever arms in each beetle's local space
                     world_lever1_x = collision_x - b1.x
@@ -18555,9 +18611,9 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 _iy1 = impulse_y
                 _iy2 = impulse_y
                 if is_horn_contact and not is_ball_collision:
-                    if b1.air_gap <= 1.0:
+                    if not b1.airborne_h:
                         _iy1 = 0.0
-                    if b2.air_gap <= 1.0:
+                    if not b2.airborne_h:
                         _iy2 = 0.0
                 # (Breakaway grip tried + REVERTED same day 2026-07-17 —
                 # "not good" in play; see git history if revisited)
@@ -18572,7 +18628,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 # Fast closing = full impulse pop, unchanged. Beetles only
                 _pss = 1.0
                 if not is_ball_collision:
-                    _psr = params.get("PUSH_SMOOTH_SPEED", 12.0)
+                    _psr = params.get("PUSH_SMOOTH_SPEED", 3.7)
                     if _psr > 0.05:
                         _pss = min(1.0, abs(vel_along_normal) / _psr)
                 if _pss >= 1.0:
@@ -18590,13 +18646,35 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # DRAMATIC (threshold and strength were coupled). The
                     # rate converges velocities over several ticks instead —
                     # same smoothness, tunable shove strength
-                    _mbl = (1.0 - _pss) * params.get("PUSH_MATCH_RATE", 0.75)
+                    _mbl = (1.0 - _pss) * params.get("PUSH_MATCH_RATE", 0.35)
                     b1.vx += impulse_x * _b1_scale * _pss + (_avgn - _v1n) * normal_x * _mbl
                     b1.vz += impulse_z * _b1_scale * _pss + (_avgn - _v1n) * normal_z * _mbl
                     b2.vx -= impulse_x * _b2_scale * _pss - (_avgn - _v2n) * normal_x * _mbl
                     b2.vz -= impulse_z * _b2_scale * _pss - (_avgn - _v2n) * normal_z * _mbl
-                b1.vy += _iy1 * _b1_scale
-                b2.vy -= _iy2 * _b2_scale
+                # AERIAL VERTICAL SMOOTHING (re-added 2026-07-20 from the
+                # combat-smoothing rewind, this time with its OWN threshold
+                # per the retrospective — the shared threshold made tuning
+                # opaque): the vertical nudges are raw per-contact pulses,
+                # and mid-air contact strobes, so airborne tangles became
+                # streams of instant vy jolts. When BOTH beetles are
+                # airborne and relative vertical speed is below
+                # AIR_MATCH_SPEED, blend the pulses toward vertical
+                # velocity matching (drift together). Real launches have
+                # big relative vy => full pulse, unchanged; grounded pairs
+                # unchanged (the floor owns their vertical). 0 = off/old
+                _ams = params.get("AIR_MATCH_SPEED", 16.0)
+                _psv = 1.0
+                if (not is_ball_collision and _ams > 0.05
+                        and b1.airborne_h and b2.airborne_h):
+                    _psv = min(1.0, abs(b1.vy - b2.vy) / _ams)
+                if _psv >= 1.0:
+                    b1.vy += _iy1 * _b1_scale
+                    b2.vy -= _iy2 * _b2_scale
+                else:
+                    _avv = 0.5 * (b1.vy + b2.vy)
+                    _vmb = (1.0 - _psv) * params.get("PUSH_MATCH_RATE", 0.35)
+                    b1.vy += _iy1 * _b1_scale * _psv + (_avv - b1.vy) * _vmb
+                    b2.vy -= _iy2 * _b2_scale * _psv - (_avv - b2.vy) * _vmb
                 # KNOCKBACK CARRY GRACE (air_feel_notes step B, 2026-07-17):
                 # a real hit opens a short window where the directional speed
                 # cap's floor rises (update_physics) — without it the clamp
@@ -20077,10 +20155,15 @@ physics_params = {
     "STANCE_BRACE": 0.0,  # 2026-07-19: grounded weight-moment torque absorption (rad/s of pitch/roll delta absorbed per second) — light presses ground out through the legs; big hits punch through. USER CALL same day after tuning 4->3->5->7: DEFAULT OFF — "better without" for now; the mechanism + sliders stay (verified working via --bracetrace) for later tuning
     "STANCE_BRACE_CHARGE": 0.0,  # 2026-07-19: brace at FULL charge speed (linear ramp from STANCE_BRACE with ground speed). OFF with the base (user call, see above) — was 20 during tuning
     "PUSH_SMOOTH_SPEED": 3.7,  # 2026-07-19: below this closing speed, beetle-beetle BODY impulses blend to VELOCITY MATCHING (smooth bulldoze pushing instead of the stick-slip run-into chop); above = full impulse pop (0 = old always-impulse). Horn/shaft path deliberately NOT smoothed (tried + reverted same day). Re-applied ALONE 2026-07-20 after the combat-smoothing rewind (see plans/combat_smoothing_retrospective.md); user re-tune post-rewind: 12 -> 3.7 (matching only for near-touch contact, real hits stay full pops)
-    "PUSH_MATCH_RATE": 0.75,  # 2026-07-19: how fast matched pushing converges per substep. 1.0 = instant lock (smoothest steady state, firm first-tick grab); user final: 0.75
+    "PUSH_MATCH_RATE": 0.35,  # 2026-07-19: how fast matched pushing converges per substep. 1.0 = instant lock (smoothest steady state, firm first-tick grab). User: 0.75 -> 0.35 (2026-07-20, softer grab; watch for return of steady-state chatter — locked velocities were WHY high rates felt smooth)
     "HEIGHT_TAX": 0.0,  # 2026-07-20: steepness of the lift height penalty 1/(1 + tax*(avg pair height - 2)). 0.35 = the old hardcoded anti-juggle brake; 0 = lifts full-strength at any height (aerial re-hits/towers viable). USER TUNE: 0 — brake OFF, aerial re-hits knock up at full force
     "LIFT_CAP": 12.0,  # 2026-07-20: per-tick horn-lift ceiling (anti-carry clamp), was hardcoded 12. Aerial contacts are brief so this cap dominates aerial lift totals — raise it to make short mid-air catches deliver real force; too high = horn-shelf carrying returns
     "LIFT_LEVER": 0.5,  # 2026-07-20: lever-length feed into lift — contact farther forward of the horn pivot (local x=3) moves faster, so it scores higher effective velocity AND delivers more lift (factor 1 at pivot, up to 1+1.5*this at 15+ voxels out). Fixes hercules/atlas getting zero payoff for reach. 0 = old lever-blind lift
+    "AIR_MATCH_SPEED": 16.0,  # 2026-07-20: aerial vertical smoothing threshold (OWN dial, deliberately NOT shared with PUSH_SMOOTH_SPEED — retrospective lesson). Both-airborne pairs below this relative vertical speed blend vy pulses toward velocity matching (drift together, no strobe jolts); launches exceed it and stay full pops. 0 = off/old raw pulses. Convergence shares PUSH_MATCH_RATE. User tune: 16 ("i kinda like this")
+    "TILT_SMOOTH_SPEED": 4.0,  # 2026-07-20: rotational smoothing threshold (own dial). Body-collision tilt scales with closing speed below this — sustained leans inject gentle tilt instead of slam-grade rocking; real impacts at/above it tumble full. 0 = off/old fixed-strength tilt. User tune: 4
+    "AIR_TURN_SMOOTH": 6.0,  # 2026-07-20: yaw smoothing for AIRBORNE recipients (own dial). Received yaw torque + away-bias scale with closing speed below this — slow mid-air grazes barely turn you, real hits spin full. Grounded yaw untouched. 0 = off/old
+    "AIR_HYST": 0.2,  # 2026-07-20 audit fix: hysteresis band on the airborne flag — leave ground above AIR_GRACE_LIFT*(1+this), land below *(1-this). Stops a skimming beetle flipping friction/nudge/match/turn/recoil/traction every substep. 0 = old knife-edge
+    "TIP_SMOOTH": 0.8,  # 2026-07-20 audit fix: per-substep retention of the tip/shaft leverage blend EMA (tip vs shaft = 2.5x force swing that strobed as contact slid along the horn). 0 = old instant flip; 0.8 ~ 0.08s settle. Same forces, no flicker
     "KNOCKBACK_GRACE": 0.5,  # Seconds of raised cap floor after a real hit (impulse > 6 u/s)
     "AIR_NUDGE_CAP": 8.25,  # Per-hit vertical impulse cap on AIRBORNE horn-contact recipients (natural mid-air nudges; 0 = old no-vertical behavior). User tune 2026-07-20: 5 -> 8.25 (aerial chain sprint)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
@@ -21889,7 +21972,7 @@ try:
                 # until the beetle touches down again.
                 _grace_lift = physics_params.get("AIR_GRACE_LIFT", 1.0)
                 _dead_lift = physics_params.get("AIR_DEAD_LIFT", 2.5)
-                on_board = beetle.air_gap <= _grace_lift
+                on_board = not beetle.airborne_h  # hysteretic (was bare air_gap <= _grace_lift)
 
                 # Movement controls (T/G) - move in facing direction
                 # Silk slowdown: 1% slower per silk particle attached to body
@@ -23777,6 +23860,7 @@ try:
                         beetles[slot].is_falling = False
                         beetles[slot].on_ground = False
                         beetles[slot].air_gap = 999.0  # Airborne until floor block re-measures
+                        beetles[slot].airborne_h = True
                         spawn_immunity[slot] = SPAWN_IMMUNITY_DURATION
                         # Sync interp snapshot (kills the 1-frame death->spawn streak)
                         beetles[slot].save_previous_state()
@@ -23801,6 +23885,7 @@ try:
                         beetles[slot].guest_death_falling = False
                         beetles[slot].on_ground = False
                         beetles[slot].air_gap = 999.0  # Airborne until floor block re-measures
+                        beetles[slot].airborne_h = True
                         beetles[slot].forward_hold_time = 0.0
                         beetles[slot].backward_hold_time = 0.0
                         beetles[slot].forward_bonus = 0.0
@@ -23877,6 +23962,7 @@ try:
                     beetles[slot].guest_death_falling = False
                     beetles[slot].on_ground = False
                     beetles[slot].air_gap = 999.0  # Airborne until floor block re-measures
+                    beetles[slot].airborne_h = True
                     # Reset speed boost state
                     beetles[slot].forward_hold_time = 0.0
                     beetles[slot].backward_hold_time = 0.0
@@ -24801,6 +24887,21 @@ try:
                     # over the board — hanging over the rim or sliding off the
                     # ledge is not "in the air" and must not trigger the slow
                     pass
+                # AIRBORNE HYSTERESIS (2026-07-20 smoothness audit): six
+                # combat/feel gates used bare air_gap ~ 1.0 cutoffs that all
+                # flipped together every substep for a beetle skimming at
+                # hover height (friction band, air nudge, air match, air
+                # turn, ball recoil, board traction). One latched flag with
+                # a band replaces them: leave the ground above
+                # AIR_GRACE_LIFT*(1+AIR_HYST), land below *(1-AIR_HYST).
+                # AIR_HYST 0 = the old knife-edge at AIR_GRACE_LIFT exactly
+                _agl_h = physics_params.get("AIR_GRACE_LIFT", 1.0)
+                _ahy = physics_params.get("AIR_HYST", 0.2)
+                if beetles[slot].airborne_h:
+                    if beetles[slot].air_gap <= _agl_h * (1.0 - _ahy):
+                        beetles[slot].airborne_h = False
+                elif beetles[slot].air_gap > _agl_h * (1.0 + _ahy):
+                    beetles[slot].airborne_h = True
         # Ball floor collision (same as beetles, but skip in goal pit areas)
         for _mb_ball in balls:  # MB1: per-ball floor collision
             if not _mb_ball.active:
@@ -29482,7 +29583,7 @@ try:
 
     # === BEETLE TUNING WINDOW (standalone, toggled from settings panel) ===
     if show_beetle_tuning and not gui_skip_content:
-        window.GUI.begin("BEETLE TUNING", 0.37, 0.01, 0.26, 0.90)
+        window.GUI.begin("BEETLE TUNING", 0.37, 0.01, 0.26, 0.98)
         beetle_tuning_sel = window.GUI.slider_int("Type", beetle_tuning_sel, 0, len(BEETLE_TYPE_STATS) - 1)
         _bs = BEETLE_TYPE_STATS[beetle_tuning_sel]
         window.GUI.text(f">>> {_bs['name'].upper()} <<<")
@@ -29519,7 +29620,7 @@ try:
         # of stick-slip bouncing (0 = old always-impulse)
         physics_params["PUSH_SMOOTH_SPEED"] = window.GUI.slider_float("Push Smooth Speed", physics_params.get("PUSH_SMOOTH_SPEED", 3.7), 0.0, 20.0)
         # How fast matched pushing locks speeds (1 = instant/firmest)
-        physics_params["PUSH_MATCH_RATE"] = window.GUI.slider_float("Push Match Rate", physics_params.get("PUSH_MATCH_RATE", 0.75), 0.05, 1.0)
+        physics_params["PUSH_MATCH_RATE"] = window.GUI.slider_float("Push Match Rate", physics_params.get("PUSH_MATCH_RATE", 0.35), 0.05, 1.0)
         # Anti-juggle brake: how fast lift force fades with height
         # (0.35 = old feel, 0 = OFF — lifts full-strength at any height)
         physics_params["HEIGHT_TAX"] = window.GUI.slider_float("Height Tax", physics_params.get("HEIGHT_TAX", 0.0), 0.0, 1.0)
@@ -29532,6 +29633,21 @@ try:
         # Lever feed: contact farther out on a long horn moves faster
         # and lifts harder (helps hercules/atlas). 0 = old lever-blind
         physics_params["LIFT_LEVER"] = window.GUI.slider_float("Lift Lever", physics_params.get("LIFT_LEVER", 0.5), 0.0, 1.0)
+        # Aerial-only: below this relative vertical speed, two AIRBORNE
+        # beetles drift together instead of trading strobing vertical
+        # jolts. Launches punch through it. 0 = off (old raw pulses)
+        physics_params["AIR_MATCH_SPEED"] = window.GUI.slider_float("Air Match Speed", physics_params.get("AIR_MATCH_SPEED", 16.0), 0.0, 20.0)
+        # Below this closing speed, body-contact tilt scales down with
+        # speed (leans stop rocking); slams tumble full. 0 = off (old)
+        physics_params["TILT_SMOOTH_SPEED"] = window.GUI.slider_float("Tilt Smooth Speed", physics_params.get("TILT_SMOOTH_SPEED", 4.0), 0.0, 20.0)
+        # Airborne-only: below this closing speed, hits barely spin you
+        # mid-air; real hits turn you full. Grounded unchanged. 0 = off
+        physics_params["AIR_TURN_SMOOTH"] = window.GUI.slider_float("Air Turn Smooth", physics_params.get("AIR_TURN_SMOOTH", 6.0), 0.0, 20.0)
+        # Air/ground switch band: stops hover-height flicker of friction/
+        # nudge/traction. 0 = old knife-edge at exactly Air Grace Lift
+        physics_params["AIR_HYST"] = window.GUI.slider_float("Air Hysteresis", physics_params.get("AIR_HYST", 0.2), 0.0, 0.5)
+        # Tip-vs-shaft force blend settle time (0 = old instant 2.5x flip)
+        physics_params["TIP_SMOOTH"] = window.GUI.slider_float("Tip Smooth", physics_params.get("TIP_SMOOTH", 0.8), 0.0, 0.95)
 
         window.GUI.text("")
         if window.GUI.button("SAVE TUNING TO FILE"):
