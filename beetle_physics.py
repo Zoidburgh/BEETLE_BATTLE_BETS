@@ -16735,6 +16735,17 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             normal_x = b1.contact_normal_x
             normal_y = b1.contact_normal_y
             normal_z = b1.contact_normal_z
+            # NORMALIZE the smoothed normal (2026-07-19): the EMA starts
+            # near zero on fresh contact, so until it converges the "normal"
+            # had length < 1 AND lagged direction — every fresh contact
+            # (and run-into stick-slip makes each pulse fresh) delivered a
+            # weakened, DIAGONAL impulse = part of the choppy sideways-jerk
+            # feel. Direction smoothing is preserved; magnitude is honest
+            _nrm_len = math.sqrt(normal_x * normal_x + normal_y * normal_y + normal_z * normal_z)
+            if _nrm_len > 0.05:
+                normal_x /= _nrm_len
+                normal_y /= _nrm_len
+                normal_z /= _nrm_len
 
             # HORN-SHAFT PENETRATION RESPONSE: stop bodies sliding sideways
             # through a horn shaft. The main impulse below acts along the
@@ -17323,6 +17334,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         # body shoves it, with a reaction on the horn owner.
                         # Resistance is natural — an intruder moving/turning
                         # away from the shaft reduces the closing speed.
+                        # (A smooth-push velocity-matching blend was tried
+                        # here 2026-07-19 and REVERTED same day — user:
+                        # "the older horn interactions might have been
+                        # better". Smooth push stays BODY-ONLY.)
                         intruder.vx += _pnx * _closing * shaft_vel_damp
                         intruder.vz += _pnz * _closing * shaft_vel_damp
                         # Reaction on the horn owner — but NOT from the ball
@@ -18523,12 +18538,42 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         _iy2 = 0.0
                 # (Breakaway grip tried + REVERTED same day 2026-07-17 —
                 # "not good" in play; see git history if revisited)
-                b1.vx += impulse_x * _b1_scale
+                # SMOOTH PUSH (2026-07-19): at walking-speed body contact
+                # the symmetric impulse OVER-BRAKES the pusher every pulse
+                # (stop -> gap -> re-accelerate -> slam = the run-into
+                # chop). Below PUSH_SMOOTH_SPEED closing, blend toward
+                # VELOCITY MATCHING along the normal — a true inelastic
+                # shove, momentum-conserving: the pusher keeps most of its
+                # speed and the pushed accelerates ahead (natural horn-less
+                # pushing/bulldozing; off-center yaw turning untouched).
+                # Fast closing = full impulse pop, unchanged. Beetles only
+                _pss = 1.0
+                if not is_ball_collision:
+                    _psr = params.get("PUSH_SMOOTH_SPEED", 12.0)
+                    if _psr > 0.05:
+                        _pss = min(1.0, abs(vel_along_normal) / _psr)
+                if _pss >= 1.0:
+                    b1.vx += impulse_x * _b1_scale
+                    b1.vz += impulse_z * _b1_scale
+                    b2.vx -= impulse_x * _b2_scale
+                    b2.vz -= impulse_z * _b2_scale
+                else:
+                    _v1n = b1.vx * normal_x + b1.vz * normal_z
+                    _v2n = b2.vx * normal_x + b2.vz * normal_z
+                    _avgn = 0.5 * (_v1n + _v2n)
+                    # PUSH MATCH RATE (2026-07-19): full per-substep matching
+                    # yanked the victim to average speed in ONE tick, so
+                    # raising the smooth threshold also made pushing more
+                    # DRAMATIC (threshold and strength were coupled). The
+                    # rate converges velocities over several ticks instead —
+                    # same smoothness, tunable shove strength
+                    _mbl = (1.0 - _pss) * params.get("PUSH_MATCH_RATE", 0.75)
+                    b1.vx += impulse_x * _b1_scale * _pss + (_avgn - _v1n) * normal_x * _mbl
+                    b1.vz += impulse_z * _b1_scale * _pss + (_avgn - _v1n) * normal_z * _mbl
+                    b2.vx -= impulse_x * _b2_scale * _pss - (_avgn - _v2n) * normal_x * _mbl
+                    b2.vz -= impulse_z * _b2_scale * _pss - (_avgn - _v2n) * normal_z * _mbl
                 b1.vy += _iy1 * _b1_scale
-                b1.vz += impulse_z * _b1_scale
-                b2.vx -= impulse_x * _b2_scale
                 b2.vy -= _iy2 * _b2_scale
-                b2.vz -= impulse_z * _b2_scale
                 # KNOCKBACK CARRY GRACE (air_feel_notes step B, 2026-07-17):
                 # a real hit opens a short window where the directional speed
                 # cap's floor rises (update_physics) — without it the clamp
@@ -20008,6 +20053,8 @@ physics_params = {
     "LIFT_RECOIL": 0.18,  # Recoil scale on the ACTIVE lift winner (braced under the load; ball-recoil pattern). 0.4→0.18 user tune 2026-07-18. 1.0 = old symmetric feel
     "STANCE_BRACE": 0.0,  # 2026-07-19: grounded weight-moment torque absorption (rad/s of pitch/roll delta absorbed per second) — light presses ground out through the legs; big hits punch through. USER CALL same day after tuning 4->3->5->7: DEFAULT OFF — "better without" for now; the mechanism + sliders stay (verified working via --bracetrace) for later tuning
     "STANCE_BRACE_CHARGE": 0.0,  # 2026-07-19: brace at FULL charge speed (linear ramp from STANCE_BRACE with ground speed). OFF with the base (user call, see above) — was 20 during tuning
+    "PUSH_SMOOTH_SPEED": 12.0,  # 2026-07-19: below this closing speed, beetle-beetle BODY impulses blend to VELOCITY MATCHING (smooth bulldoze pushing instead of the stick-slip run-into chop); above = full impulse pop (0 = old always-impulse). User final: 12 ("this really helps a lot"). Horn/shaft path deliberately NOT smoothed (tried + reverted same day). Re-applied ALONE 2026-07-20 after the combat-smoothing rewind (see plans/combat_smoothing_retrospective.md)
+    "PUSH_MATCH_RATE": 0.75,  # 2026-07-19: how fast matched pushing converges per substep. 1.0 = instant lock (smoothest steady state, firm first-tick grab); user final: 0.75
     "KNOCKBACK_GRACE": 0.5,  # Seconds of raised cap floor after a real hit (impulse > 6 u/s)
     "AIR_NUDGE_CAP": 5.0,  # Per-hit vertical impulse cap on AIRBORNE horn-contact recipients (natural mid-air nudges; 0 = old no-vertical behavior)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
@@ -29335,12 +29382,9 @@ try:
             physics_params["RAM_POP"] = window.GUI.slider_float("Ram Pop", physics_params["RAM_POP"], 0.0, 0.6)
             physics_params["RAM_POP_CAP"] = window.GUI.slider_float("Ram Pop Cap", physics_params["RAM_POP_CAP"], 0.0, 8.0)
             physics_params["LIFT_RECOIL"] = window.GUI.slider_float("Lift Recoil", physics_params["LIFT_RECOIL"], 0.0, 1.0)
-            # Weight-moment bracing: grounded beetles absorb this much
-            # contact pitch/roll torque through their stance (0 = old)
-            # Stance bracing (default 0 = OFF, user call 2026-07-19 "better
-            # without" — mechanism verified working, tune up if wanted)
-            physics_params["STANCE_BRACE"] = window.GUI.slider_float("Stance Brace", physics_params.get("STANCE_BRACE", 0.0), 0.0, 15.0)
-            physics_params["STANCE_BRACE_CHARGE"] = window.GUI.slider_float("Charge Brace", physics_params.get("STANCE_BRACE_CHARGE", 0.0), 0.0, 30.0)
+            # (Stance/Charge Brace + Push sliders live in the BEETLE
+            # TUNING window's COMBAT FEEL section — moved 2026-07-19, the
+            # user kept losing them in this buried advanced section)
             physics_params["KNOCKBACK_GRACE"] = window.GUI.slider_float("Knockback Grace", physics_params["KNOCKBACK_GRACE"], 0.0, 1.5)
             physics_params["AIR_NUDGE_CAP"] = window.GUI.slider_float("Air Nudge Cap", physics_params["AIR_NUDGE_CAP"], 0.0, 12.0)
             physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
@@ -29412,7 +29456,7 @@ try:
 
     # === BEETLE TUNING WINDOW (standalone, toggled from settings panel) ===
     if show_beetle_tuning and not gui_skip_content:
-        window.GUI.begin("BEETLE TUNING", 0.37, 0.01, 0.26, 0.62)
+        window.GUI.begin("BEETLE TUNING", 0.37, 0.01, 0.26, 0.86)
         beetle_tuning_sel = window.GUI.slider_int("Type", beetle_tuning_sel, 0, len(BEETLE_TYPE_STATS) - 1)
         _bs = BEETLE_TYPE_STATS[beetle_tuning_sel]
         window.GUI.text(f">>> {_bs['name'].upper()} <<<")
@@ -29439,6 +29483,17 @@ try:
         if _bs["yaw_min"] > _bs["yaw_max"]:
             _bs["yaw_min"] = _bs["yaw_max"]
         rebuild_horn_limit_tables()  # Apply range edits to the physics lookup tables
+
+        window.GUI.text("")
+        window.GUI.text("--- COMBAT FEEL (global, live) ---")
+        # Weight-moment stance bracing (0 = OFF, user call "better without")
+        physics_params["STANCE_BRACE"] = window.GUI.slider_float("Stance Brace", physics_params.get("STANCE_BRACE", 0.0), 0.0, 15.0)
+        physics_params["STANCE_BRACE_CHARGE"] = window.GUI.slider_float("Charge Brace", physics_params.get("STANCE_BRACE_CHARGE", 0.0), 0.0, 30.0)
+        # Below this closing speed body contact bulldozes smoothly instead
+        # of stick-slip bouncing (0 = old always-impulse)
+        physics_params["PUSH_SMOOTH_SPEED"] = window.GUI.slider_float("Push Smooth Speed", physics_params.get("PUSH_SMOOTH_SPEED", 12.0), 0.0, 20.0)
+        # How fast matched pushing locks speeds (1 = instant/firmest)
+        physics_params["PUSH_MATCH_RATE"] = window.GUI.slider_float("Push Match Rate", physics_params.get("PUSH_MATCH_RATE", 0.75), 0.05, 1.0)
 
         window.GUI.text("")
         if window.GUI.button("SAVE TUNING TO FILE"):
