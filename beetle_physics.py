@@ -17791,6 +17791,28 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         if abs(rel_z) > 1.5:  # Side pronotum horns - no velocity
                             b2_effective_vel = 0.0
 
+                    # LIFT LEVER (2026-07-20): a pitching horn's contact point
+                    # moves at pitch_velocity x distance from the pivot — the
+                    # tip of a long horn is genuinely faster than its base,
+                    # but lift was lever-blind (long-horn types like hercules/
+                    # atlas got zero payoff for reach; report in
+                    # plans/combat_smoothing_retrospective.md era). Scale each
+                    # beetle's effective velocity by how far FORWARD of the
+                    # horn pivot (local x=3) their contact sits; the winner's
+                    # delivered lift scales by the same factor below.
+                    # Factor: 1.0 at/behind the pivot, up to 1+1.5*gain at
+                    # 15+ voxels out. LIFT_LEVER 0 = old lever-blind feel
+                    _lgain = params.get("LIFT_LEVER", 0.5)
+                    _lev1 = 1.0
+                    _lev2 = 1.0
+                    if _lgain > 0.0:
+                        _lx1, _, _ = get_local_collision(b1, collision_x, collision_y, collision_z)
+                        _lx2, _, _ = get_local_collision(b2, collision_x, collision_y, collision_z)
+                        _lev1 = 1.0 + _lgain * min(max(_lx1 - 3.0, 0.0) / 8.0, 1.5)
+                        _lev2 = 1.0 + _lgain * min(max(_lx2 - 3.0, 0.0) / 8.0, 1.5)
+                        b1_effective_vel *= _lev1
+                        b2_effective_vel *= _lev2
+
                     lift_advantage = b1_effective_vel - b2_effective_vel
 
                     # DEBUG: Print collision info
@@ -17808,7 +17830,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # user preferred the original feel; see git history at
                     # c6d2c48..revert for the directional-bracing version)
                     NORMAL_HEIGHT = 2.0  # Height where lifts start weakening (lower = earlier penalty)
-                    HEIGHT_PENALTY_FACTOR = 0.35  # How quickly lift weakens with height (higher = steeper)
+                    HEIGHT_PENALTY_FACTOR = params.get("HEIGHT_TAX", 0.35)  # Live slider 2026-07-20: how quickly lift weakens with height (higher = steeper, 0 = no height penalty)
                     avg_height = (b1.y + b2.y) / 2.0
                     height_penalty = 1.0
                     if avg_height > NORMAL_HEIGHT:
@@ -17833,14 +17855,15 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # true advantage LAUNCH (lifting the opponent) stays
                     # pulsed - that one should feel like an event.
                     LIFT_STEP_DIV = 9.0  # Higher = gentler continuous lifts (6 = exact old average force)
+                    _lcap = params.get("LIFT_CAP", 12.0)  # per-tick lift ceiling (anti-carry clamp). Aerial contact is BRIEF (few ticks vs sustained ground lifts), so this cap dominates aerial lift totals
                     lift_force_full = lift_impulse * params.get("HORN_LIFT_STRENGTH", 0.195) * height_penalty
                     tumble_mult = params.get("TUMBLE_MULTIPLIER", 3.0)
 
                     if lift_advantage > ADVANTAGE_THRESHOLD and b2_pressing_down:
                         # b2 presses down onto passive b1: smooth self-wedge
                         # up for b2, continuous horizontal push on b1
-                        _f = lift_force_full / LIFT_STEP_DIV
-                        b2.pending_lift += min(_f * PRESS_DOWN_SELF_MULT, 12.0 / LIFT_STEP_DIV)
+                        _f = lift_force_full * _lev2 / LIFT_STEP_DIV
+                        b2.pending_lift += min(_f * PRESS_DOWN_SELF_MULT, _lcap / LIFT_STEP_DIV)
                         push_h = _f * PRESS_DOWN_PUSH_MULT
                         b1.vx += normal_x * push_h
                         b1.vz += normal_z * push_h
@@ -17855,8 +17878,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
 
                     elif lift_advantage < -ADVANTAGE_THRESHOLD and b1_pressing_down:
                         # b1 presses down onto passive b2 (mirror)
-                        _f = lift_force_full / LIFT_STEP_DIV
-                        b1.pending_lift += min(_f * PRESS_DOWN_SELF_MULT, 12.0 / LIFT_STEP_DIV)
+                        _f = lift_force_full * _lev1 / LIFT_STEP_DIV
+                        b1.pending_lift += min(_f * PRESS_DOWN_SELF_MULT, _lcap / LIFT_STEP_DIV)
                         push_h = _f * PRESS_DOWN_PUSH_MULT
                         b2.vx -= normal_x * push_h
                         b2.vz -= normal_z * push_h
@@ -17872,7 +17895,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     elif abs(lift_advantage) <= ADVANTAGE_THRESHOLD:
                         # Evenly matched - smooth continuous mutual push
                         _f = lift_impulse * 0.06 * height_penalty / LIFT_STEP_DIV
-                        _f_cap = min(_f, 12.0 / LIFT_STEP_DIV)
+                        _f_cap = min(_f, _lcap / LIFT_STEP_DIV)
                         b1.pending_lift += _f_cap
                         b2.pending_lift += _f_cap
 
@@ -17900,8 +17923,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         # a per-step stream - same force per unit time, and
                         # it responds every step instead of waiting out a
                         # cooldown mid-battle. Whole lift system is smooth now.
-                        _f = lift_force_full / LIFT_STEP_DIV
-                        b2.pending_lift += min(_f, 12.0 / LIFT_STEP_DIV)
+                        _f = lift_force_full * _lev1 / LIFT_STEP_DIV
+                        b2.pending_lift += min(_f, _lcap / LIFT_STEP_DIV)
                         b1.vy -= lift_impulse * 0.03 / LIFT_STEP_DIV  # Reaction
                         _lift_winner = 1  # b1 braced under the load — reduced recoil
                         # (Continuous lift-shove tried + REVERTED same day
@@ -17917,8 +17940,8 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         b2.pending_roll += (local_x * _f * tumble_mult) / b2.roll_inertia
                     else:
                         # b2 actively out-lifts b1 (mirror, continuous)
-                        _f = lift_force_full / LIFT_STEP_DIV
-                        b1.pending_lift += min(_f, 12.0 / LIFT_STEP_DIV)
+                        _f = lift_force_full * _lev2 / LIFT_STEP_DIV
+                        b1.pending_lift += min(_f, _lcap / LIFT_STEP_DIV)
                         b2.vy -= lift_impulse * 0.03 / LIFT_STEP_DIV  # Reaction
                         _lift_winner = 2  # b2 braced under the load — reduced recoil
 
@@ -20053,10 +20076,13 @@ physics_params = {
     "LIFT_RECOIL": 0.18,  # Recoil scale on the ACTIVE lift winner (braced under the load; ball-recoil pattern). 0.4→0.18 user tune 2026-07-18. 1.0 = old symmetric feel
     "STANCE_BRACE": 0.0,  # 2026-07-19: grounded weight-moment torque absorption (rad/s of pitch/roll delta absorbed per second) — light presses ground out through the legs; big hits punch through. USER CALL same day after tuning 4->3->5->7: DEFAULT OFF — "better without" for now; the mechanism + sliders stay (verified working via --bracetrace) for later tuning
     "STANCE_BRACE_CHARGE": 0.0,  # 2026-07-19: brace at FULL charge speed (linear ramp from STANCE_BRACE with ground speed). OFF with the base (user call, see above) — was 20 during tuning
-    "PUSH_SMOOTH_SPEED": 12.0,  # 2026-07-19: below this closing speed, beetle-beetle BODY impulses blend to VELOCITY MATCHING (smooth bulldoze pushing instead of the stick-slip run-into chop); above = full impulse pop (0 = old always-impulse). User final: 12 ("this really helps a lot"). Horn/shaft path deliberately NOT smoothed (tried + reverted same day). Re-applied ALONE 2026-07-20 after the combat-smoothing rewind (see plans/combat_smoothing_retrospective.md)
+    "PUSH_SMOOTH_SPEED": 3.7,  # 2026-07-19: below this closing speed, beetle-beetle BODY impulses blend to VELOCITY MATCHING (smooth bulldoze pushing instead of the stick-slip run-into chop); above = full impulse pop (0 = old always-impulse). Horn/shaft path deliberately NOT smoothed (tried + reverted same day). Re-applied ALONE 2026-07-20 after the combat-smoothing rewind (see plans/combat_smoothing_retrospective.md); user re-tune post-rewind: 12 -> 3.7 (matching only for near-touch contact, real hits stay full pops)
     "PUSH_MATCH_RATE": 0.75,  # 2026-07-19: how fast matched pushing converges per substep. 1.0 = instant lock (smoothest steady state, firm first-tick grab); user final: 0.75
+    "HEIGHT_TAX": 0.0,  # 2026-07-20: steepness of the lift height penalty 1/(1 + tax*(avg pair height - 2)). 0.35 = the old hardcoded anti-juggle brake; 0 = lifts full-strength at any height (aerial re-hits/towers viable). USER TUNE: 0 — brake OFF, aerial re-hits knock up at full force
+    "LIFT_CAP": 12.0,  # 2026-07-20: per-tick horn-lift ceiling (anti-carry clamp), was hardcoded 12. Aerial contacts are brief so this cap dominates aerial lift totals — raise it to make short mid-air catches deliver real force; too high = horn-shelf carrying returns
+    "LIFT_LEVER": 0.5,  # 2026-07-20: lever-length feed into lift — contact farther forward of the horn pivot (local x=3) moves faster, so it scores higher effective velocity AND delivers more lift (factor 1 at pivot, up to 1+1.5*this at 15+ voxels out). Fixes hercules/atlas getting zero payoff for reach. 0 = old lever-blind lift
     "KNOCKBACK_GRACE": 0.5,  # Seconds of raised cap floor after a real hit (impulse > 6 u/s)
-    "AIR_NUDGE_CAP": 5.0,  # Per-hit vertical impulse cap on AIRBORNE horn-contact recipients (natural mid-air nudges; 0 = old no-vertical behavior)
+    "AIR_NUDGE_CAP": 8.25,  # Per-hit vertical impulse cap on AIRBORNE horn-contact recipients (natural mid-air nudges; 0 = old no-vertical behavior). User tune 2026-07-20: 5 -> 8.25 (aerial chain sprint)
     "AIR_GRACE_LIFT": 1.0,  # At/below this lift: full drive + board silk applies (small hops unchanged)
     "AIR_DEAD_LIFT": 2.5,  # At/above this lift: drive at the AIR_CONTROL floor until landing
     "AIR_SLOW_LIFT": 1.5,  # Lift (daylight under leg tips) that triggers the one-shot speed cut
@@ -29386,7 +29412,7 @@ try:
             # TUNING window's COMBAT FEEL section — moved 2026-07-19, the
             # user kept losing them in this buried advanced section)
             physics_params["KNOCKBACK_GRACE"] = window.GUI.slider_float("Knockback Grace", physics_params["KNOCKBACK_GRACE"], 0.0, 1.5)
-            physics_params["AIR_NUDGE_CAP"] = window.GUI.slider_float("Air Nudge Cap", physics_params["AIR_NUDGE_CAP"], 0.0, 12.0)
+            # (Air Nudge Cap moved to BEETLE TUNING's COMBAT FEEL section)
             physics_params["AIR_GRACE_LIFT"] = window.GUI.slider_float("Air Grace Lift", physics_params["AIR_GRACE_LIFT"], 0.5, 3.0)
             physics_params["AIR_DEAD_LIFT"] = window.GUI.slider_float("Air Dead Lift", physics_params["AIR_DEAD_LIFT"], 1.5, 7.0)
             physics_params["AIR_SLOW_LIFT"] = window.GUI.slider_float("Air Slow Lift", physics_params["AIR_SLOW_LIFT"], 1.1, 5.0)
@@ -29456,7 +29482,7 @@ try:
 
     # === BEETLE TUNING WINDOW (standalone, toggled from settings panel) ===
     if show_beetle_tuning and not gui_skip_content:
-        window.GUI.begin("BEETLE TUNING", 0.37, 0.01, 0.26, 0.86)
+        window.GUI.begin("BEETLE TUNING", 0.37, 0.01, 0.26, 0.90)
         beetle_tuning_sel = window.GUI.slider_int("Type", beetle_tuning_sel, 0, len(BEETLE_TYPE_STATS) - 1)
         _bs = BEETLE_TYPE_STATS[beetle_tuning_sel]
         window.GUI.text(f">>> {_bs['name'].upper()} <<<")
@@ -29491,9 +29517,21 @@ try:
         physics_params["STANCE_BRACE_CHARGE"] = window.GUI.slider_float("Charge Brace", physics_params.get("STANCE_BRACE_CHARGE", 0.0), 0.0, 30.0)
         # Below this closing speed body contact bulldozes smoothly instead
         # of stick-slip bouncing (0 = old always-impulse)
-        physics_params["PUSH_SMOOTH_SPEED"] = window.GUI.slider_float("Push Smooth Speed", physics_params.get("PUSH_SMOOTH_SPEED", 12.0), 0.0, 20.0)
+        physics_params["PUSH_SMOOTH_SPEED"] = window.GUI.slider_float("Push Smooth Speed", physics_params.get("PUSH_SMOOTH_SPEED", 3.7), 0.0, 20.0)
         # How fast matched pushing locks speeds (1 = instant/firmest)
         physics_params["PUSH_MATCH_RATE"] = window.GUI.slider_float("Push Match Rate", physics_params.get("PUSH_MATCH_RATE", 0.75), 0.05, 1.0)
+        # Anti-juggle brake: how fast lift force fades with height
+        # (0.35 = old feel, 0 = OFF — lifts full-strength at any height)
+        physics_params["HEIGHT_TAX"] = window.GUI.slider_float("Height Tax", physics_params.get("HEIGHT_TAX", 0.0), 0.0, 1.0)
+        # Per-tick lift ceiling — brief aerial contacts live or die by
+        # this (12 = old hardcoded anti-carry clamp)
+        physics_params["LIFT_CAP"] = window.GUI.slider_float("Lift Cap", physics_params.get("LIFT_CAP", 12.0), 4.0, 40.0)
+        # Vertical impulse cap per horn hit on an AIRBORNE beetle — the
+        # direct mid-air pop channel (moved here from advanced settings)
+        physics_params["AIR_NUDGE_CAP"] = window.GUI.slider_float("Air Nudge Cap", physics_params["AIR_NUDGE_CAP"], 0.0, 12.0)
+        # Lever feed: contact farther out on a long horn moves faster
+        # and lifts harder (helps hercules/atlas). 0 = old lever-blind
+        physics_params["LIFT_LEVER"] = window.GUI.slider_float("Lift Lever", physics_params.get("LIFT_LEVER", 0.5), 0.0, 1.0)
 
         window.GUI.text("")
         if window.GUI.button("SAVE TUNING TO FILE"):
