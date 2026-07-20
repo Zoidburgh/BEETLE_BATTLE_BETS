@@ -400,7 +400,7 @@ def _bt_dump():
         return
     try:
         with open("ball_trace.csv", "w") as _f:
-            _f.write("frame,x,y,z,vx,vy,vz,branch,seg,pen,rest_y,surf_vy,pinched,contacts\n")
+            _f.write("frame,x,y,z,vx,vy,vz,branch,seg,pen,rest_y,surf_vy,pinched,contacts,zone,hpv,pdamp,scoop,tipdn,lspd,lpen,carry,swpm\n")
             for _r in _ball_trace_rows:
                 _f.write(",".join(str(_v) for _v in _r) + "\n")
         print(f"Ball trace: {len(_ball_trace_rows)} rows -> ball_trace.csv")
@@ -17004,7 +17004,7 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                 _sw_f3 = min(1.0, max(0.0, (_sfm2 - 3.0) / 4.0))
                                 _low_f2 = min(1.0, max(0.0, (_scy - 1.5) / 2.0))
                                 _lift_f = max(_low_f2, 1.0 - _sw_f3,
-                                              params.get("LOW_HORN_LIFT_KEEP", 0.0))
+                                              params.get("LOW_HORN_LIFT_KEEP", 1.0))
                                 if _ot_lift > 0.0 and _lift_f > 0.0:
                                     intruder.y += _ot_lift * _lift_f
                                     if intruder.prev_y < intruder.y:
@@ -17338,6 +17338,19 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                                              * _sw_speed_f * _sw_align_f)
                                     intruder.vx += _swux * _swdv
                                     intruder.vz += _swuz * _swdv
+                                # CARRY HANDOFF (2026-07-20): the bulldozer
+                                # keeps the ball ahead of the blade, so raw
+                                # penetration — which scales the scoop lift
+                                # below — is engineered near-zero exactly
+                                # when the anti-clip system engages ("turning
+                                # into the ball is a jerky tap, no contact
+                                # time to lift"). Record the carry engagement
+                                # so the lift path can treat an active carry
+                                # as sustained contact
+                                intruder.sweep_carry = (physics_frame,
+                                                        _sw_speed_f * _sw_align_f * min(1.0, _bp_s))
+                                if BALL_TRACE:
+                                    _bt_dbg['swpm'] = round(_swpm, 2)
                     if _closing > 0.0:
                         # Momentum transfer: driving or sweeping a horn into a
                         # body shoves it, with a reaction on the horn owner.
@@ -17401,10 +17414,27 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             # the horn up, rising body) always lifts.
                             # Slider LOW HORN LIFT, 1 = old always-lift
                             _low_fs = min(1.0, max(0.0, (_scy - 1.5) / 2.0))
-                            _low_fs = max(_low_fs, params.get("LOW_HORN_LIFT_KEEP", 0.0))
+                            _low_fs = max(_low_fs, params.get("LOW_HORN_LIFT_KEEP", 1.0))
                             _lift_speed = (max(_closing, 0.0) * _low_fs
                                            + max(_vert_closing, 0.0))
-                            intruder.vy += min(_lift_speed * shaft_lift, 4.0) * _ball_seg_pen * _sg_flat
+                            # SWEEP CARRY LIFT (2026-07-20): during an active
+                            # bulldozer carry the ball rides ahead of the
+                            # blade, so true penetration stays near zero and
+                            # the lift starved (see carry handoff above).
+                            # Lift scales by the LARGER of true penetration
+                            # and the carry engagement — a sweeping horn that
+                            # is also pitching up lifts the ball it is
+                            # carrying. 0 = bulldozer-starved behavior
+                            _cr = getattr(intruder, 'sweep_carry', None)
+                            _cf = (_cr[1] if _cr is not None
+                                   and _cr[0] >= physics_frame - 1 else 0.0)
+                            _lift_pen = max(_ball_seg_pen,
+                                            params.get("SWEEP_CARRY_LIFT", 0.6) * _cf)
+                            intruder.vy += min(_lift_speed * shaft_lift, 4.0) * _lift_pen * _sg_flat
+                            if BALL_TRACE:
+                                _bt_dbg['lspd'] = round(_lift_speed, 2)
+                                _bt_dbg['lpen'] = round(_lift_pen, 3)
+                                _bt_dbg['carry'] = round(_cf, 3)
                         else:
                             # Cap matched to the horn-lift per-step cap (this
                             # was 4.0 = 3x horn lift — an oversized queued pop)
@@ -18631,11 +18661,50 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     _psr = params.get("PUSH_SMOOTH_SPEED", 3.7)
                     if _psr > 0.05:
                         _pss = min(1.0, abs(vel_along_normal) / _psr)
+                else:
+                    # BALL CARRY (2026-07-20, --balltrace session: "swiping
+                    # it to jerk away when we turn before we can get the
+                    # up"): the ball always took the full elastic impulse
+                    # pop, so a slow turn HIT the ball away instead of
+                    # carrying it. Below BALL_CARRY_SPEED closing, blend
+                    # the pop toward matching the ball to the horn surface
+                    # speed — it rides ahead of the turn, contact persists,
+                    # and the pitch-up scoop gets its chance. Fast hits and
+                    # shots (closing above threshold) pop exactly as before
+                    _bcs = params.get("BALL_CARRY_SPEED", 15.0)
+                    if _bcs > 0.05:
+                        # VERTICAL-AWARE (2026-07-20 follow-up: "hits a
+                        # bouncing ball many times, it gets hit to ground
+                        # and slides but stops — should have bounced and
+                        # went farther"): at high carry thresholds the
+                        # matching also captured REBOUNDS, confiscating the
+                        # bounce energy on every horn touch. A bouncing
+                        # ball has big relative vy; a ground-carry has ~0 —
+                        # gate on the larger of the two so rebounds keep
+                        # their elastic pop at any carry setting
+                        _bvrel = abs(b1.vy - b2.vy)
+                        _pss = min(1.0, max(abs(vel_along_normal), _bvrel) / _bcs)
                 if _pss >= 1.0:
                     b1.vx += impulse_x * _b1_scale
                     b1.vz += impulse_z * _b1_scale
                     b2.vx -= impulse_x * _b2_scale
                     b2.vz -= impulse_z * _b2_scale
+                elif is_ball_collision:
+                    # Matching, ball flavor: converge only the BALL toward
+                    # zero closing (ride the surface) — the beetle is not
+                    # dragged by the ball it is carrying
+                    _bcl = abs(vel_along_normal)
+                    _mbl = (1.0 - _pss) * params.get("PUSH_MATCH_RATE", 0.35)
+                    if b1.horn_type == "ball":
+                        b1.vx += impulse_x * _b1_scale * _pss + normal_x * _bcl * _mbl
+                        b1.vz += impulse_z * _b1_scale * _pss + normal_z * _bcl * _mbl
+                        b2.vx -= impulse_x * _b2_scale * _pss
+                        b2.vz -= impulse_z * _b2_scale * _pss
+                    else:
+                        b2.vx -= impulse_x * _b2_scale * _pss + normal_x * _bcl * _mbl
+                        b2.vz -= impulse_z * _b2_scale * _pss + normal_z * _bcl * _mbl
+                        b1.vx += impulse_x * _b1_scale * _pss
+                        b1.vz += impulse_z * _b1_scale * _pss
                 else:
                     _v1n = b1.vx * normal_x + b1.vz * normal_z
                     _v2n = b2.vx * normal_x + b2.vz * normal_z
@@ -18764,14 +18833,22 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                 r1_z = collision_z - b1.z
                 torque1 = r1_x * impulse_z - r1_z * impulse_x
                 angular_impulse1 = (torque1 / b1.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
-                b1.angular_velocity += angular_impulse1 * _b1_scale
+                # BALL CARRY, angular half (2026-07-20: "the beetle is
+                # knocked to rotate opp dir" while turning into the ball):
+                # in the carry regime the BEETLE's torque recoil scales
+                # with the same _pss blend as its linear reaction — a
+                # carried ball stops counter-rotating its carrier every
+                # contact frame. Real hits (full _pss) recoil as before
+                _aq1 = _pss if (is_ball_collision and b1.horn_type != "ball") else 1.0
+                _aq2 = _pss if (is_ball_collision and b2.horn_type != "ball") else 1.0
+                b1.angular_velocity += angular_impulse1 * _b1_scale * _aq1
 
                 # For beetle 2: collision point relative to its center
                 r2_x = collision_x - b2.x
                 r2_z = collision_z - b2.z
                 torque2 = r2_x * (-impulse_z) - r2_z * (-impulse_x)
                 angular_impulse2 = (torque2 / b2.moment_of_inertia) * params["TORQUE_MULTIPLIER"]
-                b2.angular_velocity += angular_impulse2 * _b2_scale
+                b2.angular_velocity += angular_impulse2 * _b2_scale * _aq2
 
                 # === BALL PHYSICS: TORQUE/LIFT/TIP (realistic contact-based forces) ===
                 # Apply special physics when ball is involved (hit from side = spin, from below = lift, from above = tip)
@@ -18798,15 +18875,24 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
 
                     # Apply extra push force to ball based on push multiplier
                     # This makes the ball feel lighter and easier to push
+                    # (scaled by _pss so the ball-carry matching regime isn't
+                    # undone by the lightness pop — full strength on real hits)
                     if ball_is_b1:
-                        ball.vx += impulse_x * (push_mult - 1.0)  # Extra push on top of normal impulse
-                        ball.vz += impulse_z * (push_mult - 1.0)
+                        ball.vx += impulse_x * (push_mult - 1.0) * _pss  # Extra push on top of normal impulse
+                        ball.vz += impulse_z * (push_mult - 1.0) * _pss
                     else:
-                        ball.vx -= impulse_x * (push_mult - 1.0)
-                        ball.vz -= impulse_z * (push_mult - 1.0)
+                        ball.vx -= impulse_x * (push_mult - 1.0) * _pss
+                        ball.vz -= impulse_z * (push_mult - 1.0) * _pss
 
                     # Calculate contact offset from ball center (Y-axis for lift/tip)
                     contact_offset_y = collision_y - ball.y
+                    if BALL_TRACE:
+                        # Scoop diagnosis (2026-07-20): which vertical zone
+                        # the contact lands in + whether the beetle's pitch
+                        # velocity survives engagement damping
+                        _bt_dbg['zone'] = round(contact_offset_y, 2)
+                        _bt_dbg['hpv'] = round(beetle.horn_pitch_velocity, 2)
+                        _bt_dbg['pdamp'] = round(getattr(beetle, 'horn_pitch_damping', 0.0), 2)
 
                     # HORN SCOOP LIFT: When beetle tilts horn UP while touching bottom of ball, lift it!
                     # This mimics beetle-to-beetle combat where horn pitch velocity determines lift
@@ -18816,8 +18902,24 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             # Scale lift force by horn velocity (more aggressive scoop = more lift)
                             scoop_strength = min(beetle.horn_pitch_velocity / 2.0, 1.5)  # Cap at 1.5x
                             horn_scoop_lift = params["BALL_LIFT_STRENGTH"] * 2.0 * scoop_strength * push_mult
-                            ball.vy += horn_scoop_lift
+                            # BAT MODEL (2026-07-20, --balltrace proof: 85 of
+                            # 161 scoops ended their frame below 5 vy despite
+                            # +29 added — the old `vy +=` FOUGHT the incoming
+                            # fall, so a flick merely arrested a dropping
+                            # ball; launches only happened when the ball was
+                            # already slow. A flick now SETS the launch
+                            # velocity: flick strength + SCOOP_REFLECT x the
+                            # fall speed (volley reflection, same physics as
+                            # the floor/body bounces). Reliable regardless of
+                            # incoming vy; a ball already rising faster than
+                            # the target is untouched (no stacking)
+                            _scoop_target = (horn_scoop_lift
+                                             + params.get("SCOOP_REFLECT", 0.5) * max(0.0, -ball.vy))
+                            if ball.vy < _scoop_target:
+                                ball.vy = _scoop_target
                             beetle.lift_cooldown = 0.05  # Prevent rapid-fire ball scooping
+                            if BALL_TRACE:
+                                _bt_dbg['scoop'] = round(_scoop_target, 2)
 
                     # PASSIVE LIFT: Hit from below (contact point is below ball center)
                     # Base upward force when beetle pushes ball from below
@@ -18828,8 +18930,20 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                     # TIP: Hit from above (contact point is above ball center)
                     # When beetle hits ball from above, push it down
                     elif contact_offset_y > ball.radius * 0.2:  # Top 20% of ball
+                        # RISING-HORN EXEMPTION (2026-07-20, proven by
+                        # --balltrace): 54% of rhino sweep contacts land in
+                        # this top zone (the tall rhino tip touches the
+                        # ball's upper half) and the down-push fired on
+                        # geometry alone — avg pitch velocity during
+                        # down-pushes was 0.19, and active scoops were being
+                        # stuffed back down mid-lift. Fade the down-push as
+                        # the horn actively RISES (gone by pitch vel 1.0) —
+                        # a rising horn isn't smashing the ball down
                         tip_force = params["BALL_TIP_STRENGTH"]
+                        tip_force *= max(0.0, 1.0 - max(0.0, beetle.horn_pitch_velocity))
                         ball.vy -= tip_force
+                        if BALL_TRACE and tip_force > 0.01:
+                            _bt_dbg['tipdn'] = round(tip_force, 2)
 
                     # TORQUE: Hits create spin on all 3 axes based on contact point
                     # Calculate offset from ball center (contact_offset_y already calculated above)
@@ -20243,7 +20357,10 @@ physics_params = {
     "BALL_BOUNCE_MIN_DROP": 0.5,  # 0.75->0.5 2026-07-18: softer aerial touches count as volleys
     "BALL_FLOOR_MIN_DROP": 2.0,  # 2026-07-18 floor micro-bounce cut: drops below N voxels settle, restitution ramps to full by ~4N (0 = old flat restitution)
     "SWEEP_BULLDOZE": 1.0,  # 2026-07-18 tunneling fix B: fast horn sweeps displace the penetrated ball positionally along the sweep tangent (0 = off/old)
-    "LOW_HORN_LIFT_KEEP": 0.0,  # 2026-07-19 user rule: ground-level horns push sideways, geometric lift fades below _scy ~3.5 (1 = old always-lift; true upward motion always lifts regardless)
+    "SWEEP_CARRY_LIFT": 0.6,  # 2026-07-20: lift credit during an active bulldozer carry — the bulldozer keeps true penetration ~0 (anti-clip), which starved the pen-scaled scoop lift ("turning into the ball = jerky tap, no lift"). Carry engagement counts as contact for lift. 0 = starved behavior
+    "BALL_CARRY_SPEED": 15.0,  # 2026-07-20 (--balltrace session): below this closing speed, horn/body contact CARRIES the ball (velocity matching, ball rides the surface, contact persists for scoops) instead of the full elastic pop. Real hits/shots above it pop as before. 0 = off/old always-pop. User tune 5->15; rebounds exempted via relative-vy gate (bouncing balls always pop)
+    "SCOOP_REFLECT": 0.5,  # 2026-07-20 bat model: fraction of a falling ball's speed reflected upward on a scoop flick (volley). The flick SETS launch vy (strength + this reflection) instead of adding-vs-the-fall — the old += made scoop outcomes depend on catch timing. 0 = strength-only launch
+    "LOW_HORN_LIFT_KEEP": 1.0,  # 2026-07-20 USER RETURN TO OLD: 1 = always-lift (tested "1 is good" — the 0 fade starved rhino sweep-lifts; the fade mechanism stays for re-tuning via slider)
     "GOAL_EDGE_BOUNCE": 0.3,  # 2026-07-18 dead-corner fix: damped pop for non-pitward landings in the near-pit band (0 = old dead stop)
     "LIP_GUARD_BOUNCE": 0.2,  # 2026-07-18: small vertical arc kept on same-substep rim+floor lip hits (0 = old flat)
     "SHAFT_PENETRATION_LIFT": 0.32,  # Shaft-under-body/ball scoop strength (was .get-fallback 0.25; 2026-07-17 raised for ball scoops — beetle side stays bounded by SHAFT_PEN_LIFT_CAP)
@@ -21209,30 +21326,39 @@ try:
         BOWL_WIDTH = 12.0
         effective_radius = ARENA_RADIUS + BOWL_WIDTH if beetle_ball.active else ARENA_RADIUS
 
-        # Check both vertical fall AND horizontal arena boundary (prevents camera spazzing at edges)
-        blue_dist_from_center = math.sqrt(beetles[0].x**2 + beetles[0].z**2)
-        red_dist_from_center = math.sqrt(beetles[1].x**2 + beetles[1].z**2)
+        # GOAL-LANE-AWARE FRAMING (2026-07-20): the on-platform test was a
+        # bare circle (dist < effective_radius = 44), so anything smashed
+        # ~9 voxels past the goal mouth (35) left the framing and its
+        # explosion happened off-screen. The lane is exempt from the bowl
+        # cap so travel there is unbounded — deliberately NO invisible
+        # wall (user call); the camera follows instead. Lane entities stay
+        # framed at any depth and down to fall-death Y (-25, vs the -10
+        # platform cutoff) so pit explosions are watched to the end
+        def _framed(ent, lane_fall_y):
+            if _in_goal_lane(ent.x, ent.z):
+                return ent.y > lane_fall_y
+            _d = math.sqrt(ent.x**2 + ent.z**2)
+            return ent.y > FALL_HEIGHT_THRESHOLD and _d < effective_radius
+        blue_on_platform = _framed(beetles[0], -25.0)
+        red_on_platform = _framed(beetles[1], -25.0)
 
-        blue_on_platform = (beetles[0].y > FALL_HEIGHT_THRESHOLD and
-                            blue_dist_from_center < effective_radius)
-        red_on_platform = (beetles[1].y > FALL_HEIGHT_THRESHOLD and
-                           red_dist_from_center < effective_radius)
-
-        # Calculate midpoint - only include beetles still on platform
-        if blue_on_platform and red_on_platform:
-            # Both beetles on platform: normal midpoint
-            mid_x = (beetles[0].x + beetles[1].x) / 2.0
-            mid_z = (beetles[0].z + beetles[1].z) / 2.0
-        elif blue_on_platform:
-            # Only blue on platform: focus on blue
-            mid_x = beetles[0].x
-            mid_z = beetles[0].z
-        elif red_on_platform:
-            # Only red on platform: focus on red
-            mid_x = beetles[1].x
-            mid_z = beetles[1].z
+        # Framing points: platform/lane beetles, plus (ball mode) any ball
+        # in a goal lane — the camera never tracked balls, so rocketed
+        # goal shots vanished off-screen before the score explosion
+        _pts = []
+        if blue_on_platform:
+            _pts.append((beetles[0].x, beetles[0].z))
+        if red_on_platform:
+            _pts.append((beetles[1].x, beetles[1].z))
+        if beetle_ball.active:
+            for _fb in balls:
+                if _fb.active and _in_goal_lane(_fb.x, _fb.z) and _fb.y > -3.0:
+                    _pts.append((_fb.x, _fb.z))
+        if _pts:
+            mid_x = sum(_p[0] for _p in _pts) / len(_pts)
+            mid_z = sum(_p[1] for _p in _pts) / len(_pts)
         else:
-            # Both fallen: maintain last valid midpoint (use 0,0 as safe fallback)
+            # Everyone gone: safe fallback
             mid_x = 0.0
             mid_z = 0.0
 
@@ -21286,8 +21412,11 @@ try:
             edge_dx_norm = math.cos(angle_to_midpoint)
             edge_dz_norm = math.sin(angle_to_midpoint)
 
-        # Calculate edge proximity (0.0 = center, 1.0 = at edge)
-        edge_proximity = dist_from_origin / effective_radius
+        # Calculate edge proximity (0.0 = center, 1.0 = at edge). Clamped:
+        # a lane-framed midpoint can now sit BEYOND the radius (was
+        # impossible before goal-lane framing) and an unclamped value
+        # would over-shrink the camera distance
+        edge_proximity = min(1.0, dist_from_origin / effective_radius)
 
         # Camera distance: reduce when beetles near edge (so edge is visible)
         base_camera_distance = physics_params["CAMERA_DISTANCE"]
@@ -21302,6 +21431,26 @@ try:
         base_height = physics_params["CAMERA_BASE_HEIGHT"]
         target_y = base_height
         target_y = max(20.0, min(150.0, target_y))  # Clamp height
+
+        # LANE DEPTH GUARANTEE (2026-07-20): the camera stands edge-side
+        # of the action and faces INWARD, so anything outward of the
+        # camera's own standpoint is behind the lens — a ball tapped just
+        # past the goal mouth sat in that dead space. If a framed point
+        # is in a goal lane deeper than the camera would stand, push the
+        # camera outward past it (+margin) so the lane depth is back in
+        # front of the lens
+        _deep = 0.0
+        for _p in _pts:
+            if _in_goal_lane(_p[0], _p[1]):
+                _pd = math.sqrt(_p[0]**2 + _p[1]**2)
+                if _pd > _deep:
+                    _deep = _pd
+        if _deep > 0.0:
+            _cam_d = math.sqrt(target_x**2 + target_z**2)
+            _need = _deep + 12.0
+            if _cam_d < _need:
+                target_x += edge_dx_norm * (_need - _cam_d)
+                target_z += edge_dz_norm * (_need - _cam_d)
 
         # Smooth interpolation (lerp) to avoid jarring camera movement
         lerp_factor = 0.1 * frame_dt * 60.0  # Scale by frame time
@@ -25226,7 +25375,12 @@ try:
                 _bt_dbg.get('branch', ''), _bt_dbg.get('seg', ''),
                 _bt_dbg.get('pen', ''), _bt_dbg.get('rest_y', ''),
                 _bt_dbg.get('surf_vy', ''), _bt_dbg.get('pinched', ''),
-                _bt_dbg.get('contacts', '')))
+                _bt_dbg.get('contacts', ''),
+                _bt_dbg.get('zone', ''), _bt_dbg.get('hpv', ''),
+                _bt_dbg.get('pdamp', ''), _bt_dbg.get('scoop', ''),
+                _bt_dbg.get('tipdn', ''), _bt_dbg.get('lspd', ''),
+                _bt_dbg.get('lpen', ''), _bt_dbg.get('carry', ''),
+                _bt_dbg.get('swpm', '')))
             _bt_dbg.clear()
             if len(_ball_trace_rows) > 80000:
                 del _ball_trace_rows[:20000]
@@ -29391,7 +29545,17 @@ try:
                 # Bounciness of beetle backs/horns (0 = roll off like before)
                 physics_params["BALL_BEETLE_BOUNCE"] = window.GUI.slider_float("Beetle Bounce", physics_params.get("BALL_BEETLE_BOUNCE", 0.45), 0.0, 0.8)
                 physics_params["SWEEP_BULLDOZE"] = window.GUI.slider_float("Sweep Bulldoze", physics_params.get("SWEEP_BULLDOZE", 1.0), 0.0, 2.0)
-                physics_params["LOW_HORN_LIFT_KEEP"] = window.GUI.slider_float("Low Horn Lift", physics_params.get("LOW_HORN_LIFT_KEEP", 0.0), 0.0, 1.0)
+                # Lift credit while the bulldozer carries the ball (the
+                # carry keeps penetration ~0, which starved sweep-lifts)
+                physics_params["SWEEP_CARRY_LIFT"] = window.GUI.slider_float("Carry Lift", physics_params.get("SWEEP_CARRY_LIFT", 0.6), 0.0, 1.5)
+                # Below this closing speed the ball RIDES the horn/body
+                # (carry) instead of popping away; hits above it pop full.
+                # 0 = old always-pop
+                physics_params["BALL_CARRY_SPEED"] = window.GUI.slider_float("Ball Carry Speed", physics_params.get("BALL_CARRY_SPEED", 15.0), 0.0, 20.0)
+                # Volley reflection on scoop flicks: fraction of a falling
+                # ball's speed bounced back upward (0 = flick strength only)
+                physics_params["SCOOP_REFLECT"] = window.GUI.slider_float("Scoop Reflect", physics_params.get("SCOOP_REFLECT", 0.5), 0.0, 1.0)
+                physics_params["LOW_HORN_LIFT_KEEP"] = window.GUI.slider_float("Low Horn Lift", physics_params.get("LOW_HORN_LIFT_KEEP", 1.0), 0.0, 1.0)
                 # Min fall (voxels) before the ball bounces off a beetle at
                 # all — below it contact settles (kills mini-bounce chatter)
                 physics_params["BALL_BOUNCE_MIN_DROP"] = window.GUI.slider_float("Bounce Min Drop", physics_params.get("BALL_BOUNCE_MIN_DROP", 2.0), 0.0, 8.0)
