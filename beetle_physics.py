@@ -400,7 +400,7 @@ def _bt_dump():
         return
     try:
         with open("ball_trace.csv", "w") as _f:
-            _f.write("frame,x,y,z,vx,vy,vz,branch,seg,pen,rest_y,surf_vy,pinched,contacts,zone,hpv,pdamp,scoop,tipdn,lspd,lpen,carry,swpm\n")
+            _f.write("frame,x,y,z,vx,vy,vz,branch,seg,pen,rest_y,surf_vy,pinched,contacts,zone,hpv,pdamp,scoop,tipdn,lspd,lpen,carry,swpm,vyset,bally,bgrnd,ishorn,tips,btype,fwd,chgt\n")
             for _r in _ball_trace_rows:
                 _f.write(",".join(str(_v) for _v in _r) + "\n")
         print(f"Ball trace: {len(_ball_trace_rows)} rows -> ball_trace.csv")
@@ -2256,6 +2256,7 @@ class Beetle:
 
         # Collision cooldown timers
         self.lift_cooldown = 0.0  # Time remaining before next lift can be applied (seconds)
+        self.flick_peak = 0.0  # Decaying peak of a recent upward horn swing (ball scoop timing window)
         self.tip_cooldown = 0.0   # Time remaining before next tipping torque (separate from lift)
         self.pending_lift = 0.0    # Queued lift force, drained smoothly over multiple frames
         self.pending_pitch = 0.0   # Queued pitch torque, drained smoothly
@@ -2323,6 +2324,25 @@ class Beetle:
         # Decrement tip cooldown timer (separate from lift - for horn tipping torque)
         if self.tip_cooldown > 0.0:
             self.tip_cooldown = max(0.0, self.tip_cooldown - dt)
+
+        # FLICK WINDOW (2026-07-20, --balltrace proof): the ball scoop
+        # required the horn to be mid-swing on the exact substep contact
+        # registered — only 12% of traced ball contacts qualified, while
+        # 59% had good geometry. A horn's pitch range is ~60 deg (~0.5s of
+        # travel, then velocity reads 0 AT THE CAP), and contact detection
+        # strobes, so a real flick was routinely missed. Remember the peak
+        # of a REAL upward swing and decay it over SCOOP_FLICK_WINDOW
+        # seconds — this is not phantom velocity (the horn genuinely moved
+        # that fast; the sampling missed it), and it decays to nothing, so
+        # holding at the cap still earns zero. 0 = old exact-substep gate
+        _fw = physics_params.get("SCOOP_FLICK_WINDOW", 0.15)
+        if _fw > 0.001:
+            if self.horn_pitch_velocity > self.flick_peak:
+                self.flick_peak = self.horn_pitch_velocity
+            else:
+                self.flick_peak = max(0.0, self.flick_peak * max(0.0, 1.0 - dt / _fw))
+        else:
+            self.flick_peak = self.horn_pitch_velocity
 
         # Drain pending collision forces smoothly (20% per tick, ~15 frames to fully apply).
         # Small remainders drain at a constant floor rate instead of dumping
@@ -18886,21 +18906,44 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
 
                     # Calculate contact offset from ball center (Y-axis for lift/tip)
                     contact_offset_y = collision_y - ball.y
-                    if BALL_TRACE:
+                    # Trace only the ball the CSV rows describe (multi-ball
+                    # was logging another ball's scoop against beetle_ball's
+                    # row — a false "scoop fired but vy stayed 0")
+                    if BALL_TRACE and ball is beetle_ball:
                         # Scoop diagnosis (2026-07-20): which vertical zone
                         # the contact lands in + whether the beetle's pitch
                         # velocity survives engagement damping
                         _bt_dbg['zone'] = round(contact_offset_y, 2)
                         _bt_dbg['hpv'] = round(beetle.horn_pitch_velocity, 2)
                         _bt_dbg['pdamp'] = round(getattr(beetle, 'horn_pitch_damping', 0.0), 2)
+                        # Which part touched: 1 = horn/weapon voxels,
+                        # 0 = legs/body. Settles whether a low horn is
+                        # DETECTED at all vs merely landing in a bad zone
+                        _bt_dbg['ishorn'] = int(is_horn_contact)
+                        _bt_dbg['tips'] = int(has_horn_tips)
+                        _bt_dbg['btype'] = beetle.horn_type
+                        # THE decisive column: how far FORWARD of the beetle
+                        # center the contact sits (its own frame). Rhino horn
+                        # tip lives ~13-20 out, legs/body ~0-6 — so this says
+                        # whether the horn is touching the ball at all, and
+                        # 'chgt' says how high the contact is on the beetle
+                        _c_cos = math.cos(beetle.rotation)
+                        _c_sin = math.sin(beetle.rotation)
+                        _bt_dbg['fwd'] = round((collision_x - beetle.x) * _c_cos
+                                               + (collision_z - beetle.z) * _c_sin, 1)
+                        _bt_dbg['chgt'] = round(collision_y - beetle.y, 1)
 
                     # HORN SCOOP LIFT: When beetle tilts horn UP while touching bottom of ball, lift it!
                     # This mimics beetle-to-beetle combat where horn pitch velocity determines lift
                     if contact_offset_y < ball.radius * 0.3:  # Contact at or below ball center (bottom 80%)
                         # Check if beetle is actively tilting horn upward (positive horn_pitch_velocity)
-                        if beetle.horn_pitch_velocity > 0.5 and beetle.lift_cooldown <= 0.0:  # Beetle is scooping up
+                        # Flick window (see update_physics): a swing counts for
+                        # a short decaying period, not just the exact substep
+                        _fpv = max(beetle.horn_pitch_velocity,
+                                   getattr(beetle, 'flick_peak', 0.0))
+                        if _fpv > 0.5 and beetle.lift_cooldown <= 0.0:  # Beetle is scooping up
                             # Scale lift force by horn velocity (more aggressive scoop = more lift)
-                            scoop_strength = min(beetle.horn_pitch_velocity / 2.0, 1.5)  # Cap at 1.5x
+                            scoop_strength = min(_fpv / 2.0, 1.5)  # Cap at 1.5x
                             horn_scoop_lift = params["BALL_LIFT_STRENGTH"] * 2.0 * scoop_strength * push_mult
                             # BAT MODEL (2026-07-20, --balltrace proof: 85 of
                             # 161 scoops ended their frame below 5 vy despite
@@ -18918,8 +18961,14 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                             if ball.vy < _scoop_target:
                                 ball.vy = _scoop_target
                             beetle.lift_cooldown = 0.05  # Prevent rapid-fire ball scooping
-                            if BALL_TRACE:
+                            if BALL_TRACE and ball is beetle_ball:
+                                # vy_set = what the scoop actually installed;
+                                # compare against the row's vy (end of frame)
+                                # to see whether anything downstream ate it
                                 _bt_dbg['scoop'] = round(_scoop_target, 2)
+                                _bt_dbg['vyset'] = round(ball.vy, 2)
+                                _bt_dbg['bally'] = round(ball.y, 2)
+                                _bt_dbg['bgrnd'] = int(getattr(ball, 'on_ground', False))
 
                     # PASSIVE LIFT: Hit from below (contact point is below ball center)
                     # Base upward force when beetle pushes ball from below
@@ -18940,9 +18989,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
                         # the horn actively RISES (gone by pitch vel 1.0) —
                         # a rising horn isn't smashing the ball down
                         tip_force = params["BALL_TIP_STRENGTH"]
-                        tip_force *= max(0.0, 1.0 - max(0.0, beetle.horn_pitch_velocity))
+                        tip_force *= max(0.0, 1.0 - max(0.0, beetle.horn_pitch_velocity,
+                                                        getattr(beetle, 'flick_peak', 0.0)))
                         ball.vy -= tip_force
-                        if BALL_TRACE and tip_force > 0.01:
+                        if BALL_TRACE and tip_force > 0.01 and ball is beetle_ball:
                             _bt_dbg['tipdn'] = round(tip_force, 2)
 
                     # TORQUE: Hits create spin on all 3 axes based on contact point
@@ -20360,6 +20410,7 @@ physics_params = {
     "SWEEP_CARRY_LIFT": 0.6,  # 2026-07-20: lift credit during an active bulldozer carry — the bulldozer keeps true penetration ~0 (anti-clip), which starved the pen-scaled scoop lift ("turning into the ball = jerky tap, no lift"). Carry engagement counts as contact for lift. 0 = starved behavior
     "BALL_CARRY_SPEED": 15.0,  # 2026-07-20 (--balltrace session): below this closing speed, horn/body contact CARRIES the ball (velocity matching, ball rides the surface, contact persists for scoops) instead of the full elastic pop. Real hits/shots above it pop as before. 0 = off/old always-pop. User tune 5->15; rebounds exempted via relative-vy gate (bouncing balls always pop)
     "SCOOP_REFLECT": 0.5,  # 2026-07-20 bat model: fraction of a falling ball's speed reflected upward on a scoop flick (volley). The flick SETS launch vy (strength + this reflection) instead of adding-vs-the-fall — the old += made scoop outcomes depend on catch timing. 0 = strength-only launch
+    "SCOOP_FLICK_WINDOW": 0.15,  # 2026-07-20 (--balltrace: only 12% of ball contacts had the horn mid-swing, vs 59% with good geometry — a ~60deg horn range is ~0.5s of travel and contact strobes, so real flicks were missed): seconds a real upward swing keeps counting for the scoop, decaying to zero. NOT phantom velocity — the horn did move that fast; holding at the cap still earns nothing. 0 = old exact-substep gate
     "LOW_HORN_LIFT_KEEP": 1.0,  # 2026-07-20 USER RETURN TO OLD: 1 = always-lift (tested "1 is good" — the 0 fade starved rhino sweep-lifts; the fade mechanism stays for re-tuning via slider)
     "GOAL_EDGE_BOUNCE": 0.3,  # 2026-07-18 dead-corner fix: damped pop for non-pitward landings in the near-pit band (0 = old dead stop)
     "LIP_GUARD_BOUNCE": 0.2,  # 2026-07-18: small vertical arc kept on same-substep rim+floor lip hits (0 = old flat)
@@ -25380,7 +25431,11 @@ try:
                 _bt_dbg.get('pdamp', ''), _bt_dbg.get('scoop', ''),
                 _bt_dbg.get('tipdn', ''), _bt_dbg.get('lspd', ''),
                 _bt_dbg.get('lpen', ''), _bt_dbg.get('carry', ''),
-                _bt_dbg.get('swpm', '')))
+                _bt_dbg.get('swpm', ''), _bt_dbg.get('vyset', ''),
+                _bt_dbg.get('bally', ''), _bt_dbg.get('bgrnd', ''),
+                _bt_dbg.get('ishorn', ''), _bt_dbg.get('tips', ''),
+                _bt_dbg.get('btype', ''), _bt_dbg.get('fwd', ''),
+                _bt_dbg.get('chgt', '')))
             _bt_dbg.clear()
             if len(_ball_trace_rows) > 80000:
                 del _ball_trace_rows[:20000]
@@ -29555,6 +29610,9 @@ try:
                 # Volley reflection on scoop flicks: fraction of a falling
                 # ball's speed bounced back upward (0 = flick strength only)
                 physics_params["SCOOP_REFLECT"] = window.GUI.slider_float("Scoop Reflect", physics_params.get("SCOOP_REFLECT", 0.5), 0.0, 1.0)
+                # Seconds a real horn flick keeps counting for the scoop
+                # (contact strobes; 0 = must be mid-swing that exact step)
+                physics_params["SCOOP_FLICK_WINDOW"] = window.GUI.slider_float("Flick Window", physics_params.get("SCOOP_FLICK_WINDOW", 0.15), 0.0, 0.5)
                 physics_params["LOW_HORN_LIFT_KEEP"] = window.GUI.slider_float("Low Horn Lift", physics_params.get("LOW_HORN_LIFT_KEEP", 1.0), 0.0, 1.0)
                 # Min fall (voxels) before the ball bounces off a beetle at
                 # all — below it contact settles (kills mini-bounce chatter)
