@@ -2150,7 +2150,7 @@ BALL_SPIN_MULTIPLIER = 5.0  # How easily ball spins when hit (1.0=normal, 4.0=ve
 BALL_ANGULAR_FRICTION = 0.99  # How quickly ball spin slows (0.9=fast stop, 0.99=long spin)
 
 # Ball torque/lift physics (realistic soccer ball behavior)
-BALL_LIFT_STRENGTH = 3.6  # How much ball lifts when scooping with horn (0.0-10.0)
+BALL_LIFT_STRENGTH = 7.8  # How much ball lifts when scooping with horn (0.0-10.0). 3.6->7.8 user tune 2026-07-21 (found the real weak-lift lever)
 BALL_PASSIVE_LIFT_STRENGTH = 0.5  # Passive lift when touching bottom of ball (0.0-10.0)
 BALL_TIP_STRENGTH = 5.0  # How much ball tips down when hit from above (0.0-5.0)
 BALL_TORQUE_STRENGTH = 8.0  # How much ball spins from side hits (0.0-10.0)
@@ -2335,7 +2335,7 @@ class Beetle:
         # seconds — this is not phantom velocity (the horn genuinely moved
         # that fast; the sampling missed it), and it decays to nothing, so
         # holding at the cap still earns zero. 0 = old exact-substep gate
-        _fw = physics_params.get("SCOOP_FLICK_WINDOW", 0.15)
+        _fw = physics_params.get("SCOOP_FLICK_WINDOW", 0.05)
         if _fw > 0.001:
             if self.horn_pitch_velocity > self.flick_peak:
                 self.flick_peak = self.horn_pitch_velocity
@@ -20410,7 +20410,7 @@ physics_params = {
     "SWEEP_CARRY_LIFT": 0.6,  # 2026-07-20: lift credit during an active bulldozer carry — the bulldozer keeps true penetration ~0 (anti-clip), which starved the pen-scaled scoop lift ("turning into the ball = jerky tap, no lift"). Carry engagement counts as contact for lift. 0 = starved behavior
     "BALL_CARRY_SPEED": 15.0,  # 2026-07-20 (--balltrace session): below this closing speed, horn/body contact CARRIES the ball (velocity matching, ball rides the surface, contact persists for scoops) instead of the full elastic pop. Real hits/shots above it pop as before. 0 = off/old always-pop. User tune 5->15; rebounds exempted via relative-vy gate (bouncing balls always pop)
     "SCOOP_REFLECT": 0.5,  # 2026-07-20 bat model: fraction of a falling ball's speed reflected upward on a scoop flick (volley). The flick SETS launch vy (strength + this reflection) instead of adding-vs-the-fall — the old += made scoop outcomes depend on catch timing. 0 = strength-only launch
-    "SCOOP_FLICK_WINDOW": 0.15,  # 2026-07-20 (--balltrace: only 12% of ball contacts had the horn mid-swing, vs 59% with good geometry — a ~60deg horn range is ~0.5s of travel and contact strobes, so real flicks were missed): seconds a real upward swing keeps counting for the scoop, decaying to zero. NOT phantom velocity — the horn did move that fast; holding at the cap still earns nothing. 0 = old exact-substep gate
+    "SCOOP_FLICK_WINDOW": 0.05,  # 2026-07-20 (--balltrace: only 12% of ball contacts had the horn mid-swing, vs 59% with good geometry — a ~60deg horn range is ~0.5s of travel and contact strobes, so real flicks were missed): seconds a real upward swing keeps counting for the scoop, decaying to zero. NOT phantom velocity — the horn did move that fast; holding at the cap still earns nothing. 0 = old exact-substep gate. User tune 0.15->0.05 (2026-07-21) after the real lever turned out to be Scoop Lift strength
     "LOW_HORN_LIFT_KEEP": 1.0,  # 2026-07-20 USER RETURN TO OLD: 1 = always-lift (tested "1 is good" — the 0 fade starved rhino sweep-lifts; the fade mechanism stays for re-tuning via slider)
     "GOAL_EDGE_BOUNCE": 0.3,  # 2026-07-18 dead-corner fix: damped pop for non-pitward landings in the near-pit band (0 = old dead stop)
     "LIP_GUARD_BOUNCE": 0.2,  # 2026-07-18: small vertical arc kept on same-substep rim+floor lip hits (0 = old flat)
@@ -29612,7 +29612,7 @@ try:
                 physics_params["SCOOP_REFLECT"] = window.GUI.slider_float("Scoop Reflect", physics_params.get("SCOOP_REFLECT", 0.5), 0.0, 1.0)
                 # Seconds a real horn flick keeps counting for the scoop
                 # (contact strobes; 0 = must be mid-swing that exact step)
-                physics_params["SCOOP_FLICK_WINDOW"] = window.GUI.slider_float("Flick Window", physics_params.get("SCOOP_FLICK_WINDOW", 0.15), 0.0, 0.5)
+                physics_params["SCOOP_FLICK_WINDOW"] = window.GUI.slider_float("Flick Window", physics_params.get("SCOOP_FLICK_WINDOW", 0.05), 0.0, 0.5)
                 physics_params["LOW_HORN_LIFT_KEEP"] = window.GUI.slider_float("Low Horn Lift", physics_params.get("LOW_HORN_LIFT_KEEP", 1.0), 0.0, 1.0)
                 # Min fall (voxels) before the ball bounces off a beetle at
                 # all — below it contact settles (kills mini-bounce chatter)
