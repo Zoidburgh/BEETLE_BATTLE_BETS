@@ -49,10 +49,25 @@ SKY_DOME_RINGS = 13
 SKY_DOME_RADIUS = 300.0  # bg voxels top out ~220; must stay inside far plane
 SKY_DOME_VERTS = SKY_DOME_SEGS * SKY_DOME_RINGS  # 312 verts — upload cost is noise
 
+# Shadow discs ride this SAME mesh call too (perf_plan.md candidate #2,
+# 2026-07-24): their verts live in a reserved tail AFTER the dome block, and
+# their index block is FIXED-SIZE — unused discs collapse to a degenerate
+# point below the world (zero-area triangles rasterize to nothing) — so the
+# variable floor block can stay the index_count-truncated tail. This kills
+# the separate scene.mesh call shadows used to pay (~2ms fixed on iGPUs).
+MAX_SHADOW_DISCS = 9  # 4 beetles + 3 balls (MB2) + ladybug + spare — 6 crashed the mesh draw with --balls 3 (7 discs > buffer)
+SHADOW_DISC_SEGMENTS = 32
+SHADOW_VERTS_PER_DISC = SHADOW_DISC_SEGMENTS + 1  # center + ring
+SHADOW_TRIS_PER_DISC = SHADOW_DISC_SEGMENTS
+MAX_SHADOW_VERTS = MAX_SHADOW_DISCS * SHADOW_VERTS_PER_DISC
+MAX_SHADOW_INDICES = MAX_SHADOW_DISCS * SHADOW_TRIS_PER_DISC * 3
+SHADOW_VERT_BASE = MAX_FLOOR_VERTS + SKY_DOME_VERTS
+TOTAL_MESH_VERTS = SHADOW_VERT_BASE + MAX_SHADOW_VERTS
+
 num_floor_quads = ti.field(dtype=ti.i32, shape=())
-floor_vertices = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS + SKY_DOME_VERTS)
-floor_normals = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS + SKY_DOME_VERTS)
-floor_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_FLOOR_VERTS + SKY_DOME_VERTS)
+floor_vertices = ti.Vector.field(3, dtype=ti.f32, shape=TOTAL_MESH_VERTS)
+floor_normals = ti.Vector.field(3, dtype=ti.f32, shape=TOTAL_MESH_VERTS)
+floor_colors = ti.Vector.field(3, dtype=ti.f32, shape=TOTAL_MESH_VERTS)
 
 # Floor texture contrast (runtime-tunable — changing these won't trigger kernel recompilation)
 stone_coarse_strength = ti.field(dtype=ti.f32, shape=())   # ±coarse patch variation
@@ -75,24 +90,16 @@ for _q in range(MAX_FLOOR_QUADS):
 SKIRT_DEPTH = 2.0
 SKIRT_SHADE = 0.55
 
-# Shadow disc mesh fields (perfect circles instead of grid-based blobs)
-MAX_SHADOW_DISCS = 9  # 4 beetles + 3 balls (MB2) + ladybug + spare — 6 crashed the mesh draw with --balls 3 (7 discs > buffer)
-SHADOW_DISC_SEGMENTS = 32
-SHADOW_VERTS_PER_DISC = SHADOW_DISC_SEGMENTS + 1  # center + ring
-SHADOW_TRIS_PER_DISC = SHADOW_DISC_SEGMENTS
-MAX_SHADOW_VERTS = MAX_SHADOW_DISCS * SHADOW_VERTS_PER_DISC
-MAX_SHADOW_INDICES = MAX_SHADOW_DISCS * SHADOW_TRIS_PER_DISC * 3
-
+# Shadow disc params (geometry lives in the floor-field tail, see
+# SHADOW_VERT_BASE above — perfect circles instead of grid-based blobs)
 num_shadow_discs = ti.field(dtype=ti.i32, shape=())
 shadow_disc_params = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SHADOW_DISCS)  # [x, z, radius]
-shadow_vertices = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SHADOW_VERTS)
-shadow_normals = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SHADOW_VERTS)
-shadow_colors = ti.Vector.field(3, dtype=ti.f32, shape=MAX_SHADOW_VERTS)
 
-# Pre-computed numpy index array for triangle fans
+# Pre-computed numpy index array for triangle fans, pre-shifted into the
+# shadow tail of the floor fields
 _shadow_indices_np = np.zeros(MAX_SHADOW_INDICES, dtype=np.int32)
 for _d in range(MAX_SHADOW_DISCS):
-    _center = _d * SHADOW_VERTS_PER_DISC
+    _center = SHADOW_VERT_BASE + _d * SHADOW_VERTS_PER_DISC
     for _s in range(SHADOW_DISC_SEGMENTS):
         _ti_base = (_d * SHADOW_TRIS_PER_DISC + _s) * 3
         _shadow_indices_np[_ti_base] = _center
@@ -137,16 +144,23 @@ for _ri in range(SKY_DOME_RINGS - 1):
         _di += 6
 SKY_DOME_INDEX_COUNT = len(_dome_indices_np)
 
-# Dome-only indices (sphere-floor fallback) and merged dome+floor indices
+# Merged index arrays: [dome?][shadow (fixed-size)][floor (variable tail)].
+# index_count truncates only the LAST block, so the fixed shadow block sits
+# before the floor quads; unused discs draw as degenerate points (free).
 _dome_only_indices_np = (_dome_indices_np + MAX_FLOOR_VERTS).astype(np.int32)
-_floor_dome_indices_np = np.concatenate([_dome_only_indices_np, _floor_indices_np])
+_dome_shadow_floor_indices_np = np.concatenate([_dome_only_indices_np, _shadow_indices_np, _floor_indices_np])
+_shadow_floor_indices_np = np.concatenate([_shadow_indices_np, _floor_indices_np])
+_dome_shadow_indices_np = np.concatenate([_dome_only_indices_np, _shadow_indices_np])
 
 # Write dome verts + outward normals (away from interior lights -> ambient-
 # only shading) into the floor-field tail once; quad kernels never touch it.
-_dome_init_np = np.zeros((MAX_FLOOR_VERTS + SKY_DOME_VERTS, 3), dtype=np.float32)
-_dome_init_np[MAX_FLOOR_VERTS:] = _dome_verts_np
+# Shadow tail starts collapsed below the world (degenerate until built).
+_dome_init_np = np.zeros((TOTAL_MESH_VERTS, 3), dtype=np.float32)
+_dome_init_np[MAX_FLOOR_VERTS:SHADOW_VERT_BASE] = _dome_verts_np
+_dome_init_np[SHADOW_VERT_BASE:, 1] = -500.0
 floor_vertices.from_numpy(_dome_init_np)
-_dome_init_np[MAX_FLOOR_VERTS:] = _dome_verts_np / SKY_DOME_RADIUS
+_dome_init_np[SHADOW_VERT_BASE:, 1] = 0.0
+_dome_init_np[MAX_FLOOR_VERTS:SHADOW_VERT_BASE] = _dome_verts_np / SKY_DOME_RADIUS
 floor_normals.from_numpy(_dome_init_np)
 del _dome_init_np
 
@@ -772,11 +786,19 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
     PI2 = 3.14159265358979 * 2.0
     floor_j = ti.cast(floor_y, ti.i32)
 
-    for d in range(num_shadow_discs[None]):
+    for d in range(MAX_SHADOW_DISCS):
+        base = SHADOW_VERT_BASE + d * SHADOW_VERTS_PER_DISC
+        if d >= num_shadow_discs[None]:
+            # Inactive slot: collapse to a hidden point — zero-area triangles
+            # rasterize to nothing, keeping the merged index block fixed-size
+            for s_off in range(SHADOW_VERTS_PER_DISC):
+                floor_vertices[base + s_off] = ti.math.vec3(0.0, -500.0, 0.0)
+                floor_normals[base + s_off] = ti.math.vec3(0.0, 1.0, 0.0)
+                floor_colors[base + s_off] = ti.math.vec3(0.0, 0.0, 0.0)
+            continue
         cx = shadow_disc_params[d][0]
         cz = shadow_disc_params[d][1]
         radius = shadow_disc_params[d][2]
-        base = d * SHADOW_VERTS_PER_DISC
         # Mesh floor: slight offset above quads. Sphere floor: higher to sit above sphere tops
         top_y = floor_y + VOXEL_RADIUS + 0.06
         if use_mesh_floor == 0:
@@ -834,9 +856,9 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
             edge_color = shadow_color * 0.5 + bc * 0.5
 
         # Center vertex (darkest)
-        shadow_vertices[base] = center_pos
-        shadow_normals[base] = up
-        shadow_colors[base] = shadow_color
+        floor_vertices[base] = center_pos
+        floor_normals[base] = up
+        floor_colors[base] = shadow_color
 
         # Ring vertices — walk inward along radius until on floor (smooth edge clipping)
         for s in range(SHADOW_DISC_SEGMENTS):
@@ -874,14 +896,14 @@ def build_shadow_discs(floor_y: ti.f32, voxel_field: ti.template(), n_grid: ti.i
                                     if board_break_mask[gi, gk] == 1:
                                         in_hole_s = 1
                             if in_hole_s == 0:
-                                shadow_vertices[base + 1 + s] = ti.math.vec3(vx, top_y + c_lift, vz)
+                                floor_vertices[base + 1 + s] = ti.math.vec3(vx, top_y + c_lift, vz)
                                 placed = 1
                                 break
 
             if placed == 0:
-                shadow_vertices[base + 1 + s] = center_pos
-            shadow_normals[base + 1 + s] = up
-            shadow_colors[base + 1 + s] = edge_color
+                floor_vertices[base + 1 + s] = center_pos
+            floor_normals[base + 1 + s] = up
+            floor_colors[base + 1 + s] = edge_color
 
 def set_shadow_params(index, x, z, radius):
     """Set shadow disc position/radius (called from beetle_physics).
@@ -1897,41 +1919,46 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         )
     _t_particles1 = time.perf_counter()
 
-    # Mesh floor quads (only when mesh floor enabled). The sky dome rides in
-    # this same call (dome index block first, then floor quads) so it costs
-    # no extra scene.mesh call — only its 312 verts of upload.
+    # Build shadow discs into the floor-field tail BEFORE the merged mesh
+    # call. Runs even at disc_count 0 — it also collapses unused disc slots
+    # to degenerate points so the fixed-size shadow index block draws nothing.
+    disc_count = num_shadow_discs[None]
+    _t_shadow0 = time.perf_counter()
+    build_shadow_discs(float(floor_y), voxel_field, n_grid, use_mesh)
+    _t_shadow1 = time.perf_counter()
+
+    # Floor quads + sky dome + shadow discs in ONE scene.mesh call — each
+    # extra call costs ~2ms fixed on iGPUs (dome merged 2026-07-08, shadows
+    # merged 2026-07-24, perf_plan.md candidate #2). Index layout:
+    # [dome?][shadow fixed-size][floor variable tail].
     floor_count = 0
     _t_mesh0 = time.perf_counter()
     if mesh_floor_enabled:
         floor_count = cached_floor_count if floor_cache_valid else num_floor_quads[None]
         floor_count = min(floor_count, MAX_FLOOR_QUADS)  # same buffer-overrun guard
         if sky_dome_enabled:
-            scene.mesh(floor_vertices, indices=_floor_dome_indices_np, normals=floor_normals,
+            scene.mesh(floor_vertices, indices=_dome_shadow_floor_indices_np, normals=floor_normals,
                        per_vertex_color=floor_colors, two_sided=False,
-                       vertex_count=MAX_FLOOR_VERTS + SKY_DOME_VERTS,
-                       index_count=SKY_DOME_INDEX_COUNT + floor_count * 6)
-        elif floor_count > 0:
-            scene.mesh(floor_vertices, indices=_floor_indices_np, normals=floor_normals,
+                       vertex_count=TOTAL_MESH_VERTS,
+                       index_count=SKY_DOME_INDEX_COUNT + MAX_SHADOW_INDICES + floor_count * 6)
+        elif floor_count > 0 or disc_count > 0:
+            scene.mesh(floor_vertices, indices=_shadow_floor_indices_np, normals=floor_normals,
                        per_vertex_color=floor_colors, two_sided=False,
-                       vertex_count=floor_count * 4, index_count=floor_count * 6)
+                       vertex_count=TOTAL_MESH_VERTS,
+                       index_count=MAX_SHADOW_INDICES + floor_count * 6)
     elif sky_dome_enabled:
-        # Sphere-floor fallback: no floor mesh call to ride, dome pays its own
-        scene.mesh(floor_vertices, indices=_dome_only_indices_np, normals=floor_normals,
+        # Sphere-floor fallback: no floor mesh call to ride; dome+shadows share one
+        scene.mesh(floor_vertices, indices=_dome_shadow_indices_np, normals=floor_normals,
                    per_vertex_color=floor_colors, two_sided=False,
-                   vertex_count=MAX_FLOOR_VERTS + SKY_DOME_VERTS,
-                   index_count=SKY_DOME_INDEX_COUNT)
+                   vertex_count=TOTAL_MESH_VERTS,
+                   index_count=SKY_DOME_INDEX_COUNT + MAX_SHADOW_INDICES)
+    elif disc_count > 0:
+        # Sphere floor, no dome: shadows pay their own call (legacy config)
+        scene.mesh(floor_vertices, indices=_shadow_indices_np, normals=floor_normals,
+                   per_vertex_color=floor_colors, two_sided=False,
+                   vertex_count=TOTAL_MESH_VERTS,
+                   index_count=MAX_SHADOW_INDICES)
     _t_mesh1 = time.perf_counter()
-
-    # Shadow discs (always — works on both mesh and sphere floors)
-    disc_count = num_shadow_discs[None]
-    _t_shadow0 = time.perf_counter()
-    if disc_count > 0:
-        build_shadow_discs(float(floor_y), voxel_field, n_grid, use_mesh)
-        scene.mesh(shadow_vertices, indices=_shadow_indices_np, normals=shadow_normals,
-                   per_vertex_color=shadow_colors, two_sided=False,
-                   vertex_count=disc_count * SHADOW_VERTS_PER_DISC,
-                   index_count=disc_count * SHADOW_TRIS_PER_DISC * 3)
-    _t_shadow1 = time.perf_counter()
 
     if (_t_merge1 - _t_merge0) > 1.0 or (_t_particles1 - _t_particles0) > 1.0 or (_t_mesh1 - _t_mesh0) > 1.0 or (_t_shadow1 - _t_shadow0) > 1.0:
         print(f"[Timing] render() breakdown: merge={(_t_merge1 - _t_merge0):.2f}s particles={(_t_particles1 - _t_particles0):.2f}s mesh={(_t_mesh1 - _t_mesh0):.2f}s shadow={(_t_shadow1 - _t_shadow0):.2f}s")
@@ -1946,8 +1973,8 @@ def render(camera, canvas, scene, voxel_field, n_grid, dynamic_lighting=True, sp
         'lighting_setup': (_t5 - _t2) * 1000,
         'scene_draw': (_t6 - _t5) * 1000,  # particles + mesh
         'particles_draw': (_t_particles1 - _t_particles0) * 1000,  # scene.particles (uploads voxel fields)
-        'floor_mesh_draw': (_t_mesh1 - _t_mesh0) * 1000,  # scene.mesh floor+sky dome (uploads floor fields)
-        'shadow_draw': (_t_shadow1 - _t_shadow0) * 1000,  # shadow disc build + mesh
+        'floor_mesh_draw': (_t_mesh1 - _t_mesh0) * 1000,  # scene.mesh floor+dome+shadows (uploads floor fields)
+        'shadow_draw': (_t_shadow1 - _t_shadow0) * 1000,  # shadow disc build kernel only (draw merged into floor mesh)
         'sky_dome_on': 1 if sky_dome_enabled else 0,  # dome rides the floor mesh call
         'voxel_count': count,
         'floor_quads': floor_count,

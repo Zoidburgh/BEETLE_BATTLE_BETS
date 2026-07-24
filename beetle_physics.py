@@ -5549,11 +5549,13 @@ def check_collision_pairs_kernel(pair_count: ti.i32):
     for p in range(MAX_COLLISION_PAIRS):
         pair_check_result[p] = 0
 
-    # Parallelize over (pair, column tile). Out-of-bounds tile cells and
+    # Parallelize over (pair, column tile), bounded to the LIVE pair count —
+    # the fixed 18-row domain ran ~82% dead iterations at typical 3-4 active
+    # rows (perf_plan.md candidate #1). Out-of-bounds tile cells and
     # already-decided pairs skip cheaply; each in-bounds cell runs the same
     # column test the single-pair kernel uses.
-    for p, ix, iz in ti.ndrange(MAX_COLLISION_PAIRS, PAIR_TILE, PAIR_TILE):
-        if p < pair_count and pair_check_result[p] == 0:
+    for p, ix, iz in ti.ndrange(pair_count, PAIR_TILE, PAIR_TILE):
+        if pair_check_result[p] == 0:
             x1 = pair_check_data[p, 0]
             z1 = pair_check_data[p, 1]
             y1 = pair_check_data[p, 2]
@@ -5583,6 +5585,53 @@ def check_collision_pairs_kernel(pair_count: ti.i32):
                 if gx < x_max and gz < z_max:
                     if _column_pair_contact(gx, gz, y1, y2, color1, color2) == 1:
                         pair_check_result[p] = 1
+
+BALL_PAIR_TILE = 25  # covers ball diameter at max Ball Radius slider (10) + stamp margin — MUST stay > 2*max_radius+2
+
+@ti.kernel
+def check_collision_pairs_kernel_ball(pair_count: ti.i32):
+    """Ball-row variant of check_collision_pairs_kernel (perf_plan.md #6,
+    2026-07-24): the tile centers on the BALL (row cols 3/4) and covers only
+    the ball's own footprint. A ball-vs-beetle contact can only exist in a
+    column the BALL occupies, so this is detection-IDENTICAL to the 77-tile
+    scan at ~11% of the cells — extra columns without ball voxels can never
+    report contact, and every ball-occupied column is inside the tile. Same
+    column test, same too-far rejection as the shared kernel."""
+    for p in range(MAX_COLLISION_PAIRS):
+        pair_check_result[p] = 0
+
+    for p, ix, iz in ti.ndrange(pair_count, BALL_PAIR_TILE, BALL_PAIR_TILE):
+        if pair_check_result[p] == 0:
+            x1 = pair_check_data[p, 0]
+            z1 = pair_check_data[p, 1]
+            y1 = pair_check_data[p, 2]
+            x2 = pair_check_data[p, 3]
+            z2 = pair_check_data[p, 4]
+            y2 = pair_check_data[p, 5]
+            color1 = pair_check_colors[p, 0]
+            color2 = pair_check_colors[p, 1]
+
+            center1_x = int(x1 + simulation.n_grid / 2.0)
+            center1_z = int(z1 + simulation.n_grid / 2.0)
+            ball_cx = int(x2 + simulation.n_grid / 2.0)
+            ball_cz = int(z2 + simulation.n_grid / 2.0)
+
+            dx = center1_x - ball_cx
+            dz = center1_z - ball_cz
+            dist_sq = dx * dx + dz * dz
+            if dist_sq <= 5776:  # same too_far rejection as the shared kernel
+                HALF_TILE = ti.static(BALL_PAIR_TILE // 2)
+                x_min = ti.max(0, ball_cx - HALF_TILE)
+                x_max = ti.min(simulation.n_grid, ball_cx + HALF_TILE + 1)
+                z_min = ti.max(0, ball_cz - HALF_TILE)
+                z_max = ti.min(simulation.n_grid, ball_cz + HALF_TILE + 1)
+
+                gx = x_min + ix
+                gz = z_min + iz
+                if gx < x_max and gz < z_max:
+                    if _column_pair_contact(gx, gz, y1, y2, color1, color2) == 1:
+                        pair_check_result[p] = 1
+
 
 @ti.kernel
 def place_beetle_rotated(world_x: ti.f32, world_y: ti.f32, world_z: ti.f32, rotation: ti.f32, color_type: ti.i32, front_body_height: ti.i32, back_body_height: ti.i32):
@@ -8513,6 +8562,125 @@ lowest_point_kernels = [make_lowest_point_kernel(_s) for _s in range(4)]
 # Legacy alias (historically blue geometry for everyone)
 calculate_beetle_lowest_point = lowest_point_kernels[0]
 
+
+# Batched lowest-point (perf_plan.md candidate #3, 2026-07-24): ONE launch +
+# ONE readback replaces up to 4 scalar-return launches per substep (each call
+# is a ~0.15ms Python<->Taichi round trip on the CPU backend; the voxel math
+# inside is microseconds). Each slot's block is ti.static-unrolled over that
+# slot's OWN geometry caches — same per-slot closure capture as
+# make_lowest_point_kernel, same rotation math, so results are identical.
+# Inner loops sit under a runtime mask branch (serial) — deliberate: we are
+# batching the launch overhead, not parallelizing the work.
+lowest_point_batch = ti.field(dtype=ti.f32, shape=4)
+
+def make_lowest_point_batch_kernel():
+    _g = [beetle_geo[_s] for _s in range(4)]
+    _bsize = [g['body_cache_size'] for g in _g]
+    _bx = [g['body_cache_x'] for g in _g]
+    _by = [g['body_cache_y'] for g in _g]
+    _bz = [g['body_cache_z'] for g in _g]
+    _lgx = [g['leg_cache_x'] for g in _g]
+    _lgy = [g['leg_cache_y'] for g in _g]
+    _lgz = [g['leg_cache_z'] for g in _g]
+    _lgs = [g['leg_start_idx'] for g in _g]
+    _lge = [g['leg_end_idx'] for g in _g]
+    _tpx = [g['leg_tip_cache_x'] for g in _g]
+    _tpy = [g['leg_tip_cache_y'] for g in _g]
+    _tpz = [g['leg_tip_cache_z'] for g in _g]
+    _tps = [g['leg_tip_start_idx'] for g in _g]
+    _tpe = [g['leg_tip_end_idx'] for g in _g]
+
+    @ti.kernel
+    def lowest_point_batch_k(need_mask: ti.i32,
+                             y0: ti.f32, r0: ti.f32, p0: ti.f32, q0: ti.f32,
+                             y1: ti.f32, r1: ti.f32, p1: ti.f32, q1: ti.f32,
+                             y2: ti.f32, r2: ti.f32, p2: ti.f32, q2: ti.f32,
+                             y3: ti.f32, r3: ti.f32, p3: ti.f32, q3: ti.f32):
+        for s in range(4):
+            lowest_point_batch[s] = 9999.0
+        for slot in ti.static(range(4)):
+            wy = y0
+            rot = r0
+            pit = p0
+            rol = q0
+            if ti.static(slot == 1):
+                wy = y1
+                rot = r1
+                pit = p1
+                rol = q1
+            if ti.static(slot == 2):
+                wy = y2
+                rot = r2
+                pit = p2
+                rol = q2
+            if ti.static(slot == 3):
+                wy = y3
+                rot = r3
+                pit = p3
+                rol = q3
+            if (need_mask & ti.static(1 << slot)) != 0:
+                base_y = int(wy)
+                cos_yaw = ti.cos(rot)
+                sin_yaw = ti.sin(rot)
+                cos_pitch_body = ti.cos(pit)
+                sin_pitch_body = ti.sin(pit)
+                cos_roll = ti.cos(rol)
+                sin_roll = ti.sin(rol)
+                lowest_y = 9999.0
+
+                # Body voxels (same math as make_lowest_point_kernel)
+                for i in range(_bsize[slot][None]):
+                    local_x = float(_bx[slot][i])
+                    local_z = float(_bz[slot][i])
+                    ly = float(_by[slot][i])
+                    temp_x = local_x * cos_yaw - local_z * sin_yaw
+                    temp_z = local_x * sin_yaw + local_z * cos_yaw
+                    temp_y = ly
+                    temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+                    temp2_z = temp_z
+                    final_y = temp2_y * cos_roll - temp2_z * sin_roll
+                    grid_y = float(base_y) + final_y
+                    if grid_y < lowest_y:
+                        lowest_y = grid_y
+
+                # Leg voxels
+                for leg_id in range(8):
+                    for i in range(_lgs[slot][leg_id], _lge[slot][leg_id]):
+                        local_x = float(_lgx[slot][i])
+                        local_z = float(_lgz[slot][i])
+                        ly = float(_lgy[slot][i])
+                        temp_x = local_x * cos_yaw - local_z * sin_yaw
+                        temp_z = local_x * sin_yaw + local_z * cos_yaw
+                        temp_y = ly
+                        temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+                        temp2_z = temp_z
+                        final_y = temp2_y * cos_roll - temp2_z * sin_roll
+                        grid_y = float(base_y) + final_y
+                        if grid_y < lowest_y:
+                            lowest_y = grid_y
+
+                # Leg tip voxels
+                for leg_id in range(8):
+                    for i in range(_tps[slot][leg_id], _tpe[slot][leg_id]):
+                        local_x = float(_tpx[slot][i])
+                        local_z = float(_tpz[slot][i])
+                        ly = float(_tpy[slot][i])
+                        temp_x = local_x * cos_yaw - local_z * sin_yaw
+                        temp_z = local_x * sin_yaw + local_z * cos_yaw
+                        temp_y = ly
+                        temp2_y = temp_x * sin_pitch_body + temp_y * cos_pitch_body
+                        temp2_z = temp_z
+                        final_y = temp2_y * cos_roll - temp2_z * sin_roll
+                        grid_y = float(base_y) + final_y
+                        if grid_y < lowest_y:
+                            lowest_y = grid_y
+
+                lowest_point_batch[slot] = lowest_y
+
+    return lowest_point_batch_k
+
+lowest_point_batch_kernel = make_lowest_point_batch_kernel()
+
 def make_place_beetle_kernel(slot):
     """
     Generate the animated beetle placement kernel for one player slot.
@@ -9210,11 +9378,12 @@ def clear_beetles_bounded(x1: ti.f32, y1: ti.f32, z1: ti.f32, x2: ti.f32, y2: ti
                 if simulation.is_beetle_voxel(vtype) == 1 or vtype == simulation.STINGER_TIP_BLACK:
                     simulation.voxel_type[i, j, k] = simulation.EMPTY
 
-@ti.kernel
-def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32,
-                                     occupied_x: ti.template(), occupied_z: ti.template(),
-                                     occupied_count: ti.template()):
-    """GPU-accelerated calculation of occupied voxels for collision detection"""
+@ti.func
+def _occupied_scan(world_x, world_z, beetle_color,
+                   occupied_x: ti.template(), occupied_z: ti.template(),
+                   occupied_count: ti.template()):
+    """Occupied-voxel scan body, shared by the legacy single-scan kernel and
+    the fused cluster_pair_kernel (perf_plan.md candidate #4)"""
     center_x = int(world_x + simulation.n_grid / 2.0)
     center_z = int(world_z + simulation.n_grid / 2.0)
 
@@ -9255,10 +9424,19 @@ def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_co
                     occupied_z[idx] = k
 
 @ti.kernel
-def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
+def calculate_occupied_voxels_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color: ti.i32,
+                                     occupied_x: ti.template(), occupied_z: ti.template(),
+                                     occupied_count: ti.template()):
+    """Legacy single-scan wrapper (the hot path uses cluster_pair_kernel)"""
+    _occupied_scan(world_x, world_z, beetle_color, occupied_x, occupied_z, occupied_count)
+
+
+@ti.func
+def _collision_point_scan(color1, color2):
     """OPTIMIZED: GPU-accelerated O(N+M) collision point calculation using spatial hash.
     color1/color2: the pair's voxel color ids, used to attribute tip voxels
-    to a side (collision_tips_b1/b2) for the per-type TIP_FACTOR physics."""
+    to a side (collision_tips_b1/b2) for the per-type TIP_FACTOR physics.
+    Body shared by the legacy kernel and cluster_pair_kernel."""
     # Reset collision data
     collision_point_x[None] = 0.0
     collision_point_y[None] = 0.0
@@ -9347,6 +9525,26 @@ def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
     collision_pack[6] = ti.cast(collision_tips_b2[None], ti.f32)
     collision_pack[7] = ti.cast(collision_has_hook_interiors[None], ti.f32)
     collision_pack[8] = ti.cast(collision_has_non_leg[None], ti.f32)
+
+
+@ti.kernel
+def calculate_collision_point_kernel(color1: ti.i32, color2: ti.i32):
+    """Legacy wrapper (the hot path uses cluster_pair_kernel)"""
+    _collision_point_scan(color1, color2)
+
+
+@ti.kernel
+def cluster_pair_kernel(x1: ti.f32, z1: ti.f32, c1: ti.i32,
+                        x2: ti.f32, z2: ti.f32, c2: ti.i32):
+    """Fused cluster pipeline (perf_plan.md candidate #4, 2026-07-24): both
+    occupied scans + the collision-point pass in ONE launch. The 3 separate
+    launches cost ~0.15ms of Python<->Taichi round trip EACH per colliding
+    pair per substep; the compute inside is trivial. Statements in a kernel
+    execute in order, so the scans complete before the collision-point
+    phases read their outputs — results are identical to the 3-launch path."""
+    _occupied_scan(x1, z1, c1, beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
+    _occupied_scan(x2, z2, c2, beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
+    _collision_point_scan(c1, c2)
 
 
 def calculate_horn_length(shaft_len, prong_len, horn_type):
@@ -16586,12 +16784,10 @@ def beetle_collision(b1, b2, params, precomputed_collision=None):
             pair_tip_factor = TIP_FACTOR.get(_bt2.horn_type, 1.0) if has_horn_tips else 0.0
             leg_contact_scale = 1.0  # ball impulse branch never uses it
         else:
-            # GPU-ACCELERATED: Calculate occupied voxels on GPU (no CPU transfer!)
-            calculate_occupied_voxels_kernel(b1.x, b1.z, b1.color,
-                                            beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
-            calculate_occupied_voxels_kernel(b2.x, b2.z, b2.color,
-                                            beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
-            calculate_collision_point_kernel(int(b1.color), int(b2.color))
+            # GPU-ACCELERATED, FUSED (perf_plan.md #4): both occupied scans +
+            # collision point in ONE launch instead of three
+            cluster_pair_kernel(float(b1.x), float(b1.z), int(b1.color),
+                                float(b2.x), float(b2.z), int(b2.color))
 
             # Read ALL results in ONE sync (packed field; the old per-scalar
             # [None] reads were ~8 round-trips per colliding pair)
@@ -20233,6 +20429,7 @@ dynamic_lighting_enabled = False  # Camera-relative lighting for cinematic effec
 show_advanced_settings = False
 show_settings_panel = False  # Hide settings panel until game starts
 show_beetle_tuning = False  # Standalone BEETLE TUNING window (per-type stats sliders)
+hide_settings_panel = False  # perf_plan.md #5: collapsed settings panel saves ~1ms/frame of ImGui draw
 beetle_tuning_sel = 0  # Which horn_type_id the tuning window is editing
 beetle_tuning_note = ""  # Last save/load feedback line in the tuning window
 
@@ -20753,11 +20950,9 @@ pair_check_data[0, 4] = 100.0
 pair_check_colors[0, 0] = simulation.BEETLE_BLUE
 pair_check_colors[0, 1] = simulation.BEETLE_RED
 check_collision_pairs_kernel(1)
-calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_BLUE,
-                                 beetle1_occupied_x, beetle1_occupied_z, beetle1_occupied_count)
-calculate_occupied_voxels_kernel(0.0, 0.0, simulation.BEETLE_RED,
-                                 beetle2_occupied_x, beetle2_occupied_z, beetle2_occupied_count)
-calculate_collision_point_kernel(int(simulation.BEETLE_BLUE), int(simulation.BEETLE_RED))
+check_collision_pairs_kernel_ball(1)
+cluster_pair_kernel(0.0, 0.0, int(simulation.BEETLE_BLUE),
+                    0.0, 0.0, int(simulation.BEETLE_RED))
 update_loading(1)
 
 # PHASE 2: Death/explosion kernels
@@ -20774,6 +20969,7 @@ spawn_leg_dust_staggered(0.0, -100.0, 0.0, 1.0, 0.0, 10.0, 0.45, 0.40, 0.35, 0.0
 spawn_spin_dust_puff(0.0, -100.0, 0.0, 1.0, 0.0, 0.45, 0.40, 0.35, 1.0, 1, 1.0, 1.0)
 check_floor_collision(0.0, 0.0)
 calculate_beetle_lowest_point(0.0, 0.0, 0.0, 0.0, 0.0)
+lowest_point_batch_kernel(0, *([0.0] * 16))
 clear_ufo_bounded(0.0, -100.0, 0.0)
 place_ufo_kernel(0.0, -100.0, 0.0, 0.0)
 clear_ufo_beam_bounded(0.0, 0.0, 30.0)
@@ -22648,7 +22844,7 @@ try:
         if _ballpair_rows:
             pair_check_data.from_numpy(_pair_np_data)
             pair_check_colors.from_numpy(_pair_np_colors)
-            check_collision_pairs_kernel(len(_ballpair_rows))
+            check_collision_pairs_kernel_ball(len(_ballpair_rows))  # ball-centered small tile (perf_plan #6)
             _bp_results = pair_check_result.to_numpy()
             for _ri, (_rbi, _rps) in enumerate(_ballpair_rows):
                 _ballpair_hit[(_rbi, _rps)] = int(_bp_results[_ri])
@@ -25027,6 +25223,7 @@ try:
         # beetles upward. CPU OPTIMIZATION: cached floor heights skip kernel
         # calls if the beetle hasn't moved much
         floor_y_by_slot = [-1000.0] * 4
+        _lp_slots = []  # slots needing a lowest_point measurement this substep
         for slot in range(active_player_count):
             if beetles[slot].active and not beetles[slot].is_falling and not hovering[slot]:
                 # Check if we can reuse cached floor height
@@ -25056,11 +25253,40 @@ try:
                         if renderer.board_break_mask[bb_gi, bb_gk] == 1:
                             floor_y_by_slot[slot] = -1000.0
                 if floor_y_by_slot[slot] > -100.0:  # Floor detected under beetle (world space, floor is at Y=0)
-                    # Calculate lowest point of beetle geometry after rotation
-                    lowest_point = lowest_point_kernels[slot](
-                        beetles[slot].y, beetles[slot].rotation, beetles[slot].pitch,
-                        beetles[slot].roll, beetles[slot].horn_pitch
-                    )
+                    _lp_slots.append(slot)
+
+        # perf_plan.md #3 (2026-07-24): batch the per-slot lowest_point
+        # launches — ONE launch + ONE readback when 2+ beetles need it (at
+        # exactly 1, the old single scalar-return call is 1 sync and wins).
+        # Nothing between the lookup loop above and the apply loop below
+        # mutates beetle state, so results are identical to the inline calls.
+        _lp_vals = {}
+        if len(_lp_slots) >= 2:
+            _lp_mask = 0
+            for _s in _lp_slots:
+                _lp_mask |= 1 << _s
+            _lp_args = []
+            for _s in range(4):
+                if _s < len(beetles):
+                    _lp_args += [float(beetles[_s].y), float(beetles[_s].rotation),
+                                 float(beetles[_s].pitch), float(beetles[_s].roll)]
+                else:
+                    _lp_args += [0.0, 0.0, 0.0, 0.0]
+            lowest_point_batch_kernel(_lp_mask, *_lp_args)
+            _lp_np = lowest_point_batch.to_numpy()
+            for _s in _lp_slots:
+                _lp_vals[_s] = float(_lp_np[_s])
+        elif _lp_slots:
+            _s = _lp_slots[0]
+            _lp_vals[_s] = lowest_point_kernels[_s](
+                beetles[_s].y, beetles[_s].rotation, beetles[_s].pitch,
+                beetles[_s].roll, beetles[_s].horn_pitch
+            )
+
+        for slot in range(active_player_count):
+            if beetles[slot].active and not beetles[slot].is_falling and not hovering[slot]:
+                if slot in _lp_vals:
+                    lowest_point = _lp_vals[slot]
 
                     # Check if beetle penetrates floor (lowest point goes into or below floor)
                     floor_surface = floor_y_by_slot[slot] + 0.5  # Top of floor voxel surface
@@ -27578,13 +27804,28 @@ try:
 
     # HUD - small during title, full size after game starts
     gui_skip_content = game_state in [GAME_STATE_TITLE, GAME_STATE_TITLE_TRANSITION]
+    # perf_plan.md #5 (2026-07-24): the full widget forest costs ~1ms/frame to
+    # draw; a HIDE PANEL button collapses it to the FPS box. Standalone HUD
+    # windows (LIVES, net debug, beetle tuning) are NOT gated by this — only
+    # the settings window itself.
+    gui_panel_off = gui_skip_content or hide_settings_panel
     if gui_skip_content:
         window.GUI.begin(" ", 0.01, 0.01, 0.10, 0.04)
         window.GUI.text(f"FPS: {actual_fps:3.0f}")
         window.GUI.end()
+    elif hide_settings_panel:
+        window.GUI.begin(" ", 0.01, 0.01, 0.10, 0.075)
+        window.GUI.text(f"FPS: {actual_fps:3.0f}")
+        if window.GUI.button("PANEL"):
+            hide_settings_panel = False
+        window.GUI.end()
     else:
         window.GUI.begin("SETTINGS AND NETWORKING", 0.01, 0.01, 0.35, 0.95)
         window.GUI.text(f"FPS: {actual_fps:3.0f}")
+
+        # Collapse the panel (perf: skips the whole widget forest below)
+        if window.GUI.button("HIDE PANEL (+FPS)"):
+            hide_settings_panel = True
 
         # (FFA-LIVES HUD moved OUT of this panel 2026-07-19 — it sat at
         # the TOP, so every lives tick / elimination / win banner /
@@ -27603,7 +27844,7 @@ try:
             show_beetle_tuning = not show_beetle_tuning
 
     # === NETWORK / ONLINE PLAY SECTION ===
-    if NETWORK_AVAILABLE and not gui_skip_content:
+    if NETWORK_AVAILABLE and not gui_panel_off:
         window.GUI.text("")
 
         # Show different UI based on game state
@@ -27944,7 +28185,7 @@ try:
         window.GUI.text("")
 
     # === CAMERA SECTION ===
-    if not gui_skip_content:
+    if not gui_panel_off:
         window.GUI.text("")
         window.GUI.text("=== CAMERA ===")
 
@@ -27980,8 +28221,8 @@ try:
         if third_person_camera:
             THIRD_PERSON_DISTANCE = window.GUI.slider_float("Distance", THIRD_PERSON_DISTANCE, 40.0, 80.0)
 
-    # Arena controls - skip during title screen
-    if not gui_skip_content:
+    # Arena controls - skip during title screen or collapsed panel
+    if not gui_panel_off:
         # Mode toggle buttons (only host can toggle in online mode)
         is_online_guest = game_state == GAME_STATE_ONLINE_PLAY and network_manager and not network_manager.is_host
         if is_online_guest:
