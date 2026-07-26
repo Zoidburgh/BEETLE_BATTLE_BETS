@@ -5336,18 +5336,15 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
     y_end = ti.min(simulation.n_grid, ti.max(beetle1_grid_y + beetle1_max_up,
                                               beetle2_grid_y + beetle2_max_up))
 
-    # Track if hook interior voxels are present in this column
-    has_hook_interior = 0
-
+    # (HOOK SYSTEM REMOVED 2026-07-26, user call: stag hook-interior voxels
+    # used to widen this column's contact tolerance to ±5 rows — the stag
+    # clamp engaged ~5 voxels early. Hook voxels now count as ordinary
+    # pincer voxels everywhere, same ±1 tolerance as every other beetle.)
     for gy in range(y_start, y_end):
         voxel = simulation.voxel_type[gx, gy, gz]
 
         voxel_owner_v = simulation.beetle_owner(voxel)
         voxel_part_v = simulation.voxel_part[voxel]
-
-        # Check for hook interior voxels (any player)
-        if voxel_part_v == simulation.PART_HOOK:
-            has_hook_interior = 1
 
         # Check if voxel belongs to entity 1 (based on color1)
         belongs_to_1 = 0
@@ -5422,9 +5419,7 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
         # collision response with a visible gap. +1 = contact when things
         # genuinely touch; the response layer owns actual contact now.
         tolerance = 1  # Default: beetle-beetle
-        if has_hook_interior == 1:
-            tolerance = 5
-        elif is_ball_involved == 1:
+        if is_ball_involved == 1:
             tolerance = 0  # Ball needs tight collision - no early detection
         elif is_leg_tip_only == 1:
             tolerance = -2  # Leg tips need actual overlap (stricter)
@@ -5435,10 +5430,7 @@ def _column_pair_contact(gx: ti.i32, gz: ti.i32, y1: ti.f32, y2: ti.f32, color1:
         # vertical gaps (scorpion back below + tail arc above reads as one
         # 33..55 range), so a ball floating IN the gap "overlapped" both
         # heights and hovered on nothing. Require a ball voxel within 2
-        # rows of a beetle voxel in this column — INCLUDING hook-interior
-        # columns: their ±5-row early-squeeze tolerance is for grabbing
-        # BEETLES, and for the ball it created a glue aura around the stag
-        # pincers (carry/settle running from 5 voxels away = "too sticky")
+        # rows of a beetle voxel in this column.
         if contact == 1 and is_ball_involved == 1 and ball_adjacent == 0:
             contact = 0
 
@@ -9413,7 +9405,7 @@ def _occupied_scan(world_x, world_z, beetle_color,
                 # plus the shared stinger tip (matches the old per-color sets)
                 elif vtype == simulation.STINGER_TIP_BLACK:
                     found_in_column = 1
-                elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color) and simulation.voxel_part[vtype] != simulation.PART_HOOK:
+                elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color):  # hook voxels count as normal parts (hook system removed 2026-07-26)
                     found_in_column = 1
 
             # Add to occupied list if found (atomic increment to avoid race conditions)
@@ -12013,7 +12005,7 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                 # plus the shared stinger tip (matches the old per-color sets)
                 if vtype == simulation.STINGER_TIP_BLACK:
                     is_beetle = 1
-                elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color) and simulation.voxel_part[vtype] != simulation.PART_HOOK:
+                elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color):  # hook voxels count as normal parts (hook system removed 2026-07-26)
                     is_beetle = 1
 
                 if is_beetle == 1:
@@ -12044,7 +12036,7 @@ def calculate_edge_tipping_kernel(world_x: ti.f32, world_z: ti.f32, beetle_color
                     # plus the shared stinger tip (matches the old per-color sets)
                     if vtype == simulation.STINGER_TIP_BLACK:
                         is_beetle = 1
-                    elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color) and simulation.voxel_part[vtype] != simulation.PART_HOOK:
+                    elif simulation.beetle_owner(vtype) >= 0 and simulation.beetle_owner(vtype) == simulation.beetle_owner(beetle_color):  # hook voxels count as normal parts (hook system removed 2026-07-26)
                         is_beetle = 1
 
                     if is_beetle == 1:

@@ -1,5 +1,20 @@
 # Stag Natural Physics Plan — ball AND combat
 
+> **2026-07-26 HOOK SYSTEM REMOVED (user call, uncommitted).** The hook-
+> interior voxels' special treatment is gone: the ±5-row early-contact
+> tolerance in _column_pair_contact (stag clamped from ~5 voxels away; now
+> ±1 like everyone), the PART_HOOK exclusion in _occupied_scan (hook voxels
+> now contribute contact mass / collision-point position like normal pincer
+> voxels), and the PART_HOOK exclusion in the edge-tipping footprint. Hook
+> voxels still exist as ordinary pincer geometry; the ball-adjacency guard
+> stays (it fixes vertical-gap envelopes generally, e.g. scorpion tail arc).
+> The max_contact_no_hook perf stat still labels squeeze contacts
+> (diagnostics only). Expected feel change: stag must genuinely close on a
+> victim to register the clamp — no more early "grab aura". Containment
+> once closed is unchanged (that's real wall geometry). Next balance lever
+> under consideration: a stag TIP_FACTOR entry (<1.0) since its blunt
+> risers currently ride at full 1.0 tip force.
+
 Written 2026-07-15. Goal: the stag feels like actual physics with both the
 ball and other beetles — cradle-carry and squeeze-shoot for the ball,
 clamp/drag/lift/throw for combat — all under the design rule: per-type
